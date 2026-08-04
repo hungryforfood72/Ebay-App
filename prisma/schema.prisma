@@ -1,0 +1,85 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum ItemStatus {
+  pending_review
+  ready
+  exported
+}
+
+enum ItemCondition {
+  new
+  new_other
+  used
+  for_parts
+}
+
+model ScanSession {
+  id        String    @id @default(uuid())
+  label     String?
+  startedBy String?
+  startedAt DateTime  @default(now())
+  endedAt   DateTime?
+
+  items Item[]
+}
+
+model Item {
+  id     String @id @default(uuid())
+  sku    String @unique @default(uuid())
+  status ItemStatus @default(pending_review)
+
+  // Scan step
+  upc            String
+  quantity       Int
+  isMultipack    Boolean  @default(false)
+  packSize       Int?
+  expirationDate DateTime?
+  shelfLocation  String
+  photoUrls      String[] @default([])
+  scannedBy      String?
+
+  scanSession   ScanSession? @relation(fields: [scanSessionId], references: [id])
+  scanSessionId String?
+
+  // Review step
+  upcLookupData   Json?
+  aiTitle         String?
+  aiDescription   String?
+  finalTitle      String?
+  finalDescription String?
+  price           Decimal?  @db.Decimal(10, 2)
+  categoryId      String?
+  condition       ItemCondition?
+  compNotes       String?
+  reviewedBy      String?
+  reviewedAt      DateTime?
+
+  // Export step
+  exportBatch   ExportBatch? @relation(fields: [exportBatchId], references: [id])
+  exportBatchId String?
+  exportedAt    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@index([scanSessionId])
+}
+
+model ExportBatch {
+  id         String   @id @default(uuid())
+  createdAt  DateTime @default(now())
+  exportedBy String?
+
+  items Item[]
+}
