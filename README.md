@@ -9,10 +9,13 @@ It's a normal website, not a native app: the same URL works in Safari on iPhone 
 
 ## Status
 
-Scan flow, review/export flow, UPC lookup, and Claude-drafted titles/descriptions are all wired up. Not yet done:
-- eBay category ID mapping (enter manually for now — see `references/ebay-category-ids.md` for why, and how to fill it in)
+Deployed and running on Vercel with a live Supabase database. Scan flow, review/export flow, UPC lookup, Claude-drafted titles/descriptions, and a self-learning eBay category ID lookup (see below) are all wired up. Not yet done:
 - SFTP auto-upload (CSV download + manual Seller Hub upload for now)
-- Nothing has been run against a live Supabase/Cloudinary/Anthropic setup yet — `next build` passes, but this still needs a real end-to-end test once credentials are in place
+- Full end-to-end test on a phone (scan → review → export) still pending
+
+## eBay category IDs
+
+No eBay API access means no Taxonomy API, and this app doesn't scrape eBay's site at runtime (against their terms, fragile). Instead, category IDs are looked up once per product type and saved as a `CategoryRule` (keyword → category ID) in the database. The review page matches an item's title against saved keywords and auto-suggests the category; anything set manually can be saved as a new rule with one click ("Remember this category"). See `references/ebay-category-ids.md` for the running log and how to find a new ID when one's needed.
 
 ## Local setup
 
@@ -30,8 +33,10 @@ Copy `.env.example` to `.env.local` and fill in:
 Push the schema to your Supabase database:
 
 ```bash
-npx prisma migrate dev --name init
+npx prisma db push
 ```
+
+(We use `db push` instead of `migrate dev` here — Supabase's pooled connection doesn't allow Prisma to create the shadow database `migrate dev` needs. `prisma/migrations/` still has the initial migration for reference, but schema changes since then are applied directly.)
 
 Run the app:
 

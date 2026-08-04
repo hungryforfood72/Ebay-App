@@ -2,6 +2,13 @@
 
 import { useEffect, useState } from "react";
 
+type CategoryRule = {
+  id: string;
+  keyword: string;
+  categoryId: string;
+  categoryName: string;
+};
+
 type Item = {
   id: string;
   sku: string;
@@ -25,13 +32,18 @@ type Item = {
 
 export default function ReviewPage() {
   const [items, setItems] = useState<Item[] | null>(null);
+  const [rules, setRules] = useState<CategoryRule[]>([]);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [draftingId, setDraftingId] = useState<string | null>(null);
 
   async function load() {
-    const res = await fetch("/api/items");
-    setItems(await res.json());
+    const [itemsRes, rulesRes] = await Promise.all([
+      fetch("/api/items"),
+      fetch("/api/category-rules"),
+    ]);
+    setItems(await itemsRes.json());
+    setRules(await rulesRes.json());
   }
 
   useEffect(() => {
@@ -39,6 +51,16 @@ export default function ReviewPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
   }, []);
+
+  async function saveRule(keyword: string, categoryId: string, categoryName: string) {
+    const res = await fetch("/api/category-rules", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ keyword, categoryId, categoryName }),
+    });
+    const rule: CategoryRule = await res.json();
+    setRules((prev) => [...prev.filter((r) => r.keyword !== rule.keyword), rule]);
+  }
 
   async function updateItem(id: string, data: Partial<Item>) {
     setItems(
@@ -142,9 +164,11 @@ export default function ReviewPage() {
           <ItemCard
             key={item.id}
             item={item}
+            rules={rules}
             onChange={(data) => updateItem(item.id, data)}
             onMarkReady={() => markReady(item)}
             onGenerateDraft={() => generateDraft(item)}
+            onSaveRule={saveRule}
             drafting={draftingId === item.id}
           />
         ))}
@@ -195,17 +219,28 @@ export default function ReviewPage() {
 
 function ItemCard({
   item,
+  rules,
   onChange,
   onMarkReady,
   onGenerateDraft,
+  onSaveRule,
   drafting,
 }: {
   item: Item;
+  rules: CategoryRule[];
   onChange: (data: Partial<Item>) => void;
   onMarkReady: () => void;
   onGenerateDraft: () => void;
+  onSaveRule: (keyword: string, categoryId: string, categoryName: string) => void;
   drafting: boolean;
 }) {
+  const [ruleKeyword, setRuleKeyword] = useState("");
+  const [ruleName, setRuleName] = useState("");
+
+  const titleText = (item.finalTitle ?? item.aiTitle ?? "").toLowerCase();
+  const suggestion = titleText
+    ? rules.find((r) => titleText.includes(r.keyword))
+    : undefined;
   return (
     <div className="flex flex-col gap-3 rounded border p-4 md:flex-row">
       <div className="flex gap-2 md:w-40 md:flex-col">
@@ -274,14 +309,26 @@ function ItemCard({
             onBlur={(e) => onChange({ price: e.target.value })}
             className="w-24 rounded border px-3 py-2 text-sm"
           />
-          <input
-            type="text"
-            placeholder="Category ID"
-            title="eBay category ID — see references/ebay-category-ids.md for how to find these"
-            defaultValue={item.categoryId ?? ""}
-            onBlur={(e) => onChange({ categoryId: e.target.value })}
-            className="w-32 rounded border px-3 py-2 text-sm"
-          />
+          <div className="flex flex-col gap-1">
+            <input
+              key={`cat-${item.id}-${item.categoryId ?? ""}`}
+              type="text"
+              placeholder="Category ID"
+              title="eBay category ID"
+              defaultValue={item.categoryId ?? ""}
+              onBlur={(e) => onChange({ categoryId: e.target.value })}
+              className="w-32 rounded border px-3 py-2 text-sm"
+            />
+            {suggestion && !item.categoryId && (
+              <button
+                type="button"
+                onClick={() => onChange({ categoryId: suggestion.categoryId })}
+                className="text-left text-xs text-blue-600 underline"
+              >
+                Suggested: {suggestion.categoryName} ({suggestion.categoryId})
+              </button>
+            )}
+          </div>
           <select
             defaultValue={item.condition ?? ""}
             onChange={(e) => onChange({ condition: e.target.value || null })}
@@ -301,6 +348,41 @@ function ItemCard({
             className="min-w-48 flex-1 rounded border px-3 py-2 text-sm"
           />
         </div>
+
+        {item.categoryId && (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <input
+              type="text"
+              placeholder="Keyword to remember this category by (e.g. hair dye)"
+              value={ruleKeyword}
+              onChange={(e) => setRuleKeyword(e.target.value)}
+              className="w-56 rounded border px-2 py-1 text-xs"
+            />
+            <input
+              type="text"
+              placeholder="Category name (optional)"
+              value={ruleName}
+              onChange={(e) => setRuleName(e.target.value)}
+              className="w-40 rounded border px-2 py-1 text-xs"
+            />
+            <button
+              type="button"
+              disabled={!ruleKeyword.trim()}
+              onClick={() => {
+                onSaveRule(
+                  ruleKeyword.trim(),
+                  item.categoryId as string,
+                  ruleName.trim() || ruleKeyword.trim()
+                );
+                setRuleKeyword("");
+                setRuleName("");
+              }}
+              className="rounded border px-2 py-1 text-xs disabled:opacity-40"
+            >
+              Remember this category
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="flex md:flex-col md:justify-start">

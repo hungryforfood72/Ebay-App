@@ -83,3 +83,14 @@ model ExportBatch {
 
   items Item[]
 }
+
+// Keyword -> eBay category ID, so a category only has to be looked up once
+// per product type. Matched against an item's title as a case-insensitive
+// substring on the review page.
+model CategoryRule {
+  id           String   @id @default(uuid())
+  keyword      String   @unique
+  categoryId   String
+  categoryName String
+  createdAt    DateTime @default(now())
+}
