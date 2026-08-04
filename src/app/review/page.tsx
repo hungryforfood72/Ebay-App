@@ -50,6 +50,11 @@ export default function ReviewPage() {
     // Initial data load on mount, not a reaction to state we own.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
+    // Items scanned on the phone get their draft + category filled in by a
+    // background job (see api/items POST) — poll so they show up here
+    // without a manual refresh while that's still running.
+    const interval = setInterval(load, 10_000);
+    return () => clearInterval(interval);
   }, []);
 
   async function saveRule(keyword: string, categoryId: string, categoryName: string) {
@@ -241,6 +246,7 @@ function ItemCard({
     categoryId: string | null;
     categoryName: string | null;
     sourceUrl: string | null;
+    fromExistingRule?: boolean;
   } | null>(null);
   const [categorySearchError, setCategorySearchError] = useState<string | null>(null);
 
@@ -261,11 +267,10 @@ function ItemCard({
       if (!res.ok) {
         throw new Error(result.error ?? "Search failed.");
       }
-      if (!result.categoryId) {
-        setCategorySearchError("Couldn't find a confident match — try setting a fuller title first.");
-      } else {
-        setCategorySearchResult(result);
-      }
+      // The server already applied it and (for a fresh AI search) saved it
+      // as a rule for next time — just reflect that here.
+      onChange({ categoryId: result.categoryId });
+      setCategorySearchResult(result);
     } catch (e) {
       setCategorySearchError(e instanceof Error ? e.message : "Search failed. Try again.");
     } finally {
@@ -310,6 +315,12 @@ function ItemCard({
           {drafting && (
             <span className="text-xs text-gray-500">
               Looking up the UPC and asking Claude for a title/description…
+            </span>
+          )}
+          {!drafting && !item.aiTitle && (
+            <span className="text-xs text-gray-400">
+              Drafts and categories now start automatically when an item is scanned —
+              give it a minute, or click to generate now.
             </span>
           )}
         </div>
@@ -378,9 +389,12 @@ function ItemCard({
               <span className="text-xs text-red-600">{categorySearchError}</span>
             )}
             {categorySearchResult && (
-              <div className="rounded border border-blue-200 bg-blue-50 p-2 text-xs">
+              <div className="rounded border border-green-200 bg-green-50 p-2 text-xs">
                 <p>
-                  Found: {categorySearchResult.categoryName} ({categorySearchResult.categoryId})
+                  Applied: {categorySearchResult.categoryName} ({categorySearchResult.categoryId})
+                  {categorySearchResult.fromExistingRule
+                    ? " — from a saved rule"
+                    : " — saved as a rule for next time"}
                 </p>
                 {categorySearchResult.sourceUrl && (
                   <a
@@ -392,16 +406,6 @@ function ItemCard({
                     verify source
                   </a>
                 )}
-                <button
-                  type="button"
-                  onClick={() => {
-                    onChange({ categoryId: categorySearchResult.categoryId as string });
-                    setCategorySearchResult(null);
-                  }}
-                  className="ml-2 rounded bg-blue-600 px-2 py-0.5 text-white"
-                >
-                  Apply
-                </button>
               </div>
             )}
           </div>
@@ -427,6 +431,9 @@ function ItemCard({
 
         {item.categoryId && (
           <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="text-xs text-gray-400">
+              Typed a category ID in by hand? Save it as a rule too:
+            </span>
             <input
               type="text"
               placeholder="Keyword to remember this category by (e.g. hair dye)"

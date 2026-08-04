@@ -1,6 +1,14 @@
 import { prisma } from "@/lib/prisma";
 import { ItemStatus } from "@/generated/prisma/client";
 import { NextRequest, NextResponse } from "next/server";
+import { after } from "next/server";
+import { draftItem } from "@/lib/draftItem";
+import { lookupCategoryForItem } from "@/lib/categoryLookup";
+
+// Web search + Opus latency for the background draft/category work below
+// can run well past a minute — give the function room so `after()` isn't
+// cut off mid-work.
+export const maxDuration = 150;
 
 // List items for the review queue, optionally filtered by status.
 export async function GET(request: NextRequest) {
@@ -41,6 +49,23 @@ export async function POST(request: NextRequest) {
       scannedBy: body.scannedBy ?? null,
       scanSessionId: body.scanSessionId ?? null,
     },
+  });
+
+  // Draft the title/description and look up the category in the background
+  // — the scan flow gets its response immediately so the phone isn't stuck
+  // waiting, this keeps running after that. Category search runs after the
+  // draft so it has a real title to search from, not just the bare UPC.
+  after(async () => {
+    try {
+      await draftItem(item.id);
+    } catch (e) {
+      console.error(`Background draft failed for item ${item.id}:`, e);
+    }
+    try {
+      await lookupCategoryForItem(item.id);
+    } catch (e) {
+      console.error(`Background category lookup failed for item ${item.id}:`, e);
+    }
   });
 
   return NextResponse.json(item, { status: 201 });
