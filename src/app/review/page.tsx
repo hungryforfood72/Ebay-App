@@ -28,7 +28,29 @@ type Item = {
   categoryId: string | null;
   condition: string | null;
   compNotes: string | null;
+  itemSpecifics: Record<string, string> | null;
+  chargeForShipping: boolean;
+  boxSize: string | null;
+  weightLbs: number | null;
+  weightOz: number | null;
 };
+
+const RECENT_BOX_SIZES_KEY = "ebay-tool.recentBoxSizes";
+
+function loadRecentBoxSizes(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    return JSON.parse(localStorage.getItem(RECENT_BOX_SIZES_KEY) ?? "[]");
+  } catch {
+    return [];
+  }
+}
+
+function rememberBoxSize(size: string) {
+  const recent = loadRecentBoxSizes().filter((s) => s !== size);
+  recent.unshift(size);
+  localStorage.setItem(RECENT_BOX_SIZES_KEY, JSON.stringify(recent.slice(0, 12)));
+}
 
 export default function ReviewPage() {
   const [items, setItems] = useState<Item[] | null>(null);
@@ -252,7 +274,33 @@ function ItemCard({
 }) {
   const [ruleKeyword, setRuleKeyword] = useState("");
   const [ruleName, setRuleName] = useState("");
+  const [recentBoxSizes, setRecentBoxSizes] = useState<string[]>([]);
+  const [newSpecKey, setNewSpecKey] = useState("");
+  const [newSpecValue, setNewSpecValue] = useState("");
   const [searchingCategory, setSearchingCategory] = useState(false);
+
+  useEffect(() => {
+    // Initial hydration from localStorage on mount, not a reaction to state
+    // we own.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setRecentBoxSizes(loadRecentBoxSizes());
+  }, []);
+
+  function updateSpecific(key: string, value: string) {
+    const next = { ...(item.itemSpecifics ?? {}) };
+    if (value.trim()) {
+      next[key] = value.trim();
+    } else {
+      delete next[key];
+    }
+    onChange({ itemSpecifics: next });
+  }
+
+  function removeSpecific(key: string) {
+    const next = { ...(item.itemSpecifics ?? {}) };
+    delete next[key];
+    onChange({ itemSpecifics: next });
+  }
   const [categorySearchResult, setCategorySearchResult] = useState<{
     categoryId: string | null;
     categoryName: string | null;
@@ -455,6 +503,127 @@ function ItemCard({
             onBlur={(e) => onChange({ compNotes: e.target.value })}
             className="min-w-48 flex-1 rounded border px-3 py-2 text-sm"
           />
+        </div>
+
+        <div className="mt-2 rounded border p-2">
+          <p className="mb-1 text-xs font-medium text-gray-500">
+            Shipping — USPS Ground Advantage
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-1 text-xs">
+              <input
+                type="checkbox"
+                checked={item.chargeForShipping}
+                onChange={(e) => onChange({ chargeForShipping: e.target.checked })}
+              />
+              Charge buyer for shipping (calculated by zip)
+            </label>
+            <span className="text-xs text-gray-400">
+              {item.chargeForShipping ? "" : "— unchecked = free to buyer"}
+            </span>
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <input
+              type="text"
+              list="box-sizes"
+              placeholder="Box size"
+              defaultValue={item.boxSize ?? ""}
+              onBlur={(e) => {
+                onChange({ boxSize: e.target.value || null });
+                if (e.target.value.trim()) {
+                  rememberBoxSize(e.target.value.trim());
+                  setRecentBoxSizes(loadRecentBoxSizes());
+                }
+              }}
+              className="w-32 rounded border px-2 py-1 text-xs"
+            />
+            <datalist id="box-sizes">
+              {recentBoxSizes.map((s) => (
+                <option key={s} value={s} />
+              ))}
+            </datalist>
+            <input
+              type="number"
+              min={0}
+              placeholder="lb"
+              defaultValue={item.weightLbs ?? ""}
+              onBlur={(e) =>
+                onChange({ weightLbs: e.target.value ? Number(e.target.value) : null })
+              }
+              onWheel={(e) => e.currentTarget.blur()}
+              className="w-16 rounded border px-2 py-1 text-xs"
+            />
+            <span className="text-xs text-gray-400">lb</span>
+            <input
+              type="number"
+              min={0}
+              max={15}
+              placeholder="oz"
+              defaultValue={item.weightOz ?? ""}
+              onBlur={(e) =>
+                onChange({ weightOz: e.target.value ? Number(e.target.value) : null })
+              }
+              onWheel={(e) => e.currentTarget.blur()}
+              className="w-16 rounded border px-2 py-1 text-xs"
+            />
+            <span className="text-xs text-gray-400">oz</span>
+            <span className="text-xs text-gray-400">
+              Weight/box matter either way — accurate numbers keep eBay&apos;s calculated cost
+              (or your absorbed cost on free shipping) from defaulting high.
+            </span>
+          </div>
+        </div>
+
+        <div className="mt-2 rounded border p-2">
+          <p className="mb-1 text-xs font-medium text-gray-500">
+            Item specifics {item.itemSpecifics ? "(AI-suggested, edit as needed)" : ""}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {Object.entries(item.itemSpecifics ?? {}).map(([key, value]) => (
+              <div key={key} className="flex items-center gap-1">
+                <span className="text-xs capitalize text-gray-500">{key}:</span>
+                <input
+                  type="text"
+                  defaultValue={value}
+                  onBlur={(e) => updateSpecific(key, e.target.value)}
+                  className="w-28 rounded border px-2 py-1 text-xs"
+                />
+                <button
+                  type="button"
+                  onClick={() => removeSpecific(key)}
+                  className="text-xs text-gray-400"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            <input
+              type="text"
+              placeholder="Field (e.g. Style)"
+              value={newSpecKey}
+              onChange={(e) => setNewSpecKey(e.target.value)}
+              className="w-28 rounded border px-2 py-1 text-xs"
+            />
+            <input
+              type="text"
+              placeholder="Value"
+              value={newSpecValue}
+              onChange={(e) => setNewSpecValue(e.target.value)}
+              className="w-28 rounded border px-2 py-1 text-xs"
+            />
+            <button
+              type="button"
+              disabled={!newSpecKey.trim() || !newSpecValue.trim()}
+              onClick={() => {
+                updateSpecific(newSpecKey.trim().toLowerCase(), newSpecValue.trim());
+                setNewSpecKey("");
+                setNewSpecValue("");
+              }}
+              className="rounded border px-2 py-1 text-xs disabled:opacity-40"
+            >
+              Add
+            </button>
+          </div>
         </div>
 
         {item.categoryId && (

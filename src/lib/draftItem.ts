@@ -15,8 +15,21 @@ const DRAFT_SCHEMA = {
       type: "string",
       description: "eBay listing description, a few sentences",
     },
+    specifics: {
+      type: "object",
+      description: "eBay item specifics. Use null for anything not confidently known from the photo or UPC data — never guess.",
+      properties: {
+        brand: { type: ["string", "null"], description: "Brand name, or null if not identifiable" },
+        type: { type: ["string", "null"], description: "Product type, e.g. 'Sticker', 'Hair Dye', 'Action Figure'" },
+        color: { type: ["string", "null"], description: "Primary color, or null if not visually clear" },
+        size: { type: ["string", "null"], description: "Size (clothing size, dimensions, count, etc.), or null" },
+        material: { type: ["string", "null"], description: "Material, or null if not identifiable" },
+      },
+      required: ["brand", "type", "color", "size", "material"],
+      additionalProperties: false,
+    },
   },
-  required: ["title", "description"],
+  required: ["title", "description", "specifics"],
   additionalProperties: false,
 } as const;
 
@@ -92,11 +105,20 @@ Write a clear, keyword-appropriate eBay title (80 characters max) and a short, h
   const draft = JSON.parse(textBlock && "text" in textBlock ? textBlock.text : "{}") as {
     title?: string;
     description?: string;
+    specifics?: Record<string, string | null>;
   };
 
   const titleUnedited = !item.finalTitle || item.finalTitle === item.aiTitle;
   const descriptionUnedited =
     !item.finalDescription || item.finalDescription === item.aiDescription;
+
+  // Only keep specifics Claude was actually confident about (non-null), and
+  // don't clobber ones the reviewer has already filled in/edited by hand.
+  const newSpecifics = Object.fromEntries(
+    Object.entries(draft.specifics ?? {}).filter(([, v]) => v)
+  );
+  const existingSpecifics = (item.itemSpecifics as Record<string, string> | null) ?? {};
+  const mergedSpecifics = { ...newSpecifics, ...existingSpecifics };
 
   return prisma.item.update({
     where: { id: itemId },
@@ -108,6 +130,10 @@ Write a clear, keyword-appropriate eBay title (80 characters max) and a short, h
       finalDescription: descriptionUnedited
         ? (draft.description ?? item.finalDescription)
         : item.finalDescription,
+      itemSpecifics:
+        Object.keys(mergedSpecifics).length > 0
+          ? (mergedSpecifics as Prisma.InputJsonValue)
+          : undefined,
     },
   });
 }

@@ -63,6 +63,15 @@ model Item {
   compNotes       String?
   reviewedBy      String?
   reviewedAt      DateTime?
+  itemSpecifics   Json?     // AI-suggested key/value pairs: Color, Size, Brand, etc.
+
+  // Shipping. Unchecked = free flat-rate shipping. Checked = calculated
+  // (USPS Ground Advantage), cost varies by buyer location based on
+  // weight + box size. Alaska/Hawaii are always excluded (store policy).
+  chargeForShipping Boolean @default(false)
+  boxSize           String?
+  weightLbs         Int?
+  weightOz          Int?
 
   // Export step
   exportBatch   ExportBatch? @relation(fields: [exportBatchId], references: [id])

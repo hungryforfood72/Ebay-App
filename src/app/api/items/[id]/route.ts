@@ -10,6 +10,11 @@ const EDITABLE_FIELDS = [
   "compNotes",
   "status",
   "reviewedBy",
+  "itemSpecifics",
+  "chargeForShipping",
+  "boxSize",
+  "weightLbs",
+  "weightOz",
 ] as const;
 
 // Update review-step fields on an item (title/description/price/status, etc).
