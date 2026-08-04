@@ -46,6 +46,10 @@ export async function POST(
     ? `This is a multi-pack of ${item.packSize} units — reflect that in the title and description.`
     : "This is a single unit, not a multi-pack.";
 
+  const expirationNote = item.expirationDate
+    ? `Expiration date: ${item.expirationDate.toISOString().slice(0, 10)} — state this plainly in the description so the buyer knows exactly what they're getting (e.g. "Best by MM/DD/YYYY"). Work it into the title too if there's room within the character limit.`
+    : "";
+
   const promptText = `Draft an eBay listing title and description for this product.
 
 UPC: ${item.upc}
@@ -53,6 +57,7 @@ UPC lookup data (may be incomplete or missing): ${JSON.stringify(upcLookupData)}
 Quantity available: ${item.quantity}
 ${packNote}
 Condition: ${item.condition ?? "not specified — infer from the photo if possible, otherwise write neutrally"}
+${expirationNote}
 
 Write a clear, keyword-appropriate eBay title (80 characters max) and a short, honest description a buyer would find helpful. Do not invent specifics (model numbers, exact materials) that aren't supported by the UPC data or the photo.`;
 

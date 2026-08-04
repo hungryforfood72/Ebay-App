@@ -236,11 +236,42 @@ function ItemCard({
 }) {
   const [ruleKeyword, setRuleKeyword] = useState("");
   const [ruleName, setRuleName] = useState("");
+  const [searchingCategory, setSearchingCategory] = useState(false);
+  const [categorySearchResult, setCategorySearchResult] = useState<{
+    categoryId: string | null;
+    categoryName: string | null;
+    sourceUrl: string | null;
+  } | null>(null);
+  const [categorySearchError, setCategorySearchError] = useState<string | null>(null);
 
   const titleText = (item.finalTitle ?? item.aiTitle ?? "").toLowerCase();
   const suggestion = titleText
     ? rules.find((r) => titleText.includes(r.keyword))
     : undefined;
+
+  async function searchCategory() {
+    setSearchingCategory(true);
+    setCategorySearchError(null);
+    setCategorySearchResult(null);
+    try {
+      const res = await fetch(`/api/items/${item.id}/category-lookup`, {
+        method: "POST",
+      });
+      const result = await res.json();
+      if (!res.ok) {
+        throw new Error(result.error ?? "Search failed.");
+      }
+      if (!result.categoryId) {
+        setCategorySearchError("Couldn't find a confident match — try setting a fuller title first.");
+      } else {
+        setCategorySearchResult(result);
+      }
+    } catch (e) {
+      setCategorySearchError(e instanceof Error ? e.message : "Search failed. Try again.");
+    } finally {
+      setSearchingCategory(false);
+    }
+  }
   return (
     <div className="flex flex-col gap-3 rounded border p-4 md:flex-row">
       <div className="flex gap-2 md:w-40 md:flex-col">
@@ -327,6 +358,51 @@ function ItemCard({
               >
                 Suggested: {suggestion.categoryName} ({suggestion.categoryId})
               </button>
+            )}
+            <button
+              type="button"
+              onClick={searchCategory}
+              disabled={searchingCategory}
+              title="Searches the web for the real eBay category ID — can take up to a couple minutes, but only needs doing once per product type"
+              className="text-left text-xs text-gray-500 underline disabled:opacity-40"
+            >
+              {searchingCategory ? "Searching eBay…" : "Search category (AI)"}
+            </button>
+            {searchingCategory && (
+              <span className="text-xs text-gray-400">
+                Can take up to a couple minutes, hang tight. Once found, save it as a
+                rule below so you never have to search this product type again.
+              </span>
+            )}
+            {categorySearchError && (
+              <span className="text-xs text-red-600">{categorySearchError}</span>
+            )}
+            {categorySearchResult && (
+              <div className="rounded border border-blue-200 bg-blue-50 p-2 text-xs">
+                <p>
+                  Found: {categorySearchResult.categoryName} ({categorySearchResult.categoryId})
+                </p>
+                {categorySearchResult.sourceUrl && (
+                  <a
+                    href={categorySearchResult.sourceUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-blue-600 underline"
+                  >
+                    verify source
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    onChange({ categoryId: categorySearchResult.categoryId as string });
+                    setCategorySearchResult(null);
+                  }}
+                  className="ml-2 rounded bg-blue-600 px-2 py-0.5 text-white"
+                >
+                  Apply
+                </button>
+              </div>
             )}
           </div>
           <select
