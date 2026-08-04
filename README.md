@@ -9,11 +9,10 @@ It's a normal website, not a native app: the same URL works in Safari on iPhone 
 
 ## Status
 
-Scan flow and a manual review/export flow are built. Not yet wired up:
-- UPC lookup (product info auto-fill)
-- Claude API AI-drafted title/description (review page currently takes manual entry)
-- eBay category ID mapping (enter manually for now)
+Scan flow, review/export flow, UPC lookup, and Claude-drafted titles/descriptions are all wired up. Not yet done:
+- eBay category ID mapping (enter manually for now — see `references/ebay-category-ids.md` for why, and how to fill it in)
 - SFTP auto-upload (CSV download + manual Seller Hub upload for now)
+- Nothing has been run against a live Supabase/Cloudinary/Anthropic setup yet — `next build` passes, but this still needs a real end-to-end test once credentials are in place
 
 ## Local setup
 
@@ -24,8 +23,9 @@ npm install
 Copy `.env.example` to `.env.local` and fill in:
 
 - `DATABASE_URL` / `DIRECT_URL` — from a Supabase project (Project Settings → Database → Connection string). Use the pooled connection (port 6543) for `DATABASE_URL`, the direct connection (port 5432) for `DIRECT_URL`.
-- `CLOUDINARY_*` — from your Cloudinary dashboard (Settings → Access Keys). `NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME` should match `CLOUDINARY_CLOUD_NAME`.
-- `UPC_LOOKUP_API_KEY`, `ANTHROPIC_API_KEY` — not required yet, needed once the review-flow AI drafting is wired up.
+- `CLOUDINARY_*` — from your Cloudinary dashboard (Settings → Access Keys).
+- `ANTHROPIC_API_KEY` — from console.anthropic.com (a separate login from claude.ai). Powers the "Generate AI draft" button on the review page.
+- `UPC_LOOKUP_API_KEY` — not needed yet, UPC lookups use UPCitemdb's keyless trial tier (100/day) until volume requires a paid key.
 
 Push the schema to your Supabase database:
 

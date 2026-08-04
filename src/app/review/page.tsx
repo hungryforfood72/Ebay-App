@@ -15,6 +15,8 @@ type Item = {
   photoUrls: string[];
   finalTitle: string | null;
   finalDescription: string | null;
+  aiTitle: string | null;
+  aiDescription: string | null;
   price: string | null;
   categoryId: string | null;
   condition: string | null;
@@ -25,6 +27,7 @@ export default function ReviewPage() {
   const [items, setItems] = useState<Item[] | null>(null);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [draftingId, setDraftingId] = useState<string | null>(null);
 
   async function load() {
     const res = await fetch("/api/items");
@@ -47,6 +50,24 @@ export default function ReviewPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
     });
+  }
+
+  async function generateDraft(item: Item) {
+    setDraftingId(item.id);
+    setError(null);
+    try {
+      const res = await fetch(`/api/items/${item.id}/draft`, { method: "POST" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? "Draft generation failed.");
+      }
+      const updated: Item = await res.json();
+      setItems((prev) => prev?.map((i) => (i.id === item.id ? updated : i)) ?? prev);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setDraftingId(null);
+    }
   }
 
   async function markReady(item: Item) {
@@ -123,6 +144,8 @@ export default function ReviewPage() {
             item={item}
             onChange={(data) => updateItem(item.id, data)}
             onMarkReady={() => markReady(item)}
+            onGenerateDraft={() => generateDraft(item)}
+            drafting={draftingId === item.id}
           />
         ))}
         {pending.length === 0 && (
@@ -174,10 +197,14 @@ function ItemCard({
   item,
   onChange,
   onMarkReady,
+  onGenerateDraft,
+  drafting,
 }: {
   item: Item;
   onChange: (data: Partial<Item>) => void;
   onMarkReady: () => void;
+  onGenerateDraft: () => void;
+  drafting: boolean;
 }) {
   return (
     <div className="flex flex-col gap-3 rounded border p-4 md:flex-row">
@@ -205,14 +232,32 @@ function ItemCard({
           )}
         </div>
 
+        <div className="mb-2 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onGenerateDraft}
+            disabled={drafting}
+            className="rounded border px-3 py-1 text-xs disabled:opacity-40"
+          >
+            {drafting ? "Drafting…" : item.aiTitle ? "Regenerate AI draft" : "Generate AI draft"}
+          </button>
+          {drafting && (
+            <span className="text-xs text-gray-500">
+              Looking up the UPC and asking Claude for a title/description…
+            </span>
+          )}
+        </div>
+
         <input
+          key={`title-${item.id}-${item.aiTitle ?? ""}`}
           type="text"
-          placeholder="Title (AI drafting coming soon — enter manually for now)"
+          placeholder="Title"
           defaultValue={item.finalTitle ?? ""}
           onBlur={(e) => onChange({ finalTitle: e.target.value })}
           className="mb-2 w-full rounded border px-3 py-2 text-sm"
         />
         <textarea
+          key={`desc-${item.id}-${item.aiDescription ?? ""}`}
           placeholder="Description"
           defaultValue={item.finalDescription ?? ""}
           onBlur={(e) => onChange({ finalDescription: e.target.value })}
@@ -232,6 +277,7 @@ function ItemCard({
           <input
             type="text"
             placeholder="Category ID"
+            title="eBay category ID — see references/ebay-category-ids.md for how to find these"
             defaultValue={item.categoryId ?? ""}
             onBlur={(e) => onChange({ categoryId: e.target.value })}
             className="w-32 rounded border px-3 py-2 text-sm"
