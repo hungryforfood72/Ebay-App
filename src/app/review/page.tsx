@@ -79,6 +79,14 @@ export default function ReviewPage() {
     });
   }
 
+  async function deleteItem(item: Item) {
+    if (!confirm(`Delete "${item.finalTitle ?? item.upc}"? This can't be undone.`)) {
+      return;
+    }
+    setItems((prev) => prev?.filter((i) => i.id !== item.id) ?? prev);
+    await fetch(`/api/items/${item.id}`, { method: "DELETE" });
+  }
+
   async function generateDraft(item: Item) {
     setDraftingId(item.id);
     setError(null);
@@ -174,6 +182,7 @@ export default function ReviewPage() {
             onMarkReady={() => markReady(item)}
             onGenerateDraft={() => generateDraft(item)}
             onSaveRule={saveRule}
+            onDelete={() => deleteItem(item)}
             drafting={draftingId === item.id}
           />
         ))}
@@ -229,6 +238,7 @@ function ItemCard({
   onMarkReady,
   onGenerateDraft,
   onSaveRule,
+  onDelete,
   drafting,
 }: {
   item: Item;
@@ -237,6 +247,7 @@ function ItemCard({
   onMarkReady: () => void;
   onGenerateDraft: () => void;
   onSaveRule: (keyword: string, categoryId: string, categoryName: string) => void;
+  onDelete: () => void;
   drafting: boolean;
 }) {
   const [ruleKeyword, setRuleKeyword] = useState("");
@@ -263,14 +274,30 @@ function ItemCard({
       const res = await fetch(`/api/items/${item.id}/category-lookup`, {
         method: "POST",
       });
-      const result = await res.json();
+      // A platform-level failure (e.g. the function got killed for running
+      // too long) returns Vercel's own HTML/text error page, not our JSON —
+      // don't let that surface as a raw "not valid JSON" parse error.
+      let result: {
+        categoryId?: string | null;
+        categoryName?: string | null;
+        sourceUrl?: string | null;
+        fromExistingRule?: boolean;
+        error?: string;
+      };
+      try {
+        result = await res.json();
+      } catch {
+        throw new Error("Search timed out or failed. Try again.");
+      }
       if (!res.ok) {
         throw new Error(result.error ?? "Search failed.");
       }
       // The server already applied it and (for a fresh AI search) saved it
       // as a rule for next time — just reflect that here.
-      onChange({ categoryId: result.categoryId });
-      setCategorySearchResult(result);
+      onChange({ categoryId: result.categoryId ?? null });
+      setCategorySearchResult(
+        result as { categoryId: string; categoryName: string; sourceUrl: string | null; fromExistingRule?: boolean }
+      );
     } catch (e) {
       setCategorySearchError(e instanceof Error ? e.message : "Search failed. Try again.");
     } finally {
@@ -468,13 +495,20 @@ function ItemCard({
         )}
       </div>
 
-      <div className="flex md:flex-col md:justify-start">
+      <div className="flex gap-2 md:flex-col md:justify-start">
         <button
           type="button"
           onClick={onMarkReady}
           className="h-fit rounded bg-black px-4 py-2 text-sm text-white"
         >
           Mark ready
+        </button>
+        <button
+          type="button"
+          onClick={onDelete}
+          className="h-fit rounded border border-red-300 px-4 py-2 text-sm text-red-600"
+        >
+          Delete
         </button>
       </div>
     </div>

@@ -1,10 +1,9 @@
 import { lookupCategoryForItem } from "@/lib/categoryLookup";
 import { NextResponse } from "next/server";
 
-// Web search + Opus latency is unpredictable (seen anywhere from ~30s to
-// several minutes). Give Vercel's function enough room for the 90s SDK
-// timeout in lookupCategoryForItem to actually fire and return a clean error.
-export const maxDuration = 100;
+// Give Vercel's function enough room for the 35s SDK timeout in
+// lookupCategoryForItem to actually fire and return a clean error.
+export const maxDuration = 55;
 
 export async function POST(
   _request: Request,

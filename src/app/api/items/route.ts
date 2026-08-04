@@ -5,10 +5,11 @@ import { after } from "next/server";
 import { draftItem } from "@/lib/draftItem";
 import { lookupCategoryForItem } from "@/lib/categoryLookup";
 
-// Web search + Opus latency for the background draft/category work below
-// can run well past a minute — give the function room so `after()` isn't
-// cut off mid-work.
-export const maxDuration = 150;
+// Background draft (SDK-bounded to 45s) then category lookup (SDK-bounded
+// to 55s) run sequentially in after() below — 120s gives both room to hit
+// their own timeouts and still return cleanly instead of getting killed by
+// the platform mid-request.
+export const maxDuration = 120;
 
 // List items for the review queue, optionally filtered by status.
 export async function GET(request: NextRequest) {
@@ -56,15 +57,19 @@ export async function POST(request: NextRequest) {
   // waiting, this keeps running after that. Category search runs after the
   // draft so it has a real title to search from, not just the bare UPC.
   after(async () => {
+    console.log(`[background] ${item.id}: starting draft`);
     try {
       await draftItem(item.id);
+      console.log(`[background] ${item.id}: draft done`);
     } catch (e) {
-      console.error(`Background draft failed for item ${item.id}:`, e);
+      console.error(`[background] ${item.id}: draft failed`, e);
     }
+    console.log(`[background] ${item.id}: starting category lookup`);
     try {
       await lookupCategoryForItem(item.id);
+      console.log(`[background] ${item.id}: category lookup done`);
     } catch (e) {
-      console.error(`Background category lookup failed for item ${item.id}:`, e);
+      console.error(`[background] ${item.id}: category lookup failed`, e);
     }
   });
 

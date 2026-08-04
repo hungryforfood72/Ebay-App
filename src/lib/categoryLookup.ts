@@ -19,6 +19,8 @@ export async function lookupCategoryForItem(
   const productDescription = item.finalTitle ?? item.aiTitle ?? `UPC ${item.upc}`;
   const titleLower = productDescription.toLowerCase();
 
+  console.log(`[categoryLookup] ${itemId}: starting, title="${productDescription}"`);
+
   const rules = await prisma.categoryRule.findMany();
   const existingRule = rules.find((r) => titleLower.includes(r.keyword));
   if (existingRule) {
@@ -26,6 +28,9 @@ export async function lookupCategoryForItem(
       where: { id: itemId },
       data: { categoryId: existingRule.categoryId },
     });
+    console.log(
+      `[categoryLookup] ${itemId}: matched existing rule "${existingRule.keyword}" -> ${existingRule.categoryId}`
+    );
     return {
       categoryId: existingRule.categoryId,
       categoryName: existingRule.categoryName,
@@ -33,6 +38,8 @@ export async function lookupCategoryForItem(
       fromExistingRule: true,
     };
   }
+
+  console.log(`[categoryLookup] ${itemId}: no existing rule matched, calling Claude web search`);
 
   let response;
   try {
@@ -60,11 +67,15 @@ If you can't find a confident match, respond with:
         ],
       },
       // Web search latency is unpredictable and occasionally hangs well past
-      // what's reasonable — fail fast instead of tying up the function for
-      // the default 10-minute SDK timeout.
-      { timeout: 90_000 }
+      // what's reasonable. Kept well under Vercel's own function timeout so
+      // *our* error handling fires first — otherwise Vercel kills the
+      // request and returns its own plain-text/HTML error page instead of
+      // the JSON error response below, which broke the client's res.json().
+      { timeout: 35_000 }
     );
-  } catch {
+    console.log(`[categoryLookup] ${itemId}: Claude call finished`);
+  } catch (e) {
+    console.error(`[categoryLookup] ${itemId}: Claude call failed/timed out`, e);
     return { categoryId: null, categoryName: null, sourceUrl: null, fromExistingRule: false };
   }
 

@@ -75,12 +75,18 @@ Write a clear, keyword-appropriate eBay title (80 characters max) and a short, h
     }
   }
 
-  const response = await anthropic.messages.create({
-    model: "claude-opus-4-8",
-    max_tokens: 1024,
-    output_config: { format: { type: "json_schema", schema: DRAFT_SCHEMA } },
-    messages: [{ role: "user", content }],
-  });
+  // No web search here (just vision + structured output), so this should be
+  // fast — but bound it anyway so a hung request can't eat the whole
+  // background job's time budget and starve the category lookup after it.
+  const response = await anthropic.messages.create(
+    {
+      model: "claude-opus-4-8",
+      max_tokens: 1024,
+      output_config: { format: { type: "json_schema", schema: DRAFT_SCHEMA } },
+      messages: [{ role: "user", content }],
+    },
+    { timeout: 45_000 }
+  );
 
   const textBlock = response.content.find((b) => b.type === "text");
   const draft = JSON.parse(textBlock && "text" in textBlock ? textBlock.text : "{}") as {

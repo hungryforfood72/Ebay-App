@@ -32,3 +32,14 @@ export async function PATCH(
 
   return NextResponse.json(item);
 }
+
+// Delete an item (e.g. a scan mistake or duplicate). Only removes the
+// database record — any Cloudinary photos it referenced are left as-is.
+export async function DELETE(
+  _request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  await prisma.item.delete({ where: { id } });
+  return NextResponse.json({ ok: true });
+}
