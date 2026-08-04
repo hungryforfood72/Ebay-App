@@ -317,6 +317,7 @@ export default function ScanPage() {
             min={1}
             value={quantity}
             onChange={(e) => setQuantity(e.target.value)}
+            onWheel={(e) => e.currentTarget.blur()}
             className="w-full rounded border px-3 py-2"
           />
         </div>
@@ -340,6 +341,7 @@ export default function ScanPage() {
             min={2}
             value={packSize}
             onChange={(e) => setPackSize(e.target.value)}
+            onWheel={(e) => e.currentTarget.blur()}
             placeholder="e.g. 3"
             className="w-full rounded border px-3 py-2"
           />

@@ -376,6 +376,7 @@ function ItemCard({
             placeholder="Price"
             defaultValue={item.price ?? ""}
             onBlur={(e) => onChange({ price: e.target.value })}
+            onWheel={(e) => e.currentTarget.blur()}
             className="w-24 rounded border px-3 py-2 text-sm"
           />
           <div className="flex flex-col gap-1">
