@@ -1,23 +1,22 @@
 // eBay File Exchange "Create Listings" (Add) format, matched to the real
-// template Cristian downloaded from Seller Hub — not a guess. Shipping,
-// returns, and payment are handled via Business Policies (see
+// template Cristian downloaded from Seller Hub. Shipping, returns, and
+// payment go through Business Policies (see
 // references/ebay-shipping-setup.md) rather than the individual inline
-// Shipping*/Returns* columns, which are intentionally left blank.
+// Shipping*/Returns* columns.
+//
+// Columns the template had but we never populate (StoreCategory, Subtitle,
+// C:Style, C:MPN, ShippingType, individual ShippingService/Returns fields,
+// etc.) are dropped entirely rather than left blank — eBay support's own
+// guidance for spurious File Exchange errors is to delete unused template
+// columns, not leave them empty. See references/ebay-shipping-setup.md for
+// the real upload error this fixed and what's still unverified.
 const HEADERS = [
   "Action(SiteID=US|Country=US|Currency=USD|Version=1193|CC=UTF-8)",
   "CustomLabel",
   "Category",
-  "StoreCategory",
   "Title",
-  "Subtitle",
-  "Relationship",
-  "RelationshipDetails",
   "ConditionID",
   "C:Brand",
-  "C:Style",
-  "C:MPN",
-  "C:California Prop 65 Warning",
-  "C:Country/Region of Manufacture",
   "C:Unit Quantity",
   "C:Unit Type",
   "PicURL",
@@ -25,32 +24,15 @@ const HEADERS = [
   "Format",
   "Duration",
   "StartPrice",
-  "BuyItNowPrice",
   "Quantity",
-  "ImmediatePayRequired",
+  "AutoPay",
   "Location",
-  "ShippingType",
-  "ShippingService-1:Option",
-  "ShippingService-1:Cost",
-  "ShippingService-2:Option",
-  "ShippingService-2:Cost",
-  "DispatchTimeMax",
-  "PromotionalShippingDiscount",
-  "ShippingDiscountProfileID",
-  "ReturnsAcceptedOption",
-  "ReturnsWithinOption",
-  "RefundOption",
-  "ShippingCostPaidByOption",
-  "AdditionalDetails",
   "ShippingProfileName",
   "ReturnProfileName",
   "PaymentProfileName",
   "C:UPC",
   "C:Color",
   "C:Type",
-  "C:Item Length",
-  "C:Item Width",
-  "C:Item Height",
   "C:Item Weight",
 ] as const;
 
@@ -107,17 +89,9 @@ export function itemsToFileExchangeCsv(items: ExportableItem[]): string {
       "Action(SiteID=US|Country=US|Currency=USD|Version=1193|CC=UTF-8)": "Add",
       CustomLabel: item.sku,
       Category: item.categoryId ?? "",
-      StoreCategory: "",
       Title: item.finalTitle ?? "",
-      Subtitle: "",
-      Relationship: "",
-      RelationshipDetails: "",
       ConditionID: item.condition ? CONDITION_ID[item.condition] ?? "" : "",
       "C:Brand": specifics.brand ?? "Unbranded",
-      "C:Style": "",
-      "C:MPN": "",
-      "C:California Prop 65 Warning": "",
-      "C:Country/Region of Manufacture": "",
       "C:Unit Quantity": item.isMultipack && item.packSize ? String(item.packSize) : "",
       "C:Unit Type": item.isMultipack ? "Pack" : "",
       PicURL: item.photoUrls.join("|"),
@@ -125,23 +99,12 @@ export function itemsToFileExchangeCsv(items: ExportableItem[]): string {
       Format: "FixedPrice",
       Duration: "GTC",
       StartPrice: item.price != null ? String(item.price) : "",
-      BuyItNowPrice: "",
       Quantity: String(item.quantity),
-      ImmediatePayRequired: "Yes",
+      // Managed Payments sellers use AutoPay=true, not ImmediatePayRequired
+      // (that field threw "Item.AutoPay invalid or missing" on a real
+      // upload — see references/ebay-shipping-setup.md).
+      AutoPay: "true",
       Location: zip,
-      ShippingType: "",
-      "ShippingService-1:Option": "",
-      "ShippingService-1:Cost": "",
-      "ShippingService-2:Option": "",
-      "ShippingService-2:Cost": "",
-      DispatchTimeMax: "",
-      PromotionalShippingDiscount: "",
-      ShippingDiscountProfileID: "",
-      ReturnsAcceptedOption: "",
-      ReturnsWithinOption: "",
-      RefundOption: "",
-      ShippingCostPaidByOption: "",
-      AdditionalDetails: "",
       // Everything's free shipping for now — kept item.chargeForShipping in
       // the data model in case that changes later, just not wired up here.
       ShippingProfileName: shippingFree,
@@ -150,9 +113,6 @@ export function itemsToFileExchangeCsv(items: ExportableItem[]): string {
       "C:UPC": item.upc,
       "C:Color": specifics.color ?? "",
       "C:Type": specifics.type ?? "",
-      "C:Item Length": "",
-      "C:Item Width": "",
-      "C:Item Height": "",
       "C:Item Weight": formatWeight(item.weightLbs, item.weightOz),
     };
     return HEADERS.map((h) => escapeCsvField(fields[h])).join(",");
