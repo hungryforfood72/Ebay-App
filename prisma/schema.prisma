@@ -103,3 +103,14 @@ model CategoryRule {
   categoryName String
   createdAt    DateTime @default(now())
 }
+
+// eBay's full category tree, imported from their own official category
+// changes export (not scraped, not AI-guessed). Used for instant local
+// category search before ever falling back to an AI web search.
+model EbayCategory {
+  id   String @id // eBay's own category ID, used as-is
+  name String // leaf category name, e.g. "Stickers"
+  path String // full breadcrumb, e.g. "Crafts > ... > Stickers"
+
+  @@index([name])
+}

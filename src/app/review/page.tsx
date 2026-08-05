@@ -278,6 +278,10 @@ function ItemCard({
   const [newSpecKey, setNewSpecKey] = useState("");
   const [newSpecValue, setNewSpecValue] = useState("");
   const [searchingCategory, setSearchingCategory] = useState(false);
+  const [catQuery, setCatQuery] = useState("");
+  const [catResults, setCatResults] = useState<
+    { id: string; name: string; path: string }[]
+  >([]);
 
   useEffect(() => {
     // Initial hydration from localStorage on mount, not a reaction to state
@@ -285,6 +289,23 @@ function ItemCard({
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setRecentBoxSizes(loadRecentBoxSizes());
   }, []);
+
+  useEffect(() => {
+    if (catQuery.trim().length < 2) {
+      // Clearing stale results when the query is cleared/too short, not a
+      // reaction to state we own beyond catQuery itself.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setCatResults([]);
+      return;
+    }
+    const handle = setTimeout(() => {
+      fetch(`/api/ebay-categories/search?q=${encodeURIComponent(catQuery.trim())}`)
+        .then((r) => r.json())
+        .then(setCatResults)
+        .catch(() => setCatResults([]));
+    }, 300);
+    return () => clearTimeout(handle);
+  }, [catQuery]);
 
   function updateSpecific(key: string, value: string) {
     const next = { ...(item.itemSpecifics ?? {}) };
@@ -437,6 +458,35 @@ function ItemCard({
               onBlur={(e) => onChange({ categoryId: e.target.value })}
               className="w-32 rounded border px-3 py-2 text-sm"
             />
+            <div className="relative">
+              <input
+                type="text"
+                placeholder="Search category by name…"
+                value={catQuery}
+                onChange={(e) => setCatQuery(e.target.value)}
+                className="w-56 rounded border px-2 py-1 text-xs"
+              />
+              {catResults.length > 0 && (
+                <div className="absolute z-10 mt-1 max-h-56 w-80 overflow-y-auto rounded border bg-white text-xs shadow-lg">
+                  {catResults.map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => {
+                        onChange({ categoryId: c.id });
+                        setCatQuery("");
+                        setCatResults([]);
+                      }}
+                      className="block w-full border-b px-2 py-1 text-left last:border-b-0 hover:bg-gray-100"
+                    >
+                      <span className="font-medium">{c.name}</span> ({c.id})
+                      <br />
+                      <span className="text-gray-400">{c.path}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             {suggestion && !item.categoryId && (
               <button
                 type="button"
@@ -450,17 +500,11 @@ function ItemCard({
               type="button"
               onClick={searchCategory}
               disabled={searchingCategory}
-              title="Searches the web for the real eBay category ID — can take up to a couple minutes, but only needs doing once per product type"
+              title="Searches eBay's real category tree and has Claude pick the best match — usually a few seconds"
               className="text-left text-xs text-gray-500 underline disabled:opacity-40"
             >
-              {searchingCategory ? "Searching eBay…" : "Search category (AI)"}
+              {searchingCategory ? "Finding category…" : "Auto-find category (AI)"}
             </button>
-            {searchingCategory && (
-              <span className="text-xs text-gray-400">
-                Can take up to a couple minutes, hang tight. Once found, save it as a
-                rule below so you never have to search this product type again.
-              </span>
-            )}
             {categorySearchError && (
               <span className="text-xs text-red-600">{categorySearchError}</span>
             )}

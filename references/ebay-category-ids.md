@@ -1,43 +1,43 @@
 # eBay Category IDs
 
-We don't have eBay Developer API access, so there's no Taxonomy API to query
-category IDs, and this app doesn't scrape eBay's site to look them up
-automatically (against their terms, and fragile). Instead, category IDs are
-looked up once per product type and saved as a `CategoryRule` (keyword ->
-category ID), so the review page auto-suggests one once it's been seen
-before. The rules live in the database — this file is just a running log of
-what's been added and where each ID came from.
+Solved properly as of 2026-08-04: Cristian pulled eBay's own official
+category export (`CR_26.2_US_Category_Changes.csv`, ~20,571 categories with
+real current IDs and full breadcrumb paths) and it's imported into the
+`EbayCategory` table. This replaced guessing/scraping entirely.
 
-## How a new category gets added
+## How category lookup works now, in order
 
-1. On the review page, set the Category ID field manually (see "finding an
-   ID" below).
-2. Type a keyword in the "Remember this category by" box (e.g. `hair dye`)
-   and click "Remember this category."
-3. Any future item whose title contains that keyword auto-suggests it.
+1. **Saved `CategoryRule` keyword match** — instant, free. Something we've
+   picked before for this product type.
+2. **Local search + AI pick** — search `EbayCategory` (the real eBay tree)
+   for candidates matching words in the item's title, then one quick
+   tool-free Claude call picks the best match from those real candidates.
+   No web search involved, so no timeout risk — typically 2-5 seconds.
+   Verified live: "Custom Vinyl Die-Cut Sticker Pack..." correctly resolved
+   to 159889 (Decals, Stickers & Vinyl Art) in ~2.5s.
+3. **AI web search** — only reached if step 2 finds zero local candidates
+   (very rare now, given the local tree covers ~20K categories). Same
+   slow/unpredictable web-search approach as before, kept only as a
+   last resort.
 
-## Finding an ID for something new
+Every path that finds a category auto-saves a `CategoryRule` so the same
+product type never needs any of this again.
 
-Ask Claude to look it up (fastest — searches eBay's live `ebay.com/b/...`
-browse URLs, which embed the real current category ID), or find it yourself:
+## Manual search
 
-1. Search the product on ebay.com, click into the most specific matching
-   category in the left sidebar filter.
-2. The category ID is the number in the URL (`&_sacat=123456` on search
-   pages, or the numeric segment in `ebay.com/b/Name/123456/bn_...` browse
-   URLs).
+The review page also has a live search box next to the Category ID field
+(hits `GET /api/ebay-categories/search?q=...`) — search by real category
+name instead of guessing an ID.
 
-## Rules added so far
+## Re-importing / updating the category tree
 
-| Keyword | Category | ID | Source |
-|---|---|---|---|
-| hair dye / hair color | Hair Color Products | 31412 | ebay.com/b/Hair-Color-Products/31412 |
-| toys | Toys & Hobbies (broad — pick a more specific subcategory if the item warrants it) | 220 | ebay.com/b/Best-Toys-Hobbies/220 |
-| craft stickers | Craft Stickers | 11794 | ebay.com/b/Craft-Stickers/11794 |
-| vinyl stickers / decals | Décor Decals, Stickers & Vinyl Art | 159889 | ebay.com/b/Decor-Decals-Stickers-Vinyl-Art/159889 |
+eBay periodically publishes updated category-changes exports. To refresh:
 
-Sticker Peak's own vinyl/die-cut stickers are probably category 159889
-(Decor Decals, Stickers & Vinyl Art) rather than 11794 (Craft Stickers, more
-scrapbooking-oriented) — worth confirming which fits better once you're
-listing your own stickers rather than resale inventory, then saving it as a
-rule with keyword `sticker`.
+1. Download the current CSV from eBay (Seller Hub → category changes, or
+   the direct static URL if you have it).
+2. The import script that parsed the last one is not checked into the repo
+   (it was a one-off scratch script) — ask Claude to re-parse a new CSV the
+   same way: split on commas respecting quoted fields, the category name is
+   the last non-empty column before the numeric Category ID column, build
+   the breadcrumb path from nesting depth, then bulk-upsert into
+   `EbayCategory` (`ON CONFLICT (id) DO UPDATE`).

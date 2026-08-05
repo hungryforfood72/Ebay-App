@@ -8,18 +8,34 @@ export type CategoryLookupResult = {
   fromExistingRule: boolean;
 };
 
-// Finds an eBay category for the item and applies it, preferring a saved
-// CategoryRule (instant, free) over an AI web search (slow, costs money).
-// When a fresh AI search finds one, it's saved as a new rule automatically
-// so the same product type never needs searching again.
+const STOPWORDS = new Set([
+  "the", "and", "for", "with", "from", "this", "that", "your", "pack",
+  "unit", "units", "item", "new", "used", "single", "best", "premium",
+]);
+
+function significantWords(text: string): string[] {
+  const words = text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length > 2 && !STOPWORDS.has(w));
+  return Array.from(new Set(words)).slice(0, 12);
+}
+
+// Finds an eBay category for the item and applies it. Order of preference:
+// 1. A saved CategoryRule keyword match (instant, free — something we've
+//    picked before).
+// 2. Local search over eBay's own full category tree (imported from their
+//    official export — see references/ebay-category-ids.md) + a quick,
+//    tool-free Claude call to pick the best match from real candidates.
+//    Fast and reliable since there's no web search involved.
+// 3. AI web search, only as a last resort if step 2 finds nothing to work
+//    with (e.g. a very generic or unusual title).
 export async function lookupCategoryForItem(
   itemId: string
 ): Promise<CategoryLookupResult> {
   const item = await prisma.item.findUniqueOrThrow({ where: { id: itemId } });
   const productDescription = item.finalTitle ?? item.aiTitle ?? `UPC ${item.upc}`;
   const titleLower = productDescription.toLowerCase();
-
-  console.log(`[categoryLookup] ${itemId}: starting, title="${productDescription}"`);
 
   const rules = await prisma.categoryRule.findMany();
   const existingRule = rules.find((r) => titleLower.includes(r.keyword));
@@ -28,9 +44,6 @@ export async function lookupCategoryForItem(
       where: { id: itemId },
       data: { categoryId: existingRule.categoryId },
     });
-    console.log(
-      `[categoryLookup] ${itemId}: matched existing rule "${existingRule.keyword}" -> ${existingRule.categoryId}`
-    );
     return {
       categoryId: existingRule.categoryId,
       categoryName: existingRule.categoryName,
@@ -39,7 +52,126 @@ export async function lookupCategoryForItem(
     };
   }
 
-  console.log(`[categoryLookup] ${itemId}: no existing rule matched, calling Claude web search`);
+  const words = significantWords(productDescription);
+  const candidates =
+    words.length > 0
+      ? await prisma.ebayCategory.findMany({
+          where: { OR: words.map((w) => ({ name: { contains: w, mode: "insensitive" as const } })) },
+          take: 40,
+        })
+      : [];
+
+  console.log(
+    `[categoryLookup] ${itemId}: title="${productDescription}", words=${JSON.stringify(words)}, local candidates=${candidates.length}`
+  );
+
+  if (candidates.length > 0) {
+    const pickStart = Date.now();
+    const picked = await pickBestLocalCategory(productDescription, candidates);
+    console.log(
+      `[categoryLookup] ${itemId}: local pick took ${Date.now() - pickStart}ms, result=${JSON.stringify(picked)}`
+    );
+    if (picked) {
+      await applyCategory(itemId, picked.categoryId, picked.categoryName, picked.keyword);
+      return {
+        categoryId: picked.categoryId,
+        categoryName: picked.categoryName,
+        sourceUrl: null,
+        fromExistingRule: false,
+      };
+    }
+  }
+
+  return searchWebForCategory(itemId, productDescription);
+}
+
+// Fast, tool-free Claude call: pick the best match from real local
+// candidates, or say none fit. No web search, so no timeout risk.
+async function pickBestLocalCategory(
+  productDescription: string,
+  candidates: { id: string; name: string; path: string }[]
+): Promise<{ categoryId: string; categoryName: string; keyword: string } | null> {
+  const schema = {
+    type: "object",
+    properties: {
+      categoryId: {
+        type: ["string", "null"],
+        description: "The id of the best-matching category from the candidate list, or null if none genuinely fit",
+      },
+      keyword: {
+        type: ["string", "null"],
+        description: "A short (1-3 word) reusable keyword for this product type, e.g. 'hair dye', or null if categoryId is null",
+      },
+    },
+    required: ["categoryId", "keyword"],
+    additionalProperties: false,
+  } as const;
+
+  const candidateList = candidates
+    .map((c) => `${c.id}: ${c.path}`)
+    .join("\n");
+
+  let response;
+  try {
+    response = await anthropic.messages.create(
+      {
+        model: "claude-opus-4-8",
+        max_tokens: 512,
+        output_config: { format: { type: "json_schema", schema } },
+        messages: [
+          {
+            role: "user",
+            content: `Product: "${productDescription}"
+
+Pick the single best-matching eBay category for this product from the candidates below (id: full path). Prefer the most specific matching category over a broad parent. If none of them genuinely fit this product, return null.
+
+${candidateList}`,
+          },
+        ],
+      },
+      { timeout: 20_000 }
+    );
+  } catch (e) {
+    console.error(`[categoryLookup] local-pick call failed`, e);
+    return null;
+  }
+
+  const textBlock = response.content.find((b) => b.type === "text");
+  const parsed = JSON.parse(
+    textBlock && "text" in textBlock ? textBlock.text : "{}"
+  ) as { categoryId?: string | null; keyword?: string | null };
+
+  if (!parsed.categoryId) return null;
+  const match = candidates.find((c) => c.id === parsed.categoryId);
+  if (!match) return null;
+
+  return { categoryId: match.id, categoryName: match.name, keyword: parsed.keyword ?? match.name.toLowerCase() };
+}
+
+async function applyCategory(
+  itemId: string,
+  categoryId: string,
+  categoryName: string,
+  keyword: string
+) {
+  await prisma.item.update({ where: { id: itemId }, data: { categoryId } });
+  const normalizedKeyword = keyword.trim().toLowerCase();
+  if (normalizedKeyword) {
+    await prisma.categoryRule.upsert({
+      where: { keyword: normalizedKeyword },
+      create: { keyword: normalizedKeyword, categoryId, categoryName },
+      update: { categoryId, categoryName },
+    });
+  }
+}
+
+// Last resort — only reached if the local category tree search above found
+// nothing usable. Same web-search approach as before, same timeout caution.
+async function searchWebForCategory(
+  itemId: string,
+  productDescription: string
+): Promise<CategoryLookupResult> {
+  console.log(`[categoryLookup] ${itemId}: no local match, falling back to web search`);
 
   let response;
   try {
@@ -66,16 +198,10 @@ If you can't find a confident match, respond with:
           },
         ],
       },
-      // Web search latency is unpredictable and occasionally hangs well past
-      // what's reasonable. Kept well under Vercel's own function timeout so
-      // *our* error handling fires first — otherwise Vercel kills the
-      // request and returns its own plain-text/HTML error page instead of
-      // the JSON error response below, which broke the client's res.json().
       { timeout: 35_000 }
     );
-    console.log(`[categoryLookup] ${itemId}: Claude call finished`);
   } catch (e) {
-    console.error(`[categoryLookup] ${itemId}: Claude call failed/timed out`, e);
+    console.error(`[categoryLookup] ${itemId}: web search call failed/timed out`, e);
     return { categoryId: null, categoryName: null, sourceUrl: null, fromExistingRule: false };
   }
 
@@ -103,26 +229,7 @@ If you can't find a confident match, respond with:
     return { categoryId: null, categoryName: null, sourceUrl: null, fromExistingRule: false };
   }
 
-  await prisma.item.update({
-    where: { id: itemId },
-    data: { categoryId: parsed.categoryId },
-  });
-
-  if (parsed.keyword) {
-    const keyword = parsed.keyword.trim().toLowerCase();
-    await prisma.categoryRule.upsert({
-      where: { keyword },
-      create: {
-        keyword,
-        categoryId: parsed.categoryId,
-        categoryName: parsed.categoryName ?? keyword,
-      },
-      update: {
-        categoryId: parsed.categoryId,
-        categoryName: parsed.categoryName ?? keyword,
-      },
-    });
-  }
+  await applyCategory(itemId, parsed.categoryId, parsed.categoryName ?? parsed.categoryId, parsed.keyword ?? "");
 
   return {
     categoryId: parsed.categoryId,
