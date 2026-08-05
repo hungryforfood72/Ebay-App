@@ -1,9 +1,11 @@
 import { lookupCategoryForItem } from "@/lib/categoryLookup";
 import { NextResponse } from "next/server";
 
-// Give Vercel's function enough room for the 35s SDK timeout in
-// lookupCategoryForItem to actually fire and return a clean error.
-export const maxDuration = 55;
+// Give Vercel's function enough room for the full worst-case chain in
+// lookupCategoryForItem: local pick (20s) + generic-terms (15s) +
+// broadened local pick (20s) + web search fallback (35s) = 90s max, all with
+// maxRetries: 0 so each SDK timeout can't multiply. 100 leaves a buffer.
+export const maxDuration = 100;
 
 export async function POST(
   _request: Request,

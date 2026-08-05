@@ -98,7 +98,10 @@ Write a clear, keyword-appropriate eBay title (80 characters max) and a short, h
       output_config: { format: { type: "json_schema", schema: DRAFT_SCHEMA } },
       messages: [{ role: "user", content }],
     },
-    { timeout: 45_000 }
+    // maxRetries: 0 — the SDK retries timeouts by default, which multiplies
+    // wall-clock time up to timeout * (retries + 1). We want 45s to actually
+    // mean 45s, not up to 135s.
+    { timeout: 45_000, maxRetries: 0 }
   );
 
   const textBlock = response.content.find((b) => b.type === "text");

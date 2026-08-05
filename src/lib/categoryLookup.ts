@@ -25,11 +25,18 @@ function significantWords(text: string): string[] {
 // 1. A saved CategoryRule keyword match (instant, free — something we've
 //    picked before).
 // 2. Local search over eBay's own full category tree (imported from their
-//    official export — see references/ebay-category-ids.md) + a quick,
-//    tool-free Claude call to pick the best match from real candidates.
-//    Fast and reliable since there's no web search involved.
-// 3. AI web search, only as a last resort if step 2 finds nothing to work
-//    with (e.g. a very generic or unusual title).
+//    official export — see references/ebay-category-ids.md) using literal
+//    words from the title/specifics + a quick, tool-free Claude call to pick
+//    the best match from real candidates. Fast and reliable since there's no
+//    web search involved.
+// 3. If that finds nothing (common when the title is dominated by brand/
+//    scent/flavor words that never appear in a category name — e.g. "Glade
+//    Bergamot & Eucalyptus Automatic Spray Refill" has no literal overlap
+//    with "Air Fresheners"), ask Claude for a few generic category-type
+//    search terms instead, and retry the local search with those. Still no
+//    web search, still fast.
+// 4. AI web search, only as an absolute last resort if step 3 also finds
+//    nothing to work with (e.g. a very generic or unusual title).
 export async function lookupCategoryForItem(
   itemId: string
 ): Promise<CategoryLookupResult> {
@@ -52,37 +59,164 @@ export async function lookupCategoryForItem(
     };
   }
 
-  const words = significantWords(productDescription);
-  const candidates =
-    words.length > 0
-      ? await prisma.ebayCategory.findMany({
-          where: { OR: words.map((w) => ({ name: { contains: w, mode: "insensitive" as const } })) },
-          take: 40,
-        })
-      : [];
+  const specifics = (item.itemSpecifics as Record<string, string> | null) ?? {};
+  // Fold in the AI-identified product type/brand — these are often more
+  // category-relevant than words picked out of the title itself (e.g. a
+  // title says "Automatic Spray Refill" but specifics.type says the same
+  // thing more plainly, and it's a clean signal on its own).
+  const searchText = [productDescription, specifics.type, specifics.brand]
+    .filter(Boolean)
+    .join(" ");
+
+  const words = significantWords(searchText);
+  let candidates = await findLocalCandidates(words);
 
   console.log(
     `[categoryLookup] ${itemId}: title="${productDescription}", words=${JSON.stringify(words)}, local candidates=${candidates.length}`
   );
 
-  if (candidates.length > 0) {
-    const pickStart = Date.now();
-    const picked = await pickBestLocalCategory(productDescription, candidates);
-    console.log(
-      `[categoryLookup] ${itemId}: local pick took ${Date.now() - pickStart}ms, result=${JSON.stringify(picked)}`
-    );
-    if (picked) {
-      await applyCategory(itemId, picked.categoryId, picked.categoryName, picked.keyword);
-      return {
-        categoryId: picked.categoryId,
-        categoryName: picked.categoryName,
-        sourceUrl: null,
-        fromExistingRule: false,
-      };
+  let picked = candidates.length > 0 ? await timedPick(itemId, productDescription, candidates) : null;
+
+  if (!picked) {
+    // Literal word overlap found nothing usable — ask Claude for generic
+    // category-type terms (e.g. "air freshener", "home fragrance") instead
+    // of brand/scent words, and try the local tree again with those.
+    const genericTerms = await suggestGenericCategoryTerms(productDescription, specifics);
+    console.log(`[categoryLookup] ${itemId}: generic terms=${JSON.stringify(genericTerms)}`);
+
+    if (genericTerms.length > 0) {
+      const broaderCandidates = await findLocalCandidates(genericTerms);
+      // Merge with anything found in the first pass, deduped by id.
+      const merged = new Map(candidates.map((c) => [c.id, c]));
+      for (const c of broaderCandidates) merged.set(c.id, c);
+      candidates = Array.from(merged.values());
+
+      console.log(`[categoryLookup] ${itemId}: broadened local candidates=${candidates.length}`);
+      if (candidates.length > 0) {
+        picked = await timedPick(itemId, productDescription, candidates);
+      }
     }
   }
 
+  if (picked) {
+    await applyCategory(itemId, picked.categoryId, picked.categoryName, picked.keyword);
+    return {
+      categoryId: picked.categoryId,
+      categoryName: picked.categoryName,
+      sourceUrl: null,
+      fromExistingRule: false,
+    };
+  }
+
   return searchWebForCategory(itemId, productDescription);
+}
+
+// Pulls a generous pool of matches (no ranking from Postgres — `contains`
+// gives no relevance signal), then scores and trims it ourselves. Without
+// this, an unordered `take: N` on a common word like "toy" or "water" — which
+// can match thousands of rows across the 20k+ category tree — returns
+// whatever Postgres happens to hand back first, which is essentially random
+// and can easily miss the one category that actually fits.
+async function findLocalCandidates(words: string[]) {
+  if (words.length === 0) return [];
+
+  const pool = await prisma.ebayCategory.findMany({
+    where: {
+      OR: words.flatMap((w) => [
+        { name: { contains: w, mode: "insensitive" as const } },
+        { path: { contains: w, mode: "insensitive" as const } },
+      ]),
+    },
+    take: 2000,
+  });
+
+  const scored = pool.map((c) => {
+    const nameLower = c.name.toLowerCase();
+    const pathLower = c.path.toLowerCase();
+    let score = 0;
+    for (const w of words) {
+      if (nameLower.includes(w)) score += 3;
+      else if (pathLower.includes(w)) score += 1;
+    }
+    return { candidate: c, score };
+  });
+
+  scored.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    // Tie-break toward shorter, more specific-looking names.
+    return a.candidate.name.length - b.candidate.name.length;
+  });
+
+  return scored.slice(0, 40).map((s) => s.candidate);
+}
+
+async function timedPick(
+  itemId: string,
+  productDescription: string,
+  candidates: { id: string; name: string; path: string }[]
+) {
+  const pickStart = Date.now();
+  const picked = await pickBestLocalCategory(productDescription, candidates);
+  console.log(
+    `[categoryLookup] ${itemId}: local pick took ${Date.now() - pickStart}ms, result=${JSON.stringify(picked)}`
+  );
+  return picked;
+}
+
+// Cheap, fast, tool-free Claude call: given a product that literal keyword
+// search couldn't place, suggest a few generic retail-category search terms
+// (not brand/scent/flavor words) to retry the local search with.
+async function suggestGenericCategoryTerms(
+  productDescription: string,
+  specifics: Record<string, string>
+): Promise<string[]> {
+  const schema = {
+    type: "object",
+    properties: {
+      terms: {
+        type: "array",
+        items: { type: "string" },
+        description: "2-5 generic product-category search terms, lowercase, no brand/scent/flavor names, e.g. ['air freshener', 'home fragrance']",
+      },
+    },
+    required: ["terms"],
+    additionalProperties: false,
+  } as const;
+
+  const specificsLine = Object.entries(specifics)
+    .filter(([, v]) => v)
+    .map(([k, v]) => `${k}: ${v}`)
+    .join(", ");
+
+  let response;
+  try {
+    response = await anthropic.messages.create(
+      {
+        model: "claude-opus-4-8",
+        max_tokens: 256,
+        output_config: { format: { type: "json_schema", schema } },
+        messages: [
+          {
+            role: "user",
+            content: `Product: "${productDescription}"${specificsLine ? `\nKnown specifics: ${specificsLine}` : ""}
+
+This product's title is dominated by brand/scent/flavor words that won't literally appear in a retail category name. Suggest 2-5 generic, category-taxonomy-style search terms for what this product actually IS (its general type), ignoring brand names, scent/flavor names, and marketing words. E.g. for "Glade Bergamot & Eucalyptus Automatic Spray Refill", good terms are "air freshener", "home fragrance", "spray refill" — not "glade", "bergamot", or "eucalyptus".`,
+          },
+        ],
+      },
+      { timeout: 15_000, maxRetries: 0 }
+    );
+  } catch (e) {
+    console.error(`[categoryLookup] generic-terms call failed`, e);
+    return [];
+  }
+
+  const textBlock = response.content.find((b) => b.type === "text");
+  const parsed = JSON.parse(
+    textBlock && "text" in textBlock ? textBlock.text : "{}"
+  ) as { terms?: string[] };
+
+  return (parsed.terms ?? []).map((t) => t.toLowerCase().trim()).filter(Boolean);
 }
 
 // Fast, tool-free Claude call: pick the best match from real local
@@ -129,7 +263,7 @@ ${candidateList}`,
           },
         ],
       },
-      { timeout: 20_000 }
+      { timeout: 20_000, maxRetries: 0 }
     );
   } catch (e) {
     console.error(`[categoryLookup] local-pick call failed`, e);
@@ -198,7 +332,7 @@ If you can't find a confident match, respond with:
           },
         ],
       },
-      { timeout: 35_000 }
+      { timeout: 35_000, maxRetries: 0 }
     );
   } catch (e) {
     console.error(`[categoryLookup] ${itemId}: web search call failed/timed out`, e);
