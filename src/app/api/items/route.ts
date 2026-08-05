@@ -38,9 +38,9 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Prefix the SKU with the shelf location (e.g. "A6-<uuid>") so it's
-  // recognizable at a glance on eBay's side, not just a bare UUID.
-  const sku = `${String(body.shelfLocation).trim()}-${randomUUID()}`;
+  // Prefix the SKU with the shelf location (e.g. "(Location - A6)-<uuid>")
+  // so it's recognizable at a glance on eBay's side, not just a bare UUID.
+  const sku = `(Location - ${String(body.shelfLocation).trim()})-${randomUUID()}`;
 
   const item = await prisma.item.create({
     data: {
