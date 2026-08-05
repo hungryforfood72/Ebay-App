@@ -1,15 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { ItemStatus } from "@/generated/prisma/client";
 import { NextRequest, NextResponse } from "next/server";
-import { after } from "next/server";
-import { draftItem } from "@/lib/draftItem";
-import { lookupCategoryForItem } from "@/lib/categoryLookup";
-
-// Background draft (SDK-bounded to 45s) then category lookup (SDK-bounded
-// to 55s) run sequentially in after() below — 120s gives both room to hit
-// their own timeouts and still return cleanly instead of getting killed by
-// the platform mid-request.
-export const maxDuration = 120;
 
 // List items for the review queue, optionally filtered by status.
 export async function GET(request: NextRequest) {
@@ -52,26 +43,13 @@ export async function POST(request: NextRequest) {
     },
   });
 
-  // Draft the title/description and look up the category in the background
-  // — the scan flow gets its response immediately so the phone isn't stuck
-  // waiting, this keeps running after that. Category search runs after the
-  // draft so it has a real title to search from, not just the bare UPC.
-  after(async () => {
-    console.log(`[background] ${item.id}: starting draft`);
-    try {
-      await draftItem(item.id);
-      console.log(`[background] ${item.id}: draft done`);
-    } catch (e) {
-      console.error(`[background] ${item.id}: draft failed`, e);
-    }
-    console.log(`[background] ${item.id}: starting category lookup`);
-    try {
-      await lookupCategoryForItem(item.id);
-      console.log(`[background] ${item.id}: category lookup done`);
-    } catch (e) {
-      console.error(`[background] ${item.id}: category lookup failed`, e);
-    }
-  });
-
+  // Drafting + category lookup are triggered by the client right after this
+  // responds (see scan/page.tsx) rather than run here via Next's after() —
+  // that relied on Vercel keeping this function alive past the response,
+  // which wasn't reliably completing in production. Triggering as separate
+  // requests means each one is its own top-level invocation with its own
+  // timeout, and — importantly — it's actually observable (network tab,
+  // logs) instead of a silent background failure with no client-visible
+  // evidence. The work itself still runs entirely server-side either way.
   return NextResponse.json(item, { status: 201 });
 }

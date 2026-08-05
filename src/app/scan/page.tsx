@@ -174,6 +174,17 @@ export default function ScanPage() {
         throw new Error(err.error ?? "Save failed.");
       }
 
+      const savedItem: { id: string } = await res.json();
+      // Fire these off and move on immediately — don't await. The phone
+      // just dispatches the requests; all the actual work (Claude calls,
+      // DB writes) happens on the server. Category lookup goes second so
+      // it has a real drafted title to search from, not just the bare UPC.
+      fetch(`/api/items/${savedItem.id}/draft`, { method: "POST" })
+        .then(() => fetch(`/api/items/${savedItem.id}/category-lookup`, { method: "POST" }))
+        .catch(() => {
+          // Best-effort — reviewer can always retry from the review page.
+        });
+
       rememberLocation(shelfLocation.trim());
       setRecentLocations(loadRecentLocations());
       setSavedThisSession((n) => n + 1);
