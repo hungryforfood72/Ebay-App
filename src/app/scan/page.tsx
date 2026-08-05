@@ -73,7 +73,8 @@ export default function ScanPage() {
   const [boxSizes, setBoxSizes] = useState<LabeledEntry[]>([]);
 
   const [showScanner, setShowScanner] = useState(false);
-  const [scanTarget, setScanTarget] = useState<"item" | "component">("item");
+  const [scanTarget, setScanTarget] = useState<"item" | "component" | "location">("item");
+  const [locationScanError, setLocationScanError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -653,18 +654,34 @@ export default function ScanPage() {
 
       <section>
         <label className="text-sm font-medium">Shelf location</label>
-        <select
-          value={shelfLocation}
-          onChange={(e) => setShelfLocation(e.target.value)}
-          className="w-full rounded border px-3 py-2"
-        >
-          <option value="">Select location…</option>
-          {shelfLocations.map((loc) => (
-            <option key={loc.id} value={loc.label}>
-              {loc.label}
-            </option>
-          ))}
-        </select>
+        <div className="flex gap-2">
+          <select
+            value={shelfLocation}
+            onChange={(e) => {
+              setShelfLocation(e.target.value);
+              setLocationScanError(null);
+            }}
+            className="flex-1 rounded border px-3 py-2"
+          >
+            <option value="">Select location…</option>
+            {shelfLocations.map((loc) => (
+              <option key={loc.id} value={loc.label}>
+                {loc.label}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => {
+              setScanTarget("location");
+              setShowScanner(true);
+            }}
+            className="rounded bg-black px-3 py-2 text-sm text-white"
+          >
+            Scan
+          </button>
+        </div>
+        {locationScanError && <p className="mt-1 text-xs text-red-600">{locationScanError}</p>}
         {shelfLocations.length === 0 && (
           <a href="/settings" className="mt-1 inline-block text-xs text-blue-600 underline">
             Add shelf locations in Settings
@@ -740,6 +757,16 @@ export default function ScanPage() {
           onDetected={(text) => {
             if (scanTarget === "component") {
               setComponentUpc(text);
+            } else if (scanTarget === "location") {
+              const match = shelfLocations.find(
+                (loc) => loc.label.toLowerCase() === text.trim().toLowerCase()
+              );
+              if (match) {
+                setShelfLocation(match.label);
+                setLocationScanError(null);
+              } else {
+                setLocationScanError(`No saved location matches "${text}" — add it in Settings first.`);
+              }
             } else {
               setUpc(text);
             }

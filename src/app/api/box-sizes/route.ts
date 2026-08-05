@@ -1,9 +1,10 @@
 import { prisma } from "@/lib/prisma";
+import { naturalSort } from "@/lib/naturalSort";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function GET() {
-  const sizes = await prisma.boxSize.findMany({ orderBy: { label: "asc" } });
-  return NextResponse.json(sizes);
+  const sizes = await prisma.boxSize.findMany();
+  return NextResponse.json(naturalSort(sizes, (s) => s.label));
 }
 
 export async function POST(request: NextRequest) {
