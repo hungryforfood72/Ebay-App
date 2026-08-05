@@ -22,11 +22,15 @@ const DRAFT_SCHEMA = {
       properties: {
         brand: { type: ["string", "null"], description: "Brand name, or null if not identifiable" },
         type: { type: ["string", "null"], description: "Product type, e.g. 'Sticker', 'Hair Dye', 'Action Figure'" },
+        product: {
+          type: ["string", "null"],
+          description: "A short, generic name for what this product actually is, for eBay's 'Product' item specific (required by some categories) — e.g. 'Vitamin C Drops', 'Air Freshener Refill'. Usually close to type but phrased as a plain product name rather than a category label.",
+        },
         color: { type: ["string", "null"], description: "Primary color, or null if not visually clear" },
         size: { type: ["string", "null"], description: "Size (clothing size, dimensions, count, etc.), or null" },
         material: { type: ["string", "null"], description: "Material, or null if not identifiable" },
       },
-      required: ["brand", "type", "color", "size", "material"],
+      required: ["brand", "type", "product", "color", "size", "material"],
       additionalProperties: false,
     },
   },

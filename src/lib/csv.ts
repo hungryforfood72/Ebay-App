@@ -31,13 +31,16 @@ const HEADERS = [
   "StartPrice",
   "Quantity",
   "AutoPay",
-  "Location",
+  "PostalCode",
+  "WeightMajor",
+  "WeightMinor",
   "ShippingProfileName",
   "ReturnProfileName",
   "PaymentProfileName",
   "C:UPC",
   "C:Color",
   "C:Type",
+  "C:Product",
   "C:Item Weight",
 ] as const;
 
@@ -109,15 +112,27 @@ export function itemsToFileExchangeCsv(items: ExportableItem[]): string {
       // (that field threw "Item.AutoPay invalid or missing" on a real
       // upload — see references/ebay-shipping-setup.md).
       AutoPay: "true",
-      Location: zip,
-      // Everything's free shipping for now — kept item.chargeForShipping in
-      // the data model in case that changes later, just not wired up here.
+      // "Location" isn't a real postal code field — eBay rejected it with
+      // "Please enter a valid postal code" on a real upload. PostalCode is
+      // the actual field eBay validates against.
+      PostalCode: zip,
+      // eBay requires the actual package weight regardless of shipping
+      // being free ("package weight is not valid or is missing" on a real
+      // upload) — C:Item Weight alone is just a buyer-facing item specific,
+      // not what eBay's shipping engine reads. Both must be whole numbers;
+      // eBay expects both present even when one side is 0.
+      WeightMajor: String(item.weightLbs ?? 0),
+      WeightMinor: String(item.weightOz ?? 0),
       ShippingProfileName: shippingFree,
       ReturnProfileName: returnPolicy,
       PaymentProfileName: paymentPolicy,
       "C:UPC": item.upc,
       "C:Color": specifics.color ?? "",
       "C:Type": specifics.type ?? "",
+      // Some categories require a literal "Product" item specific ("The
+      // item specific Product is missing" on a real upload) — fall back to
+      // the product type when the AI didn't give a distinct one.
+      "C:Product": specifics.product ?? specifics.type ?? "",
       "C:Item Weight": formatWeight(item.weightLbs, item.weightOz),
     };
     return HEADERS.map((h) => escapeCsvField(fields[h])).join(",");

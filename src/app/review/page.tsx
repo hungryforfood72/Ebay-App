@@ -121,6 +121,13 @@ export default function ReviewPage() {
       setError(`"${item.upc}" needs a title and price before it can go ready.`);
       return;
     }
+    // eBay's shipping engine requires actual package weight even on free
+    // shipping — a real upload failed with "package weight is not valid or
+    // is missing" for an item with no weight set.
+    if (!item.weightLbs && !item.weightOz) {
+      setError(`"${item.upc}" needs a package weight before it can go ready.`);
+      return;
+    }
     setError(null);
     await updateItem(item.id, { status: "ready" });
   }
