@@ -1,43 +1,58 @@
-# Shipping in the File Exchange CSV
+# Shipping, Returns & Payment Setup
 
-The app captures everything needed for shipping (charge-for-shipping toggle,
-box size, weight) and writes it into the CSV, but I'm not fully confident in
-three specific values without checking them against a real downloaded
-File Exchange template — verify these before your first real shipping-enabled
-upload:
+Confirmed against Cristian's real "Create Ebay Listings Upload-CSV" template
+(the live "Add" listing template, not the Drafts one) — not guessed.
 
-1. **`ShippingService-1:Option` value for USPS Ground Advantage.** Currently
-   set to `USPSGroundAdvantage` in `src/lib/csv.ts`. Ground Advantage is a
-   relatively new USPS service (it replaced First Class Package/Parcel
-   Select Ground), so eBay's exact internal service code for it in File
-   Exchange is worth double-checking — download a template from Seller Hub
-   for a listing using that service and compare.
+## Business Policies, not inline CSV fields
 
-2. **`ExcludeShipToLocation` format for Alaska/Hawaii.** Currently set to
-   the literal string `Alaska,Hawaii`. eBay may expect a different format
-   (e.g. region codes). Check a template.
+eBay's individual `ShippingType`, `ShippingService-1:Option`,
+`ReturnsAcceptedOption`, etc. columns require exact enum values that are easy
+to get wrong. The template also has `ShippingProfileName`,
+`ReturnProfileName`, and `PaymentProfileName` columns — these reference
+**Business Policies** set up once in Seller Hub's UI (Account → Business
+Policies), where eBay's own dropdowns guarantee correct values. Per eBay's
+own docs: if you use the profile-name columns, leave the individual
+shipping/return/payment columns blank. That's what this app does.
 
-3. **`PackageSize`.** This isn't a standard eBay column name — it's a
-   placeholder holding whatever text you type into the Box Size field on
-   the review page (e.g. "Small 6x4x2"). eBay's File Exchange actually
-   wants either a package-type enum (envelope/box presets) or explicit
-   `PackageLength`/`PackageWidth`/`PackageDepth` columns in inches. Once you
-   know which your account's template expects, either:
-   - swap `PackageSize` for those dimension columns and start storing real
-     L×W×H per box size, or
-   - map your box size labels to eBay's package-type enum values.
+### One-time setup (Cristian, in eBay Seller Hub)
 
-## How the shipping logic works
+1. **Payment policy** — one is usually enough.
+2. **Return policy** — your standard return window/terms.
+3. **Two shipping policies**:
+   - **Free Shipping** — Flat rate, $0, USPS Ground Advantage, Alaska/Hawaii
+     excluded (set the exclusion in the policy itself, not per-listing).
+   - **Calculated Shipping** — Calculated, USPS Ground Advantage,
+     Alaska/Hawaii excluded.
 
-- **Unchecked "Charge for shipping"** → `ShippingType=Flat`, cost `$0.00`
-  (free to the buyer). Weight and box size are still sent, since you're
-  still shipping a real package and want eBay/USPS pricing info accurate
-  even when you're absorbing the cost yourself.
-- **Checked** → `ShippingType=Calculated`, cost left blank (eBay computes
-  it at listing/purchase time from weight + package + buyer zip).
-- **Alaska/Hawaii** are always excluded — this is a blanket store policy,
-  not a per-item toggle.
+Policy names are case-sensitive and must match exactly what's in the app's
+env vars below.
 
-Box sizes are free-text with autocomplete from what you've typed before
-(same pattern as shelf locations on the scan page) — there's no preset
-list to maintain, it just remembers what you use.
+### Env vars (`.env.local` and Vercel)
+
+```
+EBAY_SHIPPING_POLICY_FREE=""       # name of the Free Shipping policy
+EBAY_SHIPPING_POLICY_CALCULATED="" # name of the Calculated Shipping policy
+EBAY_RETURN_POLICY_NAME=""
+EBAY_PAYMENT_POLICY_NAME=""
+EBAY_LISTING_ZIP="60620"
+```
+
+The review page's "Charge for shipping" checkbox picks between the two
+shipping policy names — checked = Calculated, unchecked = Free.
+
+## Still worth verifying on your first real upload
+
+- **Weight and calculated shipping.** This template has no explicit
+  package-weight column for eBay's shipping calculator — only `C:Item
+  Weight`, which is an *item specific* (a buyer-facing spec, e.g. "1 lb 8
+  oz"), not necessarily what feeds the calculated-shipping cost engine.
+  Whether a Calculated shipping policy needs weight declared somewhere else
+  (e.g. set per-category default in the policy, or via the eBay listing UI
+  after upload) isn't confirmed. Test one calculated-shipping listing and
+  check that eBay actually computed a sane cost before doing a batch.
+- **Item Length/Width/Height** are left blank — we only collect a free-text
+  box size label (with autocomplete), not structured dimensions. Not needed
+  unless a category requires them.
+- **Category ID** — Cristian has eBay's own category reference file; once
+  loaded, that becomes the source of truth over the AI-search/CategoryRule
+  system for anything it covers.
