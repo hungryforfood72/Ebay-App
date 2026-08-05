@@ -114,3 +114,11 @@ model EbayCategory {
 
   @@index([name])
 }
+
+// Managed list of box sizes, editable on the Settings page, shown as a
+// dropdown on the review page instead of free text.
+model BoxSize {
+  id        String   @id @default(uuid())
+  label     String   @unique
+  createdAt DateTime @default(now())
+}

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
 type CategoryRule = {
@@ -35,37 +36,25 @@ type Item = {
   weightOz: number | null;
 };
 
-const RECENT_BOX_SIZES_KEY = "ebay-tool.recentBoxSizes";
-
-function loadRecentBoxSizes(): string[] {
-  if (typeof window === "undefined") return [];
-  try {
-    return JSON.parse(localStorage.getItem(RECENT_BOX_SIZES_KEY) ?? "[]");
-  } catch {
-    return [];
-  }
-}
-
-function rememberBoxSize(size: string) {
-  const recent = loadRecentBoxSizes().filter((s) => s !== size);
-  recent.unshift(size);
-  localStorage.setItem(RECENT_BOX_SIZES_KEY, JSON.stringify(recent.slice(0, 12)));
-}
+type BoxSize = { id: string; label: string };
 
 export default function ReviewPage() {
   const [items, setItems] = useState<Item[] | null>(null);
   const [rules, setRules] = useState<CategoryRule[]>([]);
+  const [boxSizes, setBoxSizes] = useState<BoxSize[]>([]);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [draftingId, setDraftingId] = useState<string | null>(null);
 
   async function load() {
-    const [itemsRes, rulesRes] = await Promise.all([
+    const [itemsRes, rulesRes, boxSizesRes] = await Promise.all([
       fetch("/api/items"),
       fetch("/api/category-rules"),
+      fetch("/api/box-sizes"),
     ]);
     setItems(await itemsRes.json());
     setRules(await rulesRes.json());
+    setBoxSizes(await boxSizesRes.json());
   }
 
   useEffect(() => {
@@ -186,6 +175,9 @@ export default function ReviewPage() {
           >
             {exporting ? "Exporting…" : "Download CSV for eBay"}
           </button>
+          <Link href="/settings" className="text-sm underline">
+            Settings
+          </Link>
         </div>
       </div>
 
@@ -200,6 +192,7 @@ export default function ReviewPage() {
             key={item.id}
             item={item}
             rules={rules}
+            boxSizes={boxSizes}
             onChange={(data) => updateItem(item.id, data)}
             onMarkReady={() => markReady(item)}
             onGenerateDraft={() => generateDraft(item)}
@@ -256,6 +249,7 @@ export default function ReviewPage() {
 function ItemCard({
   item,
   rules,
+  boxSizes,
   onChange,
   onMarkReady,
   onGenerateDraft,
@@ -265,6 +259,7 @@ function ItemCard({
 }: {
   item: Item;
   rules: CategoryRule[];
+  boxSizes: BoxSize[];
   onChange: (data: Partial<Item>) => void;
   onMarkReady: () => void;
   onGenerateDraft: () => void;
@@ -274,7 +269,6 @@ function ItemCard({
 }) {
   const [ruleKeyword, setRuleKeyword] = useState("");
   const [ruleName, setRuleName] = useState("");
-  const [recentBoxSizes, setRecentBoxSizes] = useState<string[]>([]);
   const [newSpecKey, setNewSpecKey] = useState("");
   const [newSpecValue, setNewSpecValue] = useState("");
   const [searchingCategory, setSearchingCategory] = useState(false);
@@ -282,13 +276,6 @@ function ItemCard({
   const [catResults, setCatResults] = useState<
     { id: string; name: string; path: string }[]
   >([]);
-
-  useEffect(() => {
-    // Initial hydration from localStorage on mount, not a reaction to state
-    // we own.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setRecentBoxSizes(loadRecentBoxSizes());
-  }, []);
 
   useEffect(() => {
     if (catQuery.trim().length < 2) {
@@ -554,25 +541,23 @@ function ItemCard({
             Shipping — free, USPS Ground Advantage
           </p>
           <div className="flex flex-wrap items-center gap-2">
-            <input
-              type="text"
-              list="box-sizes"
-              placeholder="Box size"
-              defaultValue={item.boxSize ?? ""}
-              onBlur={(e) => {
-                onChange({ boxSize: e.target.value || null });
-                if (e.target.value.trim()) {
-                  rememberBoxSize(e.target.value.trim());
-                  setRecentBoxSizes(loadRecentBoxSizes());
-                }
-              }}
-              className="w-32 rounded border px-2 py-1 text-xs"
-            />
-            <datalist id="box-sizes">
-              {recentBoxSizes.map((s) => (
-                <option key={s} value={s} />
+            <select
+              value={item.boxSize ?? ""}
+              onChange={(e) => onChange({ boxSize: e.target.value || null })}
+              className="rounded border px-2 py-1 text-xs"
+            >
+              <option value="">Box size…</option>
+              {boxSizes.map((b) => (
+                <option key={b.id} value={b.label}>
+                  {b.label}
+                </option>
               ))}
-            </datalist>
+            </select>
+            {boxSizes.length === 0 && (
+              <Link href="/settings" className="text-xs text-blue-600 underline">
+                Add box sizes in Settings
+              </Link>
+            )}
             <input
               type="number"
               min={0}
