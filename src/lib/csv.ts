@@ -54,7 +54,7 @@ function escapeCsvField(value: string): string {
 
 export type ExportableItem = {
   sku: string;
-  upc: string;
+  upc: string | null; // null for bundles — no single UPC applies
   categoryId: string | null;
   finalTitle: string | null;
   finalDescription: string | null;
@@ -131,7 +131,11 @@ export function itemsToFileExchangeCsv(items: ExportableItem[]): string {
       ShippingProfileName: shippingFree,
       ReturnProfileName: returnPolicy,
       PaymentProfileName: paymentPolicy,
-      "C:UPC": item.upc,
+      // Bundles have no single UPC — "Does Not Apply" is eBay's own
+      // recognized value for "no identifier applies here", not just a
+      // blank field (which can trigger a GTIN-required error in some
+      // categories).
+      "C:UPC": item.upc ?? "Does Not Apply",
       "C:Color": specifics.color ?? "",
       "C:Type": specifics.type ?? "",
       // Some categories require a literal "Product" item specific ("The

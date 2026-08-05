@@ -10,17 +10,26 @@ type CategoryRule = {
   categoryName: string;
 };
 
+type BundleComponent = {
+  upc: string;
+  quantity: number;
+  photoUrl?: string | null;
+  name?: string | null;
+};
+
 type Item = {
   id: string;
   sku: string;
   status: "pending_review" | "ready" | "exported";
-  upc: string;
+  upc: string | null;
   quantity: number;
   isMultipack: boolean;
   packSize: number | null;
   expirationDate: string | null;
   shelfLocation: string;
   photoUrls: string[];
+  isBundle: boolean;
+  bundleComponents: BundleComponent[] | null;
   finalTitle: string | null;
   finalDescription: string | null;
   aiTitle: string | null;
@@ -91,7 +100,7 @@ export default function ReviewPage() {
   }
 
   async function deleteItem(item: Item) {
-    if (!confirm(`Delete "${item.finalTitle ?? item.upc}"? This can't be undone.`)) {
+    if (!confirm(`Delete "${item.finalTitle ?? item.upc ?? item.sku}"? This can't be undone.`)) {
       return;
     }
     setItems((prev) => prev?.filter((i) => i.id !== item.id) ?? prev);
@@ -117,15 +126,16 @@ export default function ReviewPage() {
   }
 
   async function markReady(item: Item) {
+    const label = item.upc ?? item.sku;
     if (!item.finalTitle?.trim() || !item.price) {
-      setError(`"${item.upc}" needs a title and price before it can go ready.`);
+      setError(`"${label}" needs a title and price before it can go ready.`);
       return;
     }
     // eBay's shipping engine requires actual package weight even on free
     // shipping — a real upload failed with "package weight is not valid or
     // is missing" for an item with no weight set.
     if (!item.weightLbs && !item.weightOz) {
-      setError(`"${item.upc}" needs a package weight before it can go ready.`);
+      setError(`"${label}" needs a package weight before it can go ready.`);
       return;
     }
     setError(null);
@@ -391,8 +401,12 @@ function ItemCard({
 
       <div className="flex-1">
         <div className="mb-2 flex flex-wrap gap-3 text-xs text-gray-500">
-          <span>UPC {item.upc}</span>
-          <span>Qty {item.quantity}</span>
+          {item.isBundle ? (
+            <span>Bundle · {item.bundleComponents?.length ?? 0} different items</span>
+          ) : (
+            <span>UPC {item.upc}</span>
+          )}
+          <span>{item.isBundle ? "Bundles available" : "Qty"} {item.quantity}</span>
           {item.isMultipack && <span>Pack of {item.packSize}</span>}
           <span>Shelf {item.shelfLocation}</span>
           {item.expirationDate && (
@@ -401,6 +415,24 @@ function ItemCard({
             </span>
           )}
         </div>
+
+        {item.isBundle && item.bundleComponents && item.bundleComponents.length > 0 && (
+          <div className="mb-2 rounded border bg-gray-50 p-2">
+            <p className="mb-1 text-xs font-medium text-gray-500">Bundle contents</p>
+            <ul className="flex flex-col gap-1">
+              {item.bundleComponents.map((c, i) => (
+                <li key={i} className="flex items-center gap-2 text-xs text-gray-600">
+                  {c.photoUrl && (
+                    <img src={c.photoUrl} alt="" className="h-6 w-6 rounded object-cover" />
+                  )}
+                  <span>
+                    {c.quantity}x {c.name ?? `UPC ${c.upc}`}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         <div className="mb-2 flex items-center gap-2">
           <button

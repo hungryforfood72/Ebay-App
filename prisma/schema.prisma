@@ -39,14 +39,20 @@ model Item {
   status ItemStatus @default(pending_review)
 
   // Scan step
-  upc            String
-  quantity       Int
+  upc            String? // null for bundles — no single UPC applies
+  quantity       Int     // for bundles: how many complete bundles are available
   isMultipack    Boolean  @default(false)
   packSize       Int?
   expirationDate DateTime?
   shelfLocation  String
-  photoUrls      String[] @default([])
+  photoUrls      String[] @default([]) // photoUrls[0] is the bundle's "everything together" hero photo when isBundle
   scannedBy      String?
+
+  // Bundle mode — eBay doesn't allow "mystery box" listings, so every item
+  // inside a bundle has to be individually disclosed. Each entry:
+  // { upc, quantity (per bundle), photoUrl, name, upcLookupData }.
+  isBundle         Boolean @default(false)
+  bundleComponents Json?
 
   scanSession   ScanSession? @relation(fields: [scanSessionId], references: [id])
   scanSessionId String?

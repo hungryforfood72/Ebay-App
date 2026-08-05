@@ -25,14 +25,39 @@ export async function GET(request: NextRequest) {
 
 // Save one scanned item. Called from the mobile scan flow after photos have
 // already been uploaded to Cloudinary, so this is just metadata + URLs.
+type BundleComponentInput = {
+  upc?: string;
+  quantity?: number;
+};
+
 export async function POST(request: NextRequest) {
   const body = await request.json();
+  const isBundle = Boolean(body.isBundle);
 
-  const required = ["upc", "quantity", "shelfLocation"];
+  const required = isBundle ? ["quantity", "shelfLocation"] : ["upc", "quantity", "shelfLocation"];
   for (const field of required) {
     if (body[field] === undefined || body[field] === null || body[field] === "") {
       return NextResponse.json(
         { error: `Missing required field: ${field}` },
+        { status: 400 }
+      );
+    }
+  }
+
+  if (isBundle) {
+    const components: BundleComponentInput[] = Array.isArray(body.bundleComponents)
+      ? body.bundleComponents
+      : [];
+    if (components.length === 0) {
+      return NextResponse.json(
+        { error: "A bundle needs at least one item added to it." },
+        { status: 400 }
+      );
+    }
+    const invalid = components.find((c) => !c.upc || !c.quantity || c.quantity < 1);
+    if (invalid) {
+      return NextResponse.json(
+        { error: "Every item in the bundle needs a UPC and a quantity." },
         { status: 400 }
       );
     }
@@ -45,7 +70,7 @@ export async function POST(request: NextRequest) {
   const item = await prisma.item.create({
     data: {
       sku,
-      upc: body.upc,
+      upc: isBundle ? null : body.upc,
       quantity: Number(body.quantity),
       isMultipack: Boolean(body.isMultipack),
       packSize: body.isMultipack ? Number(body.packSize) : null,
@@ -57,6 +82,8 @@ export async function POST(request: NextRequest) {
       photoUrls: Array.isArray(body.photoUrls) ? body.photoUrls : [],
       scannedBy: body.scannedBy ?? null,
       scanSessionId: body.scanSessionId ?? null,
+      isBundle,
+      bundleComponents: isBundle ? body.bundleComponents : undefined,
     },
   });
 

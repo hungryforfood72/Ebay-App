@@ -2,8 +2,26 @@ import { prisma } from "@/lib/prisma";
 import { lookupUpc } from "@/lib/upcLookup";
 import { anthropic, fetchImageAsBase64 } from "@/lib/anthropic";
 import { truncateTitle } from "@/lib/ebayTitle";
-import type { Prisma } from "@/generated/prisma/client";
+import type { Item, Prisma } from "@/generated/prisma/client";
 import type Anthropic from "@anthropic-ai/sdk";
+
+const SPECIFICS_SCHEMA = {
+  type: "object",
+  description: "eBay item specifics. Use null for anything not confidently known from the photo or UPC data — never guess.",
+  properties: {
+    brand: { type: ["string", "null"], description: "Brand name, or null if not identifiable. For a bundle of different brands, use 'Various' or the dominant brand." },
+    type: { type: ["string", "null"], description: "Product type, e.g. 'Sticker', 'Hair Dye', 'Action Figure'. For a bundle, something like 'Bundle' or 'Lot'." },
+    product: {
+      type: ["string", "null"],
+      description: "A short, generic name for what this product actually is, for eBay's 'Product' item specific (required by some categories) — e.g. 'Vitamin C Drops', 'Air Freshener Refill'. Usually close to type but phrased as a plain product name rather than a category label.",
+    },
+    color: { type: ["string", "null"], description: "Primary color, or null if not visually clear" },
+    size: { type: ["string", "null"], description: "Size (clothing size, dimensions, count, etc.), or null" },
+    material: { type: ["string", "null"], description: "Material, or null if not identifiable" },
+  },
+  required: ["brand", "type", "product", "color", "size", "material"],
+  additionalProperties: false,
+} as const;
 
 const DRAFT_SCHEMA = {
   type: "object",
@@ -16,42 +34,83 @@ const DRAFT_SCHEMA = {
       type: "string",
       description: "eBay listing description, a few sentences",
     },
-    specifics: {
-      type: "object",
-      description: "eBay item specifics. Use null for anything not confidently known from the photo or UPC data — never guess.",
-      properties: {
-        brand: { type: ["string", "null"], description: "Brand name, or null if not identifiable" },
-        type: { type: ["string", "null"], description: "Product type, e.g. 'Sticker', 'Hair Dye', 'Action Figure'" },
-        product: {
-          type: ["string", "null"],
-          description: "A short, generic name for what this product actually is, for eBay's 'Product' item specific (required by some categories) — e.g. 'Vitamin C Drops', 'Air Freshener Refill'. Usually close to type but phrased as a plain product name rather than a category label.",
-        },
-        color: { type: ["string", "null"], description: "Primary color, or null if not visually clear" },
-        size: { type: ["string", "null"], description: "Size (clothing size, dimensions, count, etc.), or null" },
-        material: { type: ["string", "null"], description: "Material, or null if not identifiable" },
-      },
-      required: ["brand", "type", "product", "color", "size", "material"],
-      additionalProperties: false,
-    },
+    specifics: SPECIFICS_SCHEMA,
   },
   required: ["title", "description", "specifics"],
   additionalProperties: false,
 } as const;
 
+type Draft = {
+  title?: string;
+  description?: string;
+  specifics?: Record<string, string | null>;
+};
+
+// Shared by draftItem and draftBundleItem: truncates the title, respects
+// manual edits (a "Regenerate" only overwrites finalTitle/finalDescription
+// if they still match the *previous* AI draft, i.e. the reviewer never
+// touched them), merges specifics without clobbering reviewer-set ones, and
+// saves. `extra` carries whatever field(s) are specific to that draft path
+// (upcLookupData for a single item, bundleComponents for a bundle).
+async function applyDraft(item: Item, draft: Draft, extra: Prisma.ItemUpdateInput = {}) {
+  // eBay hard-rejects listing titles over 80 characters. The prompt asks for
+  // 80 or fewer, but that's a hint, not a guarantee — Claude has gone over
+  // (especially when working an expiration date into the title), so enforce
+  // it here rather than trust the model.
+  const draftTitle = draft.title ? truncateTitle(draft.title) : draft.title;
+
+  const titleUnedited = !item.finalTitle || item.finalTitle === item.aiTitle;
+  const descriptionUnedited =
+    !item.finalDescription || item.finalDescription === item.aiDescription;
+
+  // Only keep specifics Claude was actually confident about (non-null), and
+  // don't clobber ones the reviewer has already filled in/edited by hand.
+  const newSpecifics = Object.fromEntries(
+    Object.entries(draft.specifics ?? {}).filter(([, v]) => v)
+  );
+  const existingSpecifics = (item.itemSpecifics as Record<string, string> | null) ?? {};
+  const mergedSpecifics = { ...newSpecifics, ...existingSpecifics };
+
+  return prisma.item.update({
+    where: { id: item.id },
+    data: {
+      aiTitle: draftTitle ?? null,
+      aiDescription: draft.description ?? null,
+      finalTitle: titleUnedited ? (draftTitle ?? item.finalTitle) : item.finalTitle,
+      finalDescription: descriptionUnedited
+        ? (draft.description ?? item.finalDescription)
+        : item.finalDescription,
+      itemSpecifics:
+        Object.keys(mergedSpecifics).length > 0
+          ? (mergedSpecifics as Prisma.InputJsonValue)
+          : undefined,
+      ...extra,
+    },
+  });
+}
+
+async function imageContentBlock(url: string): Promise<Anthropic.Messages.ContentBlockParam | null> {
+  try {
+    const { data, mediaType } = await fetchImageAsBase64(url);
+    return { type: "image", source: { type: "base64", media_type: mediaType, data } };
+  } catch {
+    return null;
+  }
+}
+
 // Looks up the item's UPC (caching the result) and asks Claude to draft an
 // eBay title + description from that data plus the first product photo.
-// A "Regenerate" only overwrites the reviewer-facing finalTitle/
-// finalDescription if they still match the *previous* AI draft (i.e. the
-// reviewer never edited them) — a manual edit is never silently clobbered.
 export async function draftItem(itemId: string) {
   const item = await prisma.item.findUniqueOrThrow({ where: { id: itemId } });
+
+  if (item.isBundle) return draftBundleItem(item);
 
   let upcLookupData: Prisma.InputJsonValue;
   if (item.upcLookupData) {
     upcLookupData = item.upcLookupData as Prisma.InputJsonValue;
   } else {
     try {
-      upcLookupData = (await lookupUpc(item.upc)) as Prisma.InputJsonValue;
+      upcLookupData = (await lookupUpc(item.upc!)) as Prisma.InputJsonValue;
     } catch {
       upcLookupData = { error: "UPC lookup failed" };
     }
@@ -82,15 +141,8 @@ Write a clear, keyword-appropriate eBay title (80 characters max) and a short, h
 
   const firstPhoto = item.photoUrls[0];
   if (firstPhoto) {
-    try {
-      const { data, mediaType } = await fetchImageAsBase64(firstPhoto);
-      content.unshift({
-        type: "image",
-        source: { type: "base64", media_type: mediaType, data },
-      });
-    } catch {
-      // Draft from text alone if the photo can't be fetched.
-    }
+    const block = await imageContentBlock(firstPhoto);
+    if (block) content.unshift(block);
   }
 
   // No web search here (just vision + structured output), so this should be
@@ -110,44 +162,137 @@ Write a clear, keyword-appropriate eBay title (80 characters max) and a short, h
   );
 
   const textBlock = response.content.find((b) => b.type === "text");
-  const draft = JSON.parse(textBlock && "text" in textBlock ? textBlock.text : "{}") as {
+  const draft = JSON.parse(
+    textBlock && "text" in textBlock ? textBlock.text : "{}"
+  ) as Draft;
+
+  return applyDraft(item, draft, { upcLookupData });
+}
+
+type BundleComponent = {
+  upc: string;
+  quantity: number;
+  photoUrl?: string | null;
+  name?: string | null;
+  upcLookupData?: unknown;
+};
+
+const BUNDLE_DRAFT_SCHEMA = {
+  type: "object",
+  properties: {
+    title: {
+      type: "string",
+      description: "eBay listing title for the whole bundle, 80 characters or fewer. Make clear it's a bundle/lot of multiple items and roughly how many pieces.",
+    },
+    introDescription: {
+      type: "string",
+      description: "A short intro paragraph (2-4 sentences) describing the bundle as a whole and its general appeal/theme. Do NOT list the individual items or their quantities here — an itemized list of exactly what's included gets appended automatically after this, from known data, so don't duplicate or guess at it.",
+    },
+    specifics: SPECIFICS_SCHEMA,
+    components: {
+      type: "array",
+      description: "One entry per bundle component, in the same order they were given.",
+      items: {
+        type: "object",
+        properties: {
+          index: { type: "integer", description: "0-based index matching the input component order" },
+          name: {
+            type: "string",
+            description: "A short, clear, buyer-facing product name for this specific component (e.g. 'Silicone Whisk', 'Vanilla Bean Candle 8oz'), based on its photo and UPC lookup data. Never a generic placeholder like 'Item 1'.",
+          },
+        },
+        required: ["index", "name"],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["title", "introDescription", "specifics", "components"],
+  additionalProperties: false,
+} as const;
+
+// Bundles combine several *different* products into one listing. eBay
+// doesn't allow "mystery box" listings — everything inside has to be
+// individually disclosed — so the manifest (what's included and how many of
+// each) is built deterministically by this code from the known component
+// data, never left for the model to recount or summarize in free text. The
+// model's job is narrower: name each component from its photo/UPC data, and
+// write a short intro paragraph for the bundle as a whole.
+async function draftBundleItem(item: Item) {
+  const components = ((item.bundleComponents as unknown as BundleComponent[] | null) ?? []).slice();
+
+  await Promise.all(
+    components.map(async (c) => {
+      if (c.upcLookupData) return;
+      try {
+        c.upcLookupData = await lookupUpc(c.upc);
+      } catch {
+        c.upcLookupData = { error: "UPC lookup failed" };
+      }
+    })
+  );
+
+  const content: Anthropic.Messages.ContentBlockParam[] = [
+    {
+      type: "text",
+      text: `Draft an eBay listing for a BUNDLE of ${components.length} different items sold together as one lot.
+
+${components.length} bundles available for sale (each identical, containing all the items below).
+${item.expirationDate ? `Note: something in this bundle expires ${item.expirationDate.toISOString().slice(0, 10)} — mention that plainly in the intro.` : ""}
+
+Below is the overall bundle photo (everything together — this is the main listing image), followed by each individual component with its own photo and UPC data. For "components" in your response, give each one a short, clear, buyer-facing product name. For "title" and "introDescription", describe the bundle as a whole — do not list individual items/quantities yourself, that's added automatically from known data afterward.`,
+    },
+  ];
+
+  const heroPhoto = item.photoUrls[0];
+  if (heroPhoto) {
+    const block = await imageContentBlock(heroPhoto);
+    if (block) content.push(block);
+  }
+
+  for (const [i, c] of components.entries()) {
+    content.push({
+      type: "text",
+      text: `Component ${i}: UPC ${c.upc}, ${c.quantity} included per bundle. UPC lookup data (may be incomplete or missing): ${JSON.stringify(c.upcLookupData)}`,
+    });
+    if (c.photoUrl) {
+      const block = await imageContentBlock(c.photoUrl);
+      if (block) content.push(block);
+    }
+  }
+
+  const response = await anthropic.messages.create(
+    {
+      model: "claude-opus-4-8",
+      max_tokens: 2048,
+      output_config: { format: { type: "json_schema", schema: BUNDLE_DRAFT_SCHEMA } },
+      messages: [{ role: "user", content }],
+    },
+    { timeout: 60_000, maxRetries: 0 }
+  );
+
+  const textBlock = response.content.find((b) => b.type === "text");
+  const parsed = JSON.parse(
+    textBlock && "text" in textBlock ? textBlock.text : "{}"
+  ) as {
     title?: string;
-    description?: string;
+    introDescription?: string;
     specifics?: Record<string, string | null>;
+    components?: { index: number; name: string }[];
   };
 
-  // eBay hard-rejects listing titles over 80 characters. The prompt asks for
-  // 80 or fewer, but that's a hint, not a guarantee — Claude has gone over
-  // (especially when working an expiration date into the title), so enforce
-  // it here rather than trust the model.
-  const draftTitle = draft.title ? truncateTitle(draft.title) : draft.title;
+  for (const named of parsed.components ?? []) {
+    if (components[named.index]) components[named.index].name = named.name;
+  }
 
-  const titleUnedited = !item.finalTitle || item.finalTitle === item.aiTitle;
-  const descriptionUnedited =
-    !item.finalDescription || item.finalDescription === item.aiDescription;
+  const manifestLines = components
+    .map((c) => `• ${c.quantity}x ${c.name ?? `item (UPC ${c.upc})`}`)
+    .join("\n");
 
-  // Only keep specifics Claude was actually confident about (non-null), and
-  // don't clobber ones the reviewer has already filled in/edited by hand.
-  const newSpecifics = Object.fromEntries(
-    Object.entries(draft.specifics ?? {}).filter(([, v]) => v)
+  const description = `${parsed.introDescription ?? ""}\n\nThis bundle includes:\n${manifestLines}`.trim();
+
+  return applyDraft(
+    item,
+    { title: parsed.title, description, specifics: parsed.specifics },
+    { bundleComponents: components as unknown as Prisma.InputJsonValue }
   );
-  const existingSpecifics = (item.itemSpecifics as Record<string, string> | null) ?? {};
-  const mergedSpecifics = { ...newSpecifics, ...existingSpecifics };
-
-  return prisma.item.update({
-    where: { id: itemId },
-    data: {
-      upcLookupData,
-      aiTitle: draftTitle ?? null,
-      aiDescription: draft.description ?? null,
-      finalTitle: titleUnedited ? (draftTitle ?? item.finalTitle) : item.finalTitle,
-      finalDescription: descriptionUnedited
-        ? (draft.description ?? item.finalDescription)
-        : item.finalDescription,
-      itemSpecifics:
-        Object.keys(mergedSpecifics).length > 0
-          ? (mergedSpecifics as Prisma.InputJsonValue)
-          : undefined,
-    },
-  });
 }
