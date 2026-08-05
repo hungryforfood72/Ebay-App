@@ -15,6 +15,7 @@ type BundleComponent = {
   quantity: number;
   photoUrl?: string | null;
   name?: string | null;
+  expirationDate?: string | null;
 };
 
 type Item = {
@@ -430,6 +431,7 @@ function ItemCard({
                   )}
                   <span>
                     {c.quantity}x {c.name ?? `UPC ${c.upc}`}
+                    {c.expirationDate && ` — exp ${new Date(c.expirationDate).toLocaleDateString()}`}
                   </span>
                 </li>
               ))}

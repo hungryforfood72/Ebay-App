@@ -28,6 +28,7 @@ type BundleComponentDraft = {
   upc: string;
   quantity: string;
   photo: Photo | null;
+  expirationDate: string;
 };
 
 const ACTIVE_SESSION_KEY = "ebay-tool.activeScanSessionId";
@@ -53,17 +54,20 @@ export default function ScanPage() {
   const [upc, setUpc] = useState("");
   const [isMultipack, setIsMultipack] = useState(false);
   const [packSize, setPackSize] = useState("");
+  const [expirationDate, setExpirationDate] = useState("");
 
-  // Bundle mode
+  // Bundle mode — expiration is asked per item added to the bundle, not
+  // once for the whole listing, since different items in the same bundle
+  // can have different (or no) expiration dates.
   const [heroPhoto, setHeroPhoto] = useState<Photo | null>(null);
   const [bundleComponents, setBundleComponents] = useState<BundleComponentDraft[]>([]);
   const [componentUpc, setComponentUpc] = useState("");
   const [componentQuantity, setComponentQuantity] = useState("1");
   const [componentPhoto, setComponentPhoto] = useState<Photo | null>(null);
+  const [componentExpirationDate, setComponentExpirationDate] = useState("");
 
   // Shared
   const [quantity, setQuantity] = useState("1"); // bundle mode: "how many bundles"
-  const [expirationDate, setExpirationDate] = useState("");
   const [shelfLocation, setShelfLocation] = useState("");
   const [boxSize, setBoxSize] = useState("");
   const [weightLbs, setWeightLbs] = useState("");
@@ -166,11 +170,13 @@ export default function ScanPage() {
         upc: componentUpc.trim(),
         quantity: componentQuantity,
         photo: componentPhoto,
+        expirationDate: componentExpirationDate,
       },
     ]);
     setComponentUpc("");
     setComponentQuantity("1");
     setComponentPhoto(null);
+    setComponentExpirationDate("");
     if (componentFileInputRef.current) componentFileInputRef.current.value = "";
   }
 
@@ -188,6 +194,7 @@ export default function ScanPage() {
     setComponentUpc("");
     setComponentQuantity("1");
     setComponentPhoto(null);
+    setComponentExpirationDate("");
     setQuantity("1");
     setExpirationDate("");
     setWeightLbs("");
@@ -232,7 +239,7 @@ export default function ScanPage() {
           quantity: Number(quantity) || 1,
           isMultipack: isBundle ? false : isMultipack,
           packSize: !isBundle && isMultipack ? Number(packSize) : null,
-          expirationDate: expirationDate || null,
+          expirationDate: isBundle ? null : expirationDate || null,
           shelfLocation: shelfLocation.trim(),
           boxSize: boxSize || null,
           weightLbs: weightLbs ? Number(weightLbs) : null,
@@ -245,6 +252,7 @@ export default function ScanPage() {
                 upc: c.upc,
                 quantity: Number(c.quantity) || 1,
                 photoUrl: c.photo?.cloudinaryUrl ?? null,
+                expirationDate: c.expirationDate || null,
               }))
             : undefined,
           scanSessionId: activeSessionId,
@@ -580,6 +588,18 @@ export default function ScanPage() {
               />
             </div>
 
+            <div>
+              <label className="text-xs text-gray-500">
+                Expiration date <span className="text-gray-400">(optional, this item only)</span>
+              </label>
+              <input
+                type="date"
+                value={componentExpirationDate}
+                onChange={(e) => setComponentExpirationDate(e.target.value)}
+                className="w-full rounded border px-3 py-2 text-sm"
+              />
+            </div>
+
             <button
               type="button"
               onClick={addBundleComponent}
@@ -610,6 +630,7 @@ export default function ScanPage() {
                     )}
                     <span className="flex-1">
                       UPC {c.upc} — qty {c.quantity}
+                      {c.expirationDate && ` — exp ${c.expirationDate}`}
                     </span>
                     <button
                       type="button"
@@ -640,17 +661,19 @@ export default function ScanPage() {
         />
       </section>
 
-      <section>
-        <label className="text-sm font-medium">
-          Expiration date <span className="text-gray-400">(optional)</span>
-        </label>
-        <input
-          type="date"
-          value={expirationDate}
-          onChange={(e) => setExpirationDate(e.target.value)}
-          className="w-full rounded border px-3 py-2"
-        />
-      </section>
+      {!isBundle && (
+        <section>
+          <label className="text-sm font-medium">
+            Expiration date <span className="text-gray-400">(optional)</span>
+          </label>
+          <input
+            type="date"
+            value={expirationDate}
+            onChange={(e) => setExpirationDate(e.target.value)}
+            className="w-full rounded border px-3 py-2"
+          />
+        </section>
+      )}
 
       <section>
         <label className="text-sm font-medium">Shelf location</label>

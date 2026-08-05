@@ -175,7 +175,16 @@ type BundleComponent = {
   photoUrl?: string | null;
   name?: string | null;
   upcLookupData?: unknown;
+  expirationDate?: string | null;
 };
+
+// "12/2026" from an ISO date string — expiration on packaging is usually
+// month/year, and this is what shows up in the manifest per item.
+function formatExpiration(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${String(d.getUTCMonth() + 1).padStart(2, "0")}/${d.getUTCFullYear()}`;
+}
 
 const COMPONENT_NAME_SCHEMA = {
   type: "object",
@@ -277,8 +286,9 @@ async function draftBundleItem(item: Item) {
   );
 
   const manifestForPrompt = components
-    .map((c, i) => `${i + 1}. ${c.quantity}x ${c.name}`)
+    .map((c, i) => `${i + 1}. ${c.quantity}x ${c.name}${c.expirationDate ? ` (expires ${formatExpiration(c.expirationDate)})` : ""}`)
     .join("\n");
+  const anyExpiring = components.some((c) => c.expirationDate);
 
   const content: Anthropic.Messages.ContentBlockParam[] = [
     {
@@ -286,7 +296,7 @@ async function draftBundleItem(item: Item) {
       text: `Write an eBay listing title and short intro description for a BUNDLE of ${components.length} different items sold together as one lot.
 
 ${item.quantity} bundle(s) available for sale (each identical, containing all the items below).
-${item.expirationDate ? `Note: something in this bundle expires ${item.expirationDate.toISOString().slice(0, 10)} — mention that plainly in the intro.` : ""}
+${anyExpiring ? "Note: one or more items in this bundle have an expiration date (shown below) — mention plainly in the intro that some contents have expiration dates, without needing to restate each one (the exact dates are listed automatically per item afterward)." : ""}
 
 Contents:
 ${manifestForPrompt}
@@ -320,7 +330,9 @@ Write a title (80 characters max) and a short intro paragraph (2-4 sentences) de
     specifics?: Record<string, string | null>;
   };
 
-  const manifestLines = components.map((c) => `• ${c.quantity}x ${c.name}`).join("\n");
+  const manifestLines = components
+    .map((c) => `• ${c.quantity}x ${c.name}${c.expirationDate ? ` — Best by ${formatExpiration(c.expirationDate)}` : ""}`)
+    .join("\n");
   const description = `${parsed.introDescription ?? ""}\n\nThis bundle includes:\n${manifestLines}`.trim();
 
   return applyDraft(
