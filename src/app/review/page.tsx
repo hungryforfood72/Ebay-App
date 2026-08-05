@@ -507,22 +507,9 @@ function ItemCard({
 
         <div className="mt-2 rounded border p-2">
           <p className="mb-1 text-xs font-medium text-gray-500">
-            Shipping — USPS Ground Advantage
+            Shipping — free, USPS Ground Advantage
           </p>
           <div className="flex flex-wrap items-center gap-2">
-            <label className="flex items-center gap-1 text-xs">
-              <input
-                type="checkbox"
-                checked={item.chargeForShipping}
-                onChange={(e) => onChange({ chargeForShipping: e.target.checked })}
-              />
-              Charge buyer for shipping (calculated by zip)
-            </label>
-            <span className="text-xs text-gray-400">
-              {item.chargeForShipping ? "" : "— unchecked = free to buyer"}
-            </span>
-          </div>
-          <div className="mt-1 flex flex-wrap items-center gap-2">
             <input
               type="text"
               list="box-sizes"

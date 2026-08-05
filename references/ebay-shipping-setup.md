@@ -16,13 +16,14 @@ shipping/return/payment columns blank. That's what this app does.
 
 ### One-time setup (Cristian, in eBay Seller Hub)
 
+Everything ships free for now (decided 2026-08-04 to keep things simple), so
+only one shipping policy is needed:
+
 1. **Payment policy** — one is usually enough.
 2. **Return policy** — your standard return window/terms.
-3. **Two shipping policies**:
-   - **Free Shipping** — Flat rate, $0, USPS Ground Advantage, Alaska/Hawaii
-     excluded (set the exclusion in the policy itself, not per-listing).
-   - **Calculated Shipping** — Calculated, USPS Ground Advantage,
-     Alaska/Hawaii excluded.
+3. **Shipping policy** — Free, Flat rate $0, USPS Ground Advantage,
+   Alaska/Hawaii excluded (set the exclusion in the policy itself, not
+   per-listing).
 
 Policy names are case-sensitive and must match exactly what's in the app's
 env vars below.
@@ -30,15 +31,16 @@ env vars below.
 ### Env vars (`.env.local` and Vercel)
 
 ```
-EBAY_SHIPPING_POLICY_FREE=""       # name of the Free Shipping policy
-EBAY_SHIPPING_POLICY_CALCULATED="" # name of the Calculated Shipping policy
+EBAY_SHIPPING_POLICY_FREE=""  # name of the Free Shipping policy
 EBAY_RETURN_POLICY_NAME=""
 EBAY_PAYMENT_POLICY_NAME=""
 EBAY_LISTING_ZIP="60620"
 ```
 
-The review page's "Charge for shipping" checkbox picks between the two
-shipping policy names — checked = Calculated, unchecked = Free.
+`chargeForShipping` still exists on the item record and the CSV logic
+(`src/lib/csv.ts`) if a calculated-shipping option is wanted again later, it
+just isn't wired up to anything right now — every export uses the Free
+Shipping policy regardless.
 
 ## Still worth verifying on your first real upload
 

@@ -96,7 +96,6 @@ function formatWeight(lbs: number | null, oz: number | null): string {
 
 export function itemsToFileExchangeCsv(items: ExportableItem[]): string {
   const shippingFree = process.env.EBAY_SHIPPING_POLICY_FREE ?? "";
-  const shippingCalculated = process.env.EBAY_SHIPPING_POLICY_CALCULATED ?? "";
   const returnPolicy = process.env.EBAY_RETURN_POLICY_NAME ?? "";
   const paymentPolicy = process.env.EBAY_PAYMENT_POLICY_NAME ?? "";
   const zip = process.env.EBAY_LISTING_ZIP ?? "60620";
@@ -143,7 +142,9 @@ export function itemsToFileExchangeCsv(items: ExportableItem[]): string {
       RefundOption: "",
       ShippingCostPaidByOption: "",
       AdditionalDetails: "",
-      ShippingProfileName: item.chargeForShipping ? shippingCalculated : shippingFree,
+      // Everything's free shipping for now — kept item.chargeForShipping in
+      // the data model in case that changes later, just not wired up here.
+      ShippingProfileName: shippingFree,
       ReturnProfileName: returnPolicy,
       PaymentProfileName: paymentPolicy,
       "C:UPC": item.upc,
