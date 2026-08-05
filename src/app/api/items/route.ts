@@ -1,6 +1,14 @@
 import { prisma } from "@/lib/prisma";
 import { ItemStatus } from "@/generated/prisma/client";
 import { NextRequest, NextResponse } from "next/server";
+import { after } from "next/server";
+import { draftItem } from "@/lib/draftItem";
+import { lookupCategoryForItem } from "@/lib/categoryLookup";
+
+// Draft (up to 45s) + category lookup (up to 100s worst case) can together
+// take a while — give the function room to actually finish that work in
+// after(), not just respond to the initial POST.
+export const maxDuration = 150;
 
 // List items for the review queue, optionally filtered by status.
 export async function GET(request: NextRequest) {
@@ -43,13 +51,28 @@ export async function POST(request: NextRequest) {
     },
   });
 
-  // Drafting + category lookup are triggered by the client right after this
-  // responds (see scan/page.tsx) rather than run here via Next's after() —
-  // that relied on Vercel keeping this function alive past the response,
-  // which wasn't reliably completing in production. Triggering as separate
-  // requests means each one is its own top-level invocation with its own
-  // timeout, and — importantly — it's actually observable (network tab,
-  // logs) instead of a silent background failure with no client-visible
-  // evidence. The work itself still runs entirely server-side either way.
+  // Run drafting + category lookup here, after responding, so it's fully
+  // server-side and doesn't depend on the phone's browser tab staying in the
+  // foreground. (An earlier version had the client fire these as separate
+  // fetches instead — but the "+ Photo" button launches the native camera
+  // app via capture="environment", which backgrounds the tab almost
+  // immediately during real scanning, and mobile browsers suspend
+  // backgrounded network activity — very likely killing those requests
+  // mid-flight before the ~45-100s of work finished.) Category lookup runs
+  // after drafting so it has a real title to search from, not just the UPC.
+  after(async () => {
+    try {
+      await draftItem(item.id);
+    } catch (e) {
+      console.error(`[items after()] ${item.id}: draft failed`, e);
+      return;
+    }
+    try {
+      await lookupCategoryForItem(item.id);
+    } catch (e) {
+      console.error(`[items after()] ${item.id}: category lookup failed`, e);
+    }
+  });
+
   return NextResponse.json(item, { status: 201 });
 }
