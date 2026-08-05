@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { ItemStatus } from "@/generated/prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 import { after } from "next/server";
+import { randomUUID } from "node:crypto";
 import { draftItem } from "@/lib/draftItem";
 import { lookupCategoryForItem } from "@/lib/categoryLookup";
 
@@ -37,8 +38,13 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // Prefix the SKU with the shelf location (e.g. "A6-<uuid>") so it's
+  // recognizable at a glance on eBay's side, not just a bare UUID.
+  const sku = `${String(body.shelfLocation).trim()}-${randomUUID()}`;
+
   const item = await prisma.item.create({
     data: {
+      sku,
       upc: body.upc,
       quantity: Number(body.quantity),
       isMultipack: Boolean(body.isMultipack),
