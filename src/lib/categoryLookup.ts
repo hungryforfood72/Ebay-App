@@ -193,7 +193,10 @@ async function suggestGenericCategoryTerms(
   try {
     response = await anthropic.messages.create(
       {
-        model: "claude-opus-4-8",
+        // Brainstorming a few generic keywords — simple, high-volume, low
+        // stakes (a miss just falls through to web search), so this doesn't
+        // need Opus-level reasoning.
+        model: "claude-haiku-4-5",
         max_tokens: 256,
         output_config: { format: { type: "json_schema", schema } },
         messages: [
@@ -250,7 +253,9 @@ async function pickBestLocalCategory(
   try {
     response = await anthropic.messages.create(
       {
-        model: "claude-opus-4-8",
+        // Picking the best match from a real, bounded candidate list —
+        // needs real judgment but not Opus-level reasoning.
+        model: "claude-sonnet-5",
         max_tokens: 512,
         output_config: { format: { type: "json_schema", schema } },
         messages: [
@@ -312,7 +317,10 @@ async function searchWebForCategory(
   try {
     response = await anthropic.messages.create(
       {
-        model: "claude-opus-4-8",
+        // Web search + interpreting real results needs decent judgment, but
+        // this is also the priciest path (tool use, slow) — Sonnet handles
+        // it well for a fraction of Opus's cost.
+        model: "claude-sonnet-5",
         max_tokens: 1024,
         output_config: { effort: "low" },
         tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 1 }],

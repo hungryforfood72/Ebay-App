@@ -237,7 +237,10 @@ Give a short, clear, buyer-facing product name.`,
   try {
     const response = await anthropic.messages.create(
       {
-        model: "claude-opus-4-8",
+        // Simple "what is this product" identification from one photo,
+        // called once per bundle component — high-volume and low-stakes
+        // (a bad name is easy for the reviewer to fix), so Haiku is plenty.
+        model: "claude-haiku-4-5",
         max_tokens: 256,
         output_config: { format: { type: "json_schema", schema: COMPONENT_NAME_SCHEMA } },
         messages: [{ role: "user", content }],
