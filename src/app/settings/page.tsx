@@ -13,9 +13,14 @@ export default function SettingsPage() {
     <main className="mx-auto max-w-lg p-6">
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-xl font-semibold">Settings</h1>
-        <Link href="/review" className="text-sm underline">
-          Back to review
-        </Link>
+        <div className="flex items-center gap-3">
+          <Link href="/scan" className="text-sm underline">
+            Scan
+          </Link>
+          <Link href="/review" className="text-sm underline">
+            Review
+          </Link>
+        </div>
       </div>
 
       <LabelListEditor

@@ -314,13 +314,18 @@ export default function ScanPage() {
         <h1 className="text-lg font-semibold">
           Scanning · {savedThisSession} saved
         </h1>
-        <button
-          type="button"
-          onClick={finishSession}
-          className="text-sm text-red-600 underline"
-        >
-          Finish session
-        </button>
+        <div className="flex items-center gap-3">
+          <a href="/review" className="text-sm underline">
+            Review
+          </a>
+          <button
+            type="button"
+            onClick={finishSession}
+            className="text-sm text-red-600 underline"
+          >
+            Finish session
+          </button>
+        </div>
       </div>
 
       <section className="flex rounded-lg border p-1 text-sm">
