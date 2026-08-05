@@ -18,26 +18,12 @@ type Photo = {
   cloudinaryUrl?: string;
 };
 
+type LabeledEntry = {
+  id: string;
+  label: string;
+};
+
 const ACTIVE_SESSION_KEY = "ebay-tool.activeScanSessionId";
-const RECENT_LOCATIONS_KEY = "ebay-tool.recentShelfLocations";
-
-function loadRecentLocations(): string[] {
-  if (typeof window === "undefined") return [];
-  try {
-    return JSON.parse(localStorage.getItem(RECENT_LOCATIONS_KEY) ?? "[]");
-  } catch {
-    return [];
-  }
-}
-
-function rememberLocation(location: string) {
-  const recent = loadRecentLocations().filter((l) => l !== location);
-  recent.unshift(location);
-  localStorage.setItem(
-    RECENT_LOCATIONS_KEY,
-    JSON.stringify(recent.slice(0, 12))
-  );
-}
 
 export default function ScanPage() {
   const [sessions, setSessions] = useState<ScanSession[] | null>(null);
@@ -51,7 +37,12 @@ export default function ScanPage() {
   const [packSize, setPackSize] = useState("");
   const [expirationDate, setExpirationDate] = useState("");
   const [shelfLocation, setShelfLocation] = useState("");
-  const [recentLocations, setRecentLocations] = useState<string[]>([]);
+  const [boxSize, setBoxSize] = useState("");
+  const [weightLbs, setWeightLbs] = useState("");
+  const [weightOz, setWeightOz] = useState("");
+
+  const [shelfLocations, setShelfLocations] = useState<LabeledEntry[]>([]);
+  const [boxSizes, setBoxSizes] = useState<LabeledEntry[]>([]);
 
   const [showScanner, setShowScanner] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -61,8 +52,6 @@ export default function ScanPage() {
   useEffect(() => {
     // Initial hydration from localStorage/API on mount, not a reaction to
     // state we own.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setRecentLocations(loadRecentLocations());
     const stored = localStorage.getItem(ACTIVE_SESSION_KEY);
     fetch("/api/sessions")
       .then((r) => r.json())
@@ -72,6 +61,12 @@ export default function ScanPage() {
           setActiveSessionId(stored);
         }
       });
+    fetch("/api/shelf-locations")
+      .then((r) => r.json())
+      .then(setShelfLocations);
+    fetch("/api/box-sizes")
+      .then((r) => r.json())
+      .then(setBoxSizes);
   }, []);
 
   async function startSession(existing?: ScanSession) {
@@ -136,7 +131,11 @@ export default function ScanPage() {
     setIsMultipack(false);
     setPackSize("");
     setExpirationDate("");
-    setShelfLocation("");
+    setWeightLbs("");
+    setWeightOz("");
+    // Shelf location and box size are left as-is — items are usually
+    // scanned in batches from the same bin into the same box type, so
+    // keeping the selection saves a re-pick on every single item.
     if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
@@ -162,6 +161,9 @@ export default function ScanPage() {
           packSize: isMultipack ? Number(packSize) : null,
           expirationDate: expirationDate || null,
           shelfLocation: shelfLocation.trim(),
+          boxSize: boxSize || null,
+          weightLbs: weightLbs ? Number(weightLbs) : null,
+          weightOz: weightOz ? Number(weightOz) : null,
           photoUrls: photos
             .filter((p) => p.status === "done")
             .map((p) => p.cloudinaryUrl),
@@ -178,8 +180,6 @@ export default function ScanPage() {
       // responds (see the after() call in the items POST route) — nothing
       // for the phone to trigger or wait on here, so it's unaffected by the
       // camera app backgrounding the tab between scans.
-      rememberLocation(shelfLocation.trim());
-      setRecentLocations(loadRecentLocations());
       setSavedThisSession((n) => n + 1);
       setMessage("Saved. Ready for the next item.");
       resetForm();
@@ -366,19 +366,71 @@ export default function ScanPage() {
 
       <section>
         <label className="text-sm font-medium">Shelf location</label>
-        <input
-          type="text"
-          list="recent-locations"
+        <select
           value={shelfLocation}
           onChange={(e) => setShelfLocation(e.target.value)}
-          placeholder="e.g. Bin A3"
           className="w-full rounded border px-3 py-2"
-        />
-        <datalist id="recent-locations">
-          {recentLocations.map((loc) => (
-            <option key={loc} value={loc} />
+        >
+          <option value="">Select location…</option>
+          {shelfLocations.map((loc) => (
+            <option key={loc.id} value={loc.label}>
+              {loc.label}
+            </option>
           ))}
-        </datalist>
+        </select>
+        {shelfLocations.length === 0 && (
+          <a href="/settings" className="mt-1 inline-block text-xs text-blue-600 underline">
+            Add shelf locations in Settings
+          </a>
+        )}
+      </section>
+
+      <section>
+        <label className="text-sm font-medium">Box size</label>
+        <select
+          value={boxSize}
+          onChange={(e) => setBoxSize(e.target.value)}
+          className="w-full rounded border px-3 py-2"
+        >
+          <option value="">Select box size…</option>
+          {boxSizes.map((b) => (
+            <option key={b.id} value={b.label}>
+              {b.label}
+            </option>
+          ))}
+        </select>
+        {boxSizes.length === 0 && (
+          <a href="/settings" className="mt-1 inline-block text-xs text-blue-600 underline">
+            Add box sizes in Settings
+          </a>
+        )}
+      </section>
+
+      <section>
+        <label className="text-sm font-medium">Weight</label>
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min={0}
+            placeholder="lb"
+            value={weightLbs}
+            onChange={(e) => setWeightLbs(e.target.value)}
+            onWheel={(e) => e.currentTarget.blur()}
+            className="w-20 rounded border px-3 py-2"
+          />
+          <span className="text-sm text-gray-400">lb</span>
+          <input
+            type="number"
+            min={0}
+            max={15}
+            placeholder="oz"
+            value={weightOz}
+            onChange={(e) => setWeightOz(e.target.value)}
+            onWheel={(e) => e.currentTarget.blur()}
+            className="w-20 rounded border px-3 py-2"
+          />
+          <span className="text-sm text-gray-400">oz</span>
+        </div>
       </section>
 
       {message && <p className="text-sm">{message}</p>}

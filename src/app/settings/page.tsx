@@ -3,35 +3,73 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
-type BoxSize = {
+type LabeledEntry = {
   id: string;
   label: string;
 };
 
 export default function SettingsPage() {
-  const [boxSizes, setBoxSizes] = useState<BoxSize[] | null>(null);
+  return (
+    <main className="mx-auto max-w-lg p-6">
+      <div className="mb-6 flex items-center justify-between">
+        <h1 className="text-xl font-semibold">Settings</h1>
+        <Link href="/review" className="text-sm underline">
+          Back to review
+        </Link>
+      </div>
+
+      <LabelListEditor
+        apiPath="/api/box-sizes"
+        title="Box sizes"
+        description="These show up as a dropdown on the scan and review pages' Box Size field."
+        placeholder="e.g. Small 6x4x2"
+      />
+
+      <LabelListEditor
+        apiPath="/api/shelf-locations"
+        title="Shelf locations"
+        description="These show up as a dropdown on the scan page's Location field."
+        placeholder="e.g. A6"
+      />
+    </main>
+  );
+}
+
+function LabelListEditor({
+  apiPath,
+  title,
+  description,
+  placeholder,
+}: {
+  apiPath: string;
+  title: string;
+  description: string;
+  placeholder: string;
+}) {
+  const [entries, setEntries] = useState<LabeledEntry[] | null>(null);
   const [newLabel, setNewLabel] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function load() {
-    const res = await fetch("/api/box-sizes");
-    setBoxSizes(await res.json());
+    const res = await fetch(apiPath);
+    setEntries(await res.json());
   }
 
   useEffect(() => {
     // Initial data load on mount, not a reaction to state we own.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function addBoxSize() {
+  async function addEntry() {
     const label = newLabel.trim();
     if (!label) return;
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch("/api/box-sizes", {
+      const res = await fetch(apiPath, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ label }),
@@ -49,37 +87,28 @@ export default function SettingsPage() {
     }
   }
 
-  async function removeBoxSize(id: string) {
-    setBoxSizes((prev) => prev?.filter((b) => b.id !== id) ?? prev);
-    await fetch(`/api/box-sizes/${id}`, { method: "DELETE" });
+  async function removeEntry(id: string) {
+    setEntries((prev) => prev?.filter((b) => b.id !== id) ?? prev);
+    await fetch(`${apiPath}/${id}`, { method: "DELETE" });
   }
 
   return (
-    <main className="mx-auto max-w-lg p-6">
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Settings</h1>
-        <Link href="/review" className="text-sm underline">
-          Back to review
-        </Link>
-      </div>
-
-      <h2 className="mb-2 text-sm font-medium text-gray-500">Box sizes</h2>
-      <p className="mb-3 text-xs text-gray-400">
-        These show up as a dropdown on the review page&apos;s Box Size field.
-      </p>
+    <section className="mb-8">
+      <h2 className="mb-2 text-sm font-medium text-gray-500">{title}</h2>
+      <p className="mb-3 text-xs text-gray-400">{description}</p>
 
       <div className="mb-4 flex gap-2">
         <input
           type="text"
-          placeholder="e.g. Small 6x4x2"
+          placeholder={placeholder}
           value={newLabel}
           onChange={(e) => setNewLabel(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && addBoxSize()}
+          onKeyDown={(e) => e.key === "Enter" && addEntry()}
           className="flex-1 rounded border px-3 py-2 text-sm"
         />
         <button
           type="button"
-          onClick={addBoxSize}
+          onClick={addEntry}
           disabled={saving || !newLabel.trim()}
           className="rounded bg-black px-4 py-2 text-sm text-white disabled:opacity-40"
         >
@@ -89,21 +118,21 @@ export default function SettingsPage() {
 
       {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
 
-      {!boxSizes ? (
+      {!entries ? (
         <p className="text-sm text-gray-400">Loading…</p>
-      ) : boxSizes.length === 0 ? (
-        <p className="text-sm text-gray-400">No box sizes yet — add one above.</p>
+      ) : entries.length === 0 ? (
+        <p className="text-sm text-gray-400">Nothing yet — add one above.</p>
       ) : (
         <ul className="flex flex-col gap-2">
-          {boxSizes.map((b) => (
+          {entries.map((entry) => (
             <li
-              key={b.id}
+              key={entry.id}
               className="flex items-center justify-between rounded border px-3 py-2 text-sm"
             >
-              {b.label}
+              {entry.label}
               <button
                 type="button"
-                onClick={() => removeBoxSize(b.id)}
+                onClick={() => removeEntry(entry.id)}
                 className="text-xs text-red-600"
               >
                 Remove
@@ -112,6 +141,6 @@ export default function SettingsPage() {
           ))}
         </ul>
       )}
-    </main>
+    </section>
   );
 }

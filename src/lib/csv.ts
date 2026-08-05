@@ -31,6 +31,7 @@ const HEADERS = [
   "StartPrice",
   "Quantity",
   "AutoPay",
+  "BestOfferEnabled",
   "PostalCode",
   "WeightMajor",
   "WeightMinor",
@@ -112,6 +113,10 @@ export function itemsToFileExchangeCsv(items: ExportableItem[]): string {
       // (that field threw "Item.AutoPay invalid or missing" on a real
       // upload — see references/ebay-shipping-setup.md).
       AutoPay: "true",
+      // Fixed-price listings stay Buy It Now, but also accept offers —
+      // Cristian reviews and accepts/declines/counters each one manually
+      // in Seller Hub (no auto-accept/auto-decline thresholds set here).
+      BestOfferEnabled: "true",
       // "Location" isn't a real postal code field — eBay rejected it with
       // "Please enter a valid postal code" on a real upload. PostalCode is
       // the actual field eBay validates against.

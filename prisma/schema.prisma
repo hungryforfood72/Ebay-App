@@ -122,3 +122,11 @@ model BoxSize {
   label     String   @unique
   createdAt DateTime @default(now())
 }
+
+// Managed list of shelf locations, editable on the Settings page, shown as
+// a dropdown on the scan page instead of free text.
+model ShelfLocation {
+  id        String   @id @default(uuid())
+  label     String   @unique
+  createdAt DateTime @default(now())
+}
