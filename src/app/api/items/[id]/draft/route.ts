@@ -1,6 +1,11 @@
 import { draftItem } from "@/lib/draftItem";
 import { NextResponse } from "next/server";
 
+// A bundle drafts each component in its own call (parallel) plus one final
+// synthesis call — give it enough room even if several run near their
+// individual timeouts.
+export const maxDuration = 90;
+
 export async function POST(
   _request: Request,
   { params }: { params: Promise<{ id: string }> }

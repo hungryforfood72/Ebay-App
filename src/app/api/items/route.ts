@@ -6,10 +6,12 @@ import { randomUUID } from "node:crypto";
 import { draftItem } from "@/lib/draftItem";
 import { lookupCategoryForItem } from "@/lib/categoryLookup";
 
-// Draft (up to 45s) + category lookup (up to 100s worst case) can together
-// take a while — give the function room to actually finish that work in
-// after(), not just respond to the initial POST.
-export const maxDuration = 150;
+// Draft (up to 45s for a single item, or up to ~90s for a bundle — parallel
+// per-component naming calls plus one final synthesis call) + category
+// lookup (up to 100s worst case) can together take a while — give the
+// function room to actually finish that work in after(), not just respond
+// to the initial POST.
+export const maxDuration = 190;
 
 // List items for the review queue, optionally filtered by status.
 export async function GET(request: NextRequest) {

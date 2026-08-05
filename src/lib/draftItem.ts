@@ -177,7 +177,19 @@ type BundleComponent = {
   upcLookupData?: unknown;
 };
 
-const BUNDLE_DRAFT_SCHEMA = {
+const COMPONENT_NAME_SCHEMA = {
+  type: "object",
+  properties: {
+    name: {
+      type: "string",
+      description: "A short, clear, buyer-facing product name for this item (e.g. 'Silicone Whisk', 'Vanilla Bean Candle 8oz'), based on its photo and UPC lookup data. Never a generic placeholder like 'Item 1'.",
+    },
+  },
+  required: ["name"],
+  additionalProperties: false,
+} as const;
+
+const BUNDLE_SUMMARY_SCHEMA = {
   type: "object",
   properties: {
     title: {
@@ -189,34 +201,61 @@ const BUNDLE_DRAFT_SCHEMA = {
       description: "A short intro paragraph (2-4 sentences) describing the bundle as a whole and its general appeal/theme. Do NOT list the individual items or their quantities here — an itemized list of exactly what's included gets appended automatically after this, from known data, so don't duplicate or guess at it.",
     },
     specifics: SPECIFICS_SCHEMA,
-    components: {
-      type: "array",
-      description: "One entry per bundle component, in the same order they were given.",
-      items: {
-        type: "object",
-        properties: {
-          index: { type: "integer", description: "0-based index matching the input component order" },
-          name: {
-            type: "string",
-            description: "A short, clear, buyer-facing product name for this specific component (e.g. 'Silicone Whisk', 'Vanilla Bean Candle 8oz'), based on its photo and UPC lookup data. Never a generic placeholder like 'Item 1'.",
-          },
-        },
-        required: ["index", "name"],
-        additionalProperties: false,
-      },
-    },
   },
-  required: ["title", "introDescription", "specifics", "components"],
+  required: ["title", "introDescription", "specifics"],
   additionalProperties: false,
 } as const;
+
+// One item's photo + UPC data at a time, never bundled together with other
+// photos — keeps every request small and safe no matter how many items are
+// in the bundle (a real upload hit Anthropic's 413 request_too_large trying
+// to send every component's photo in one request).
+async function nameComponent(c: BundleComponent): Promise<string> {
+  const fallback = `item (UPC ${c.upc})`;
+  const content: Anthropic.Messages.ContentBlockParam[] = [
+    {
+      type: "text",
+      text: `What is this product? UPC: ${c.upc}. UPC lookup data (may be incomplete or missing): ${JSON.stringify(c.upcLookupData)}
+
+Give a short, clear, buyer-facing product name.`,
+    },
+  ];
+  if (c.photoUrl) {
+    const block = await imageContentBlock(c.photoUrl);
+    if (block) content.unshift(block);
+  }
+
+  try {
+    const response = await anthropic.messages.create(
+      {
+        model: "claude-opus-4-8",
+        max_tokens: 256,
+        output_config: { format: { type: "json_schema", schema: COMPONENT_NAME_SCHEMA } },
+        messages: [{ role: "user", content }],
+      },
+      { timeout: 30_000, maxRetries: 0 }
+    );
+    const textBlock = response.content.find((b) => b.type === "text");
+    const parsed = JSON.parse(
+      textBlock && "text" in textBlock ? textBlock.text : "{}"
+    ) as { name?: string };
+    return parsed.name || fallback;
+  } catch (e) {
+    console.error(`[draftBundleItem] naming component UPC ${c.upc} failed`, e);
+    return fallback;
+  }
+}
 
 // Bundles combine several *different* products into one listing. eBay
 // doesn't allow "mystery box" listings — everything inside has to be
 // individually disclosed — so the manifest (what's included and how many of
 // each) is built deterministically by this code from the known component
-// data, never left for the model to recount or summarize in free text. The
-// model's job is narrower: name each component from its photo/UPC data, and
-// write a short intro paragraph for the bundle as a whole.
+// data, never left for the model to recount or summarize in free text.
+//
+// Drafting happens in two stages: first, each component is named from its
+// own photo in its own small request (see nameComponent above); then one
+// final text-only call (plus the hero photo) writes the title and intro
+// paragraph for the bundle as a whole, from the now-known item names.
 async function draftBundleItem(item: Item) {
   const components = ((item.bundleComponents as unknown as BundleComponent[] | null) ?? []).slice();
 
@@ -231,15 +270,28 @@ async function draftBundleItem(item: Item) {
     })
   );
 
+  await Promise.all(
+    components.map(async (c) => {
+      c.name = await nameComponent(c);
+    })
+  );
+
+  const manifestForPrompt = components
+    .map((c, i) => `${i + 1}. ${c.quantity}x ${c.name}`)
+    .join("\n");
+
   const content: Anthropic.Messages.ContentBlockParam[] = [
     {
       type: "text",
-      text: `Draft an eBay listing for a BUNDLE of ${components.length} different items sold together as one lot.
+      text: `Write an eBay listing title and short intro description for a BUNDLE of ${components.length} different items sold together as one lot.
 
-${components.length} bundles available for sale (each identical, containing all the items below).
+${item.quantity} bundle(s) available for sale (each identical, containing all the items below).
 ${item.expirationDate ? `Note: something in this bundle expires ${item.expirationDate.toISOString().slice(0, 10)} — mention that plainly in the intro.` : ""}
 
-Below is the overall bundle photo (everything together — this is the main listing image), followed by each individual component with its own photo and UPC data. For "components" in your response, give each one a short, clear, buyer-facing product name. For "title" and "introDescription", describe the bundle as a whole — do not list individual items/quantities yourself, that's added automatically from known data afterward.`,
+Contents:
+${manifestForPrompt}
+
+Write a title (80 characters max) and a short intro paragraph (2-4 sentences) describing the bundle as a whole and its general appeal. Do not list the individual items/quantities yourself — an itemized list gets appended automatically after your intro from the data above, so don't duplicate it.`,
     },
   ];
 
@@ -249,25 +301,14 @@ Below is the overall bundle photo (everything together — this is the main list
     if (block) content.push(block);
   }
 
-  for (const [i, c] of components.entries()) {
-    content.push({
-      type: "text",
-      text: `Component ${i}: UPC ${c.upc}, ${c.quantity} included per bundle. UPC lookup data (may be incomplete or missing): ${JSON.stringify(c.upcLookupData)}`,
-    });
-    if (c.photoUrl) {
-      const block = await imageContentBlock(c.photoUrl);
-      if (block) content.push(block);
-    }
-  }
-
   const response = await anthropic.messages.create(
     {
       model: "claude-opus-4-8",
-      max_tokens: 2048,
-      output_config: { format: { type: "json_schema", schema: BUNDLE_DRAFT_SCHEMA } },
+      max_tokens: 1024,
+      output_config: { format: { type: "json_schema", schema: BUNDLE_SUMMARY_SCHEMA } },
       messages: [{ role: "user", content }],
     },
-    { timeout: 60_000, maxRetries: 0 }
+    { timeout: 45_000, maxRetries: 0 }
   );
 
   const textBlock = response.content.find((b) => b.type === "text");
@@ -277,17 +318,9 @@ Below is the overall bundle photo (everything together — this is the main list
     title?: string;
     introDescription?: string;
     specifics?: Record<string, string | null>;
-    components?: { index: number; name: string }[];
   };
 
-  for (const named of parsed.components ?? []) {
-    if (components[named.index]) components[named.index].name = named.name;
-  }
-
-  const manifestLines = components
-    .map((c) => `• ${c.quantity}x ${c.name ?? `item (UPC ${c.upc})`}`)
-    .join("\n");
-
+  const manifestLines = components.map((c) => `• ${c.quantity}x ${c.name}`).join("\n");
   const description = `${parsed.introDescription ?? ""}\n\nThis bundle includes:\n${manifestLines}`.trim();
 
   return applyDraft(
