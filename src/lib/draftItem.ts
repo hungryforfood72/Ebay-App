@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { lookupUpc } from "@/lib/upcLookup";
 import { anthropic, fetchImageAsBase64 } from "@/lib/anthropic";
+import { truncateTitle } from "@/lib/ebayTitle";
 import type { Prisma } from "@/generated/prisma/client";
 import type Anthropic from "@anthropic-ai/sdk";
 
@@ -111,6 +112,12 @@ Write a clear, keyword-appropriate eBay title (80 characters max) and a short, h
     specifics?: Record<string, string | null>;
   };
 
+  // eBay hard-rejects listing titles over 80 characters. The prompt asks for
+  // 80 or fewer, but that's a hint, not a guarantee — Claude has gone over
+  // (especially when working an expiration date into the title), so enforce
+  // it here rather than trust the model.
+  const draftTitle = draft.title ? truncateTitle(draft.title) : draft.title;
+
   const titleUnedited = !item.finalTitle || item.finalTitle === item.aiTitle;
   const descriptionUnedited =
     !item.finalDescription || item.finalDescription === item.aiDescription;
@@ -127,9 +134,9 @@ Write a clear, keyword-appropriate eBay title (80 characters max) and a short, h
     where: { id: itemId },
     data: {
       upcLookupData,
-      aiTitle: draft.title ?? null,
+      aiTitle: draftTitle ?? null,
       aiDescription: draft.description ?? null,
-      finalTitle: titleUnedited ? (draft.title ?? item.finalTitle) : item.finalTitle,
+      finalTitle: titleUnedited ? (draftTitle ?? item.finalTitle) : item.finalTitle,
       finalDescription: descriptionUnedited
         ? (draft.description ?? item.finalDescription)
         : item.finalDescription,

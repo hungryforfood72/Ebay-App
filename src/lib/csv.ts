@@ -1,8 +1,13 @@
+import { truncateTitle } from "@/lib/ebayTitle";
+
 // eBay File Exchange "Create Listings" (Add) format, matched to the real
 // template Cristian downloaded from Seller Hub. Shipping, returns, and
 // payment go through Business Policies (see
 // references/ebay-shipping-setup.md) rather than the individual inline
 // Shipping*/Returns* columns.
+//
+// Titles get a last-stop truncation to 80 chars right before export — see
+// truncateTitle in ebayTitle.ts for why.
 //
 // Columns the template had but we never populate (StoreCategory, Subtitle,
 // C:Style, C:MPN, ShippingType, individual ShippingService/Returns fields,
@@ -89,7 +94,7 @@ export function itemsToFileExchangeCsv(items: ExportableItem[]): string {
       "Action(SiteID=US|Country=US|Currency=USD|Version=1193|CC=UTF-8)": "Add",
       CustomLabel: item.sku,
       Category: item.categoryId ?? "",
-      Title: item.finalTitle ?? "",
+      Title: item.finalTitle ? truncateTitle(item.finalTitle) : "",
       ConditionID: item.condition ? CONDITION_ID[item.condition] ?? "" : "",
       "C:Brand": specifics.brand ?? "Unbranded",
       "C:Unit Quantity": item.isMultipack && item.packSize ? String(item.packSize) : "",

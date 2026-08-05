@@ -269,6 +269,15 @@ function ItemCard({
 }) {
   const [ruleKeyword, setRuleKeyword] = useState("");
   const [ruleName, setRuleName] = useState("");
+  const [titleLength, setTitleLength] = useState((item.finalTitle ?? "").length);
+  useEffect(() => {
+    // Resync the character counter when a new AI draft (or an external
+    // update from polling) replaces the title out from under the user —
+    // the title input itself is uncontrolled, so this is the one place that
+    // needs to track the prop directly.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setTitleLength((item.finalTitle ?? "").length);
+  }, [item.finalTitle]);
   const [newSpecKey, setNewSpecKey] = useState("");
   const [newSpecValue, setNewSpecValue] = useState("");
   const [searchingCategory, setSearchingCategory] = useState(false);
@@ -413,9 +422,14 @@ function ItemCard({
           type="text"
           placeholder="Title"
           defaultValue={item.finalTitle ?? ""}
+          maxLength={80}
+          onChange={(e) => setTitleLength(e.target.value.length)}
           onBlur={(e) => onChange({ finalTitle: e.target.value })}
-          className="mb-2 w-full rounded border px-3 py-2 text-sm"
+          className="w-full rounded border px-3 py-2 text-sm"
         />
+        <p className={`mb-2 text-right text-xs ${titleLength >= 80 ? "text-red-600" : "text-gray-400"}`}>
+          {titleLength}/80
+        </p>
         <textarea
           key={`desc-${item.id}-${item.aiDescription ?? ""}`}
           placeholder="Description"
