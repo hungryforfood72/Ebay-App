@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { lookupUpc } from "@/lib/upcLookup";
 import { anthropic, fetchImageAsBase64 } from "@/lib/anthropic";
 import { truncateTitle } from "@/lib/ebayTitle";
+import { formatExpiration } from "@/lib/formatExpiration";
 import type { Item, Prisma } from "@/generated/prisma/client";
 import type Anthropic from "@anthropic-ai/sdk";
 
@@ -18,8 +19,12 @@ const SPECIFICS_SCHEMA = {
     color: { type: ["string", "null"], description: "Primary color, or null if not visually clear" },
     size: { type: ["string", "null"], description: "Size (clothing size, dimensions, count, etc.), or null" },
     material: { type: ["string", "null"], description: "Material, or null if not identifiable" },
+    dosage: {
+      type: ["string", "null"],
+      description: "Dose or strength per unit, for medicines/vitamins/supplements only — e.g. '500 mg', '17.2 mg per tablet', '10 mg/5 mL'. Null for anything that isn't a medicine or supplement, or if the strength isn't legible in the photo/UPC data.",
+    },
   },
-  required: ["brand", "type", "product", "color", "size", "material"],
+  required: ["brand", "type", "product", "color", "size", "material", "dosage"],
   additionalProperties: false,
 } as const;
 
@@ -177,14 +182,6 @@ type BundleComponent = {
   upcLookupData?: unknown;
   expirationDate?: string | null;
 };
-
-// "12/2026" from an ISO date string — expiration on packaging is usually
-// month/year, and this is what shows up in the manifest per item.
-function formatExpiration(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return `${String(d.getUTCMonth() + 1).padStart(2, "0")}/${d.getUTCFullYear()}`;
-}
 
 const COMPONENT_NAME_SCHEMA = {
   type: "object",

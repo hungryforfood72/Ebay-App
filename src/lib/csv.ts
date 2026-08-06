@@ -1,4 +1,5 @@
 import { truncateTitle } from "@/lib/ebayTitle";
+import { formatExpiration } from "@/lib/formatExpiration";
 
 // eBay File Exchange "Create Listings" (Add) format, matched to the real
 // template Cristian downloaded from Seller Hub. Shipping, returns, and
@@ -43,6 +44,8 @@ const HEADERS = [
   "C:Type",
   "C:Product",
   "C:Item Weight",
+  "C:Expiration Date",
+  "C:Dosage",
 ] as const;
 
 function escapeCsvField(value: string): string {
@@ -68,6 +71,7 @@ export type ExportableItem = {
   chargeForShipping: boolean;
   weightLbs: number | null;
   weightOz: number | null;
+  expirationDate: Date | string | null;
 };
 
 const CONDITION_ID: Record<string, string> = {
@@ -143,6 +147,12 @@ export function itemsToFileExchangeCsv(items: ExportableItem[]): string {
       // the product type when the AI didn't give a distinct one.
       "C:Product": specifics.product ?? specifics.type ?? "",
       "C:Item Weight": formatWeight(item.weightLbs, item.weightOz),
+      // Some categories (OTC medicine, vitamins/supplements) require these
+      // as real item specifics, not just text worked into the title/
+      // description — a real upload failed with "The item specific
+      // Expiration Date/Dosage is missing" for exactly that reason.
+      "C:Expiration Date": item.expirationDate ? formatExpiration(item.expirationDate) : "",
+      "C:Dosage": specifics.dosage ?? specifics.size ?? "",
     };
     return HEADERS.map((h) => escapeCsvField(fields[h])).join(",");
   });
