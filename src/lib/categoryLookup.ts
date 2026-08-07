@@ -148,7 +148,31 @@ async function findLocalCandidates(words: string[]) {
     return a.candidate.name.length - b.candidate.name.length;
   });
 
-  return scored.slice(0, 40).map((s) => s.candidate);
+  // A parent/umbrella category (e.g. "Candy") often outscores its own more
+  // specific leaf children (e.g. "Chocolate Sweets & Assortments") because
+  // the search word matches its name directly — but eBay rejects listings
+  // under non-leaf categories ("category is not a leaf category" on a real
+  // upload). Take a generous buffer past the final 40 before filtering, so
+  // dropping parents still leaves a full leaf-only pool for the AI to pick
+  // from.
+  const leafCandidates = await filterToLeaves(scored.slice(0, 100).map((s) => s.candidate));
+  return leafCandidates.slice(0, 40);
+}
+
+// eBay only allows listing directly under "leaf" categories (ones with no
+// children) — the local tree has no explicit leaf flag, so infer it: a
+// category is a leaf if no other row's path starts with its own path + " > ".
+async function filterToLeaves<T extends { path: string }>(candidates: T[]): Promise<T[]> {
+  if (candidates.length === 0) return candidates;
+
+  const children = await prisma.ebayCategory.findMany({
+    where: { OR: candidates.map((c) => ({ path: { startsWith: `${c.path} > ` } })) },
+    select: { path: true },
+  });
+
+  return candidates.filter(
+    (c) => !children.some((child) => child.path.startsWith(`${c.path} > `))
+  );
 }
 
 async function timedPick(
@@ -263,7 +287,7 @@ async function pickBestLocalCategory(
             role: "user",
             content: `Product: "${productDescription}"
 
-Pick the single best-matching eBay category for this product from the candidates below (id: full path). Prefer the most specific matching category over a broad parent. If none of them genuinely fit this product, return null.
+Pick the single best-matching eBay category for this product from the candidates below (id: full path). Prefer the most specific matching category over a broad parent. Ignore "Collectibles > Advertising" / memorabilia-style categories that just happen to share a brand name (e.g. a candy brand's "Collectibles > Advertising > ... > Hershey & Reese's" category is for vintage tins and ads, not for selling the actual candy) — only pick those if the product itself is explicitly a collectible/vintage/advertising item. If none of them genuinely fit this product, return null.
 
 ${candidateList}`,
           },
@@ -370,6 +394,20 @@ If you can't find a confident match, respond with:
 
   if (!parsed.categoryId) {
     return { categoryId: null, categoryName: null, sourceUrl: null, fromExistingRule: false };
+  }
+
+  // Web search can hand back a parent category too (same failure mode as the
+  // local pick) — check it against our local tree when we have it, and
+  // reject rather than silently apply a category we know is a dead end.
+  const localMatch = await prisma.ebayCategory.findUnique({ where: { id: parsed.categoryId } });
+  if (localMatch) {
+    const [leafMatch] = await filterToLeaves([localMatch]);
+    if (!leafMatch) {
+      console.warn(
+        `[categoryLookup] ${itemId}: web search returned non-leaf category ${parsed.categoryId} (${localMatch.name}), rejecting`
+      );
+      return { categoryId: null, categoryName: null, sourceUrl: null, fromExistingRule: false };
+    }
   }
 
   await applyCategory(itemId, parsed.categoryId, parsed.categoryName ?? parsed.categoryId, parsed.keyword ?? "");
