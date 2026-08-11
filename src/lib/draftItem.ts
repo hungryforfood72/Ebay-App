@@ -23,8 +23,16 @@ const SPECIFICS_SCHEMA = {
       type: ["string", "null"],
       description: "Dose or strength per unit, for medicines/vitamins/supplements only — e.g. '500 mg', '17.2 mg per tablet', '10 mg/5 mL'. Null for anything that isn't a medicine or supplement, or if the strength isn't legible in the photo/UPC data. eBay hard-caps this field at 65 characters — for multi-ingredient combo products, list only the 1-2 most prominent active ingredients rather than every one, so it stays under that limit.",
     },
+    department: {
+      type: ["string", "null"],
+      description: "eBay's standard clothing 'Department' item specific, for clothing/shoes/accessories only — one of 'Men', 'Women', 'Unisex Adult', 'Boys', 'Girls', 'Baby & Toddler', or similar. Null for anything that isn't clothing.",
+    },
+    sizeType: {
+      type: ["string", "null"],
+      description: "eBay's standard clothing 'Size Type' item specific, for clothing/shoes/accessories only — one of 'Regular', 'Big & Tall', 'Plus', 'Petite', 'Maternity'. Use 'Regular' for a standard-fit item unless the packaging/listing clearly indicates otherwise. Null for anything that isn't clothing.",
+    },
   },
-  required: ["brand", "type", "product", "color", "size", "material", "dosage"],
+  required: ["brand", "type", "product", "color", "size", "material", "dosage", "department", "sizeType"],
   additionalProperties: false,
 } as const;
 

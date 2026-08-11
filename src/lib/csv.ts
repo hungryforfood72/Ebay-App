@@ -46,6 +46,9 @@ const HEADERS = [
   "C:Item Weight",
   "C:Expiration Date",
   "C:Dosage",
+  "C:Size",
+  "C:Department",
+  "C:Size Type",
 ] as const;
 
 function escapeCsvField(value: string): string {
@@ -156,6 +159,13 @@ export function itemsToFileExchangeCsv(items: ExportableItem[]): string {
       // upload for a 3-ingredient combo dosage string) — reuse truncateTitle's
       // word-boundary truncation logic, it's generic and not title-specific.
       "C:Dosage": truncateTitle(specifics.dosage ?? specifics.size ?? "", 65),
+      // Clothing categories require these as real item specifics — a real
+      // upload failed with "item specific Size/Department/Size Type is
+      // missing" for a t-shirt listing that only had Size worked into
+      // specifics.size, with nothing for Department or Size Type at all.
+      "C:Size": specifics.size ?? "",
+      "C:Department": specifics.department ?? "",
+      "C:Size Type": specifics.sizeType ?? "",
     };
     return HEADERS.map((h) => escapeCsvField(fields[h])).join(",");
   });
