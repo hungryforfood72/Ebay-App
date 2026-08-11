@@ -221,7 +221,9 @@ export default function ScanPage() {
         return setMessage("Photos are still uploading, hang on a sec.");
       }
     } else {
-      if (!upc.trim()) return setMessage("Scan or enter a UPC first.");
+      // No gate on UPC — custom/handmade items (e.g. our own t-shirts) have
+      // no barcode. Left blank, it exports as "Does Not Apply", eBay's own
+      // recognized value for "no identifier applies here."
       if (isMultipack && !packSize) return setMessage("Enter a pack size.");
       if (photos.some((p) => p.status === "uploading")) {
         return setMessage("Photos are still uploading, hang on a sec.");
@@ -235,7 +237,7 @@ export default function ScanPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           isBundle,
-          upc: isBundle ? undefined : upc.trim(),
+          upc: isBundle ? undefined : upc.trim() || undefined,
           quantity: Number(quantity) || 1,
           isMultipack: isBundle ? false : isMultipack,
           packSize: !isBundle && isMultipack ? Number(packSize) : null,
@@ -405,14 +407,14 @@ export default function ScanPage() {
           </section>
 
           <section className="flex flex-col gap-1">
-            <label className="text-sm font-medium">UPC</label>
+            <label className="text-sm font-medium">UPC (optional — leave blank for custom/handmade items)</label>
             <div className="flex gap-2">
               <input
                 type="text"
                 inputMode="numeric"
                 value={upc}
                 onChange={(e) => setUpc(e.target.value)}
-                placeholder="Scan or type UPC"
+                placeholder="Scan or type UPC, or leave blank"
                 className="flex-1 rounded border px-3 py-2"
               />
               <button

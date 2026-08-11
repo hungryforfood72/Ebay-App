@@ -38,7 +38,10 @@ export async function POST(request: NextRequest) {
   const body = await request.json();
   const isBundle = Boolean(body.isBundle);
 
-  const required = isBundle ? ["quantity", "shelfLocation"] : ["upc", "quantity", "shelfLocation"];
+  // UPC isn't required for single items either — custom/handmade products
+  // (e.g. our own t-shirts) have no barcode, and export already falls back
+  // to "Does Not Apply" for a missing UPC.
+  const required = ["quantity", "shelfLocation"];
   for (const field of required) {
     if (body[field] === undefined || body[field] === null || body[field] === "") {
       return NextResponse.json(
@@ -74,7 +77,7 @@ export async function POST(request: NextRequest) {
   const item = await prisma.item.create({
     data: {
       sku,
-      upc: isBundle ? null : body.upc,
+      upc: isBundle ? null : body.upc || null,
       quantity: Number(body.quantity),
       isMultipack: Boolean(body.isMultipack),
       packSize: body.isMultipack ? Number(body.packSize) : null,

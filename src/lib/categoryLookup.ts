@@ -42,7 +42,9 @@ export async function lookupCategoryForItem(
 ): Promise<CategoryLookupResult> {
   const item = await prisma.item.findUniqueOrThrow({ where: { id: itemId } });
   const productDescription =
-    item.finalTitle ?? item.aiTitle ?? (item.upc ? `UPC ${item.upc}` : `bundle ${item.sku}`);
+    item.finalTitle ??
+    item.aiTitle ??
+    (item.upc ? `UPC ${item.upc}` : item.isBundle ? `bundle ${item.sku}` : `item ${item.sku}`);
   const titleLower = productDescription.toLowerCase();
 
   const rules = await prisma.categoryRule.findMany();
