@@ -21,7 +21,7 @@ const SPECIFICS_SCHEMA = {
     material: { type: ["string", "null"], description: "Material, or null if not identifiable" },
     dosage: {
       type: ["string", "null"],
-      description: "Dose or strength per unit, for medicines/vitamins/supplements only — e.g. '500 mg', '17.2 mg per tablet', '10 mg/5 mL'. Null for anything that isn't a medicine or supplement, or if the strength isn't legible in the photo/UPC data.",
+      description: "Dose or strength per unit, for medicines/vitamins/supplements only — e.g. '500 mg', '17.2 mg per tablet', '10 mg/5 mL'. Null for anything that isn't a medicine or supplement, or if the strength isn't legible in the photo/UPC data. eBay hard-caps this field at 65 characters — for multi-ingredient combo products, list only the 1-2 most prominent active ingredients rather than every one, so it stays under that limit.",
     },
   },
   required: ["brand", "type", "product", "color", "size", "material", "dosage"],

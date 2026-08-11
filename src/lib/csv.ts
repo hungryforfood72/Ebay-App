@@ -152,7 +152,10 @@ export function itemsToFileExchangeCsv(items: ExportableItem[]): string {
       // description — a real upload failed with "The item specific
       // Expiration Date/Dosage is missing" for exactly that reason.
       "C:Expiration Date": item.expirationDate ? formatExpiration(item.expirationDate) : "",
-      "C:Dosage": specifics.dosage ?? specifics.size ?? "",
+      // eBay caps Dosage at 65 characters ("value is too long" on a real
+      // upload for a 3-ingredient combo dosage string) — reuse truncateTitle's
+      // word-boundary truncation logic, it's generic and not title-specific.
+      "C:Dosage": truncateTitle(specifics.dosage ?? specifics.size ?? "", 65),
     };
     return HEADERS.map((h) => escapeCsvField(fields[h])).join(",");
   });
