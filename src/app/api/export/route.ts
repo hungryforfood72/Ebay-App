@@ -18,13 +18,29 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // The review page's "Mark Ready" button blocks items with no category, but
+  // that's a client-side check — belt-and-suspenders here too, since a real
+  // upload failed with "missing required input tag <Item.PrimaryCategory.
+  // CategoryID>" for an item that reached export without one. Export what's
+  // actually exportable and leave the rest in "ready" rather than failing
+  // the whole batch over one bad item.
+  const exportableItems = readyItems.filter((i) => i.categoryId);
+  const skippedItems = readyItems.filter((i) => !i.categoryId);
+
+  if (exportableItems.length === 0) {
+    return NextResponse.json(
+      { error: "No ready items have a category set — nothing to export." },
+      { status: 400 }
+    );
+  }
+
   const batch = await prisma.$transaction(async (tx) => {
     const created = await tx.exportBatch.create({
       data: { exportedBy: body.exportedBy ?? null },
     });
 
     await tx.item.updateMany({
-      where: { id: { in: readyItems.map((i) => i.id) } },
+      where: { id: { in: exportableItems.map((i) => i.id) } },
       data: {
         status: "exported",
         exportBatchId: created.id,
@@ -35,13 +51,14 @@ export async function POST(request: NextRequest) {
     return created;
   });
 
-  const csv = itemsToFileExchangeCsv(readyItems);
+  const csv = itemsToFileExchangeCsv(exportableItems);
 
   return new NextResponse(csv, {
     status: 200,
     headers: {
       "Content-Type": "text/csv",
       "Content-Disposition": `attachment; filename="ebay-export-${batch.id}.csv"`,
+      "X-Skipped-No-Category": String(skippedItems.length),
     },
   });
 }

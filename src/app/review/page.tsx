@@ -132,6 +132,14 @@ export default function ReviewPage() {
       setError(`"${label}" needs a title and price before it can go ready.`);
       return;
     }
+    // Category lookup is a manual step (Search Category button) and can also
+    // come up empty on its own — a real upload failed with "missing required
+    // input tag <Item.PrimaryCategory.CategoryID>" for an item that reached
+    // export with no category set.
+    if (!item.categoryId) {
+      setError(`"${label}" needs a category before it can go ready.`);
+      return;
+    }
     // eBay's shipping engine requires actual package weight even on free
     // shipping — a real upload failed with "package weight is not valid or
     // is missing" for an item with no weight set.
@@ -156,6 +164,7 @@ export default function ReviewPage() {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error ?? "Export failed.");
       }
+      const skipped = Number(res.headers.get("X-Skipped-No-Category") ?? "0");
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -164,6 +173,11 @@ export default function ReviewPage() {
       a.click();
       URL.revokeObjectURL(url);
       load();
+      if (skipped > 0) {
+        setError(
+          `Exported the rest, but skipped ${skipped} item${skipped === 1 ? "" : "s"} with no category set — still marked "ready", fix and re-export.`
+        );
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
