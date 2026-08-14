@@ -92,6 +92,14 @@ function formatWeight(lbs: number | null, oz: number | null): string {
   return parts.join(" ");
 }
 
+// eBay rejects WeightMinor outside 0-15 ("Invalid value provided for Weight
+// Minor" on a real upload for 2 lb 16 oz, which is really just 3 lb 0 oz) —
+// carry ounces over 15 into pounds rather than trust whatever was entered.
+function normalizeWeight(lbs: number | null, oz: number | null): { lbs: number; oz: number } {
+  const totalOz = (lbs ?? 0) * 16 + (oz ?? 0);
+  return { lbs: Math.floor(totalOz / 16), oz: totalOz % 16 };
+}
+
 export function itemsToFileExchangeCsv(items: ExportableItem[]): string {
   const shippingFree = process.env.EBAY_SHIPPING_POLICY_FREE ?? "";
   const returnPolicy = process.env.EBAY_RETURN_POLICY_NAME ?? "";
@@ -100,6 +108,7 @@ export function itemsToFileExchangeCsv(items: ExportableItem[]): string {
 
   const rows = items.map((item) => {
     const specifics = (item.itemSpecifics as Record<string, string> | null) ?? {};
+    const weight = normalizeWeight(item.weightLbs, item.weightOz);
 
     const fields: Record<(typeof HEADERS)[number], string> = {
       "Action(SiteID=US|Country=US|Currency=USD|Version=1193|CC=UTF-8)": "Add",
@@ -133,8 +142,8 @@ export function itemsToFileExchangeCsv(items: ExportableItem[]): string {
       // upload) — C:Item Weight alone is just a buyer-facing item specific,
       // not what eBay's shipping engine reads. Both must be whole numbers;
       // eBay expects both present even when one side is 0.
-      WeightMajor: String(item.weightLbs ?? 0),
-      WeightMinor: String(item.weightOz ?? 0),
+      WeightMajor: String(weight.lbs),
+      WeightMinor: String(weight.oz),
       ShippingProfileName: shippingFree,
       ReturnProfileName: returnPolicy,
       PaymentProfileName: paymentPolicy,
@@ -149,7 +158,7 @@ export function itemsToFileExchangeCsv(items: ExportableItem[]): string {
       // item specific Product is missing" on a real upload) — fall back to
       // the product type when the AI didn't give a distinct one.
       "C:Product": specifics.product ?? specifics.type ?? "",
-      "C:Item Weight": formatWeight(item.weightLbs, item.weightOz),
+      "C:Item Weight": formatWeight(weight.lbs, weight.oz),
       // Some categories (OTC medicine, vitamins/supplements) require these
       // as real item specifics, not just text worked into the title/
       // description — a real upload failed with "The item specific
