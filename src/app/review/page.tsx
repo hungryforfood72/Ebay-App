@@ -140,6 +140,13 @@ export default function ReviewPage() {
       setError(`"${label}" needs a category before it can go ready.`);
       return;
     }
+    // Condition is required by nearly every eBay category — a real upload
+    // failed with "Item condition is required for this category" for an
+    // item that reached export with condition still unset.
+    if (!item.condition) {
+      setError(`"${label}" needs a condition before it can go ready.`);
+      return;
+    }
     // eBay's shipping engine requires actual package weight even on free
     // shipping — a real upload failed with "package weight is not valid or
     // is missing" for an item with no weight set.
@@ -164,7 +171,7 @@ export default function ReviewPage() {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error ?? "Export failed.");
       }
-      const skipped = Number(res.headers.get("X-Skipped-No-Category") ?? "0");
+      const skipped = Number(res.headers.get("X-Skipped-Incomplete") ?? "0");
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -175,7 +182,7 @@ export default function ReviewPage() {
       load();
       if (skipped > 0) {
         setError(
-          `Exported the rest, but skipped ${skipped} item${skipped === 1 ? "" : "s"} with no category set — still marked "ready", fix and re-export.`
+          `Exported the rest, but skipped ${skipped} item${skipped === 1 ? "" : "s"} missing a category or condition — still marked "ready", fix and re-export.`
         );
       }
     } catch (e) {

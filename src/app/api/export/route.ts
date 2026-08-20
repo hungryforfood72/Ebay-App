@@ -24,12 +24,15 @@ export async function POST(request: NextRequest) {
   // CategoryID>" for an item that reached export without one. Export what's
   // actually exportable and leave the rest in "ready" rather than failing
   // the whole batch over one bad item.
-  const exportableItems = readyItems.filter((i) => i.categoryId);
-  const skippedItems = readyItems.filter((i) => !i.categoryId);
+  // Same belt-and-suspenders for condition — a real upload failed with
+  // "Item condition is required for this category" for an item that reached
+  // export with condition still unset.
+  const exportableItems = readyItems.filter((i) => i.categoryId && i.condition);
+  const skippedItems = readyItems.filter((i) => !i.categoryId || !i.condition);
 
   if (exportableItems.length === 0) {
     return NextResponse.json(
-      { error: "No ready items have a category set — nothing to export." },
+      { error: "No ready items have both a category and a condition set — nothing to export." },
       { status: 400 }
     );
   }
@@ -58,7 +61,7 @@ export async function POST(request: NextRequest) {
     headers: {
       "Content-Type": "text/csv",
       "Content-Disposition": `attachment; filename="ebay-export-${batch.id}.csv"`,
-      "X-Skipped-No-Category": String(skippedItems.length),
+      "X-Skipped-Incomplete": String(skippedItems.length),
     },
   });
 }
