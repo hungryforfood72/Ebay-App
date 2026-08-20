@@ -353,7 +353,7 @@ Write a title (80 characters max) and a short intro paragraph (2-4 sentences) de
   const manifestListHtml = components
     .map(
       (c) =>
-        `<li>${c.quantity}x ${c.name}${c.expirationDate ? ` — Best by ${formatExpiration(c.expirationDate)}` : ""}</li>`
+        `<li>${c.quantity}x ${c.name} (UPC ${c.upc})${c.expirationDate ? ` — Best by ${formatExpiration(c.expirationDate)}` : ""}</li>`
     )
     .join("");
   const description = `<p>${parsed.introDescription ?? ""}</p><p>This bundle includes:</p><ul>${manifestListHtml}</ul>`;
