@@ -13,7 +13,7 @@ type CategoryRule = {
 type BundleComponent = {
   upc: string;
   quantity: number;
-  photoUrl?: string | null;
+  photoUrls?: string[] | null;
   name?: string | null;
   expirationDate?: string | null;
 };
@@ -447,9 +447,9 @@ function ItemCard({
             <ul className="flex flex-col gap-1">
               {item.bundleComponents.map((c, i) => (
                 <li key={i} className="flex items-center gap-2 text-xs text-gray-600">
-                  {c.photoUrl && (
-                    <img src={c.photoUrl} alt="" className="h-6 w-6 rounded object-cover" />
-                  )}
+                  {c.photoUrls?.map((url) => (
+                    <img key={url} src={url} alt="" className="h-6 w-6 rounded object-cover" />
+                  ))}
                   <span>
                     {c.quantity}x {c.name ?? `UPC ${c.upc}`}
                     {c.expirationDate && ` — exp ${new Date(c.expirationDate).toLocaleDateString()}`}

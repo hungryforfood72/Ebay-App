@@ -30,7 +30,7 @@ export async function GET(request: NextRequest) {
 type BundleComponentInput = {
   upc?: string;
   quantity?: number;
-  photoUrl?: string | null;
+  photoUrls?: string[] | null;
   expirationDate?: string | null;
 };
 

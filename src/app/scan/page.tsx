@@ -27,7 +27,7 @@ type BundleComponentDraft = {
   id: string;
   upc: string;
   quantity: string;
-  photo: Photo | null;
+  photos: Photo[];
   expirationDate: string;
 };
 
@@ -63,7 +63,7 @@ export default function ScanPage() {
   const [bundleComponents, setBundleComponents] = useState<BundleComponentDraft[]>([]);
   const [componentUpc, setComponentUpc] = useState("");
   const [componentQuantity, setComponentQuantity] = useState("1");
-  const [componentPhoto, setComponentPhoto] = useState<Photo | null>(null);
+  const [componentPhotos, setComponentPhotos] = useState<Photo[]>([]);
   const [componentExpirationDate, setComponentExpirationDate] = useState("");
 
   // Shared
@@ -133,7 +133,7 @@ export default function ScanPage() {
     );
   }
 
-  function handleFiles(files: FileList | null) {
+  function addPhotosTo(files: FileList | null, setPhotos: React.Dispatch<React.SetStateAction<Photo[]>>) {
     if (!files) return;
     Array.from(files).forEach((file) => {
       const id = `${Date.now()}-${Math.random()}`;
@@ -156,26 +156,38 @@ export default function ScanPage() {
     });
   }
 
+  function handleFiles(files: FileList | null) {
+    addPhotosTo(files, setPhotos);
+  }
+
+  function handleComponentFiles(files: FileList | null) {
+    addPhotosTo(files, setComponentPhotos);
+  }
+
   function removePhoto(id: string) {
     setPhotos((prev) => prev.filter((p) => p.id !== id));
   }
 
+  function removeComponentPhoto(id: string) {
+    setComponentPhotos((prev) => prev.filter((p) => p.id !== id));
+  }
+
   function addBundleComponent() {
     if (!componentUpc.trim() || !componentQuantity || Number(componentQuantity) < 1) return;
-    if (componentPhoto?.status === "uploading") return;
+    if (componentPhotos.some((p) => p.status === "uploading")) return;
     setBundleComponents((prev) => [
       ...prev,
       {
         id: `${Date.now()}-${Math.random()}`,
         upc: componentUpc.trim(),
         quantity: componentQuantity,
-        photo: componentPhoto,
+        photos: componentPhotos,
         expirationDate: componentExpirationDate,
       },
     ]);
     setComponentUpc("");
     setComponentQuantity("1");
-    setComponentPhoto(null);
+    setComponentPhotos([]);
     setComponentExpirationDate("");
     if (componentFileInputRef.current) componentFileInputRef.current.value = "";
   }
@@ -193,7 +205,7 @@ export default function ScanPage() {
     setBundleComponents([]);
     setComponentUpc("");
     setComponentQuantity("1");
-    setComponentPhoto(null);
+    setComponentPhotos([]);
     setComponentExpirationDate("");
     setQuantity("1");
     setExpirationDate("");
@@ -217,7 +229,7 @@ export default function ScanPage() {
       if (bundleComponents.length === 0) {
         return setMessage("Add at least one item to the bundle first.");
       }
-      if (heroPhoto?.status === "uploading" || bundleComponents.some((c) => c.photo?.status === "uploading")) {
+      if (heroPhoto?.status === "uploading" || bundleComponents.some((c) => c.photos.some((p) => p.status === "uploading"))) {
         return setMessage("Photos are still uploading, hang on a sec.");
       }
     } else {
@@ -246,14 +258,22 @@ export default function ScanPage() {
           boxSize: boxSize || null,
           weightLbs: weightLbs ? Number(weightLbs) : null,
           weightOz: weightOz ? Number(weightOz) : null,
+          // The actual eBay listing photos — for a bundle, the hero group
+          // shot plus every photo taken of every component, not just the
+          // hero, so the buyer has real photos of everything included.
           photoUrls: isBundle
-            ? [heroPhoto?.cloudinaryUrl].filter((u): u is string => Boolean(u))
+            ? [
+                heroPhoto?.cloudinaryUrl,
+                ...bundleComponents.flatMap((c) =>
+                  c.photos.filter((p) => p.status === "done").map((p) => p.cloudinaryUrl)
+                ),
+              ].filter((u): u is string => Boolean(u))
             : photos.filter((p) => p.status === "done").map((p) => p.cloudinaryUrl),
           bundleComponents: isBundle
             ? bundleComponents.map((c) => ({
                 upc: c.upc,
                 quantity: Number(c.quantity) || 1,
-                photoUrl: c.photo?.cloudinaryUrl ?? null,
+                photoUrls: c.photos.filter((p) => p.status === "done").map((p) => p.cloudinaryUrl),
                 expirationDate: c.expirationDate || null,
               }))
             : undefined,
@@ -520,45 +540,42 @@ export default function ScanPage() {
             <label className="text-sm font-medium">Add an item to this bundle</label>
 
             <div className="flex flex-wrap items-center gap-2">
-              {componentPhoto ? (
-                <div className="relative h-14 w-14">
+              {componentPhotos.map((p) => (
+                <div key={p.id} className="relative h-14 w-14">
                   <img
-                    src={componentPhoto.previewUrl}
+                    src={p.previewUrl}
                     alt=""
                     className="h-full w-full rounded object-cover"
                   />
-                  {componentPhoto.status === "uploading" && (
+                  {p.status === "uploading" && (
                     <div className="absolute inset-0 flex items-center justify-center rounded bg-black/40 text-xs text-white">
                       ...
                     </div>
                   )}
                   <button
                     type="button"
-                    onClick={() => setComponentPhoto(null)}
+                    onClick={() => removeComponentPhoto(p.id)}
                     className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-black text-[10px] text-white"
                   >
                     ×
                   </button>
                 </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => componentFileInputRef.current?.click()}
-                  className="flex h-14 w-14 items-center justify-center rounded border border-dashed text-xs text-gray-500"
-                >
-                  + Photo
-                </button>
-              )}
+              ))}
+              <button
+                type="button"
+                onClick={() => componentFileInputRef.current?.click()}
+                className="flex h-14 w-14 items-center justify-center rounded border border-dashed text-xs text-gray-500"
+              >
+                + Photo
+              </button>
               <input
                 ref={componentFileInputRef}
                 type="file"
                 accept="image/*"
                 capture="environment"
+                multiple
                 className="hidden"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) startSinglePhotoUpload(file, setComponentPhoto);
-                }}
+                onChange={(e) => handleComponentFiles(e.target.files)}
               />
 
               <input
@@ -605,7 +622,7 @@ export default function ScanPage() {
             <button
               type="button"
               onClick={addBundleComponent}
-              disabled={!componentUpc.trim() || componentPhoto?.status === "uploading"}
+              disabled={!componentUpc.trim() || componentPhotos.some((p) => p.status === "uploading")}
               className="rounded bg-black px-3 py-2 text-sm text-white disabled:opacity-40"
             >
               Add to bundle
@@ -623,12 +640,17 @@ export default function ScanPage() {
                     key={c.id}
                     className="flex items-center gap-3 rounded border p-2 text-sm"
                   >
-                    {c.photo && (
-                      <img
-                        src={c.photo.previewUrl}
-                        alt=""
-                        className="h-10 w-10 rounded object-cover"
-                      />
+                    {c.photos.length > 0 && (
+                      <div className="flex -space-x-2">
+                        {c.photos.map((p) => (
+                          <img
+                            key={p.id}
+                            src={p.previewUrl}
+                            alt=""
+                            className="h-10 w-10 rounded-full border-2 border-white object-cover"
+                          />
+                        ))}
+                      </div>
                     )}
                     <span className="flex-1">
                       UPC {c.upc} — qty {c.quantity}

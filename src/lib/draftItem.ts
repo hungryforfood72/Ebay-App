@@ -192,7 +192,7 @@ Write a clear, keyword-appropriate eBay title (80 characters max) and a short, h
 type BundleComponent = {
   upc: string;
   quantity: number;
-  photoUrl?: string | null;
+  photoUrls?: string[] | null;
   name?: string | null;
   upcLookupData?: unknown;
   expirationDate?: string | null;
@@ -241,8 +241,10 @@ async function nameComponent(c: BundleComponent): Promise<string> {
 Give a short, clear, buyer-facing product name.`,
     },
   ];
-  if (c.photoUrl) {
-    const block = await imageContentBlock(c.photoUrl);
+  // Multiple photos per component just show different sides for the
+  // listing — one photo is plenty for naming what the product is.
+  if (c.photoUrls?.[0]) {
+    const block = await imageContentBlock(c.photoUrls[0]);
     if (block) content.unshift(block);
   }
 
@@ -345,10 +347,16 @@ Write a title (80 characters max) and a short intro paragraph (2-4 sentences) de
     specifics?: Record<string, string | null>;
   };
 
-  const manifestLines = components
-    .map((c) => `• ${c.quantity}x ${c.name}${c.expirationDate ? ` — Best by ${formatExpiration(c.expirationDate)}` : ""}`)
-    .join("\n");
-  const description = `${parsed.introDescription ?? ""}\n\nThis bundle includes:\n${manifestLines}`.trim();
+  // eBay renders Description as HTML — plain "\n" line breaks collapse into
+  // one run-on paragraph on the live listing (a real bundle listing came out
+  // completely bunched up). Use actual <ul>/<li>/<br> markup instead.
+  const manifestListHtml = components
+    .map(
+      (c) =>
+        `<li>${c.quantity}x ${c.name}${c.expirationDate ? ` — Best by ${formatExpiration(c.expirationDate)}` : ""}</li>`
+    )
+    .join("");
+  const description = `<p>${parsed.introDescription ?? ""}</p><p>This bundle includes:</p><ul>${manifestListHtml}</ul>`;
 
   return applyDraft(
     item,

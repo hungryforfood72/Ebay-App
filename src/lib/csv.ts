@@ -119,7 +119,10 @@ export function itemsToFileExchangeCsv(items: ExportableItem[]): string {
       "C:Brand": specifics.brand ?? "Unbranded",
       "C:Unit Quantity": item.isMultipack && item.packSize ? String(item.packSize) : "",
       "C:Unit Type": item.isMultipack ? "Pack" : "",
-      PicURL: item.photoUrls.join("|"),
+      // eBay caps listings at 24 photos — a bundle with several
+      // multi-photo components could exceed that, so trim rather than
+      // risk an upload error over it.
+      PicURL: item.photoUrls.slice(0, 24).join("|"),
       Description: item.finalDescription ?? "",
       Format: "FixedPrice",
       Duration: "GTC",
