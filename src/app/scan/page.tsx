@@ -31,6 +31,27 @@ type BundleComponentDraft = {
   expirationDate: string;
 };
 
+// A guided step-by-step flow instead of one long form — built for scanning
+// with a handheld barcode scanner (e.g. a Wasp/Unitech device in keyboard-
+// wedge mode): it "types" a scan into whatever text input is focused,
+// usually followed by an Enter keystroke. Enter on the UPC/shelf-location
+// steps advances to the next step, so a physical trigger-pull moves the
+// flow forward without touching the screen.
+type Step =
+  | "mode"
+  | "photos"
+  | "upc"
+  | "quantity"
+  | "expiration"
+  | "bundleHeroPhoto"
+  | "bundleComponents"
+  | "bundleQuantity"
+  | "shelfLocation"
+  | "boxWeight";
+
+const SINGLE_STEPS: Step[] = ["mode", "photos", "upc", "quantity", "expiration", "shelfLocation", "boxWeight"];
+const BUNDLE_STEPS: Step[] = ["mode", "bundleHeroPhoto", "bundleComponents", "bundleQuantity", "shelfLocation", "boxWeight"];
+
 const ACTIVE_SESSION_KEY = "ebay-tool.activeScanSessionId";
 
 function startSinglePhotoUpload(file: File, setPhoto: (p: Photo | null) => void) {
@@ -42,11 +63,21 @@ function startSinglePhotoUpload(file: File, setPhoto: (p: Photo | null) => void)
     .catch(() => setPhoto({ id, previewUrl, status: "error" }));
 }
 
+// Enter fires when a keyboard-wedge scanner finishes typing a scan — advance
+// the wizard instead of leaving it as a no-op.
+function onScanEnter(e: React.KeyboardEvent<HTMLInputElement>, action: () => void) {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    action();
+  }
+}
+
 export default function ScanPage() {
   const [sessions, setSessions] = useState<ScanSession[] | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [savedThisSession, setSavedThisSession] = useState(0);
 
+  const [step, setStep] = useState<Step>("mode");
   const [isBundle, setIsBundle] = useState(false);
 
   // Single-item mode
@@ -78,7 +109,6 @@ export default function ScanPage() {
 
   const [showScanner, setShowScanner] = useState(false);
   const [scanTarget, setScanTarget] = useState<"item" | "component" | "location">("item");
-  const [locationScanError, setLocationScanError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -209,15 +239,40 @@ export default function ScanPage() {
     setComponentExpirationDate("");
     setQuantity("1");
     setExpirationDate("");
-    setWeightLbs("");
-    setWeightOz("");
     if (fileInputRef.current) fileInputRef.current.value = "";
     if (heroFileInputRef.current) heroFileInputRef.current.value = "";
     if (componentFileInputRef.current) componentFileInputRef.current.value = "";
-    // Shelf location, box size, and isBundle are left as-is — items are
-    // usually scanned in batches from the same bin into the same box type
-    // (and often the same mode), so keeping the selection saves re-picking
-    // it on every single item.
+    // Shelf location, box size, weight, and isBundle are left as-is — items
+    // are usually scanned in batches from the same bin into the same box
+    // type (and often the same mode), so keeping the selection saves
+    // re-entering it for every item. Jump back to the first step that
+    // actually needs fresh input for the next item.
+    setStep(isBundle ? "bundleHeroPhoto" : "photos");
+  }
+
+  const steps = isBundle ? BUNDLE_STEPS : SINGLE_STEPS;
+  const stepIndex = steps.indexOf(step);
+
+  function goBack() {
+    setMessage(null);
+    if (stepIndex > 0) setStep(steps[stepIndex - 1]);
+  }
+
+  function goNext() {
+    setMessage(null);
+    if (step === "quantity" && isMultipack && !packSize) {
+      setMessage("Enter a pack size.");
+      return;
+    }
+    if (step === "bundleComponents" && bundleComponents.length === 0) {
+      setMessage("Add at least one item to the bundle first.");
+      return;
+    }
+    if (step === "shelfLocation" && !shelfLocation.trim()) {
+      setMessage("Scan or enter a shelf location.");
+      return;
+    }
+    if (stepIndex < steps.length - 1) setStep(steps[stepIndex + 1]);
   }
 
   async function saveItem() {
@@ -339,6 +394,8 @@ export default function ScanPage() {
     );
   }
 
+  const isLastStep = stepIndex === steps.length - 1;
+
   return (
     <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-4 p-4 pb-24">
       <div className="flex items-center justify-between">
@@ -359,112 +416,130 @@ export default function ScanPage() {
         </div>
       </div>
 
-      <section className="flex rounded-lg border p-1 text-sm">
-        <button
-          type="button"
-          onClick={() => setIsBundle(false)}
-          className={`flex-1 rounded py-2 ${!isBundle ? "bg-black text-white" : "text-gray-500"}`}
-        >
-          Single item
-        </button>
-        <button
-          type="button"
-          onClick={() => setIsBundle(true)}
-          className={`flex-1 rounded py-2 ${isBundle ? "bg-black text-white" : "text-gray-500"}`}
-        >
-          Bundle
-        </button>
-      </section>
+      <p className="text-xs text-gray-400">
+        Step {stepIndex + 1} of {steps.length}
+      </p>
 
-      {!isBundle && (
-        <>
-          <section className="flex flex-col gap-2">
-            <label className="text-sm font-medium">Photos</label>
-            <div className="flex flex-wrap gap-2">
-              {photos.map((p) => (
-                <div key={p.id} className="relative h-20 w-20">
-                  <img
-                    src={p.previewUrl}
-                    alt=""
-                    className="h-full w-full rounded object-cover"
-                  />
-                  {p.status === "uploading" && (
-                    <div className="absolute inset-0 flex items-center justify-center rounded bg-black/40 text-xs text-white">
-                      ...
-                    </div>
-                  )}
-                  {p.status === "error" && (
-                    <div className="absolute inset-0 flex items-center justify-center rounded bg-red-600/70 text-xs text-white">
-                      Failed
-                    </div>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => removePhoto(p.id)}
-                    className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black text-xs text-white"
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="flex h-20 w-20 items-center justify-center rounded border border-dashed text-sm text-gray-500"
-              >
-                + Photo
-              </button>
-            </div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              multiple
-              className="hidden"
-              onChange={(e) => handleFiles(e.target.files)}
-            />
-          </section>
+      {step === "mode" && (
+        <section className="flex flex-col gap-3">
+          <label className="text-sm font-medium">What are you scanning?</label>
+          <div className="flex flex-col gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                setIsBundle(false);
+                setStep("photos");
+              }}
+              className="rounded-lg border-2 border-black px-4 py-6 text-center text-lg font-medium"
+            >
+              Single item
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setIsBundle(true);
+                setStep("bundleHeroPhoto");
+              }}
+              className="rounded-lg border-2 border-black px-4 py-6 text-center text-lg font-medium"
+            >
+              Bundle
+            </button>
+          </div>
+        </section>
+      )}
 
-          <section className="flex flex-col gap-1">
-            <label className="text-sm font-medium">UPC (optional — leave blank for custom/handmade items)</label>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                inputMode="numeric"
-                value={upc}
-                onChange={(e) => setUpc(e.target.value)}
-                placeholder="Scan or type UPC, or leave blank"
-                className="flex-1 rounded border px-3 py-2"
-              />
-              <button
-                type="button"
-                onClick={() => {
-                  setScanTarget("item");
-                  setShowScanner(true);
-                }}
-                className="rounded bg-black px-3 py-2 text-sm text-white"
-              >
-                Scan
-              </button>
-            </div>
-          </section>
-
-          <section className="flex gap-3">
-            <div className="flex flex-1 flex-col justify-end">
-              <label className="flex items-center gap-2 py-2 text-sm font-medium">
-                <input
-                  type="checkbox"
-                  checked={isMultipack}
-                  onChange={(e) => setIsMultipack(e.target.checked)}
+      {step === "photos" && (
+        <section className="flex flex-col gap-2">
+          <label className="text-sm font-medium">Photos</label>
+          <div className="flex flex-wrap gap-2">
+            {photos.map((p) => (
+              <div key={p.id} className="relative h-20 w-20">
+                <img
+                  src={p.previewUrl}
+                  alt=""
+                  className="h-full w-full rounded object-cover"
                 />
-                Multi-pack
-              </label>
-            </div>
-          </section>
+                {p.status === "uploading" && (
+                  <div className="absolute inset-0 flex items-center justify-center rounded bg-black/40 text-xs text-white">
+                    ...
+                  </div>
+                )}
+                {p.status === "error" && (
+                  <div className="absolute inset-0 flex items-center justify-center rounded bg-red-600/70 text-xs text-white">
+                    Failed
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => removePhoto(p.id)}
+                  className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black text-xs text-white"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="flex h-20 w-20 items-center justify-center rounded border border-dashed text-sm text-gray-500"
+            >
+              + Photo
+            </button>
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            multiple
+            className="hidden"
+            onChange={(e) => handleFiles(e.target.files)}
+          />
+        </section>
+      )}
+
+      {step === "upc" && (
+        <section className="flex flex-col gap-1">
+          <label className="text-sm font-medium">UPC (optional — leave blank for custom/handmade items)</label>
+          <div className="flex gap-2">
+            <input
+              autoFocus
+              type="text"
+              inputMode="numeric"
+              value={upc}
+              onChange={(e) => setUpc(e.target.value)}
+              onKeyDown={(e) => onScanEnter(e, goNext)}
+              placeholder="Scan or type UPC, or leave blank"
+              className="flex-1 rounded border px-3 py-2"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                setScanTarget("item");
+                setShowScanner(true);
+              }}
+              className="rounded bg-black px-3 py-2 text-sm text-white"
+            >
+              Camera
+            </button>
+          </div>
+          <p className="text-xs text-gray-400">Scanning with the handheld scanner auto-advances.</p>
+        </section>
+      )}
+
+      {step === "quantity" && (
+        <section className="flex flex-col gap-3">
+          <label className="flex items-center gap-2 text-sm font-medium">
+            <input
+              type="checkbox"
+              checked={isMultipack}
+              onChange={(e) => setIsMultipack(e.target.checked)}
+            />
+            Multi-pack
+          </label>
 
           {isMultipack && (
-            <section>
+            <div>
               <label className="text-sm font-medium">Pack size</label>
               <input
                 type="number"
@@ -475,67 +550,95 @@ export default function ScanPage() {
                 placeholder="e.g. 3"
                 className="w-full rounded border px-3 py-2"
               />
-            </section>
+            </div>
           )}
-        </>
+
+          <div>
+            <label className="text-sm font-medium">Quantity</label>
+            <input
+              type="number"
+              min={1}
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value)}
+              onWheel={(e) => e.currentTarget.blur()}
+              className="w-full rounded border px-3 py-2"
+            />
+          </div>
+        </section>
       )}
 
-      {isBundle && (
-        <>
-          <section className="flex flex-col gap-2">
-            <label className="text-sm font-medium">
-              Bundle photo <span className="text-gray-400">(everything together — the main listing photo)</span>
-            </label>
-            <div className="flex flex-wrap gap-2">
-              {heroPhoto && (
-                <div className="relative h-20 w-20">
-                  <img
-                    src={heroPhoto.previewUrl}
-                    alt=""
-                    className="h-full w-full rounded object-cover"
-                  />
-                  {heroPhoto.status === "uploading" && (
-                    <div className="absolute inset-0 flex items-center justify-center rounded bg-black/40 text-xs text-white">
-                      ...
-                    </div>
-                  )}
-                  {heroPhoto.status === "error" && (
-                    <div className="absolute inset-0 flex items-center justify-center rounded bg-red-600/70 text-xs text-white">
-                      Failed
-                    </div>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => setHeroPhoto(null)}
-                    className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black text-xs text-white"
-                  >
-                    ×
-                  </button>
-                </div>
-              )}
-              {!heroPhoto && (
+      {step === "expiration" && (
+        <section>
+          <label className="text-sm font-medium">
+            Expiration date <span className="text-gray-400">(optional)</span>
+          </label>
+          <input
+            type="date"
+            value={expirationDate}
+            onChange={(e) => setExpirationDate(e.target.value)}
+            className="w-full rounded border px-3 py-2"
+          />
+        </section>
+      )}
+
+      {step === "bundleHeroPhoto" && (
+        <section className="flex flex-col gap-2">
+          <label className="text-sm font-medium">
+            Bundle photo <span className="text-gray-400">(everything together — the main listing photo)</span>
+          </label>
+          <div className="flex flex-wrap gap-2">
+            {heroPhoto && (
+              <div className="relative h-20 w-20">
+                <img
+                  src={heroPhoto.previewUrl}
+                  alt=""
+                  className="h-full w-full rounded object-cover"
+                />
+                {heroPhoto.status === "uploading" && (
+                  <div className="absolute inset-0 flex items-center justify-center rounded bg-black/40 text-xs text-white">
+                    ...
+                  </div>
+                )}
+                {heroPhoto.status === "error" && (
+                  <div className="absolute inset-0 flex items-center justify-center rounded bg-red-600/70 text-xs text-white">
+                    Failed
+                  </div>
+                )}
                 <button
                   type="button"
-                  onClick={() => heroFileInputRef.current?.click()}
-                  className="flex h-20 w-20 items-center justify-center rounded border border-dashed text-sm text-gray-500"
+                  onClick={() => setHeroPhoto(null)}
+                  className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black text-xs text-white"
                 >
-                  + Photo
+                  ×
                 </button>
-              )}
-            </div>
-            <input
-              ref={heroFileInputRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              className="hidden"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) startSinglePhotoUpload(file, setHeroPhoto);
-              }}
-            />
-          </section>
+              </div>
+            )}
+            {!heroPhoto && (
+              <button
+                type="button"
+                onClick={() => heroFileInputRef.current?.click()}
+                className="flex h-20 w-20 items-center justify-center rounded border border-dashed text-sm text-gray-500"
+              >
+                + Photo
+              </button>
+            )}
+          </div>
+          <input
+            ref={heroFileInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) startSinglePhotoUpload(file, setHeroPhoto);
+            }}
+          />
+        </section>
+      )}
 
+      {step === "bundleComponents" && (
+        <>
           <section className="flex flex-col gap-2 rounded-lg border p-3">
             <label className="text-sm font-medium">Add an item to this bundle</label>
 
@@ -583,6 +686,10 @@ export default function ScanPage() {
                 inputMode="numeric"
                 value={componentUpc}
                 onChange={(e) => setComponentUpc(e.target.value)}
+                // Scanning a component's UPC adds it to the bundle right
+                // away, so the loop of "photo(s) already taken, scan UPC" is
+                // one trigger-pull per item instead of also tapping Add.
+                onKeyDown={(e) => onScanEnter(e, addBundleComponent)}
                 placeholder="UPC"
                 className="min-w-0 flex-1 rounded border px-3 py-2 text-sm"
               />
@@ -594,7 +701,7 @@ export default function ScanPage() {
                 }}
                 className="rounded bg-black px-3 py-2 text-sm text-white"
               >
-                Scan
+                Camera
               </button>
               <input
                 type="number"
@@ -671,133 +778,135 @@ export default function ScanPage() {
         </>
       )}
 
-      <section className="flex-1">
-        <label className="text-sm font-medium">
-          {isBundle ? "How many of this bundle do you have?" : "Quantity"}
-        </label>
-        <input
-          type="number"
-          min={1}
-          value={quantity}
-          onChange={(e) => setQuantity(e.target.value)}
-          onWheel={(e) => e.currentTarget.blur()}
-          className="w-full rounded border px-3 py-2"
-        />
-      </section>
-
-      {!isBundle && (
+      {step === "bundleQuantity" && (
         <section>
-          <label className="text-sm font-medium">
-            Expiration date <span className="text-gray-400">(optional)</span>
-          </label>
+          <label className="text-sm font-medium">How many of this bundle do you have?</label>
           <input
-            type="date"
-            value={expirationDate}
-            onChange={(e) => setExpirationDate(e.target.value)}
+            type="number"
+            min={1}
+            value={quantity}
+            onChange={(e) => setQuantity(e.target.value)}
+            onWheel={(e) => e.currentTarget.blur()}
             className="w-full rounded border px-3 py-2"
           />
         </section>
       )}
 
-      <section>
-        <label className="text-sm font-medium">Shelf location</label>
-        <div className="flex gap-2">
-          <select
-            value={shelfLocation}
-            onChange={(e) => {
-              setShelfLocation(e.target.value);
-              setLocationScanError(null);
-            }}
-            className="flex-1 rounded border px-3 py-2"
-          >
-            <option value="">Select location…</option>
-            {shelfLocations.map((loc) => (
-              <option key={loc.id} value={loc.label}>
-                {loc.label}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            onClick={() => {
-              setScanTarget("location");
-              setShowScanner(true);
-            }}
-            className="rounded bg-black px-3 py-2 text-sm text-white"
-          >
-            Scan
-          </button>
-        </div>
-        {locationScanError && <p className="mt-1 text-xs text-red-600">{locationScanError}</p>}
-        {shelfLocations.length === 0 && (
-          <a href="/settings" className="mt-1 inline-block text-xs text-blue-600 underline">
-            Add shelf locations in Settings
-          </a>
-        )}
-      </section>
+      {step === "shelfLocation" && (
+        <section className="flex flex-col gap-1">
+          <label className="text-sm font-medium">Shelf location</label>
+          <div className="flex gap-2">
+            <input
+              autoFocus
+              type="text"
+              list="shelf-location-suggestions"
+              value={shelfLocation}
+              onChange={(e) => setShelfLocation(e.target.value)}
+              onKeyDown={(e) => onScanEnter(e, goNext)}
+              placeholder="Scan or type shelf location"
+              className="flex-1 rounded border px-3 py-2"
+            />
+            <datalist id="shelf-location-suggestions">
+              {shelfLocations.map((loc) => (
+                <option key={loc.id} value={loc.label} />
+              ))}
+            </datalist>
+            <button
+              type="button"
+              onClick={() => {
+                setScanTarget("location");
+                setShowScanner(true);
+              }}
+              className="rounded bg-black px-3 py-2 text-sm text-white"
+            >
+              Camera
+            </button>
+          </div>
+          <p className="text-xs text-gray-400">Scanning with the handheld scanner auto-advances.</p>
+        </section>
+      )}
 
-      <section>
-        <label className="text-sm font-medium">
-          Box size {isBundle && <span className="text-gray-400">(for the whole bundle)</span>}
-        </label>
-        <select
-          value={boxSize}
-          onChange={(e) => setBoxSize(e.target.value)}
-          className="w-full rounded border px-3 py-2"
-        >
-          <option value="">Select box size…</option>
-          {boxSizes.map((b) => (
-            <option key={b.id} value={b.label}>
-              {b.label}
-            </option>
-          ))}
-        </select>
-        {boxSizes.length === 0 && (
-          <a href="/settings" className="mt-1 inline-block text-xs text-blue-600 underline">
-            Add box sizes in Settings
-          </a>
-        )}
-      </section>
+      {step === "boxWeight" && (
+        <>
+          <section>
+            <label className="text-sm font-medium">
+              Box size {isBundle && <span className="text-gray-400">(for the whole bundle)</span>}
+            </label>
+            <select
+              value={boxSize}
+              onChange={(e) => setBoxSize(e.target.value)}
+              className="w-full rounded border px-3 py-2"
+            >
+              <option value="">Select box size…</option>
+              {boxSizes.map((b) => (
+                <option key={b.id} value={b.label}>
+                  {b.label}
+                </option>
+              ))}
+            </select>
+            {boxSizes.length === 0 && (
+              <a href="/settings" className="mt-1 inline-block text-xs text-blue-600 underline">
+                Add box sizes in Settings
+              </a>
+            )}
+          </section>
 
-      <section>
-        <label className="text-sm font-medium">
-          Weight {isBundle && <span className="text-gray-400">(for the whole bundle)</span>}
-        </label>
-        <div className="flex items-center gap-2">
-          <input
-            type="number"
-            min={0}
-            placeholder="lb"
-            value={weightLbs}
-            onChange={(e) => setWeightLbs(e.target.value)}
-            onWheel={(e) => e.currentTarget.blur()}
-            className="w-20 rounded border px-3 py-2"
-          />
-          <span className="text-sm text-gray-400">lb</span>
-          <input
-            type="number"
-            min={0}
-            max={15}
-            placeholder="oz"
-            value={weightOz}
-            onChange={(e) => setWeightOz(e.target.value)}
-            onWheel={(e) => e.currentTarget.blur()}
-            className="w-20 rounded border px-3 py-2"
-          />
-          <span className="text-sm text-gray-400">oz</span>
-        </div>
-      </section>
+          <section>
+            <label className="text-sm font-medium">
+              Weight {isBundle && <span className="text-gray-400">(for the whole bundle)</span>}
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={0}
+                placeholder="lb"
+                value={weightLbs}
+                onChange={(e) => setWeightLbs(e.target.value)}
+                onWheel={(e) => e.currentTarget.blur()}
+                className="w-20 rounded border px-3 py-2"
+              />
+              <span className="text-sm text-gray-400">lb</span>
+              <input
+                type="number"
+                min={0}
+                max={15}
+                placeholder="oz"
+                value={weightOz}
+                onChange={(e) => setWeightOz(e.target.value)}
+                onWheel={(e) => e.currentTarget.blur()}
+                className="w-20 rounded border px-3 py-2"
+              />
+              <span className="text-sm text-gray-400">oz</span>
+            </div>
+          </section>
+        </>
+      )}
 
       {message && <p className="text-sm">{message}</p>}
 
-      <button
-        type="button"
-        onClick={saveItem}
-        disabled={saving}
-        className="fixed inset-x-0 bottom-0 mx-auto max-w-md rounded-t-lg bg-black py-4 text-center text-white disabled:opacity-50"
-      >
-        {saving ? "Saving…" : "Save & scan next"}
-      </button>
+      {/* The mode step's two big buttons ARE its navigation — no generic
+          Next button needed (or wanted) there. */}
+      {step !== "mode" && (
+        <div className="fixed inset-x-0 bottom-0 mx-auto flex max-w-md gap-px overflow-hidden rounded-t-lg">
+          {stepIndex > 0 && (
+            <button
+              type="button"
+              onClick={goBack}
+              className="w-24 bg-gray-700 py-4 text-center text-white"
+            >
+              Back
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={isLastStep ? saveItem : goNext}
+            disabled={saving}
+            className="flex-1 bg-black py-4 text-center text-white disabled:opacity-50"
+          >
+            {isLastStep ? (saving ? "Saving…" : "Save & scan next") : "Next"}
+          </button>
+        </div>
+      )}
 
       {showScanner && (
         <BarcodeScanner
@@ -805,15 +914,7 @@ export default function ScanPage() {
             if (scanTarget === "component") {
               setComponentUpc(text);
             } else if (scanTarget === "location") {
-              const match = shelfLocations.find(
-                (loc) => loc.label.toLowerCase() === text.trim().toLowerCase()
-              );
-              if (match) {
-                setShelfLocation(match.label);
-                setLocationScanError(null);
-              } else {
-                setLocationScanError(`No saved location matches "${text}" — add it in Settings first.`);
-              }
+              setShelfLocation(text);
             } else {
               setUpc(text);
             }
