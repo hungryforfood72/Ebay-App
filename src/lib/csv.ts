@@ -76,7 +76,20 @@ export type ExportableItem = {
   weightLbs: number | null;
   weightOz: number | null;
   expirationDate: Date | string | null;
+  bundleComponents: unknown;
 };
+
+// Bundles never set their own top-level expirationDate — only individual
+// components do (different items in the same bundle can expire on
+// different dates, or not at all) — so a bundle in a category that
+// requires "Expiration Date" needs one derived from its components. Using
+// the earliest is the more conservative disclosure to the buyer.
+function earliestBundleExpiration(bundleComponents: unknown): string | null {
+  const components = (bundleComponents as { expirationDate?: string | null }[] | null) ?? [];
+  const dates = components.map((c) => c.expirationDate).filter((d): d is string => Boolean(d));
+  if (dates.length === 0) return null;
+  return dates.reduce((earliest, d) => (new Date(d) < new Date(earliest) ? d : earliest));
+}
 
 const CONDITION_ID: Record<string, string> = {
   new: "1000",
@@ -110,6 +123,7 @@ export function itemsToFileExchangeCsv(items: ExportableItem[]): string {
   const rows = items.map((item) => {
     const specifics = (item.itemSpecifics as Record<string, string> | null) ?? {};
     const weight = normalizeWeight(item.weightLbs, item.weightOz);
+    const expirationDate = item.expirationDate ?? earliestBundleExpiration(item.bundleComponents);
 
     const fields: Record<(typeof HEADERS)[number], string> = {
       "Action(SiteID=US|Country=US|Currency=USD|Version=1193|CC=UTF-8)": "Add",
@@ -167,7 +181,7 @@ export function itemsToFileExchangeCsv(items: ExportableItem[]): string {
       // as real item specifics, not just text worked into the title/
       // description — a real upload failed with "The item specific
       // Expiration Date/Dosage is missing" for exactly that reason.
-      "C:Expiration Date": item.expirationDate ? formatExpiration(item.expirationDate) : "",
+      "C:Expiration Date": expirationDate ? formatExpiration(expirationDate) : "",
       // eBay caps Dosage at 65 characters ("value is too long" on a real
       // upload for a 3-ingredient combo dosage string) — reuse truncateTitle's
       // word-boundary truncation logic, it's generic and not title-specific.
