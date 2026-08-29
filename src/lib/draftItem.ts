@@ -31,8 +31,12 @@ const SPECIFICS_SCHEMA = {
       type: ["string", "null"],
       description: "eBay's standard clothing 'Size Type' item specific, for clothing/shoes/accessories only — one of 'Regular', 'Big & Tall', 'Plus', 'Petite', 'Maternity'. Use 'Regular' for a standard-fit item unless the packaging/listing clearly indicates otherwise. Null for anything that isn't clothing.",
     },
+    volume: {
+      type: ["string", "null"],
+      description: "eBay's 'Volume' item specific, for beverages and drink mixes only — e.g. '16 fl oz', '1 Gallon'. For a powder/stick drink mix meant to be reconstituted, use the volume of liquid the packaging directs it to be mixed with (this is usually printed right on the box, e.g. 'Mix with 16 fl oz of water'), not the dry product's own size. Null for anything that isn't a beverage or drink mix.",
+    },
   },
-  required: ["brand", "type", "product", "color", "size", "material", "dosage", "department", "sizeType"],
+  required: ["brand", "type", "product", "color", "size", "material", "dosage", "department", "sizeType", "volume"],
   additionalProperties: false,
 } as const;
 

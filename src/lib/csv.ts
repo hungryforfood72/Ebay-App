@@ -49,6 +49,7 @@ const HEADERS = [
   "C:Size",
   "C:Department",
   "C:Size Type",
+  "C:Volume",
 ] as const;
 
 function escapeCsvField(value: string): string {
@@ -178,6 +179,7 @@ export function itemsToFileExchangeCsv(items: ExportableItem[]): string {
       "C:Size": specifics.size ?? "",
       "C:Department": specifics.department ?? "",
       "C:Size Type": specifics.sizeType ?? "",
+      "C:Volume": specifics.volume ?? "",
     };
     return HEADERS.map((h) => escapeCsvField(fields[h])).join(",");
   });
