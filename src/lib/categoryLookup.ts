@@ -177,6 +177,21 @@ async function filterToLeaves<T extends { path: string }>(candidates: T[]): Prom
   );
 }
 
+// Loose overlap check, not exact match — web search's phrasing of a
+// category name won't always exactly match our tree's (e.g. "Chips" vs.
+// "Potato Chips"), but a genuine match still shares real words with either
+// the leaf name or its full breadcrumb path.
+function categoryNameRoughlyMatches(claimed: string, actual: { name: string; path: string }): boolean {
+  const claimedLower = claimed.trim().toLowerCase();
+  const nameLower = actual.name.toLowerCase();
+  const pathLower = actual.path.toLowerCase();
+  return (
+    nameLower.includes(claimedLower) ||
+    claimedLower.includes(nameLower) ||
+    pathLower.includes(claimedLower)
+  );
+}
+
 async function timedPick(
   itemId: string,
   productDescription: string,
@@ -398,18 +413,40 @@ If you can't find a confident match, respond with:
     return { categoryId: null, categoryName: null, sourceUrl: null, fromExistingRule: false };
   }
 
-  // Web search can hand back a parent category too (same failure mode as the
-  // local pick) — check it against our local tree when we have it, and
-  // reject rather than silently apply a category we know is a dead end.
+  // Web search free-forms both an ID and a name from what it reads on
+  // ebay.com, unlike the local pick (which only ever chooses from real
+  // (id, name, path) rows already in our own tree) — so it can return an ID
+  // that's flat-out wrong in ways the local pick can't: retired/nonexistent,
+  // or a real leaf that just isn't what it claims. Our local tree is a full,
+  // current snapshot of eBay's real category list (~20,571 categories,
+  // re-verified byte-identical against eBay's own live export) — trust it
+  // over the web search's own claim rather than the other way around.
   const localMatch = await prisma.ebayCategory.findUnique({ where: { id: parsed.categoryId } });
-  if (localMatch) {
-    const [leafMatch] = await filterToLeaves([localMatch]);
-    if (!leafMatch) {
-      console.warn(
-        `[categoryLookup] ${itemId}: web search returned non-leaf category ${parsed.categoryId} (${localMatch.name}), rejecting`
-      );
-      return { categoryId: null, categoryName: null, sourceUrl: null, fromExistingRule: false };
-    }
+
+  if (!localMatch) {
+    console.warn(
+      `[categoryLookup] ${itemId}: web search returned category ${parsed.categoryId}, not found in our local tree at all — rejecting`
+    );
+    return { categoryId: null, categoryName: null, sourceUrl: null, fromExistingRule: false };
+  }
+
+  const [leafMatch] = await filterToLeaves([localMatch]);
+  if (!leafMatch) {
+    console.warn(
+      `[categoryLookup] ${itemId}: web search returned non-leaf category ${parsed.categoryId} (${localMatch.name}), rejecting`
+    );
+    return { categoryId: null, categoryName: null, sourceUrl: null, fromExistingRule: false };
+  }
+
+  if (parsed.categoryName && !categoryNameRoughlyMatches(parsed.categoryName, localMatch)) {
+    // The ID exists and is a real leaf, but for something else entirely —
+    // e.g. web search once claimed an ID was "Chips & Crisps" when our tree
+    // (matching eBay's own real export) says it's actually "Uganda" under
+    // Stamps. A technically-valid-but-wrong ID is worse than no category.
+    console.warn(
+      `[categoryLookup] ${itemId}: web search claimed ${parsed.categoryId} was "${parsed.categoryName}" but it's actually "${localMatch.path}" — rejecting`
+    );
+    return { categoryId: null, categoryName: null, sourceUrl: null, fromExistingRule: false };
   }
 
   await applyCategory(itemId, parsed.categoryId, parsed.categoryName ?? parsed.categoryId, parsed.keyword ?? "");
