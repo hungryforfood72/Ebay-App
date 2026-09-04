@@ -142,7 +142,7 @@ export async function draftItem(itemId: string) {
     : "This is a single unit, not a multi-pack.";
 
   const expirationNote = item.expirationDate
-    ? `Expiration date: ${item.expirationDate.toISOString().slice(0, 10)} — state this plainly in the description so the buyer knows exactly what they're getting (e.g. "Best by MM/DD/YYYY"). Work it into the title too if there's room within the character limit.`
+    ? `Expiration date: ${item.expirationDate.toISOString().slice(0, 10)} — state this plainly in the description so the buyer knows exactly what they're getting (e.g. "Best by MM/DD/YYYY"). Work it into the title too if there's room within the character limit — use the same full MM/DD/YYYY date there too, not just the month and year (eBay pulled a real listing over the title/specifics only showing month/year while the description had the full date).`
     : "";
 
   const upcNote = item.upc
