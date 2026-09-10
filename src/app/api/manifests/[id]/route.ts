@@ -104,10 +104,14 @@ export async function GET(
     // This line's proportional share of the load's total declared value —
     // used to weight the shared landed cost, so a pricier line absorbs more
     // of the freight/fee cost than a cheap one rather than splitting evenly.
+    // Divided by units actually received good (not the expected count, and
+    // not damaged/expired ones) — if fewer good units came in than
+    // expected, the same dollar share spreads over fewer units, correctly
+    // raising the cost per unit rather than understating it.
     const valueShare = totalManifestExtendedRetail > 0 ? Number(line.extendedRetail) / totalManifestExtendedRetail : 0;
     const weightedCogsPerUnit =
-      totalLandedCost != null && line.expectedQuantity > 0
-        ? (valueShare * totalLandedCost) / line.expectedQuantity
+      totalLandedCost != null && receivedUnits > 0
+        ? (valueShare * totalLandedCost) / receivedUnits
         : null;
 
     return {

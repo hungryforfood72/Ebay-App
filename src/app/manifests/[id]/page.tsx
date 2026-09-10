@@ -141,7 +141,8 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
           <p className="text-sm text-gray-600">
             Blended COGS: <strong>${s.blendedCogsPerUnit.toFixed(4)}</strong> per unit (landed cost ÷{" "}
             {s.totalReceivedUnits} units received). Per-line weighted cost below accounts for each
-            item&apos;s share of the load&apos;s declared value instead of splitting evenly.
+            item&apos;s share of the load&apos;s declared value, divided by that line&apos;s good units
+            received — damaged/expired and still-missing units aren&apos;t counted.
           </p>
         ) : (
           <p className="text-xs text-gray-400">Enter a landed cost to see COGS per unit.</p>
