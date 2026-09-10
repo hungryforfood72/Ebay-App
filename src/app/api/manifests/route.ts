@@ -42,7 +42,7 @@ export async function POST(request: NextRequest) {
       supplier: parsed.supplier,
       createdBy: body.createdBy ?? null,
       lines: {
-        create: parsed.lines.map((l) => ({
+        create: parsed.lines.map((l, index) => ({
           supplierSku: l.supplierSku,
           upc: l.upc,
           description: l.description,
@@ -52,6 +52,7 @@ export async function POST(request: NextRequest) {
           condition: l.condition,
           category: l.category,
           subcategory: l.subcategory,
+          sortOrder: index,
         })),
       },
     },

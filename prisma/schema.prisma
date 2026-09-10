@@ -183,6 +183,11 @@ model ManifestLine {
   condition        String? // e.g. BStock's USED_GOOD/LIKE_NEW — Liquidation.com has none
   category         String?
   subcategory      String?
+  // Original row order in the CSV — when the same UPC appears on more than
+  // one line (e.g. split across pallets/lots), received/damaged units are
+  // allocated to lines in this order, filling one before spilling to the
+  // next, rather than crediting the same total to every matching line.
+  sortOrder        Int      @default(0)
 
   @@index([manifestId, upc])
 }

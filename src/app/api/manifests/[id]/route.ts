@@ -9,6 +9,33 @@ function unitsFor(item: { quantity: number; isMultipack: boolean; packSize: numb
   return item.quantity * (item.isMultipack && item.packSize ? item.packSize : 1);
 }
 
+// Fills each line's expected quantity in order before spilling into the
+// next — a UPC can legitimately appear on more than one manifest line (e.g.
+// the same item split across pallets/lots), and crediting the full total to
+// every matching line would double- or triple-count what was actually
+// received. `alreadyClaimed` lets a second pool (damaged, run after
+// received) respect capacity the first pool already used on each line.
+// Once every line in the group is full, whatever's left piles onto the
+// last line as a surplus rather than being dropped.
+function allocateSequentially(
+  expectedQuantities: number[],
+  poolTotal: number,
+  alreadyClaimed: number[]
+): number[] {
+  const allocated = expectedQuantities.map(() => 0);
+  let remaining = poolTotal;
+  for (let i = 0; i < expectedQuantities.length && remaining > 0; i++) {
+    const capacity = Math.max(0, expectedQuantities[i] - alreadyClaimed[i]);
+    const take = Math.min(capacity, remaining);
+    allocated[i] = take;
+    remaining -= take;
+  }
+  if (remaining > 0 && expectedQuantities.length > 0) {
+    allocated[expectedQuantities.length - 1] += remaining;
+  }
+  return allocated;
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -18,7 +45,7 @@ export async function GET(
   const manifest = await prisma.manifest.findUnique({
     where: { id },
     include: {
-      lines: true,
+      lines: { orderBy: { sortOrder: "asc" } },
       damaged: true,
       items: {
         select: { upc: true, quantity: true, isMultipack: true, packSize: true, isBundle: true },
@@ -48,11 +75,31 @@ export async function GET(
   );
   const totalLandedCost = manifest.totalLandedCost != null ? Number(manifest.totalLandedCost) : null;
 
-  const matchedUpcs = new Set<string>();
-  const lines = manifest.lines.map((line) => {
-    const receivedUnits = line.upc ? receivedByUpc.get(line.upc) ?? 0 : 0;
-    const damagedUnits = line.upc ? damagedByUpc.get(line.upc) ?? 0 : 0;
-    if (line.upc) matchedUpcs.add(line.upc);
+  // Group lines by UPC (in manifest order) so received/damaged pools can be
+  // allocated across duplicates instead of double-counted onto each one.
+  const lineIndexesByUpc = new Map<string, number[]>();
+  manifest.lines.forEach((line, index) => {
+    if (!line.upc) return;
+    const list = lineIndexesByUpc.get(line.upc) ?? [];
+    list.push(index);
+    lineIndexesByUpc.set(line.upc, list);
+  });
+
+  const receivedAllocation = new Array(manifest.lines.length).fill(0);
+  const damagedAllocation = new Array(manifest.lines.length).fill(0);
+  for (const [upc, indexes] of lineIndexesByUpc) {
+    const expectedQuantities = indexes.map((i) => manifest.lines[i].expectedQuantity);
+    const received = allocateSequentially(expectedQuantities, receivedByUpc.get(upc) ?? 0, expectedQuantities.map(() => 0));
+    const damaged = allocateSequentially(expectedQuantities, damagedByUpc.get(upc) ?? 0, received);
+    indexes.forEach((lineIdx, j) => {
+      receivedAllocation[lineIdx] = received[j];
+      damagedAllocation[lineIdx] = damaged[j];
+    });
+  }
+
+  const lines = manifest.lines.map((line, index) => {
+    const receivedUnits = receivedAllocation[index];
+    const damagedUnits = damagedAllocation[index];
 
     // This line's proportional share of the load's total declared value —
     // used to weight the shared landed cost, so a pricier line absorbs more
@@ -81,6 +128,8 @@ export async function GET(
       weightedCogsPerUnit,
     };
   });
+
+  const matchedUpcs = new Set(lineIndexesByUpc.keys());
 
   // Received/damaged units whose UPC isn't on the manifest at all — extra or
   // mis-scanned items, worth surfacing rather than silently dropping.
