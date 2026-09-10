@@ -367,6 +367,28 @@ function ItemCard({
     fromExistingRule?: boolean;
   } | null>(null);
   const [categorySearchError, setCategorySearchError] = useState<string | null>(null);
+  const [typedCategoryCheck, setTypedCategoryCheck] = useState<{
+    id: string;
+    name: string | null; // null means the ID wasn't found in eBay's category tree
+  } | null>(null);
+
+  // The "Category ID" field below is free text — nothing stops someone from
+  // typing a UPC or other garbage into it by mistake. Confirm it against
+  // eBay's real category tree right away rather than finding out only when
+  // the bulk upload rejects the whole listing.
+  async function checkTypedCategoryId(id: string) {
+    if (!id) {
+      setTypedCategoryCheck(null);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/ebay-categories/search?id=${encodeURIComponent(id)}`);
+      const category: { name: string } | null = await res.json();
+      setTypedCategoryCheck({ id, name: category?.name ?? null });
+    } catch {
+      setTypedCategoryCheck(null);
+    }
+  }
 
   const titleText = (item.finalTitle ?? item.aiTitle ?? "").toLowerCase();
   const suggestion = titleText
@@ -521,9 +543,20 @@ function ItemCard({
               placeholder="Category ID"
               title="eBay category ID"
               defaultValue={item.categoryId ?? ""}
-              onBlur={(e) => onChange({ categoryId: e.target.value })}
+              onBlur={(e) => {
+                const value = e.target.value.trim();
+                onChange({ categoryId: value });
+                checkTypedCategoryId(value);
+              }}
               className="w-32 rounded border px-3 py-2 text-sm"
             />
+            {typedCategoryCheck && typedCategoryCheck.id === (item.categoryId ?? "") && (
+              <span className={`text-xs ${typedCategoryCheck.name ? "text-green-600" : "text-red-600"}`}>
+                {typedCategoryCheck.name
+                  ? `✓ ${typedCategoryCheck.name}`
+                  : "⚠ Not a real eBay category ID — the upload will fail"}
+              </span>
+            )}
             <div className="relative">
               <input
                 type="text"

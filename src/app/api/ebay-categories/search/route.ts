@@ -5,6 +5,15 @@ import { NextRequest, NextResponse } from "next/server";
 // category export — see references/ebay-category-ids.md). Instant and free,
 // so this is always tried before ever falling back to an AI web search.
 export async function GET(request: NextRequest) {
+  // Exact-ID lookup — used to validate a category ID typed by hand into the
+  // review page's free-text field, since that field has no dropdown to
+  // constrain it to a real category.
+  const id = request.nextUrl.searchParams.get("id")?.trim();
+  if (id) {
+    const category = await prisma.ebayCategory.findUnique({ where: { id } });
+    return NextResponse.json(category);
+  }
+
   const q = request.nextUrl.searchParams.get("q")?.trim() ?? "";
   if (q.length < 2) return NextResponse.json([]);
 
