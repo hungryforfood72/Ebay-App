@@ -89,6 +89,7 @@ export async function POST(request: NextRequest) {
       photoUrls: Array.isArray(body.photoUrls) ? body.photoUrls : [],
       scannedBy: body.scannedBy ?? null,
       scanSessionId: body.scanSessionId ?? null,
+      manifestId: body.manifestId ?? null,
       isBundle,
       bundleComponents: isBundle ? body.bundleComponents : undefined,
     },

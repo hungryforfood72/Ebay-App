@@ -2,7 +2,9 @@
 
 import BarcodeScanner from "@/components/BarcodeScanner";
 import { uploadPhoto } from "@/lib/uploadPhoto";
-import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useRef, useState } from "react";
 
 type ScanSession = {
   id: string;
@@ -53,6 +55,7 @@ const SINGLE_STEPS: Step[] = ["mode", "photos", "upc", "quantity", "expiration",
 const BUNDLE_STEPS: Step[] = ["mode", "bundleHeroPhoto", "bundleComponents", "bundleQuantity", "shelfLocation", "boxWeight"];
 
 const ACTIVE_SESSION_KEY = "ebay-tool.activeScanSessionId";
+const ACTIVE_MANIFEST_KEY = "ebay-tool.activeManifestId";
 
 function startSinglePhotoUpload(file: File, setPhoto: (p: Photo | null) => void) {
   const id = `${Date.now()}-${Math.random()}`;
@@ -73,9 +76,33 @@ function onScanEnter(e: React.KeyboardEvent<HTMLInputElement>, action: () => voi
 }
 
 export default function ScanPage() {
+  return (
+    <Suspense>
+      <ScanPageInner />
+    </Suspense>
+  );
+}
+
+function ScanPageInner() {
+  const searchParams = useSearchParams();
   const [sessions, setSessions] = useState<ScanSession[] | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [savedThisSession, setSavedThisSession] = useState(0);
+
+  // Manifest mode is an addition on top of the normal flow, not a
+  // replacement — items scanned with no manifest attached behave exactly as
+  // before. Reached via the "Scan with Manifest" link, which lands here
+  // with ?manifestId=... after picking/uploading one on /manifests.
+  const [activeManifestId, setActiveManifestId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return searchParams.get("manifestId") ?? localStorage.getItem(ACTIVE_MANIFEST_KEY);
+  });
+  const [manifestTitle, setManifestTitle] = useState<string | null>(null);
+  const [damagedMode, setDamagedMode] = useState(false);
+  const [damagedUpc, setDamagedUpc] = useState("");
+  const [damagedQuantity, setDamagedQuantity] = useState("1");
+  const [damagedSaving, setDamagedSaving] = useState(false);
+  const [damagedMessage, setDamagedMessage] = useState<string | null>(null);
 
   const [step, setStep] = useState<Step>("mode");
   const [isBundle, setIsBundle] = useState(false);
@@ -119,12 +146,18 @@ export default function ScanPage() {
     // Initial hydration from localStorage/API on mount, not a reaction to
     // state we own.
     const stored = localStorage.getItem(ACTIVE_SESSION_KEY);
+    const manifestIdFromUrl = searchParams.get("manifestId");
+
     fetch("/api/sessions")
       .then((r) => r.json())
       .then((data: ScanSession[]) => {
         setSessions(data);
         if (stored && data.some((s) => s.id === stored)) {
           setActiveSessionId(stored);
+        } else if (manifestIdFromUrl) {
+          // Arrived via "Scan into this manifest" with no session already
+          // running — start one immediately instead of making them pick.
+          startSession();
         }
       });
     fetch("/api/shelf-locations")
@@ -133,7 +166,20 @@ export default function ScanPage() {
     fetch("/api/box-sizes")
       .then((r) => r.json())
       .then(setBoxSizes);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    // Sync whichever manifest is active to localStorage and fetch its
+    // title for the banner — activeManifestId itself is set from the URL
+    // or localStorage at initial state, or by picking one mid-session.
+    if (!activeManifestId) return;
+    localStorage.setItem(ACTIVE_MANIFEST_KEY, activeManifestId);
+    fetch(`/api/manifests/${activeManifestId}`)
+      .then((r) => r.json())
+      .then((data: { title?: string }) => setManifestTitle(data.title ?? null))
+      .catch(() => setManifestTitle(null));
+  }, [activeManifestId]);
 
   async function startSession(existing?: ScanSession) {
     if (existing) {
@@ -156,11 +202,43 @@ export default function ScanPage() {
     if (!activeSessionId) return;
     await fetch(`/api/sessions/${activeSessionId}`, { method: "PATCH" });
     localStorage.removeItem(ACTIVE_SESSION_KEY);
+    localStorage.removeItem(ACTIVE_MANIFEST_KEY);
     setActiveSessionId(null);
+    setActiveManifestId(null);
+    setManifestTitle(null);
+    setDamagedMode(false);
     setSavedThisSession(0);
     setSessions((prev) =>
       (prev ?? []).filter((s) => s.id !== activeSessionId)
     );
+  }
+
+  async function saveDamagedEntry() {
+    if (!activeManifestId) return;
+    setDamagedMessage(null);
+    if (!damagedUpc.trim()) return setDamagedMessage("Scan or enter a UPC first.");
+    const qty = Number(damagedQuantity);
+    if (!qty || qty < 1) return setDamagedMessage("Enter a quantity of at least 1.");
+
+    setDamagedSaving(true);
+    try {
+      const res = await fetch(`/api/manifests/${activeManifestId}/damaged`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ upc: damagedUpc.trim(), quantity: qty }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? "Save failed.");
+      }
+      setDamagedUpc("");
+      setDamagedQuantity("1");
+      setDamagedMessage("Logged. Ready for the next one.");
+    } catch (e) {
+      setDamagedMessage(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setDamagedSaving(false);
+    }
   }
 
   function addPhotosTo(files: FileList | null, setPhotos: React.Dispatch<React.SetStateAction<Photo[]>>) {
@@ -333,6 +411,7 @@ export default function ScanPage() {
               }))
             : undefined,
           scanSessionId: activeSessionId,
+          manifestId: activeManifestId,
         }),
       });
 
@@ -368,6 +447,13 @@ export default function ScanPage() {
           Start new scan session
         </button>
 
+        <Link
+          href="/manifests"
+          className="rounded-lg border-2 border-black px-4 py-3 text-center font-medium"
+        >
+          Scan with Manifest
+        </Link>
+
         {sessions === null && <p className="text-sm text-gray-500">Loading…</p>}
 
         {sessions && sessions.length > 0 && (
@@ -394,6 +480,59 @@ export default function ScanPage() {
     );
   }
 
+  // Sorting-only path — no photos, no listing, just a tally of bad units
+  // against the manifest. Separate from the normal item wizard entirely.
+  if (damagedMode) {
+    return (
+      <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-4 p-4">
+        <div className="flex items-center justify-between">
+          <h1 className="text-lg font-semibold">Scan as Damaged/Expired</h1>
+          <button type="button" onClick={() => setDamagedMode(false)} className="text-sm underline">
+            Back to scanning
+          </button>
+        </div>
+        {manifestTitle && <p className="text-xs text-gray-400">Manifest: {manifestTitle}</p>}
+
+        <section className="flex flex-col gap-1">
+          <label className="text-sm font-medium">UPC</label>
+          <input
+            autoFocus
+            type="text"
+            inputMode="numeric"
+            value={damagedUpc}
+            onChange={(e) => setDamagedUpc(e.target.value)}
+            onKeyDown={(e) => onScanEnter(e, saveDamagedEntry)}
+            placeholder="Scan or type UPC"
+            className="rounded border px-3 py-2"
+          />
+        </section>
+
+        <section>
+          <label className="text-sm font-medium">Quantity bad</label>
+          <input
+            type="number"
+            min={1}
+            value={damagedQuantity}
+            onChange={(e) => setDamagedQuantity(e.target.value)}
+            onWheel={(e) => e.currentTarget.blur()}
+            className="w-full rounded border px-3 py-2"
+          />
+        </section>
+
+        {damagedMessage && <p className="text-sm">{damagedMessage}</p>}
+
+        <button
+          type="button"
+          onClick={saveDamagedEntry}
+          disabled={damagedSaving}
+          className="rounded bg-red-600 py-4 text-center text-white disabled:opacity-50"
+        >
+          {damagedSaving ? "Logging…" : "Log damaged/expired"}
+        </button>
+      </main>
+    );
+  }
+
   const isLastStep = stepIndex === steps.length - 1;
 
   return (
@@ -415,6 +554,24 @@ export default function ScanPage() {
           </button>
         </div>
       </div>
+
+      {activeManifestId && (
+        <div className="flex items-center justify-between rounded border bg-gray-50 px-3 py-2 text-xs">
+          <span>
+            Manifest: {manifestTitle ?? "…"}{" "}
+            <Link href={`/manifests/${activeManifestId}`} className="underline">
+              dashboard
+            </Link>
+          </span>
+          <button
+            type="button"
+            onClick={() => setDamagedMode(true)}
+            className="rounded bg-red-600 px-2 py-1 text-white"
+          >
+            Scan as Damaged/Expired
+          </button>
+        </div>
+      )}
 
       <p className="text-xs text-gray-400">
         Step {stepIndex + 1} of {steps.length}

@@ -84,11 +84,17 @@ model Item {
   exportBatchId String?
   exportedAt    DateTime?
 
+  // Manifest reconciliation — which shipment/load this was scanned in
+  // from, if any (null for items scanned outside manifest mode).
+  manifest   Manifest? @relation(fields: [manifestId], references: [id])
+  manifestId String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([status])
   @@index([scanSessionId])
+  @@index([manifestId])
 }
 
 model ExportBatch {
@@ -135,4 +141,64 @@ model ShelfLocation {
   id        String   @id @default(uuid())
   label     String   @unique
   createdAt DateTime @default(now())
+}
+
+enum ManifestSupplier {
+  bstock
+  liquidation_com
+  unknown
+}
+
+// One uploaded shipment/load manifest — the source of truth for what was
+// supposed to arrive, so scanning against it can show what's actually been
+// accounted for vs. expected. Items scanned in manifest mode still go
+// through the normal review queue exactly like any other item; the
+// manifest link is purely for reconciliation.
+model Manifest {
+  id              String           @id @default(uuid())
+  title           String
+  supplier        ManifestSupplier @default(unknown)
+  totalLandedCost Decimal?         @db.Decimal(10, 2)
+  createdAt       DateTime         @default(now())
+  createdBy       String?
+
+  lines   ManifestLine[]
+  damaged ManifestDamagedEntry[]
+  items   Item[]
+}
+
+// One expected line from the manifest CSV — what the supplier says should
+// have arrived. retailPrice/extendedRetail come straight from the CSV
+// (not recomputed), so they double as a checksum against the file itself.
+model ManifestLine {
+  id               String   @id @default(uuid())
+  manifest         Manifest @relation(fields: [manifestId], references: [id], onDelete: Cascade)
+  manifestId       String
+  supplierSku      String? // e.g. BStock's "Item #" — Liquidation.com has none
+  upc              String?
+  description      String
+  expectedQuantity Int
+  retailPrice      Decimal  @db.Decimal(10, 2)
+  extendedRetail   Decimal  @db.Decimal(10, 2)
+  condition        String? // e.g. BStock's USED_GOOD/LIKE_NEW — Liquidation.com has none
+  category         String?
+  subcategory      String?
+
+  @@index([manifestId, upc])
+}
+
+// A tally of units found damaged/expired while sorting a manifest — not a
+// listing, just a count against the manifest's reconciliation, recorded via
+// the "Scan as Damaged/Expired" flow instead of the normal item flow.
+model ManifestDamagedEntry {
+  id         String   @id @default(uuid())
+  manifest   Manifest @relation(fields: [manifestId], references: [id], onDelete: Cascade)
+  manifestId String
+  upc        String
+  quantity   Int
+  note       String?
+  recordedBy String?
+  createdAt  DateTime @default(now())
+
+  @@index([manifestId, upc])
 }
