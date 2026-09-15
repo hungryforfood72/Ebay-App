@@ -59,6 +59,7 @@ export default function ReviewPage() {
   const [error, setError] = useState<string | null>(null);
   const [draftingId, setDraftingId] = useState<string | null>(null);
   const [publishingId, setPublishingId] = useState<string | null>(null);
+  const [bulkPublishing, setBulkPublishing] = useState(false);
 
   async function load() {
     const [itemsRes, rulesRes, boxSizesRes] = await Promise.all([
@@ -165,8 +166,9 @@ export default function ReviewPage() {
   // Distinct from "Mark ready" — this is the actual, not-cleanly-undoable
   // publish to eBay via the real Inventory API. Errors (a bad category ID,
   // a missing business policy, etc.) come back from eBay's own validation
-  // and are shown inline on the item rather than swallowed.
-  async function publishToEbay(item: Item) {
+  // and are shown inline on the item rather than swallowed. Returns whether
+  // it succeeded, so publishAllToEbay can tally results across a batch.
+  async function publishToEbay(item: Item): Promise<boolean> {
     setPublishingId(item.id);
     setError(null);
     try {
@@ -176,12 +178,47 @@ export default function ReviewPage() {
         throw new Error(result.error ?? "Publish failed.");
       }
       setItems((prev) => prev?.map((i) => (i.id === item.id ? result : i)) ?? prev);
+      return true;
     } catch (e) {
       await load();
       setError(e instanceof Error ? e.message : "Something went wrong.");
+      return false;
     } finally {
       setPublishingId(null);
     }
+  }
+
+  // Runs publishToEbay one item at a time (not in parallel — keeps each
+  // item's inline error/progress state legible, and avoids hammering eBay
+  // with a burst of simultaneous requests) over every currently-ready item.
+  // Each one still goes through the same review-then-publish path as a
+  // single click — this is a convenience over repeating that click, not a
+  // way to skip the review step, since every item here already had its
+  // fields confirmed by hand to reach "ready" in the first place.
+  async function publishAllToEbay() {
+    if (ready.length === 0) return;
+    if (
+      !confirm(
+        `Publish all ${ready.length} ready item(s) to eBay now? This creates real, live listings and isn't easily undone.`
+      )
+    ) {
+      return;
+    }
+    setBulkPublishing(true);
+    const batch = [...ready];
+    let succeeded = 0;
+    const failed: string[] = [];
+    for (const item of batch) {
+      const ok = await publishToEbay(item);
+      if (ok) succeeded++;
+      else failed.push(item.finalTitle ?? item.sku);
+    }
+    setBulkPublishing(false);
+    setError(
+      failed.length === 0
+        ? null
+        : `Published ${succeeded} of ${batch.length}. Failed: ${failed.join(", ")} — see the error on each item below.`
+    );
   }
 
   async function exportReady() {
@@ -275,9 +312,21 @@ export default function ReviewPage() {
         )}
       </div>
 
-      <h2 className="mb-2 text-sm font-medium text-gray-500">
-        Ready to list ({ready.length})
-      </h2>
+      <div className="mb-2 flex items-center justify-between">
+        <h2 className="text-sm font-medium text-gray-500">
+          Ready to list ({ready.length})
+        </h2>
+        {ready.length > 0 && (
+          <button
+            type="button"
+            onClick={publishAllToEbay}
+            disabled={bulkPublishing || publishingId !== null}
+            className="rounded bg-black px-3 py-1.5 text-xs text-white disabled:opacity-40"
+          >
+            {bulkPublishing ? "Publishing all…" : `Publish all ${ready.length} to eBay`}
+          </button>
+        )}
+      </div>
       <div className="mb-8 flex flex-col gap-2">
         {ready.map((item) => (
           <div
@@ -297,7 +346,7 @@ export default function ReviewPage() {
               <button
                 type="button"
                 onClick={() => publishToEbay(item)}
-                disabled={publishingId === item.id}
+                disabled={bulkPublishing || publishingId === item.id}
                 className="rounded bg-black px-3 py-1.5 text-xs text-white disabled:opacity-40"
               >
                 {publishingId === item.id ? "Publishing…" : "Publish to eBay"}
