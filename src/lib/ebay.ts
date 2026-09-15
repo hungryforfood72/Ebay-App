@@ -522,7 +522,7 @@ export async function getOrderEarnings(orderId: string): Promise<EbayOrderEarnin
 // ---------------------------------------------------------------------------
 
 export async function getAdCampaigns(): Promise<{ campaignId: string; campaignName: string; campaignStatus: string }[]> {
-  const result = (await ebayFetch(`/sell/marketing/v1/ad_campaign?campaign_status=ACTIVE,PAUSED&limit=100`)) as {
+  const result = (await ebayFetch(`/sell/marketing/v1/ad_campaign?campaign_statuses=ACTIVE,PAUSED&limit=100`)) as {
     campaigns?: { campaignId: string; campaignName: string; campaignStatus: string }[];
   };
   return result.campaigns ?? [];
