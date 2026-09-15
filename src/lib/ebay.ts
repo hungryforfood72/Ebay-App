@@ -455,6 +455,31 @@ export type EbayOrder = {
   lineItems: EbayOrderLineItem[];
 };
 
+// GET /sell/fulfillment/v1/order/{orderId} — single-order lookup, used to
+// re-derive an order's full line-item list (for proportional shipping
+// allocation) without needing a date-range scan.
+export async function getOrder(orderId: string): Promise<EbayOrder> {
+  const o = (await ebayFetch(`/sell/fulfillment/v1/order/${encodeURIComponent(orderId)}`)) as {
+    orderId: string;
+    orderPaymentStatus: string;
+    creationDate: string;
+    lineItems?: { lineItemId: string; sku?: string; quantity?: number; lineItemCost?: { value: string } }[];
+  };
+  return {
+    orderId: o.orderId,
+    orderPaymentStatus: o.orderPaymentStatus,
+    creationDate: o.creationDate,
+    lineItems: (o.lineItems ?? [])
+      .filter((li): li is Required<typeof li> => Boolean(li.sku && li.quantity && li.lineItemCost))
+      .map((li) => ({
+        lineItemId: li.lineItemId,
+        sku: li.sku,
+        quantity: li.quantity,
+        lineItemCostValue: Number(li.lineItemCost.value),
+      })),
+  };
+}
+
 // Pages through GET /sell/fulfillment/v1/order for orders last-modified in
 // [from, to). Vercel Cron's own bearer-token check happens one layer up in
 // the route handler — this just does the paging.
@@ -498,24 +523,40 @@ export async function getRecentOrders(from: Date, to: Date): Promise<EbayOrder[]
 }
 
 export type EbayOrderEarnings = {
-  lineItemId: string;
-  totalFees: number;
-}[];
+  lineItemFees: { lineItemId: string; totalFees: number }[];
+  // Shipping label cost is its OWN transaction (transactionType
+  // SHIPPING_LABEL, a DEBIT), separate from the SALE transaction and not
+  // itemized per line item — confirmed live on a real order. Order-level,
+  // so the caller allocates it across matched line items itself.
+  //
+  // Critically, the SAME shipping transaction (same transactionId) can
+  // come back for SEVERAL different orderId queries — confirmed live:
+  // Cristian combine-ships multiple eBay orders under one physical label,
+  // and eBay associates that one label transaction with every order in the
+  // shipment. Naively summing shippingLabelCost per order therefore
+  // double- (or N-times-) counts the same real cost. The transactionId is
+  // exposed here specifically so callers can dedupe globally (e.g. "has
+  // this transactionId already been counted on any existing sale row?")
+  // rather than trusting a per-order total. Array, not a single value,
+  // since an order could in principle have more than one shipping-label
+  // transaction (a split shipment).
+  shippingLabels: { transactionId: string; amount: number }[];
+};
 
 // GET /sell/finances/v1/transaction?filter=orderId:{orderId} — the real
-// fees (final value fee, regulatory fee, shipping label cost if purchased
-// through eBay, etc.) actually deducted from the payout for each line item
-// in this order. Uses transaction rather than the order_earnings resource
-// (GET .../order_earnings/{orderId}, same shape, simpler call) — verified
-// live that order_earnings 403s with "Insufficient permissions" even with
-// the sell.finances scope correctly granted (it needs some additional
-// eBay-side enrollment this account doesn't have), while transaction
-// returns the identical orderLineItems[].marketplaceFees[] data with no
-// such restriction. Also confirmed live that the Finances API resolves
-// under apiz.*.ebay.com, not api.*.ebay.com like every other Sell API this
-// app talks to — a wrong-host call here comes back as a bare 404 with an
-// empty body, not an eBay error response, easy to mistake for "order not
-// found."
+// fees (final value fee, regulatory fee, etc.) actually deducted from the
+// payout for each line item in this order, plus the order's shipping label
+// cost if purchased through eBay. Uses transaction rather than the
+// order_earnings resource (GET .../order_earnings/{orderId}, same line-item
+// fee data, simpler call) — verified live that order_earnings 403s with
+// "Insufficient permissions" even with the sell.finances scope correctly
+// granted (it needs some additional eBay-side enrollment this account
+// doesn't have), while transaction returns the identical
+// orderLineItems[].marketplaceFees[] data with no such restriction. Also
+// confirmed live that the Finances API resolves under apiz.*.ebay.com, not
+// api.*.ebay.com like every other Sell API this app talks to — a
+// wrong-host call here comes back as a bare 404 with an empty body, not an
+// eBay error response, easy to mistake for "order not found."
 export async function getOrderEarnings(orderId: string): Promise<EbayOrderEarnings> {
   const environment = getEbayEnvironment();
   const financesBase = environment === "production" ? "https://apiz.ebay.com" : "https://apiz.sandbox.ebay.com";
@@ -524,13 +565,25 @@ export async function getOrderEarnings(orderId: string): Promise<EbayOrderEarnin
     {},
     financesBase
   )) as {
-    transactions?: { orderLineItems?: { lineItemId: string; marketplaceFees?: { amount: { value: string } }[] }[] }[];
+    transactions?: {
+      transactionType?: string;
+      transactionId?: string;
+      amount?: { value: string };
+      orderLineItems?: { lineItemId: string; marketplaceFees?: { amount: { value: string } }[] }[];
+    }[];
   };
-  const lineItems = (result.transactions ?? []).flatMap((t) => t.orderLineItems ?? []);
-  return lineItems.map((li) => ({
-    lineItemId: li.lineItemId,
-    totalFees: (li.marketplaceFees ?? []).reduce((sum, f) => sum + Number(f.amount.value), 0),
-  }));
+  const transactions = result.transactions ?? [];
+  const lineItems = transactions.flatMap((t) => t.orderLineItems ?? []);
+  const shippingLabels = transactions
+    .filter((t) => t.transactionType === "SHIPPING_LABEL" && t.transactionId)
+    .map((t) => ({ transactionId: t.transactionId!, amount: Number(t.amount?.value ?? 0) }));
+  return {
+    lineItemFees: lineItems.map((li) => ({
+      lineItemId: li.lineItemId,
+      totalFees: (li.marketplaceFees ?? []).reduce((sum, f) => sum + Number(f.amount.value), 0),
+    })),
+    shippingLabels,
+  };
 }
 
 // ---------------------------------------------------------------------------

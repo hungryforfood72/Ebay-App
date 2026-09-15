@@ -47,6 +47,15 @@ export async function syncEbayOrders(options?: { since?: Date }): Promise<EbayOr
   const syncStartedAt = new Date();
 
   const earningsCache = new Map<string, Awaited<ReturnType<typeof getOrderEarnings>>>();
+  // Shipping-label transactions claimed so far *in this run* — Cristian
+  // combine-ships multiple eBay orders under one physical label, and eBay
+  // returns the same shipping transaction for every order in the shipment.
+  // Without this, each sibling order would independently allocate the
+  // FULL label cost to itself, multiplying the real cost by however many
+  // orders shared it. Whichever order is processed first claims the label;
+  // the DB check below (ebayOrderId: { not: order.orderId }) makes this
+  // durable across separate sync runs too, not just within one.
+  const claimedShippingTxnIdsThisRun = new Set<string>();
 
   try {
     const orders = await getRecentOrders(from, syncStartedAt);
@@ -54,6 +63,39 @@ export async function syncEbayOrders(options?: { since?: Date }): Promise<EbayOr
 
     for (const order of orders) {
       if (NON_SALE_PAYMENT_STATUSES.includes(order.orderPaymentStatus)) continue;
+
+      // Shipping label cost is order-level, not per line item — split it
+      // across line items proportional to each one's share of the order's
+      // total declared value (same weighting philosophy the manifest
+      // reconciliation route already uses for landed cost). Computed from
+      // ALL of the order's line items, matched or not, so an order mixing
+      // our items with someone else's (a VA's dropshipped item, say) still
+      // only attributes our item's fair share, not the whole shipment.
+      const orderTotalRevenue = order.lineItems.reduce((sum, li) => sum + li.lineItemCostValue, 0);
+
+      if (!earningsCache.has(order.orderId)) {
+        earningsCache.set(order.orderId, await getOrderEarnings(order.orderId));
+      }
+      const earnings = earningsCache.get(order.orderId)!;
+
+      // Claim whichever of this order's shipping labels haven't already
+      // been claimed by a sibling order (this run or a previous one).
+      // Usually 0 or 1 label; more than 1 only for a genuinely split
+      // shipment, in which case only the last transactionId gets stored as
+      // the reference — a rare edge case, not worth a many-to-many schema.
+      let orderShippingPool = 0;
+      let orderShippingTxnId: string | null = null;
+      for (const label of earnings.shippingLabels) {
+        if (claimedShippingTxnIdsThisRun.has(label.transactionId)) continue;
+        const claimedByAnotherOrder = await prisma.ebayItemSale.findFirst({
+          where: { shippingTransactionId: label.transactionId, ebayOrderId: { not: order.orderId } },
+          select: { id: true },
+        });
+        if (claimedByAnotherOrder) continue;
+        orderShippingPool += label.amount;
+        orderShippingTxnId = label.transactionId;
+        claimedShippingTxnIdsThisRun.add(label.transactionId);
+      }
 
       for (const lineItem of order.lineItems) {
         try {
@@ -71,11 +113,9 @@ export async function syncEbayOrders(options?: { since?: Date }): Promise<EbayOr
             continue;
           }
 
-          if (!earningsCache.has(order.orderId)) {
-            earningsCache.set(order.orderId, await getOrderEarnings(order.orderId));
-          }
-          const earnings = earningsCache.get(order.orderId) ?? [];
-          const fees = earnings.find((e) => e.lineItemId === lineItem.lineItemId)?.totalFees ?? 0;
+          const fees = earnings.lineItemFees.find((e) => e.lineItemId === lineItem.lineItemId)?.totalFees ?? 0;
+          const shipping =
+            orderTotalRevenue > 0 ? (lineItem.lineItemCostValue / orderTotalRevenue) * orderShippingPool : 0;
 
           const newSoldQuantity = item.soldQuantity + lineItem.quantity;
           await prisma.$transaction([
@@ -87,6 +127,8 @@ export async function syncEbayOrders(options?: { since?: Date }): Promise<EbayOr
                 quantity: lineItem.quantity,
                 revenue: lineItem.lineItemCostValue,
                 fees,
+                shipping,
+                shippingTransactionId: orderShippingTxnId,
                 soldAt: new Date(order.creationDate),
               },
             }),
@@ -96,6 +138,7 @@ export async function syncEbayOrders(options?: { since?: Date }): Promise<EbayOr
                 soldQuantity: newSoldQuantity,
                 soldRevenueTotal: { increment: lineItem.lineItemCostValue },
                 soldFeesTotal: { increment: fees },
+                soldShippingTotal: { increment: shipping },
                 // Only fully sold-out flips status — a partially-sold
                 // multi-unit item stays "listed" with soldQuantity > 0.
                 status: newSoldQuantity >= item.quantity ? "sold" : undefined,

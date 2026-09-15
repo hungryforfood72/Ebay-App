@@ -124,9 +124,14 @@ model Item {
   // amount); a partially-sold multi-unit item stays "listed" with
   // soldQuantity > 0, which is why these are separate fields rather than a
   // single before/after status flag.
-  soldQuantity     Int     @default(0)
-  soldRevenueTotal Decimal @default(0) @db.Decimal(10, 2)
-  soldFeesTotal    Decimal @default(0) @db.Decimal(10, 2)
+  soldQuantity      Int     @default(0)
+  soldRevenueTotal  Decimal @default(0) @db.Decimal(10, 2)
+  soldFeesTotal     Decimal @default(0) @db.Decimal(10, 2)
+  // Shipping label cost — a separate Finances API transaction per order
+  // (transactionType SHIPPING_LABEL), not nested under a line item like
+  // marketplaceFees is. Allocated across an order's matched line items
+  // proportional to each line's share of the order's total value.
+  soldShippingTotal Decimal @default(0) @db.Decimal(10, 2)
 
   sales EbayItemSale[]
 
@@ -153,18 +158,31 @@ model Item {
 // checkpoint: a repeated cron run skips any line item already recorded
 // here, the same non-clobbering philosophy as Item.ebayOfferId.
 model EbayItemSale {
-  id                  String   @id @default(uuid())
-  item                Item     @relation(fields: [itemId], references: [id], onDelete: Cascade)
-  itemId              String
-  ebayOrderId         String
-  ebayOrderLineItemId String   @unique
-  quantity            Int
-  revenue             Decimal  @db.Decimal(10, 2) // buyer-paid total for this line item
-  fees                Decimal  @db.Decimal(10, 2) // summed from the Finances API; includes eBay's shipping-label deductions
-  soldAt              DateTime
-  createdAt           DateTime @default(now())
+  id                    String   @id @default(uuid())
+  item                  Item     @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  itemId                String
+  ebayOrderId           String
+  ebayOrderLineItemId   String   @unique
+  quantity              Int
+  revenue               Decimal  @db.Decimal(10, 2) // buyer-paid total for this line item
+  fees                  Decimal  @db.Decimal(10, 2) // summed marketplaceFees from the Finances API (final value fee etc.), line-item-scoped
+  // Shipping label cost is a separate order-level Finances API transaction
+  // (transactionType SHIPPING_LABEL), not itemized per line item — this is
+  // this sale's allocated share, proportional to its revenue share of the
+  // order's total value. shippingTransactionId is the real eBay
+  // transaction's own id, kept so the sync job can dedupe: the SAME
+  // shipping-label transaction can come back for SEVERAL different orders
+  // when Cristian combine-ships them under one physical label, so its cost
+  // must only ever be allocated once across whichever order claims it
+  // first — checked via "does any existing sale already reference this
+  // transactionId" before allocating a new one.
+  shipping              Decimal  @default(0) @db.Decimal(10, 2)
+  shippingTransactionId String?
+  soldAt                DateTime
+  createdAt             DateTime @default(now())
 
   @@index([itemId])
+  @@index([shippingTransactionId])
 }
 
 // Incremental order-sync watermark, one row per environment (mirrors

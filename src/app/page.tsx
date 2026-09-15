@@ -42,6 +42,9 @@ type DashboardData = {
     expiringCount: number;
     soldThisMonthRevenue: number;
     soldThisMonthUnits: number;
+    soldThisMonthFees: number;
+    soldThisMonthShipping: number;
+    soldThisMonthProfit: number;
   };
   ebay: { connected: boolean; missingScopes: string[] };
   expiringListed: ExpiringListedItem[];
@@ -195,7 +198,19 @@ export default function DashboardPage() {
         <Stat label="Expiring ≤21 days" value={stats.expiringCount} highlight={stats.expiringCount > 0} />
         <Stat label="Sold this month" value={stats.soldThisMonthRevenue} format="currency" />
         <Stat label="Units sold this month" value={stats.soldThisMonthUnits} />
+        <Stat label="Fees this month" value={stats.soldThisMonthFees} format="currency" />
+        <Stat label="Shipping this month" value={stats.soldThisMonthShipping} format="currency" />
+        <Stat
+          label="Profit this month"
+          value={stats.soldThisMonthProfit}
+          format="currency"
+          highlight={stats.soldThisMonthUnits > 0 && stats.soldThisMonthProfit < 0}
+        />
       </section>
+      <p className="mb-6 -mt-4 text-xs text-gray-400">
+        Only counts items scanned and listed through this app — Profit uses manifest COGS where available,
+        $0 for anything with no manifest.
+      </p>
 
       <section className="mb-6 flex flex-col gap-2 rounded-lg border p-4">
         <div className="flex items-center justify-between">
