@@ -214,18 +214,33 @@ function buildAspects(specifics: Record<string, string> | null): Record<string, 
   return aspects;
 }
 
-// eBay's Inventory API SKU must be alphanumeric only and ≤50 characters —
-// stricter than the app's own sku field ("(Location - A3)-<uuid>", used
-// freely elsewhere: CSV CustomLabel, on-screen display, internal
-// uniqueness). Strips everything else and keeps the last 50 chars rather
-// than the first 50, so truncation (for an unusually long shelf location
-// label) trims the human-readable prefix instead of the UUID suffix that
-// actually guarantees uniqueness. Deterministic and reusable — matching an
-// eBay order's SKU back to an Item later just means recomputing this same
-// function over each candidate Item.sku, no extra field needed.
+// eBay's Inventory API SKU must be ≤50 characters and rejects most
+// punctuation — stricter than the app's own sku field ("(Location - A3)-
+// <uuid>", used freely elsewhere: CSV CustomLabel, on-screen display,
+// internal uniqueness). A single underscore separator between the location
+// and the unique id is confirmed accepted by the real API (verified with a
+// throwaway test item) and keeps the result readable — "LocationA3_..."
+// instead of everything mashed together with no separator at all.
+// Deterministic and reusable — matching an eBay order's SKU back to an Item
+// later just means recomputing this same function over each candidate
+// Item.sku, no extra field needed.
 export function toEbaySku(sku: string): string {
-  const alphanumeric = sku.replace(/[^a-zA-Z0-9]/g, "");
-  return alphanumeric.length > 50 ? alphanumeric.slice(-50) : alphanumeric;
+  const match = sku.match(/^\(Location - (.+?)\)-(.+)$/);
+  if (!match) {
+    // Fallback for anything that doesn't match the expected shape — strip
+    // to alphanumeric and keep the last 50 chars, so a truncation trims the
+    // human-readable prefix rather than the more-unique tail.
+    const alphanumeric = sku.replace(/[^a-zA-Z0-9]/g, "");
+    return alphanumeric.length > 50 ? alphanumeric.slice(-50) : alphanumeric;
+  }
+  const [, location, unique] = match;
+  const locationPart = `Location${location.replace(/[^a-zA-Z0-9]/g, "")}`;
+  const uniquePart = unique.replace(/[^a-zA-Z0-9]/g, "");
+  // Budget the location half around however long the unique half turns out
+  // to be, so the full unique id — the part that actually guarantees no two
+  // items collide — never gets cut off to make room.
+  const maxLocationChars = Math.max(0, 49 - uniquePart.length);
+  return `${locationPart.slice(0, maxLocationChars)}_${uniquePart}`;
 }
 
 export async function createOrReplaceInventoryItem(item: ItemForEbayPublish): Promise<void> {
