@@ -132,6 +132,10 @@ model Item {
   // marketplaceFees is. Allocated across an order's matched line items
   // proportional to each line's share of the order's total value.
   soldShippingTotal Decimal @default(0) @db.Decimal(10, 2)
+  // Buyer refunds against this item's sales — see EbayItemRefund. Netted
+  // against revenue in profit calculations so a returned order doesn't
+  // silently keep looking like a normal sale.
+  refundedTotal     Decimal @default(0) @db.Decimal(10, 2)
 
   sales EbayItemSale[]
 
@@ -181,6 +185,8 @@ model EbayItemSale {
   soldAt                DateTime
   createdAt             DateTime @default(now())
 
+  refunds EbayItemRefund[]
+
   @@index([itemId])
   @@index([shippingTransactionId])
 }
@@ -192,6 +198,40 @@ model EbaySyncState {
   environment     String    @id // "sandbox" | "production"
   lastOrderSyncAt DateTime?
   updatedAt       DateTime  @updatedAt
+}
+
+// A buyer refund on an already-recorded sale — never folded into
+// EbayItemSale directly, since one sale can be partially refunded, or
+// refunded some time after the original sync already ran (eBay bumps the
+// order's lastmodifieddate when a refund posts, so the regular incremental
+// sync re-scans the order and finds it). ebayRefundTransactionId is the
+// sync job's idempotency checkpoint, same role ebayOrderLineItemId plays
+// on EbayItemSale. Only ever created against a sale that's already in our
+// own data — a refund on a listing never made through this app has no
+// EbayItemSale to attach to and is correctly never seen at all.
+model EbayItemRefund {
+  id                      String       @id @default(uuid())
+  sale                    EbayItemSale @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  saleId                  String
+  ebayRefundTransactionId String       @unique
+  amount                  Decimal      @db.Decimal(10, 2) // revenue credited back to the buyer
+  feeCredit               Decimal      @default(0) @db.Decimal(10, 2) // marketplace fees eBay credited back on the refund
+  refundedAt              DateTime
+  createdAt               DateTime     @default(now())
+
+  @@index([saleId])
+}
+
+// Cached app-level access token for the Browse API's Client Credentials
+// grant (price research) — a completely separate OAuth flow from
+// EbayAuthToken's user tokens: no refresh token, no user consent, just an
+// app-identity token re-requested whenever it's near expiry. Kept in the
+// DB (not an in-memory cache) so it survives serverless cold starts.
+model EbayAppToken {
+  environment String   @id // "sandbox" | "production"
+  accessToken String
+  expiresAt   DateTime
+  updatedAt   DateTime @updatedAt
 }
 
 model ExportBatch {

@@ -191,6 +191,78 @@ export async function getMissingScopes(): Promise<string[]> {
 }
 
 // ---------------------------------------------------------------------------
+// Browse API (price research) — a completely separate auth flow from
+// everything above: Client Credentials grant, app-level identity, no user
+// consent. Reuses the same keyset (clientId/clientSecret) already
+// configured for the Sell APIs, just a different grant_type, so no new env
+// vars are needed. Cached in EbayAppToken (DB-backed, not in-memory) so it
+// survives serverless cold starts.
+// ---------------------------------------------------------------------------
+
+const BROWSE_SCOPE = "https://api.ebay.com/oauth/api_scope";
+
+async function getAppAccessToken(): Promise<string> {
+  const environment = getEbayEnvironment();
+  const existing = await prisma.ebayAppToken.findUnique({ where: { environment } });
+  if (existing && existing.expiresAt.getTime() - Date.now() > 5 * 60 * 1000) {
+    return existing.accessToken;
+  }
+  const result = await requestToken(new URLSearchParams({ grant_type: "client_credentials", scope: BROWSE_SCOPE }));
+  await prisma.ebayAppToken.upsert({
+    where: { environment },
+    create: { environment, accessToken: result.accessToken, expiresAt: result.accessTokenExpiresAt },
+    update: { accessToken: result.accessToken, expiresAt: result.accessTokenExpiresAt },
+  });
+  return result.accessToken;
+}
+
+export type ActiveListingComp = { price: number; title: string };
+
+// GET /buy/browse/v1/item_summary/search — active (not sold) listings, the
+// only comp data actually available via API (see EbayApiError's callers
+// for the sold-comps research that confirmed Marketplace Insights is
+// closed to new applicants). Prefers a GTIN (UPC) search when the item has
+// one — far more precise than keyword matching — falling back to keywords
+// from the title for bundles/items with no UPC.
+export async function searchActiveListings(query: {
+  upc: string | null;
+  keywords: string;
+  excludeListingId?: string | null;
+}): Promise<ActiveListingComp[]> {
+  const config = getEbayConfig();
+  const token = await getAppAccessToken();
+  const params = new URLSearchParams({ limit: "50" });
+  if (query.upc) {
+    params.set("gtin", query.upc);
+  } else {
+    params.set("q", query.keywords);
+  }
+  const res = await fetch(`${config.apiBase}/buy/browse/v1/item_summary/search?${params.toString()}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
+      "Content-Language": "en-US",
+      "Accept-Language": "en-US",
+    },
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    const errors = (body as { errors?: { message: string; longMessage?: string }[] } | null)?.errors;
+    throw new EbayApiError(
+      errors?.length ? errors.map((e) => e.longMessage ?? e.message).join("; ") : `Browse API error (${res.status})`,
+      res.status,
+      errors ?? body
+    );
+  }
+  const result = (await res.json()) as {
+    itemSummaries?: { itemId: string; title: string; price?: { value: string } }[];
+  };
+  return (result.itemSummaries ?? [])
+    .filter((i) => i.itemId !== query.excludeListingId && i.price)
+    .map((i) => ({ price: Number(i.price!.value), title: i.title }));
+}
+
+// ---------------------------------------------------------------------------
 // Inventory API
 // ---------------------------------------------------------------------------
 

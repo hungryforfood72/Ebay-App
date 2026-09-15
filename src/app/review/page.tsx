@@ -491,6 +491,34 @@ function ItemCard({
     fromExistingRule?: boolean;
   } | null>(null);
   const [categorySearchError, setCategorySearchError] = useState<string | null>(null);
+  const [priceResearching, setPriceResearching] = useState(false);
+  const [priceResearchResult, setPriceResearchResult] = useState<{
+    count: number;
+    median: number | null;
+    low: number | null;
+    high: number | null;
+  } | null>(null);
+  const [priceResearchError, setPriceResearchError] = useState<string | null>(null);
+
+  // Active-listing comps only — there's no API path to real sold-price data
+  // (eBay's Marketplace Insights API is closed to new applicants), so this
+  // is framed as "based on active competition," never auto-fills the price
+  // field, purely advisory.
+  async function researchPrice() {
+    setPriceResearching(true);
+    setPriceResearchError(null);
+    setPriceResearchResult(null);
+    try {
+      const res = await fetch(`/api/items/${item.id}/price-research`);
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error ?? "Price research failed.");
+      setPriceResearchResult(result);
+    } catch (e) {
+      setPriceResearchError(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setPriceResearching(false);
+    }
+  }
   const [typedCategoryCheck, setTypedCategoryCheck] = useState<{
     id: string;
     name: string | null; // null means the ID wasn't found in eBay's category tree
@@ -651,15 +679,37 @@ function ItemCard({
         />
 
         <div className="flex flex-wrap gap-2">
-          <input
-            type="number"
-            step="0.01"
-            placeholder="Price"
-            defaultValue={item.price ?? ""}
-            onBlur={(e) => onChange({ price: e.target.value })}
-            onWheel={(e) => e.currentTarget.blur()}
-            className="w-24 rounded border px-3 py-2 text-sm"
-          />
+          <div className="flex flex-col gap-1">
+            <input
+              type="number"
+              step="0.01"
+              placeholder="Price"
+              defaultValue={item.price ?? ""}
+              onBlur={(e) => onChange({ price: e.target.value })}
+              onWheel={(e) => e.currentTarget.blur()}
+              className="w-24 rounded border px-3 py-2 text-sm"
+            />
+            <button
+              type="button"
+              onClick={researchPrice}
+              disabled={priceResearching}
+              title="Searches active (not sold) listings for this UPC — advisory only, doesn't change the price"
+              className="text-left text-xs text-gray-500 underline disabled:opacity-40"
+            >
+              {priceResearching ? "Checking eBay…" : "Price estimate"}
+            </button>
+            {priceResearchError && <span className="text-xs text-red-600">{priceResearchError}</span>}
+            {priceResearchResult &&
+              (priceResearchResult.count === 0 ? (
+                <span className="text-xs text-gray-400">No active comps found.</span>
+              ) : (
+                <span className="text-xs text-gray-600">
+                  Active: ${priceResearchResult.low?.toFixed(2)}–${priceResearchResult.high?.toFixed(2)} (median $
+                  {priceResearchResult.median?.toFixed(2)}, {priceResearchResult.count} comp
+                  {priceResearchResult.count === 1 ? "" : "s"})
+                </span>
+              ))}
+          </div>
           <div className="flex flex-col gap-1">
             <input
               key={`cat-${item.id}-${item.categoryId ?? ""}`}
