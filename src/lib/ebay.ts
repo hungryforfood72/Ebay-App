@@ -583,6 +583,20 @@ export async function createAdByListingId(listingId: string, bidPercentage: numb
   return result.adId;
 }
 
+// Some items already had an active Promoted Listings ad from before this
+// app's integration existed (created directly in Seller Hub, or from an
+// earlier manual campaign) — createAdByListingId 403s "already exists" for
+// those. This looks the existing ad up so the promote route can self-heal
+// by linking it instead of just failing.
+export async function findAdByListingId(listingId: string): Promise<{ adId: string; bidPercentage: number } | null> {
+  const campaignId = getAdCampaignId();
+  const result = (await ebayFetch(
+    `/sell/marketing/v1/ad_campaign/${encodeURIComponent(campaignId)}/ad?listing_ids=${encodeURIComponent(listingId)}`
+  )) as { ads?: { adId: string; listingId: string; bidPercentage?: string }[] };
+  const ad = result.ads?.find((a) => a.listingId === listingId);
+  return ad ? { adId: ad.adId, bidPercentage: Number(ad.bidPercentage ?? 0) } : null;
+}
+
 export async function updateAdBid(adId: string, bidPercentage: number): Promise<void> {
   const campaignId = getAdCampaignId();
   await ebayFetch(

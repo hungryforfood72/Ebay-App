@@ -1,4 +1,4 @@
-import { createAdByListingId, deleteAd, EbayApiError, updateAdBid } from "@/lib/ebay";
+import { createAdByListingId, deleteAd, EbayApiError, findAdByListingId, updateAdBid } from "@/lib/ebay";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -33,10 +33,28 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   }
 
   try {
-    const adId = await createAdByListingId(item.ebayListingId, bidPercentage);
+    let adId: string;
+    let actualBid = bidPercentage;
+    try {
+      adId = await createAdByListingId(item.ebayListingId, bidPercentage);
+    } catch (e) {
+      // Some listings already had an active ad from before this app's
+      // integration existed (Seller Hub, an earlier manual campaign) —
+      // eBay rejects a second one for the same listing. Self-heal by
+      // linking the existing ad instead of just failing, same spirit as
+      // /api/items/link-legacy for listings themselves.
+      if (e instanceof EbayApiError && /already exists/i.test(e.message)) {
+        const existing = await findAdByListingId(item.ebayListingId);
+        if (!existing) throw e;
+        adId = existing.adId;
+        actualBid = existing.bidPercentage || bidPercentage;
+      } else {
+        throw e;
+      }
+    }
     const updated = await prisma.item.update({
       where: { id },
-      data: { ebayAdId: adId, promotedBidPercentage: bidPercentage, promotedAt: new Date(), ebayPromoteError: null },
+      data: { ebayAdId: adId, promotedBidPercentage: actualBid, promotedAt: new Date(), ebayPromoteError: null },
     });
     return NextResponse.json(updated);
   } catch (e) {
