@@ -17,6 +17,10 @@ type ExpiringListedItem = {
   promotedBidPercentage: number | null;
   ebayPublishError: string | null;
   ebayPromoteError: string | null;
+  ebayMarkdownId: string | null;
+  markdownPercentOff: number | null;
+  markdownEndsAt: string | null;
+  ebayMarkdownError: string | null;
 };
 
 function ebayListingUrl(item: Pick<ExpiringListedItem, "ebayListingId" | "ebayEnvironment">): string | null {
@@ -326,7 +330,10 @@ function ExpiringItemCard({
   const [discountMode, setDiscountMode] = useState<"percent" | "amount">("percent");
   const [discountValue, setDiscountValue] = useState("");
   const [bidPercentage, setBidPercentage] = useState("");
-  const [acting, setActing] = useState<"discount" | "promote" | "bid" | "stop" | null>(null);
+  const [markdownPercent, setMarkdownPercent] = useState("");
+  const [acting, setActing] = useState<"discount" | "promote" | "bid" | "stop" | "markdown" | "stop-markdown" | null>(
+    null
+  );
   const [error, setError] = useState<string | null>(null);
 
   const days = daysUntil(item.expirationDate);
@@ -420,6 +427,57 @@ function ExpiringItemCard({
       const result = await res.json();
       if (!res.ok) throw new Error(result.error ?? "Failed to stop promoting.");
       onChange({ ebayAdId: null, promotedBidPercentage: null });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setActing(null);
+    }
+  }
+
+  async function startMarkdown() {
+    const value = Number(markdownPercent);
+    if (!value || value < 1 || value > 80) return;
+    if (
+      !confirm(
+        `Start a ${value}% off sale event on "${item.finalTitle ?? item.sku}"? Buyers will see the current price struck through next to the new discounted price on the live eBay listing.`
+      )
+    ) {
+      return;
+    }
+    setActing("markdown");
+    setError(null);
+    try {
+      const res = await fetch(`/api/items/${item.id}/markdown`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ percentOff: value }),
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error ?? "Starting the sale event failed.");
+      onChange({
+        ebayMarkdownId: result.ebayMarkdownId,
+        markdownPercentOff: result.markdownPercentOff,
+        markdownEndsAt: result.markdownEndsAt,
+      });
+      setMarkdownPercent("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setActing(null);
+    }
+  }
+
+  async function stopMarkdown() {
+    if (!confirm(`End the sale event on "${item.finalTitle ?? item.sku}"? The listing stays live at its regular price.`)) {
+      return;
+    }
+    setActing("stop-markdown");
+    setError(null);
+    try {
+      const res = await fetch(`/api/items/${item.id}/markdown`, { method: "DELETE" });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error ?? "Failed to end the sale event.");
+      onChange({ ebayMarkdownId: null, markdownPercentOff: null, markdownEndsAt: null });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
@@ -533,10 +591,47 @@ function ExpiringItemCard({
             </button>
           </>
         )}
+
+        {item.ebayMarkdownId ? (
+          <>
+            <span className="rounded-full bg-purple-100 px-2 py-1 text-xs text-purple-700">
+              Sale event: {item.markdownPercentOff}% off
+              {item.markdownEndsAt ? ` until ${new Date(item.markdownEndsAt).toLocaleDateString()}` : ""}
+            </span>
+            <button
+              type="button"
+              onClick={stopMarkdown}
+              disabled={acting !== null}
+              className="rounded border border-red-300 px-3 py-1.5 text-xs text-red-600 disabled:opacity-40"
+            >
+              {acting === "stop-markdown" ? "Ending…" : "End sale event"}
+            </button>
+          </>
+        ) : (
+          <>
+            <input
+              type="number"
+              min={1}
+              max={80}
+              value={markdownPercent}
+              onChange={(e) => setMarkdownPercent(e.target.value)}
+              placeholder="sale %"
+              className="w-16 rounded border px-2 py-1.5 text-xs"
+            />
+            <button
+              type="button"
+              onClick={startMarkdown}
+              disabled={acting !== null || !markdownPercent}
+              className="rounded border border-purple-300 px-3 py-1.5 text-xs text-purple-700 disabled:opacity-40"
+            >
+              {acting === "markdown" ? "Starting…" : "Start sale event"}
+            </button>
+          </>
+        )}
       </div>
 
-      {(error || item.ebayPromoteError) && (
-        <p className="mt-2 text-xs text-red-600">{error ?? item.ebayPromoteError}</p>
+      {(error || item.ebayPromoteError || item.ebayMarkdownError) && (
+        <p className="mt-2 text-xs text-red-600">{error ?? item.ebayPromoteError ?? item.ebayMarkdownError}</p>
       )}
     </div>
   );

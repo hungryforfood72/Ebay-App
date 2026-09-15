@@ -49,6 +49,10 @@ export async function GET() {
         promotedBidPercentage: true,
         ebayPublishError: true,
         ebayPromoteError: true,
+        ebayMarkdownId: true,
+        markdownPercentOff: true,
+        markdownEndsAt: true,
+        ebayMarkdownError: true,
       },
     }),
     prisma.item.findMany({

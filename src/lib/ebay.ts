@@ -781,6 +781,103 @@ export async function deleteAd(adId: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Marketing API — "Sale event" (Discounts Manager, formerly Markdown
+// Manager). Shows a strikethrough "was $X" price next to the discounted
+// price on the live listing, unlike updateOfferPrice which just silently
+// changes the price. Field names here (`name`, `selectedInventoryDiscounts`,
+// `inventoryCriterion.listingIds`) are confirmed against a real object —
+// eBay's own docs for this endpoint 403/404 for WebFetch, and the
+// create call 500s with generic "Internal error" on any wrong field name
+// with zero useful validation feedback (a publicly reported, still-open
+// eBay bug as of 2026-09-15 — see the eBay dev community thread
+// "createItemPriceMarkdownPromotion crashing"). Ground truth came from
+// GET-ing a sale event created manually in Seller Hub.
+// ---------------------------------------------------------------------------
+
+export type MarkdownPromotion = {
+  promotionId: string; // "{id}@{marketplace}" composite, as eBay itself addresses it
+  percentOff: number;
+  startDate: string;
+  endDate: string;
+};
+
+// createItemPriceMarkdownPromotion returns 201 with an empty body — the new
+// promotion's id is only in the Location header, not JSON, so this can't go
+// through the shared ebayFetch() (which always calls res.json()).
+//
+// description and promotionImageUrl are only required once promotionStatus
+// is RUNNING (not DRAFT) — confirmed live: a DRAFT create without them
+// succeeds, a RUNNING one 400s with "A valid entry is required for
+// 'description'/'promotionImageUrl'".
+export async function createMarkdownPromotion(
+  listingId: string,
+  percentOff: number,
+  endDate: Date,
+  description: string,
+  promotionImageUrl: string
+): Promise<MarkdownPromotion> {
+  const [token, config] = await Promise.all([getValidAccessToken(), Promise.resolve(getEbayConfig())]);
+  const startDate = new Date(Date.now() + 60 * 1000); // eBay rejects a startDate that's already in the past by the time it processes the request
+  const body = {
+    name: `Sale event — ${percentOff}% off`,
+    description,
+    promotionImageUrl,
+    marketplaceId: "EBAY_US",
+    promotionStatus: "RUNNING",
+    startDate: startDate.toISOString(),
+    endDate: endDate.toISOString(),
+    selectedInventoryDiscounts: [
+      {
+        discountBenefit: { percentageOffItem: percentOff.toFixed(1) },
+        ruleOrder: 0,
+        inventoryCriterion: { inventoryCriterionType: "INVENTORY_BY_VALUE", listingIds: [listingId] },
+      },
+    ],
+  };
+  const res = await fetch(`${config.apiBase}/sell/marketing/v1/item_price_markdown`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+      "Content-Language": "en-US",
+      "Accept-Language": "en-US",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => null);
+    const errors = (errBody as { errors?: { message: string; longMessage?: string }[] } | null)?.errors;
+    const message = errors?.length ? errors.map((e) => e.longMessage ?? e.message).join("; ") : `eBay API error (${res.status})`;
+    throw new EbayApiError(message, res.status, errors ?? errBody);
+  }
+  const location = res.headers.get("Location");
+  const promotionId = location?.split("/").pop();
+  if (!promotionId) {
+    throw new Error("eBay didn't return a promotion id (no Location header) when creating the sale event.");
+  }
+  return { promotionId, percentOff, startDate: startDate.toISOString(), endDate: endDate.toISOString() };
+}
+
+// Ends a sale event early / removes it — the listing itself stays live,
+// only the strikethrough markdown is removed. Not routed through the shared
+// ebayFetch() — confirmed live that this endpoint returns 200 with an empty
+// body (not 204 like deleteAd's ad_campaign endpoint), which ebayFetch's
+// unconditional res.json() on any non-204 status would choke on.
+export async function deleteMarkdownPromotion(promotionId: string): Promise<void> {
+  const [token, config] = await Promise.all([getValidAccessToken(), Promise.resolve(getEbayConfig())]);
+  const res = await fetch(`${config.apiBase}/sell/marketing/v1/item_price_markdown/${encodeURIComponent(promotionId)}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}`, "Content-Language": "en-US", "Accept-Language": "en-US" },
+  });
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => null);
+    const errors = (errBody as { errors?: { message: string; longMessage?: string }[] } | null)?.errors;
+    const message = errors?.length ? errors.map((e) => e.longMessage ?? e.message).join("; ") : `eBay API error (${res.status})`;
+    throw new EbayApiError(message, res.status, errors ?? errBody);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Trading API (legacy XML) — only for listings that were bulk-uploaded via
 // the File Exchange CSV export (src/lib/csv.ts), never through this app's
 // own Inventory API publish flow. Those have no ebayOfferId (offers are an

@@ -148,6 +148,18 @@ model Item {
   promotedAt            DateTime?
   ebayPromoteError      String?
 
+  // eBay "Sale event" (Discounts Manager / Markdown Manager) state — set by
+  // /api/items/[id]/markdown, never by the client. Shows a strikethrough
+  // "was $X" price next to the discounted price on the live listing, unlike
+  // the plain discount route which just silently changes the price.
+  // ebayMarkdownId is the full "{promotionId}@{marketplace}" composite eBay
+  // itself uses to address the promotion (see getItemPriceMarkdownPromotion).
+  ebayMarkdownId        String?
+  markdownPercentOff    Int?
+  markdownStartedAt     DateTime?
+  markdownEndsAt        DateTime?
+  ebayMarkdownError     String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
