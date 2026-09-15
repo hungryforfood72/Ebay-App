@@ -264,6 +264,11 @@ export async function createOffer(item: ItemForEbayPublish): Promise<string> {
         fulfillmentPolicyId: config.fulfillmentPolicyId,
         paymentPolicyId: config.paymentPolicyId,
         returnPolicyId: config.returnPolicyId,
+        // Matches the CSV export's BestOfferEnabled=true — fixed-price
+        // listings that also take offers, with no auto-accept/auto-decline
+        // threshold set. Cristian reviews and accepts/declines/counters
+        // each one manually in Seller Hub.
+        bestOfferTerms: { bestOfferEnabled: true },
       },
       pricingSummary: { price: { value: item.price.toFixed(2), currency: "USD" } },
       merchantLocationKey: config.merchantLocationKey,
