@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
 
 type LabeledEntry = {
   id: string;
@@ -9,6 +10,14 @@ type LabeledEntry = {
 };
 
 export default function SettingsPage() {
+  return (
+    <Suspense>
+      <SettingsPageInner />
+    </Suspense>
+  );
+}
+
+function SettingsPageInner() {
   return (
     <main className="mx-auto max-w-lg p-6">
       <div className="mb-6 flex items-center justify-between">
@@ -23,6 +32,8 @@ export default function SettingsPage() {
         </div>
       </div>
 
+      <EbayConnectionStatus />
+
       <LabelListEditor
         apiPath="/api/box-sizes"
         title="Box sizes"
@@ -32,6 +43,97 @@ export default function SettingsPage() {
 
       <ShelfLocationsEditor />
     </main>
+  );
+}
+
+type EbayStatus = {
+  environment: "sandbox" | "production";
+  connected: boolean;
+  connectedAt: string | null;
+};
+
+// Connect/disconnect the eBay account used by the "Publish to eBay" button
+// on the review page. Tokens are kept per environment (see EbayAuthToken),
+// so which one this shows depends entirely on the server's EBAY_ENV — there's
+// no environment picker here, just a status readout for whichever one is
+// currently active.
+function EbayConnectionStatus() {
+  const searchParams = useSearchParams();
+  const callbackResult = searchParams.get("ebay");
+  const [status, setStatus] = useState<EbayStatus | null>(null);
+  const [disconnecting, setDisconnecting] = useState(false);
+
+  function load() {
+    fetch("/api/ebay/status")
+      .then((r) => r.json())
+      .then(setStatus);
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function disconnect() {
+    if (!confirm("Disconnect this eBay account? You'll need to reconnect before publishing again.")) {
+      return;
+    }
+    setDisconnecting(true);
+    await fetch("/api/ebay/status", { method: "DELETE" });
+    load();
+    setDisconnecting(false);
+  }
+
+  return (
+    <section className="mb-8">
+      <h2 className="mb-2 text-sm font-medium text-gray-500">eBay account</h2>
+      <p className="mb-3 text-xs text-gray-400">
+        Connects the account used by the &quot;Publish to eBay&quot; button on the review page.
+      </p>
+
+      {callbackResult === "connected" && (
+        <p className="mb-3 text-sm text-green-600">Connected.</p>
+      )}
+      {callbackResult === "declined" && (
+        <p className="mb-3 text-sm text-gray-500">Connection declined.</p>
+      )}
+      {callbackResult === "error" && (
+        <p className="mb-3 text-sm text-red-600">
+          {searchParams.get("ebayMessage") ?? "Something went wrong connecting — try again."}
+        </p>
+      )}
+
+      {!status ? (
+        <p className="text-sm text-gray-400">Loading…</p>
+      ) : (
+        <div className="flex items-center justify-between rounded border px-3 py-2 text-sm">
+          <div>
+            <p>
+              {status.connected ? "Connected" : "Not connected"}{" "}
+              <span className="text-xs text-gray-400">({status.environment})</span>
+            </p>
+            {status.connected && status.connectedAt && (
+              <p className="text-xs text-gray-400">
+                Since {new Date(status.connectedAt).toLocaleString()}
+              </p>
+            )}
+          </div>
+          {status.connected ? (
+            <button
+              type="button"
+              onClick={disconnect}
+              disabled={disconnecting}
+              className="rounded border border-red-300 px-3 py-1 text-xs text-red-600 disabled:opacity-40"
+            >
+              Disconnect
+            </button>
+          ) : (
+            <a href="/api/ebay/connect" className="rounded bg-black px-3 py-1 text-xs text-white">
+              Connect eBay account
+            </a>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 

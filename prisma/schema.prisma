@@ -14,6 +14,10 @@ enum ItemStatus {
   pending_review
   ready
   exported
+  // "listed" = published live via the eBay Inventory API — distinct from
+  // "exported", which only means a File Exchange CSV was generated, not
+  // that eBay ever confirmed receiving it.
+  listed
 }
 
 enum ItemCondition {
@@ -34,18 +38,18 @@ model ScanSession {
 }
 
 model Item {
-  id     String @id @default(uuid())
-  sku    String @unique @default(uuid())
+  id     String     @id @default(uuid())
+  sku    String     @unique @default(uuid())
   status ItemStatus @default(pending_review)
 
   // Scan step
   upc            String? // null for bundles — no single UPC applies
-  quantity       Int     // for bundles: how many complete bundles are available
-  isMultipack    Boolean  @default(false)
+  quantity       Int // for bundles: how many complete bundles are available
+  isMultipack    Boolean   @default(false)
   packSize       Int?
   expirationDate DateTime?
   shelfLocation  String
-  photoUrls      String[] @default([]) // photoUrls[0] is the bundle's "everything together" hero photo when isBundle
+  photoUrls      String[]  @default([]) // photoUrls[0] is the bundle's "everything together" hero photo when isBundle
   scannedBy      String?
 
   // Bundle mode — eBay doesn't allow "mystery box" listings, so every item
@@ -58,18 +62,18 @@ model Item {
   scanSessionId String?
 
   // Review step
-  upcLookupData   Json?
-  aiTitle         String?
-  aiDescription   String?
-  finalTitle      String?
+  upcLookupData    Json?
+  aiTitle          String?
+  aiDescription    String?
+  finalTitle       String?
   finalDescription String?
-  price           Decimal?  @db.Decimal(10, 2)
-  categoryId      String?
-  condition       ItemCondition?
-  compNotes       String?
-  reviewedBy      String?
-  reviewedAt      DateTime?
-  itemSpecifics   Json?     // AI-suggested key/value pairs: Color, Size, Brand, etc.
+  price            Decimal?       @db.Decimal(10, 2)
+  categoryId       String?
+  condition        ItemCondition?
+  compNotes        String?
+  reviewedBy       String?
+  reviewedAt       DateTime?
+  itemSpecifics    Json? // AI-suggested key/value pairs: Color, Size, Brand, etc.
 
   // Shipping. Unchecked = free flat-rate shipping. Checked = calculated
   // (USPS Ground Advantage), cost varies by buyer location based on
@@ -88,6 +92,20 @@ model Item {
   // from, if any (null for items scanned outside manifest mode).
   manifest   Manifest? @relation(fields: [manifestId], references: [id])
   manifestId String?
+
+  // eBay API publish result — set by POST /api/items/[id]/publish-to-ebay,
+  // never by the client. ebayOfferId is persisted as soon as createOffer
+  // succeeds (before publishOffer runs) so a retry after a publish failure
+  // can skip straight to publishing the existing offer instead of trying to
+  // create a second one for the same SKU, which eBay rejects.
+  ebayOfferId      String?
+  ebayListingId    String?
+  ebayPublishedAt  DateTime?
+  ebayPublishError String?
+  // "sandbox" | "production" this item was actually published to — kept
+  // per-item so a listing link still resolves correctly even if EBAY_ENV
+  // is later flipped to the other environment.
+  ebayEnvironment  String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -206,4 +224,19 @@ model ManifestDamagedEntry {
   createdAt  DateTime @default(now())
 
   @@index([manifestId, upc])
+}
+
+// eBay OAuth user token, one row per environment (sandbox/production) —
+// single-tenant app, one eBay seller account, so environment alone is
+// enough to key it. Keeping sandbox and production as separate rows lets
+// EBAY_ENV flip between them without losing either connection. Refresh
+// tokens are long-lived (~18mo) and aren't rotated on refresh, so only
+// accessToken/accessTokenExpiresAt change after the initial connect.
+model EbayAuthToken {
+  environment           String   @id // "sandbox" | "production"
+  accessToken           String
+  accessTokenExpiresAt  DateTime
+  refreshToken          String
+  refreshTokenExpiresAt DateTime
+  updatedAt             DateTime @updatedAt
 }

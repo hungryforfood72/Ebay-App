@@ -21,7 +21,7 @@ type BundleComponent = {
 type Item = {
   id: string;
   sku: string;
-  status: "pending_review" | "ready" | "exported";
+  status: "pending_review" | "ready" | "exported" | "listed";
   upc: string | null;
   quantity: number;
   isMultipack: boolean;
@@ -44,6 +44,9 @@ type Item = {
   boxSize: string | null;
   weightLbs: number | null;
   weightOz: number | null;
+  ebayListingId: string | null;
+  ebayPublishError: string | null;
+  ebayEnvironment: string | null;
 };
 
 type BoxSize = { id: string; label: string };
@@ -55,6 +58,7 @@ export default function ReviewPage() {
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [draftingId, setDraftingId] = useState<string | null>(null);
+  const [publishingId, setPublishingId] = useState<string | null>(null);
 
   async function load() {
     const [itemsRes, rulesRes, boxSizesRes] = await Promise.all([
@@ -158,6 +162,28 @@ export default function ReviewPage() {
     await updateItem(item.id, { status: "ready" });
   }
 
+  // Distinct from "Mark ready" — this is the actual, not-cleanly-undoable
+  // publish to eBay via the real Inventory API. Errors (a bad category ID,
+  // a missing business policy, etc.) come back from eBay's own validation
+  // and are shown inline on the item rather than swallowed.
+  async function publishToEbay(item: Item) {
+    setPublishingId(item.id);
+    setError(null);
+    try {
+      const res = await fetch(`/api/items/${item.id}/publish-to-ebay`, { method: "POST" });
+      const result = await res.json();
+      if (!res.ok) {
+        throw new Error(result.error ?? "Publish failed.");
+      }
+      setItems((prev) => prev?.map((i) => (i.id === item.id ? result : i)) ?? prev);
+    } catch (e) {
+      await load();
+      setError(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setPublishingId(null);
+    }
+  }
+
   async function exportReady() {
     setExporting(true);
     setError(null);
@@ -197,6 +223,7 @@ export default function ReviewPage() {
   const pending = items.filter((i) => i.status === "pending_review");
   const ready = items.filter((i) => i.status === "ready");
   const exported = items.filter((i) => i.status === "exported");
+  const listed = items.filter((i) => i.status === "listed");
 
   return (
     <main className="mx-auto max-w-5xl p-6">
@@ -255,20 +282,65 @@ export default function ReviewPage() {
         {ready.map((item) => (
           <div
             key={item.id}
-            className="flex items-center gap-3 rounded border p-3 text-sm"
+            className="flex flex-col gap-2 rounded border p-3 text-sm"
           >
-            {item.photoUrls[0] && (
-              <img
-                src={item.photoUrls[0]}
-                alt=""
-                className="h-10 w-10 rounded object-cover"
-              />
+            <div className="flex items-center gap-3">
+              {item.photoUrls[0] && (
+                <img
+                  src={item.photoUrls[0]}
+                  alt=""
+                  className="h-10 w-10 rounded object-cover"
+                />
+              )}
+              <span className="flex-1">{item.finalTitle}</span>
+              <span className="text-gray-500">${item.price}</span>
+              <button
+                type="button"
+                onClick={() => publishToEbay(item)}
+                disabled={publishingId === item.id}
+                className="rounded bg-black px-3 py-1.5 text-xs text-white disabled:opacity-40"
+              >
+                {publishingId === item.id ? "Publishing…" : "Publish to eBay"}
+              </button>
+            </div>
+            {item.ebayPublishError && (
+              <p className="text-xs text-red-600">eBay rejected this: {item.ebayPublishError}</p>
             )}
-            <span className="flex-1">{item.finalTitle}</span>
-            <span className="text-gray-500">${item.price}</span>
           </div>
         ))}
+        {ready.length === 0 && (
+          <p className="text-sm text-gray-400">Nothing marked ready yet.</p>
+        )}
       </div>
+
+      {listed.length > 0 && (
+        <>
+          <h2 className="mb-2 text-sm font-medium text-gray-500">
+            Listed on eBay ({listed.length})
+          </h2>
+          <div className="mb-8 flex flex-col gap-2">
+            {listed.map((item) => (
+              <div key={item.id} className="flex items-center gap-3 text-sm text-gray-500">
+                <span className="flex-1">{item.finalTitle}</span>
+                {item.ebayListingId && (
+                  <a
+                    href={
+                      item.ebayEnvironment === "production"
+                        ? `https://www.ebay.com/itm/${item.ebayListingId}`
+                        : `https://sandbox.ebay.com/itm/${item.ebayListingId}`
+                    }
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-blue-600 underline"
+                  >
+                    view listing
+                  </a>
+                )}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
 
       {exported.length > 0 && (
         <>
