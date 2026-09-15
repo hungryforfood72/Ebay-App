@@ -597,10 +597,11 @@ export async function findAdByListingId(listingId: string): Promise<{ adId: stri
   return ad ? { adId: ad.adId, bidPercentage: Number(ad.bidPercentage ?? 0) } : null;
 }
 
+// Path is /update_bid, not just /bid — confirmed live (the latter 404s).
 export async function updateAdBid(adId: string, bidPercentage: number): Promise<void> {
   const campaignId = getAdCampaignId();
   await ebayFetch(
-    `/sell/marketing/v1/ad_campaign/${encodeURIComponent(campaignId)}/ad/${encodeURIComponent(adId)}/bid`,
+    `/sell/marketing/v1/ad_campaign/${encodeURIComponent(campaignId)}/ad/${encodeURIComponent(adId)}/update_bid`,
     { method: "POST", body: JSON.stringify({ bidPercentage: String(bidPercentage) }) }
   );
 }
