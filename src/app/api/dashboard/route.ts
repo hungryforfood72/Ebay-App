@@ -19,6 +19,7 @@ export async function GET() {
     expiringUnlisted,
     salesThisMonth,
     token,
+    refundsThisMonth,
   ] = await Promise.all([
     prisma.item.count({ where: { status: "pending_review" } }),
     prisma.item.count({ where: { status: "ready" } }),
@@ -74,6 +75,15 @@ export async function GET() {
       },
     }),
     prisma.ebayAuthToken.findUnique({ where: { environment: getEbayEnvironment() } }),
+    // Refunds this month, scoped by when the refund itself posted (not the
+    // original sale date) — a September refund on an August sale belongs in
+    // September's numbers. EbayItemRefund can only ever exist attached to
+    // an EbayItemSale, so this is automatically already scoped to
+    // app-tracked listings only, same as sales.
+    prisma.ebayItemRefund.findMany({
+      where: { refundedAt: { gte: startOfMonth } },
+      select: { amount: true, feeCredit: true },
+    }),
   ]);
 
   const missingScopes = token ? await getMissingScopes() : [];
@@ -100,7 +110,19 @@ export async function GET() {
       sale.item.manifestId && sale.item.upc ? (cogsMaps.get(sale.item.manifestId)?.get(sale.item.upc) ?? 0) : 0;
     soldThisMonthCogs += cogsPerUnit * physicalUnits;
   }
-  const soldThisMonthProfit = soldThisMonthRevenue - soldThisMonthFees - soldThisMonthShipping - soldThisMonthCogs;
+  // Net refund cost = amount paid back to the buyer minus whatever fees
+  // eBay credited back to us on that refund — the fee credit isn't pure
+  // profit, it's an offset against the fees already subtracted above.
+  let refundedThisMonthAmount = 0;
+  let refundedThisMonthFeeCredit = 0;
+  for (const refund of refundsThisMonth) {
+    refundedThisMonthAmount += Number(refund.amount);
+    refundedThisMonthFeeCredit += Number(refund.feeCredit);
+  }
+  const refundedThisMonthNet = refundedThisMonthAmount - refundedThisMonthFeeCredit;
+
+  const soldThisMonthProfit =
+    soldThisMonthRevenue - soldThisMonthFees - soldThisMonthShipping - soldThisMonthCogs - refundedThisMonthNet;
 
   return NextResponse.json({
     stats: {
@@ -112,6 +134,7 @@ export async function GET() {
       soldThisMonthUnits,
       soldThisMonthFees,
       soldThisMonthShipping,
+      soldThisMonthRefunded: refundedThisMonthAmount,
       soldThisMonthProfit,
     },
     ebay: {

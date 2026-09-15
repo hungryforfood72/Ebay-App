@@ -44,6 +44,7 @@ type DashboardData = {
     soldThisMonthUnits: number;
     soldThisMonthFees: number;
     soldThisMonthShipping: number;
+    soldThisMonthRefunded: number;
     soldThisMonthProfit: number;
   };
   ebay: { connected: boolean; missingScopes: string[] };
@@ -65,6 +66,7 @@ type SyncResult = {
   itemsUpdated: number;
   itemsAlreadySynced: number;
   itemsUnmatched: number;
+  refundsRecorded: number;
   errors: string[];
 };
 
@@ -101,6 +103,7 @@ export default function DashboardPage() {
         itemsUpdated: 0,
         itemsAlreadySynced: 0,
         itemsUnmatched: 0,
+        refundsRecorded: 0,
         errors: ["Sync request failed."],
       });
     } finally {
@@ -201,6 +204,12 @@ export default function DashboardPage() {
         <Stat label="Fees this month" value={stats.soldThisMonthFees} format="currency" />
         <Stat label="Shipping this month" value={stats.soldThisMonthShipping} format="currency" />
         <Stat
+          label="Refunds this month"
+          value={stats.soldThisMonthRefunded}
+          format="currency"
+          highlight={stats.soldThisMonthRefunded > 0}
+        />
+        <Stat
           label="Profit this month"
           value={stats.soldThisMonthProfit}
           format="currency"
@@ -234,7 +243,8 @@ export default function DashboardPage() {
             ) : (
               <p>
                 Scanned {syncResult.ordersScanned} order(s) — {syncResult.itemsUpdated} item(s) updated,{" "}
-                {syncResult.itemsAlreadySynced} already synced, {syncResult.itemsUnmatched} unmatched.
+                {syncResult.itemsAlreadySynced} already synced, {syncResult.itemsUnmatched} unmatched,{" "}
+                {syncResult.refundsRecorded} refund(s) recorded.
               </p>
             )}
             {syncResult.errors.length > 0 && (

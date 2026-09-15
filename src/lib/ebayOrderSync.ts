@@ -7,6 +7,7 @@ export type EbayOrderSyncResult = {
   itemsUpdated: number;
   itemsAlreadySynced: number;
   itemsUnmatched: number;
+  refundsRecorded: number;
   errors: string[];
 };
 
@@ -29,6 +30,7 @@ export async function syncEbayOrders(options?: { since?: Date }): Promise<EbayOr
     itemsUpdated: 0,
     itemsAlreadySynced: 0,
     itemsUnmatched: 0,
+    refundsRecorded: 0,
     errors: [],
   };
 
@@ -149,6 +151,68 @@ export async function syncEbayOrders(options?: { since?: Date }): Promise<EbayOr
         } catch (e) {
           result.errors.push(
             `Order ${order.orderId} line ${lineItem.lineItemId}: ${e instanceof Error ? e.message : String(e)}`
+          );
+        }
+      }
+
+      // Refunds are processed for every scanned order, not just ones with
+      // newly-synced line items — a refund can post well after the
+      // original sale was already recorded (eBay bumps the order's
+      // lastmodifieddate when it does, which is exactly what brings the
+      // order back into a later incremental sync's window). Only ever
+      // attaches to a sale that already exists in our own data, so a
+      // refund on a listing never made through this app has nothing to
+      // attach to and is correctly never recorded at all.
+      for (const refund of earnings.refunds) {
+        try {
+          const targetSales =
+            refund.affectedLineItemIds.length > 0
+              ? await prisma.ebayItemSale.findMany({
+                  where: { ebayOrderLineItemId: { in: refund.affectedLineItemIds } },
+                })
+              : await prisma.ebayItemSale.findMany({ where: { ebayOrderId: order.orderId } });
+          if (targetSales.length === 0) continue;
+
+          // No genuine per-line refund-amount breakdown from eBay even
+          // when affectedLineItemIds names more than one line (only fee
+          // credits are itemized) — split the refund total across
+          // whichever of our sales it applies to, proportional to each
+          // one's original revenue, same allocation philosophy as the
+          // shipping-label split above.
+          const totalRevenueOfTargets = targetSales.reduce((sum, s) => sum + Number(s.revenue), 0);
+          for (const sale of targetSales) {
+            const share = totalRevenueOfTargets > 0 ? Number(sale.revenue) / totalRevenueOfTargets : 1 / targetSales.length;
+            const amount = refund.totalAmount * share;
+            const feeCredit = refund.totalFeeCredit * share;
+            // Composite, not the bare eBay transactionId — one refund
+            // transaction can legitimately become several EbayItemRefund
+            // rows (one per affected sale), and each needs its own stable
+            // idempotency key.
+            const compositeId = `${refund.transactionId}:${sale.id}`;
+
+            const alreadyRecorded = await prisma.ebayItemRefund.findUnique({
+              where: { ebayRefundTransactionId: compositeId },
+              select: { id: true },
+            });
+            if (alreadyRecorded) continue;
+
+            await prisma.$transaction([
+              prisma.ebayItemRefund.create({
+                data: {
+                  saleId: sale.id,
+                  ebayRefundTransactionId: compositeId,
+                  amount,
+                  feeCredit,
+                  refundedAt: new Date(refund.refundedAt),
+                },
+              }),
+              prisma.item.update({ where: { id: sale.itemId }, data: { refundedTotal: { increment: amount } } }),
+            ]);
+            result.refundsRecorded++;
+          }
+        } catch (e) {
+          result.errors.push(
+            `Order ${order.orderId} refund ${refund.transactionId}: ${e instanceof Error ? e.message : String(e)}`
           );
         }
       }

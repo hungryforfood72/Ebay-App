@@ -613,6 +613,24 @@ export type EbayOrderEarnings = {
   // since an order could in principle have more than one shipping-label
   // transaction (a split shipment).
   shippingLabels: { transactionId: string; amount: number }[];
+  // Buyer refunds against this order — confirmed live in two shapes: most
+  // have orderLineItems naming which line(s) were refunded (each with its
+  // own marketplaceFees, but as CREDITS here rather than charges — and
+  // note the API gives no genuine per-line *revenue* breakdown, only a
+  // top-level total, even when multiple lines are named), but a Money Back
+  // Guarantee case refund can come back with no orderLineItems at all —
+  // just a top-level amount, no way to tell which line item it covers.
+  // affectedLineItemIds is empty for that second shape; the caller falls
+  // back to splitting totalAmount/totalFeeCredit proportionally across
+  // whatever of the order's line items it already has a sale on record
+  // for (same allocation philosophy as shippingLabels above).
+  refunds: {
+    transactionId: string;
+    refundedAt: string;
+    totalAmount: number;
+    totalFeeCredit: number;
+    affectedLineItemIds: string[];
+  }[];
 };
 
 // GET /sell/finances/v1/transaction?filter=orderId:{orderId} — the real
@@ -641,20 +659,42 @@ export async function getOrderEarnings(orderId: string): Promise<EbayOrderEarnin
       transactionType?: string;
       transactionId?: string;
       amount?: { value: string };
+      transactionDate?: string;
       orderLineItems?: { lineItemId: string; marketplaceFees?: { amount: { value: string } }[] }[];
     }[];
   };
   const transactions = result.transactions ?? [];
-  const lineItems = transactions.flatMap((t) => t.orderLineItems ?? []);
+
+  // Only SALE transactions' orderLineItems represent fees actually
+  // charged — a REFUND transaction's orderLineItems.marketplaceFees are
+  // CREDITS, and were previously being summed into the same pool as
+  // charges here, silently inflating fees on any order with a refund.
+  const saleLineItems = transactions.filter((t) => t.transactionType === "SALE").flatMap((t) => t.orderLineItems ?? []);
+
   const shippingLabels = transactions
     .filter((t) => t.transactionType === "SHIPPING_LABEL" && t.transactionId)
     .map((t) => ({ transactionId: t.transactionId!, amount: Number(t.amount?.value ?? 0) }));
+
+  const refunds = transactions
+    .filter((t) => t.transactionType === "REFUND" && t.transactionId)
+    .map((t) => ({
+      transactionId: t.transactionId!,
+      refundedAt: t.transactionDate ?? new Date().toISOString(),
+      totalAmount: Number(t.amount?.value ?? 0),
+      totalFeeCredit: (t.orderLineItems ?? []).reduce(
+        (sum, li) => sum + (li.marketplaceFees ?? []).reduce((s, f) => s + Number(f.amount.value), 0),
+        0
+      ),
+      affectedLineItemIds: (t.orderLineItems ?? []).map((li) => li.lineItemId),
+    }));
+
   return {
-    lineItemFees: lineItems.map((li) => ({
+    lineItemFees: saleLineItems.map((li) => ({
       lineItemId: li.lineItemId,
       totalFees: (li.marketplaceFees ?? []).reduce((sum, f) => sum + Number(f.amount.value), 0),
     })),
     shippingLabels,
+    refunds,
   };
 }
 
