@@ -214,9 +214,23 @@ function buildAspects(specifics: Record<string, string> | null): Record<string, 
   return aspects;
 }
 
+// eBay's Inventory API SKU must be alphanumeric only and ≤50 characters —
+// stricter than the app's own sku field ("(Location - A3)-<uuid>", used
+// freely elsewhere: CSV CustomLabel, on-screen display, internal
+// uniqueness). Strips everything else and keeps the last 50 chars rather
+// than the first 50, so truncation (for an unusually long shelf location
+// label) trims the human-readable prefix instead of the UUID suffix that
+// actually guarantees uniqueness. Deterministic and reusable — matching an
+// eBay order's SKU back to an Item later just means recomputing this same
+// function over each candidate Item.sku, no extra field needed.
+export function toEbaySku(sku: string): string {
+  const alphanumeric = sku.replace(/[^a-zA-Z0-9]/g, "");
+  return alphanumeric.length > 50 ? alphanumeric.slice(-50) : alphanumeric;
+}
+
 export async function createOrReplaceInventoryItem(item: ItemForEbayPublish): Promise<void> {
   const totalWeightLbs = (item.weightLbs ?? 0) + (item.weightOz ?? 0) / 16;
-  await ebayFetch(`/sell/inventory/v1/inventory_item/${encodeURIComponent(item.sku)}`, {
+  await ebayFetch(`/sell/inventory/v1/inventory_item/${encodeURIComponent(toEbaySku(item.sku))}`, {
     method: "PUT",
     body: JSON.stringify({
       condition: CONDITION_ENUM[item.condition],
@@ -240,7 +254,7 @@ export async function createOffer(item: ItemForEbayPublish): Promise<string> {
   const result = (await ebayFetch(`/sell/inventory/v1/offer`, {
     method: "POST",
     body: JSON.stringify({
-      sku: item.sku,
+      sku: toEbaySku(item.sku),
       marketplaceId: "EBAY_US",
       format: "FIXED_PRICE",
       availableQuantity: item.quantity,
