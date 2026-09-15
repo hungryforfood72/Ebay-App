@@ -47,8 +47,19 @@ function daysUntil(dateStr: string): number {
   return Math.ceil((new Date(dateStr).getTime() - Date.now()) / (24 * 60 * 60 * 1000));
 }
 
+type SyncResult = {
+  skipped?: string;
+  ordersScanned: number;
+  itemsUpdated: number;
+  itemsAlreadySynced: number;
+  itemsUnmatched: number;
+  errors: string[];
+};
+
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
 
   function load() {
     fetch("/api/dashboard")
@@ -57,6 +68,29 @@ export default function DashboardPage() {
   }
 
   useEffect(load, []);
+
+  // Same sync the cron job runs every 4 hours (src/lib/ebayOrderSync.ts) —
+  // manual trigger for testing or when Cristian doesn't want to wait.
+  async function syncNow() {
+    setSyncing(true);
+    setSyncResult(null);
+    try {
+      const res = await fetch("/api/ebay/sync", { method: "POST" });
+      const result = await res.json();
+      setSyncResult(result);
+      load();
+    } catch {
+      setSyncResult({
+        ordersScanned: 0,
+        itemsUpdated: 0,
+        itemsAlreadySynced: 0,
+        itemsUnmatched: 0,
+        errors: ["Sync request failed."],
+      });
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   function updateItem(id: string, patch: Partial<ExpiringListedItem>) {
     setData((prev) =>
@@ -129,6 +163,38 @@ export default function DashboardPage() {
         <Stat label="Expiring ≤21 days" value={stats.expiringCount} highlight={stats.expiringCount > 0} />
         <Stat label="Sold this month" value={stats.soldThisMonthRevenue} format="currency" />
         <Stat label="Units sold this month" value={stats.soldThisMonthUnits} />
+      </section>
+
+      <section className="mb-6 flex flex-col gap-2 rounded-lg border p-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium">Sold-order sync</p>
+            <p className="text-xs text-gray-400">Runs automatically every 4 hours — or trigger it now.</p>
+          </div>
+          <button
+            type="button"
+            onClick={syncNow}
+            disabled={syncing}
+            className="rounded bg-black px-3 py-2 text-sm text-white disabled:opacity-40"
+          >
+            {syncing ? "Syncing…" : "Sync now"}
+          </button>
+        </div>
+        {syncResult && (
+          <div className="text-sm text-gray-600">
+            {syncResult.skipped ? (
+              <p className="text-amber-600">{syncResult.skipped}</p>
+            ) : (
+              <p>
+                Scanned {syncResult.ordersScanned} order(s) — {syncResult.itemsUpdated} item(s) updated,{" "}
+                {syncResult.itemsAlreadySynced} already synced, {syncResult.itemsUnmatched} unmatched.
+              </p>
+            )}
+            {syncResult.errors.length > 0 && (
+              <p className="text-red-600">{syncResult.errors.join(" · ")}</p>
+            )}
+          </div>
+        )}
       </section>
 
       <section className="mb-6">
