@@ -216,7 +216,13 @@ async function getAppAccessToken(): Promise<string> {
   return result.accessToken;
 }
 
-export type ActiveListingComp = { price: number; title: string };
+// price is the item price alone; shippingCost is added on top only when
+// the listing has a real FIXED shipping charge (CALCULATED shipping
+// depends on the buyer's address, which the API can't resolve without one
+// — those comps get shippingCost 0, same as genuinely free shipping,
+// since there's no other number to use). totalPrice is what a buyer
+// actually pays, and is what comps should be compared/sorted on.
+export type ActiveListingComp = { price: number; shippingCost: number; totalPrice: number; title: string };
 
 // GET /buy/browse/v1/item_summary/search — active (not sold) listings, the
 // only comp data actually available via API (see EbayApiError's callers
@@ -255,11 +261,27 @@ export async function searchActiveListings(query: {
     );
   }
   const result = (await res.json()) as {
-    itemSummaries?: { itemId: string; title: string; price?: { value: string } }[];
+    itemSummaries?: {
+      itemId: string;
+      title: string;
+      price?: { value: string };
+      shippingOptions?: { shippingCostType: string; shippingCost?: { value: string } }[];
+    }[];
   };
   return (result.itemSummaries ?? [])
     .filter((i) => i.itemId !== query.excludeListingId && i.price)
-    .map((i) => ({ price: Number(i.price!.value), title: i.title }));
+    .map((i) => {
+      const price = Number(i.price!.value);
+      // Only a FIXED shippingCostType actually carries a shippingCost value
+      // — confirmed live. CALCULATED shipping varies by buyer address, so
+      // there's no number the API can give without one.
+      const shippingOption = i.shippingOptions?.[0];
+      const shippingCost =
+        shippingOption?.shippingCostType === "FIXED" && shippingOption.shippingCost
+          ? Number(shippingOption.shippingCost.value)
+          : 0;
+      return { price, shippingCost, totalPrice: price + shippingCost, title: i.title };
+    });
 }
 
 // ---------------------------------------------------------------------------

@@ -22,6 +22,20 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     return NextResponse.json({ error: "Need a UPC or a title to search comps." }, { status: 400 });
   }
 
+  // What the spreadsheet said this cost per unit, if this item came from a
+  // manifest scan — lets Cristian see at a glance whether current comps are
+  // above or below what he paid. Not recomputed; comes straight from the
+  // manifest CSV line, same as the manifest reconciliation dashboard's
+  // figures. Same UPC can appear on more than one line (split across
+  // pallets) — they're normally the same price, so the first match is fine.
+  const retailLine = item.manifestId && item.upc
+    ? await prisma.manifestLine.findFirst({
+        where: { manifestId: item.manifestId, upc: item.upc },
+        select: { retailPrice: true },
+      })
+    : null;
+  const retailPrice = retailLine ? Number(retailLine.retailPrice) : null;
+
   try {
     const comps = await searchActiveListings({
       upc: item.upc,
@@ -29,20 +43,25 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       excludeListingId: item.ebayListingId,
     });
     if (comps.length === 0) {
-      return NextResponse.json({ comps: [], median: null, low: null, high: null });
+      return NextResponse.json({ comps: [], median: null, low: null, high: null, retailPrice });
     }
-    const prices = comps.map((c) => c.price).sort((a, b) => a - b);
-    const mid = Math.floor(prices.length / 2);
-    const median = prices.length % 2 === 0 ? (prices[mid - 1] + prices[mid]) / 2 : prices[mid];
+    // Sorted/summarized on totalPrice (item + real fixed shipping cost) —
+    // the actual out-of-pocket price to a buyer, not just the item's own
+    // sticker price, so a "free shipping at $20" listing and a "$15 + $5
+    // shipping" listing compare as the equivalent deals they are.
+    const totals = comps.map((c) => c.totalPrice).sort((a, b) => a - b);
+    const mid = Math.floor(totals.length / 2);
+    const median = totals.length % 2 === 0 ? (totals[mid - 1] + totals[mid]) / 2 : totals[mid];
     return NextResponse.json({
       comps: comps.slice(0, 10),
       count: comps.length,
       median,
-      low: prices[0],
-      high: prices[prices.length - 1],
+      low: totals[0],
+      high: totals[totals.length - 1],
+      retailPrice,
     });
   } catch (e) {
     const message = e instanceof EbayApiError || e instanceof Error ? e.message : "Price research failed.";
-    return NextResponse.json({ error: message }, { status: 502 });
+    return NextResponse.json({ error: message, retailPrice }, { status: 502 });
   }
 }

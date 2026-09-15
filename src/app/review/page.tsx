@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type CategoryRule = {
   id: string;
@@ -497,13 +497,17 @@ function ItemCard({
     median: number | null;
     low: number | null;
     high: number | null;
+    retailPrice: number | null;
   } | null>(null);
   const [priceResearchError, setPriceResearchError] = useState<string | null>(null);
+  const priceResearchedFor = useRef<string | null>(null);
 
   // Active-listing comps only — there's no API path to real sold-price data
   // (eBay's Marketplace Insights API is closed to new applicants), so this
   // is framed as "based on active competition," never auto-fills the price
-  // field, purely advisory.
+  // field, purely advisory. Comps are totalPrice (item + real fixed
+  // shipping cost), not just the item's own price, so a free-shipping
+  // listing and a cheaper-item-plus-shipping listing compare fairly.
   async function researchPrice() {
     setPriceResearching(true);
     setPriceResearchError(null);
@@ -511,7 +515,14 @@ function ItemCard({
     try {
       const res = await fetch(`/api/items/${item.id}/price-research`);
       const result = await res.json();
-      if (!res.ok) throw new Error(result.error ?? "Price research failed.");
+      if (!res.ok) {
+        // Manifest retail price doesn't depend on the eBay call succeeding
+        // — still show it even if the comp search itself failed.
+        if (result.retailPrice != null) {
+          setPriceResearchResult({ count: 0, median: null, low: null, high: null, retailPrice: result.retailPrice });
+        }
+        throw new Error(result.error ?? "Price research failed.");
+      }
       setPriceResearchResult(result);
     } catch (e) {
       setPriceResearchError(e instanceof Error ? e.message : "Something went wrong.");
@@ -519,6 +530,22 @@ function ItemCard({
       setPriceResearching(false);
     }
   }
+
+  // Runs automatically once a UPC or title is available — no need to hit
+  // the button. Keyed off item.id so it only fires once per item (a title
+  // edit while comps are already shown shouldn't silently re-trigger a
+  // fetch mid-edit).
+  useEffect(() => {
+    if (priceResearchedFor.current === item.id) return;
+    if (!item.upc && !item.finalTitle && !item.aiTitle) return;
+    priceResearchedFor.current = item.id;
+    // Deferred rather than called directly — researchPrice's first line is
+    // a setState call, and calling that synchronously from an effect body
+    // triggers React's cascading-render warning.
+    const timer = setTimeout(researchPrice, 0);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item.id, item.upc, item.finalTitle, item.aiTitle]);
   const [typedCategoryCheck, setTypedCategoryCheck] = useState<{
     id: string;
     name: string | null; // null means the ID wasn't found in eBay's category tree
@@ -693,22 +720,29 @@ function ItemCard({
               type="button"
               onClick={researchPrice}
               disabled={priceResearching}
-              title="Searches active (not sold) listings for this UPC — advisory only, doesn't change the price"
+              title="Searches active (not sold) listings for this UPC, total price includes the seller's shipping charge when it's a fixed cost — advisory only, doesn't change the price"
               className="text-left text-xs text-gray-500 underline disabled:opacity-40"
             >
-              {priceResearching ? "Checking eBay…" : "Price estimate"}
+              {priceResearching ? "Checking eBay…" : "Refresh price estimate"}
             </button>
             {priceResearchError && <span className="text-xs text-red-600">{priceResearchError}</span>}
-            {priceResearchResult &&
-              (priceResearchResult.count === 0 ? (
-                <span className="text-xs text-gray-400">No active comps found.</span>
-              ) : (
-                <span className="text-xs text-gray-600">
-                  Active: ${priceResearchResult.low?.toFixed(2)}–${priceResearchResult.high?.toFixed(2)} (median $
-                  {priceResearchResult.median?.toFixed(2)}, {priceResearchResult.count} comp
-                  {priceResearchResult.count === 1 ? "" : "s"})
-                </span>
-              ))}
+            {!priceResearchError && priceResearchResult && priceResearchResult.count === 0 && (
+              <span className="text-xs text-gray-400">No active comps found.</span>
+            )}
+            {priceResearchResult && priceResearchResult.count > 0 && (
+              <span className="text-xs text-gray-600">
+                Active (shipped): ${priceResearchResult.low?.toFixed(2)}–${priceResearchResult.high?.toFixed(2)}{" "}
+                (median ${priceResearchResult.median?.toFixed(2)}, {priceResearchResult.count} comp
+                {priceResearchResult.count === 1 ? "" : "s"})
+              </span>
+            )}
+            {priceResearchResult?.retailPrice != null && (
+              <span className="text-xs text-gray-600">
+                Manifest retail: ${priceResearchResult.retailPrice.toFixed(2)}
+                {priceResearchResult.median != null &&
+                  ` (comps ${priceResearchResult.median >= priceResearchResult.retailPrice ? "above" : "below"} retail)`}
+              </span>
+            )}
           </div>
           <div className="flex flex-col gap-1">
             <input
