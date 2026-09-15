@@ -21,6 +21,8 @@ type ExpiringListedItem = {
   markdownPercentOff: number | null;
   markdownEndsAt: string | null;
   ebayMarkdownError: string | null;
+  livePrice: number | null;
+  liveOriginalPrice: number | null;
 };
 
 function ebayListingUrl(item: Pick<ExpiringListedItem, "ebayListingId" | "ebayEnvironment">): string | null {
@@ -491,7 +493,21 @@ function ExpiringItemCard({
         <div>
           <p className="font-medium">{item.finalTitle ?? item.sku}</p>
           <p className="text-xs text-gray-400">
-            {item.shelfLocation} · {item.price != null ? `$${item.price.toFixed(2)}` : "no price"}
+            {item.shelfLocation} ·{" "}
+            {item.livePrice != null ? (
+              <>
+                {item.liveOriginalPrice != null && (
+                  <span className="text-gray-400 line-through">${item.liveOriginalPrice.toFixed(2)}</span>
+                )}{" "}
+                <span className={item.liveOriginalPrice != null ? "font-medium text-green-700" : undefined}>
+                  ${item.livePrice.toFixed(2)}
+                </span>
+              </>
+            ) : item.price != null ? (
+              `$${item.price.toFixed(2)}`
+            ) : (
+              "no price"
+            )}
             {ebayListingUrl(item) && (
               <>
                 {" · "}

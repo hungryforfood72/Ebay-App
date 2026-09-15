@@ -284,6 +284,43 @@ export async function searchActiveListings(query: {
     });
 }
 
+export type LiveListingPrice = { price: number; originalPrice: number | null };
+
+// GET /buy/browse/v1/item/get_item_by_legacy_id — the app's own stored
+// Item.price is what it was set to at publish/discount time, but a running
+// "Sale event" markdown changes the actual live price on eBay without ever
+// writing back to our DB (there's no webhook for it). Confirmed live: the
+// top-level `price` is the current (post-markdown) price a buyer pays, and
+// `marketingPrice.originalPrice` is only present while a strikethrough sale
+// is active — exactly the two numbers needed to show real live state
+// instead of a stale one. Uses the app-level Browse API token, same as
+// searchActiveListings, since this is public listing data.
+export async function getLiveListingPrice(legacyItemId: string): Promise<LiveListingPrice | null> {
+  const config = getEbayConfig();
+  const token = await getAppAccessToken();
+  const res = await fetch(
+    `${config.apiBase}/buy/browse/v1/item/get_item_by_legacy_id?legacy_item_id=${encodeURIComponent(legacyItemId)}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
+        "Content-Language": "en-US",
+        "Accept-Language": "en-US",
+      },
+    }
+  );
+  if (!res.ok) return null; // best-effort — a failed live lookup falls back to the stored price, not an error
+  const body = (await res.json()) as {
+    price?: { value: string };
+    marketingPrice?: { originalPrice?: { value: string } };
+  };
+  if (!body.price) return null;
+  return {
+    price: Number(body.price.value),
+    originalPrice: body.marketingPrice?.originalPrice ? Number(body.marketingPrice.originalPrice.value) : null,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Inventory API
 // ---------------------------------------------------------------------------

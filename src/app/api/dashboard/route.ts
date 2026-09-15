@@ -1,7 +1,9 @@
 import { cogsPerUnitByManifest } from "@/lib/cogs";
-import { getEbayEnvironment, getMissingScopes } from "@/lib/ebay";
+import { getEbayEnvironment, getLiveListingPrice, getMissingScopes } from "@/lib/ebay";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
+
+export const maxDuration = 30;
 
 const EXPIRING_WINDOW_DAYS = 21;
 
@@ -92,6 +94,20 @@ export async function GET() {
 
   const missingScopes = token ? await getMissingScopes() : [];
 
+  // The stored Item.price is only ever what it was set to at publish/
+  // discount time — a running Sale event changes the real live price on
+  // eBay directly, with no webhook back to this app, so the card would
+  // otherwise silently show a stale pre-sale number while a sale is
+  // active. Best-effort and parallel: a failed lookup for one item just
+  // falls back to the stored price for that card, not a dashboard error.
+  const livePrices = new Map(
+    await Promise.all(
+      expiringListed
+        .filter((i) => i.ebayListingId)
+        .map(async (i) => [i.id, await getLiveListingPrice(i.ebayListingId!)] as const)
+    )
+  );
+
   // COGS is manifest-derived — fetch each distinct manifest's per-UPC cost
   // map once (not once per sale), $0 for anything with no manifest at all
   // (items scanned outside manifest mode, per Cristian's instruction).
@@ -145,7 +161,15 @@ export async function GET() {
       connected: Boolean(token),
       missingScopes,
     },
-    expiringListed: expiringListed.map((i) => ({ ...i, price: i.price != null ? Number(i.price) : null })),
+    expiringListed: expiringListed.map((i) => {
+      const live = livePrices.get(i.id);
+      return {
+        ...i,
+        price: i.price != null ? Number(i.price) : null,
+        livePrice: live?.price ?? null,
+        liveOriginalPrice: live?.originalPrice ?? null,
+      };
+    }),
     expiringUnlisted,
   });
 }
