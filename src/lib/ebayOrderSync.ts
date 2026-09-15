@@ -18,7 +18,12 @@ export type EbayOrderSyncResult = {
 // cancelled orders are excluded.
 const NON_SALE_PAYMENT_STATUSES = ["FAILED", "PENDING", "CANCELLED", "NO_PAYMENT_NEEDED"];
 
-export async function syncEbayOrders(): Promise<EbayOrderSyncResult> {
+// `since`, when passed, overrides the normal incremental watermark — for a
+// one-off historical catch-up (e.g. after linking legacy CSV-uploaded
+// listings via /api/items/link-legacy, whose sales could predate this sync
+// feature entirely and would otherwise never be picked up, since the
+// regular run only ever looks forward from the last successful sync).
+export async function syncEbayOrders(options?: { since?: Date }): Promise<EbayOrderSyncResult> {
   const result: EbayOrderSyncResult = {
     ordersScanned: 0,
     itemsUpdated: 0,
@@ -35,7 +40,7 @@ export async function syncEbayOrders(): Promise<EbayOrderSyncResult> {
 
   const environment = getEbayEnvironment();
   const syncState = await prisma.ebaySyncState.findUnique({ where: { environment } });
-  const from = syncState?.lastOrderSyncAt ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const from = options?.since ?? syncState?.lastOrderSyncAt ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
   // Captured before calling eBay, not after — an order modified while this
   // run is in flight must still be picked up by the *next* run, not
   // skipped because the watermark already moved past it.

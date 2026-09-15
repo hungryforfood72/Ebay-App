@@ -194,9 +194,13 @@ export async function getMissingScopes(): Promise<string[]> {
 // Inventory API
 // ---------------------------------------------------------------------------
 
-async function ebayFetch(path: string, init: RequestInit = {}): Promise<unknown> {
+// baseOverride exists for the Finances API, which resolves under a
+// different host entirely (apiz.*.ebay.com, not api.*.ebay.com) — every
+// other Sell API this app talks to uses config.apiBase, so this defaults
+// to that rather than needing every call site to know the difference.
+async function ebayFetch(path: string, init: RequestInit = {}, baseOverride?: string): Promise<unknown> {
   const [token, config] = await Promise.all([getValidAccessToken(), Promise.resolve(getEbayConfig())]);
-  const res = await fetch(`${config.apiBase}${path}`, {
+  const res = await fetch(`${baseOverride ?? config.apiBase}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -498,15 +502,32 @@ export type EbayOrderEarnings = {
   totalFees: number;
 }[];
 
-// GET /sell/finances/v1/order_earnings/{orderId} — the real fees (final
-// value fee, regulatory fee, shipping label cost if purchased through
-// eBay, etc.) actually deducted from the payout for each line item in this
-// order.
+// GET /sell/finances/v1/transaction?filter=orderId:{orderId} — the real
+// fees (final value fee, regulatory fee, shipping label cost if purchased
+// through eBay, etc.) actually deducted from the payout for each line item
+// in this order. Uses transaction rather than the order_earnings resource
+// (GET .../order_earnings/{orderId}, same shape, simpler call) — verified
+// live that order_earnings 403s with "Insufficient permissions" even with
+// the sell.finances scope correctly granted (it needs some additional
+// eBay-side enrollment this account doesn't have), while transaction
+// returns the identical orderLineItems[].marketplaceFees[] data with no
+// such restriction. Also confirmed live that the Finances API resolves
+// under apiz.*.ebay.com, not api.*.ebay.com like every other Sell API this
+// app talks to — a wrong-host call here comes back as a bare 404 with an
+// empty body, not an eBay error response, easy to mistake for "order not
+// found."
 export async function getOrderEarnings(orderId: string): Promise<EbayOrderEarnings> {
-  const result = (await ebayFetch(`/sell/finances/v1/order_earnings/${encodeURIComponent(orderId)}`)) as {
-    orderLineItems?: { lineItemId: string; marketplaceFees?: { amount: { value: string } }[] }[];
+  const environment = getEbayEnvironment();
+  const financesBase = environment === "production" ? "https://apiz.ebay.com" : "https://apiz.sandbox.ebay.com";
+  const result = (await ebayFetch(
+    `/sell/finances/v1/transaction?filter=${encodeURIComponent(`orderId:{${orderId}}`)}`,
+    {},
+    financesBase
+  )) as {
+    transactions?: { orderLineItems?: { lineItemId: string; marketplaceFees?: { amount: { value: string } }[] }[] }[];
   };
-  return (result.orderLineItems ?? []).map((li) => ({
+  const lineItems = (result.transactions ?? []).flatMap((t) => t.orderLineItems ?? []);
+  return lineItems.map((li) => ({
     lineItemId: li.lineItemId,
     totalFees: (li.marketplaceFees ?? []).reduce((sum, f) => sum + Number(f.amount.value), 0),
   }));
