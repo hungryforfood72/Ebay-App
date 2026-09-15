@@ -476,6 +476,9 @@ function ScanPageInner() {
         <a href="/review" className="mt-4 text-center text-sm underline">
           Go to review queue instead
         </a>
+        <Link href="/" className="text-center text-sm underline">
+          Dashboard
+        </Link>
       </main>
     );
   }

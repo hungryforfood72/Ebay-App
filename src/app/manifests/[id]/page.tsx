@@ -1,5 +1,6 @@
 "use client";
 
+import { Stat } from "@/components/Stat";
 import Link from "next/link";
 import { useEffect, useState, use as usePromise } from "react";
 
@@ -143,6 +144,9 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
       <div className="mb-2 flex items-center justify-between">
         <h1 className="text-xl font-semibold">{manifest.title}</h1>
         <div className="flex items-center gap-3">
+          <Link href="/" className="text-sm underline">
+            Dashboard
+          </Link>
           <Link href="/manifests" className="text-sm underline">
             All manifests
           </Link>
@@ -317,26 +321,5 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
         </section>
       )}
     </main>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  highlight,
-  format,
-}: {
-  label: string;
-  value: number;
-  highlight?: boolean;
-  format?: "currency";
-}) {
-  return (
-    <div className="rounded-lg border p-3">
-      <p className="text-xs text-gray-500">{label}</p>
-      <p className={`text-2xl font-semibold ${highlight ? "text-red-600" : ""}`}>
-        {format === "currency" ? `$${value.toFixed(2)}` : value}
-      </p>
-    </div>
   );
 }

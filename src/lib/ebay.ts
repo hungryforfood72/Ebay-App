@@ -17,7 +17,8 @@ export function getEbayEnvironment(): EbayEnvironment {
 const SELL_INVENTORY_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.inventory";
 const SELL_FULFILLMENT_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.fulfillment";
 const SELL_FINANCES_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.finances";
-const REQUIRED_SCOPES = [SELL_INVENTORY_SCOPE, SELL_FULFILLMENT_SCOPE, SELL_FINANCES_SCOPE];
+const SELL_MARKETING_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.marketing";
+const REQUIRED_SCOPES = [SELL_INVENTORY_SCOPE, SELL_FULFILLMENT_SCOPE, SELL_FINANCES_SCOPE, SELL_MARKETING_SCOPE];
 
 function getEbayConfig() {
   const environment = getEbayEnvironment();
@@ -41,6 +42,24 @@ function getEbayConfig() {
     paymentPolicyId: get("PAYMENT_POLICY_ID"),
     returnPolicyId: get("RETURN_POLICY_ID"),
   };
+}
+
+// Deliberately NOT part of getEbayConfig() above — that object eagerly
+// evaluates every field on every call, including from buildAuthorizeUrl/
+// requestToken (the OAuth connect flow itself). The ad campaign can't exist
+// until *after* Cristian has connected (its setup script needs a valid
+// access token), so folding it into the eager config would make
+// reconnecting throw "missing env var" before he ever reaches eBay's
+// consent screen. This is called only from createAdByListingId, so it only
+// throws when someone actually tries to promote something.
+function getAdCampaignId(): string {
+  const environment = getEbayEnvironment();
+  const prefix = environment === "production" ? "EBAY_PRODUCTION_" : "EBAY_SANDBOX_";
+  const value = process.env[`${prefix}AD_CAMPAIGN_ID`];
+  if (!value) {
+    throw new Error(`Missing env var ${prefix}AD_CAMPAIGN_ID — run scripts/ebay-setup-campaign.ts first.`);
+  }
+  return value;
 }
 
 export class EbayApiError extends Error {
@@ -213,6 +232,44 @@ export type ItemForEbayPublish = {
   weightOz: number | null;
   upc: string | null;
 };
+
+// Maps a raw Prisma Item row (or the subset of its fields needed here) into
+// the shape createOrReplaceInventoryItem/createOffer/updateOfferPrice
+// expect. Used at publish time and by both discount routes (manifest bulk
+// and single-item) — priceOverride lets a discount route pass the newly
+// computed price without first mutating the DB row.
+export function toItemForEbayPublish(
+  item: {
+    sku: string;
+    finalTitle: string | null;
+    finalDescription: string | null;
+    price: unknown;
+    categoryId: string | null;
+    condition: string | null;
+    itemSpecifics: unknown;
+    photoUrls: string[];
+    quantity: number;
+    weightLbs: number | null;
+    weightOz: number | null;
+    upc: string | null;
+  },
+  priceOverride?: number
+): ItemForEbayPublish {
+  return {
+    sku: item.sku,
+    finalTitle: item.finalTitle ?? "",
+    finalDescription: item.finalDescription ?? "",
+    price: priceOverride ?? Number(item.price ?? 0),
+    categoryId: item.categoryId ?? "",
+    condition: (item.condition ?? "used") as ItemForEbayPublish["condition"],
+    itemSpecifics: item.itemSpecifics as Record<string, string> | null,
+    photoUrls: item.photoUrls,
+    quantity: item.quantity,
+    weightLbs: item.weightLbs,
+    weightOz: item.weightOz,
+    upc: item.upc,
+  };
+}
 
 // eBay's Inventory API ConditionEnum is a ~14-value set, considerably more
 // granular than the app's own 4-value ItemCondition — same lossy mapping
@@ -453,6 +510,73 @@ export async function getOrderEarnings(orderId: string): Promise<EbayOrderEarnin
     lineItemId: li.lineItemId,
     totalFees: (li.marketplaceFees ?? []).reduce((sum, f) => sum + Number(f.amount.value), 0),
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Marketing API (Promoted Listings — Cost Per Sale funding, so eBay only
+// charges the ad fee, as a % of the sale price, if the promoted item
+// actually sells; no upfront spend). Request/response shapes per eBay's
+// current published docs — not yet exercised against a real call, since no
+// campaign exists until scripts/ebay-setup-campaign.ts is run. Fails loud
+// (a clear thrown error) rather than silently storing a wrong/undefined id.
+// ---------------------------------------------------------------------------
+
+export async function getAdCampaigns(): Promise<{ campaignId: string; campaignName: string; campaignStatus: string }[]> {
+  const result = (await ebayFetch(`/sell/marketing/v1/ad_campaign?campaign_status=ACTIVE,PAUSED&limit=100`)) as {
+    campaigns?: { campaignId: string; campaignName: string; campaignStatus: string }[];
+  };
+  return result.campaigns ?? [];
+}
+
+// One-time setup (see scripts/ebay-setup-campaign.ts) — an ad campaign must
+// exist before any item can be promoted into it. No endDate is set, so the
+// campaign runs indefinitely rather than needing periodic renewal.
+export async function createAdCampaign(name: string, defaultBidPercentage: number): Promise<string> {
+  const result = (await ebayFetch(`/sell/marketing/v1/ad_campaign`, {
+    method: "POST",
+    body: JSON.stringify({
+      marketplaceId: "EBAY_US",
+      campaignName: name,
+      fundingStrategy: {
+        fundingModel: "COST_PER_SALE",
+        bidPercentage: String(defaultBidPercentage),
+      },
+      startDate: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    }),
+  })) as { campaignId?: string };
+  if (!result.campaignId) {
+    throw new Error("eBay didn't return a campaignId when creating the ad campaign.");
+  }
+  return result.campaignId;
+}
+
+export async function createAdByListingId(listingId: string, bidPercentage: number): Promise<string> {
+  const campaignId = getAdCampaignId();
+  const result = (await ebayFetch(`/sell/marketing/v1/ad_campaign/${encodeURIComponent(campaignId)}/ad`, {
+    method: "POST",
+    body: JSON.stringify({ listingId, bidPercentage: String(bidPercentage) }),
+  })) as { adId?: string };
+  if (!result.adId) {
+    throw new Error("eBay didn't return an adId when creating the ad — check the response shape.");
+  }
+  return result.adId;
+}
+
+export async function updateAdBid(adId: string, bidPercentage: number): Promise<void> {
+  const campaignId = getAdCampaignId();
+  await ebayFetch(
+    `/sell/marketing/v1/ad_campaign/${encodeURIComponent(campaignId)}/ad/${encodeURIComponent(adId)}/bid`,
+    { method: "POST", body: JSON.stringify({ bidPercentage: String(bidPercentage) }) }
+  );
+}
+
+// Stops promoting an item (removes it from the campaign) — the listing
+// itself stays live, only the ad is deleted.
+export async function deleteAd(adId: string): Promise<void> {
+  const campaignId = getAdCampaignId();
+  await ebayFetch(`/sell/marketing/v1/ad_campaign/${encodeURIComponent(campaignId)}/ad/${encodeURIComponent(adId)}`, {
+    method: "DELETE",
+  });
 }
 
 export function listingUrl(environment: string, listingId: string): string {

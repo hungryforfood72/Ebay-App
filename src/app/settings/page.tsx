@@ -23,6 +23,9 @@ function SettingsPageInner() {
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-xl font-semibold">Settings</h1>
         <div className="flex items-center gap-3">
+          <Link href="/" className="text-sm underline">
+            Dashboard
+          </Link>
           <Link href="/scan" className="text-sm underline">
             Scan
           </Link>

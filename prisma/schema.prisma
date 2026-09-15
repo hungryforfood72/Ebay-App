@@ -130,6 +130,15 @@ model Item {
 
   sales EbayItemSale[]
 
+  // eBay Promoted Listings ad state — set by /api/items/[id]/promote,
+  // never by the client. One campaign is shared across every item in an
+  // environment (see scripts/ebay-setup-campaign.ts and the
+  // *_AD_CAMPAIGN_ID env vars), so no per-item campaign id is stored here.
+  ebayAdId              String?
+  promotedBidPercentage Int?
+  promotedAt            DateTime?
+  ebayPromoteError      String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

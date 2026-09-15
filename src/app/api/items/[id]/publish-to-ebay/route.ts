@@ -5,6 +5,7 @@ import {
   getEbayEnvironment,
   publishOffer,
   toEbaySku,
+  toItemForEbayPublish,
 } from "@/lib/ebay";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
@@ -43,20 +44,7 @@ export async function POST(
     );
   }
 
-  const publishData = {
-    sku: item.sku,
-    finalTitle: item.finalTitle!,
-    finalDescription: item.finalDescription ?? "",
-    price: Number(item.price),
-    categoryId: item.categoryId!,
-    condition: item.condition!,
-    itemSpecifics: item.itemSpecifics as Record<string, string> | null,
-    photoUrls: item.photoUrls,
-    quantity: item.quantity,
-    weightLbs: item.weightLbs,
-    weightOz: item.weightOz,
-    upc: item.upc,
-  };
+  const publishData = toItemForEbayPublish(item);
 
   try {
     // ebayOfferId is checked first so a retry after a publish failure skips

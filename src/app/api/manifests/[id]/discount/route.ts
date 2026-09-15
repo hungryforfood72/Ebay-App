@@ -1,4 +1,5 @@
-import { EbayApiError, updateOfferPrice } from "@/lib/ebay";
+import { computeDiscountedPrice } from "@/lib/discount";
+import { EbayApiError, toItemForEbayPublish, updateOfferPrice } from "@/lib/ebay";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -33,29 +34,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   // publish: keeps failures attributable to a specific item and avoids
   // bursting eBay with simultaneous requests.
   for (const item of items) {
-    const currentPrice = Number(item.price ?? 0);
-    const rawNewPrice = mode === "percent" ? currentPrice * (1 - value / 100) : currentPrice - value;
-    const newPrice = Math.max(rawNewPrice, 0.99);
+    const newPrice = computeDiscountedPrice(Number(item.price ?? 0), mode, value);
 
     try {
-      await updateOfferPrice(
-        item.ebayOfferId!,
-        {
-          sku: item.sku,
-          finalTitle: item.finalTitle ?? "",
-          finalDescription: item.finalDescription ?? "",
-          price: newPrice,
-          categoryId: item.categoryId ?? "",
-          condition: (item.condition ?? "used") as "new" | "new_other" | "used" | "for_parts",
-          itemSpecifics: item.itemSpecifics as Record<string, string> | null,
-          photoUrls: item.photoUrls,
-          quantity: item.quantity,
-          weightLbs: item.weightLbs,
-          weightOz: item.weightOz,
-          upc: item.upc,
-        },
-        newPrice
-      );
+      await updateOfferPrice(item.ebayOfferId!, toItemForEbayPublish(item, newPrice), newPrice);
       await prisma.item.update({ where: { id: item.id }, data: { price: newPrice } });
       updated++;
     } catch (e) {

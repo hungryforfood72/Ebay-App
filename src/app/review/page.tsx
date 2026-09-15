@@ -278,6 +278,9 @@ export default function ReviewPage() {
           >
             {exporting ? "Exporting…" : "Download CSV for eBay"}
           </button>
+          <Link href="/" className="text-sm underline">
+            Dashboard
+          </Link>
           <Link href="/scan" className="text-sm underline">
             Scan
           </Link>
