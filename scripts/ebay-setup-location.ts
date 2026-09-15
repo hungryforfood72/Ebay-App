@@ -7,9 +7,13 @@
 import { config as loadEnv } from "dotenv";
 loadEnv({ path: ".env.local" });
 
-import { createOrUpdateMerchantLocation, EbayApiError, getEbayEnvironment } from "../src/lib/ebay";
-
 async function main() {
+  // Dynamic import, not a static one — static imports are hoisted and would
+  // evaluate src/lib/prisma.ts's `new PrismaPg({ connectionString:
+  // process.env.DATABASE_URL })` before loadEnv() above ever runs, leaving
+  // DATABASE_URL empty and every query failing with ECONNREFUSED.
+  const { createOrUpdateMerchantLocation, EbayApiError, getEbayEnvironment } = await import("../src/lib/ebay");
+
   const zip = process.env.EBAY_LISTING_ZIP;
   if (!zip) {
     console.error("Set EBAY_LISTING_ZIP in .env.local first.");
