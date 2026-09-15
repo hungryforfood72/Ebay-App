@@ -1,4 +1,4 @@
-import { findListingsBySku } from "@/lib/ebay";
+import { findListingsBySku, getEbayEnvironment } from "@/lib/ebay";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
 
@@ -22,6 +22,7 @@ export async function POST() {
   }
 
   const found = await findListingsBySku(items.map((i) => i.sku));
+  const environment = getEbayEnvironment();
 
   let linked = 0;
   for (const item of items) {
@@ -33,7 +34,11 @@ export async function POST() {
       // actually on the live legacy listing (File Exchange's CustomLabel
       // got the full app sku, unlike the Inventory API flow which runs it
       // through toEbaySku() first), so order-sync matching stays correct.
-      data: { ebayListingId: listingId, ebaySku: item.sku },
+      // ebayEnvironment is recorded too so listingUrl() resolves the right
+      // domain later — these are always real listings from whichever
+      // environment the app is currently pointed at (File Exchange has no
+      // sandbox equivalent), same as a fresh publish would set it.
+      data: { ebayListingId: listingId, ebaySku: item.sku, ebayEnvironment: environment },
     });
     linked++;
   }

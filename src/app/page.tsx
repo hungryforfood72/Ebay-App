@@ -11,11 +11,20 @@ type ExpiringListedItem = {
   expirationDate: string;
   price: number | null;
   shelfLocation: string;
+  ebayListingId: string | null;
+  ebayEnvironment: string | null;
   ebayAdId: string | null;
   promotedBidPercentage: number | null;
   ebayPublishError: string | null;
   ebayPromoteError: string | null;
 };
+
+function ebayListingUrl(item: Pick<ExpiringListedItem, "ebayListingId" | "ebayEnvironment">): string | null {
+  if (!item.ebayListingId) return null;
+  return item.ebayEnvironment === "production"
+    ? `https://www.ebay.com/itm/${item.ebayListingId}`
+    : `https://sandbox.ebay.com/itm/${item.ebayListingId}`;
+}
 
 type ExpiringUnlistedItem = {
   id: string;
@@ -400,6 +409,19 @@ function ExpiringItemCard({
           <p className="font-medium">{item.finalTitle ?? item.sku}</p>
           <p className="text-xs text-gray-400">
             {item.shelfLocation} · {item.price != null ? `$${item.price.toFixed(2)}` : "no price"}
+            {ebayListingUrl(item) && (
+              <>
+                {" · "}
+                <a
+                  href={ebayListingUrl(item)!}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-blue-600 underline"
+                >
+                  View on eBay ↗
+                </a>
+              </>
+            )}
           </p>
         </div>
         <span className={`text-sm ${urgent ? "font-semibold text-red-600" : "text-gray-500"}`}>

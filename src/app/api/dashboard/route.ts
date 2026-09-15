@@ -41,6 +41,8 @@ export async function GET() {
         expirationDate: true,
         price: true,
         shelfLocation: true,
+        ebayListingId: true,
+        ebayEnvironment: true,
         ebayAdId: true,
         promotedBidPercentage: true,
         ebayPublishError: true,
