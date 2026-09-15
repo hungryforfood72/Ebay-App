@@ -56,10 +56,14 @@ type SyncResult = {
   errors: string[];
 };
 
+type LinkLegacyResult = { checked: number; linked: number; notFound: number };
+
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
+  const [linking, setLinking] = useState(false);
+  const [linkResult, setLinkResult] = useState<LinkLegacyResult | string | null>(null);
 
   function load() {
     fetch("/api/dashboard")
@@ -89,6 +93,25 @@ export default function DashboardPage() {
       });
     } finally {
       setSyncing(false);
+    }
+  }
+
+  // Looks up every "exported" (CSV bulk-uploaded, never through this app's
+  // real API) item app-wide against eBay's real listings by SKU, and links
+  // up whatever's still active — not scoped to just what's visible here.
+  async function linkLegacyListings() {
+    setLinking(true);
+    setLinkResult(null);
+    try {
+      const res = await fetch("/api/items/link-legacy", { method: "POST" });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error ?? "Failed to check eBay.");
+      setLinkResult(result);
+      load();
+    } catch (e) {
+      setLinkResult(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setLinking(false);
     }
   }
 
@@ -218,9 +241,28 @@ export default function DashboardPage() {
             Expiring soon — not yet published ({expiringUnlisted.length})
           </h2>
           <p className="mb-2 text-xs text-gray-500">
-            These have no live eBay listing yet, so they can&apos;t be discounted or promoted — get them
-            published before they expire.
+            These have no live eBay listing on file, so they can&apos;t be discounted or promoted yet. If
+            one was already bulk-uploaded via the old CSV flow before this app tracked listing IDs, check
+            for it below instead of re-publishing.
           </p>
+          <div className="mb-2 flex items-center gap-2">
+            <button
+              type="button"
+              onClick={linkLegacyListings}
+              disabled={linking}
+              className="rounded border border-orange-400 bg-white px-3 py-1.5 text-xs disabled:opacity-40"
+            >
+              {linking ? "Checking eBay…" : "Check eBay for existing listings"}
+            </button>
+            <span className="text-xs text-gray-500">Checks every exported item app-wide, not just these.</span>
+          </div>
+          {linkResult && (
+            <p className="mb-2 text-xs text-gray-600">
+              {typeof linkResult === "string"
+                ? linkResult
+                : `Checked ${linkResult.checked} — linked ${linkResult.linked}, ${linkResult.notFound} not found on eBay.`}
+            </p>
+          )}
           <div className="flex flex-col gap-1">
             {expiringUnlisted.map((item) => (
               <div key={item.id} className="flex items-center justify-between text-sm">

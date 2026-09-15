@@ -226,7 +226,16 @@ export async function GET(
   const blendedCogsPerUnit =
     totalLandedCost != null && totalReceivedUnits > 0 ? totalLandedCost / totalReceivedUnits : null;
 
-  const totalListedUnsoldItems = await prisma.item.count({ where: { manifestId: id, status: "listed" } });
+  // Matches the discount route's own eligibility — a legacy CSV-uploaded
+  // item that's since been linked up (ebayListingId, no offerId) is just as
+  // discountable as one published through the Inventory API.
+  const totalListedUnsoldItems = await prisma.item.count({
+    where: {
+      manifestId: id,
+      status: { in: ["listed", "exported"] },
+      OR: [{ ebayOfferId: { not: null } }, { ebayListingId: { not: null } }],
+    },
+  });
 
   return NextResponse.json({
     id: manifest.id,

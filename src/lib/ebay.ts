@@ -579,6 +579,99 @@ export async function deleteAd(adId: string): Promise<void> {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Trading API (legacy XML) — only for listings that were bulk-uploaded via
+// the File Exchange CSV export (src/lib/csv.ts), never through this app's
+// own Inventory API publish flow. Those have no ebayOfferId (offers are an
+// Inventory-API-only concept), so they can't be discounted via
+// updateOfferPrice — but their listingId works fine for Promoted Listings
+// (createAdByListingId above is confirmed to work on both classic and
+// RESTful listings) once it's known. Same OAuth user token works here via
+// the X-EBAY-API-IAF-TOKEN header — no separate auth needed.
+// ---------------------------------------------------------------------------
+
+async function tradingApiFetch(callName: string, bodyXml: string): Promise<string> {
+  const [token, config] = await Promise.all([getValidAccessToken(), Promise.resolve(getEbayConfig())]);
+  const res = await fetch(`${config.apiBase}/ws/api.dll`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "text/xml",
+      "X-EBAY-API-COMPATIBILITY-LEVEL": "1439",
+      "X-EBAY-API-CALL-NAME": callName,
+      "X-EBAY-API-SITEID": "0",
+      "X-EBAY-API-IAF-TOKEN": token,
+    },
+    body: `<?xml version="1.0" encoding="utf-8"?>${bodyXml}`,
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    throw new EbayApiError(`Trading API ${callName} failed (${res.status})`, res.status, text);
+  }
+  // Trading API always returns HTTP 200 even for application-level errors —
+  // the real result is in the XML body's Ack field.
+  if (/<Ack>Failure<\/Ack>/.test(text)) {
+    const message = text.match(/<LongMessage>(.*?)<\/LongMessage>/)?.[1];
+    throw new EbayApiError(message ?? `Trading API ${callName} returned Failure`, 200, text);
+  }
+  return text;
+}
+
+function xmlEscape(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Looks up ItemIDs for a batch of SKUs (our own Item.sku, verbatim — that's
+// exactly what csv.ts put in the CustomLabel/SKU field at upload time, no
+// transformation). Batches internally since GetSellerList's SKUArray has an
+// undocumented-here practical limit — verified batch size against a real
+// call rather than assumed.
+export async function findListingsBySku(skus: string[], batchSize = 20): Promise<Map<string, string>> {
+  const found = new Map<string, string>();
+  for (let i = 0; i < skus.length; i += batchSize) {
+    const batch = skus.slice(i, i + batchSize);
+    // GetSellerList's SKUArray entries are capped at 50 chars (the same
+    // limit the Inventory API enforces on its own sku field) — File
+    // Exchange's CustomLabel column got the full, untruncated app sku
+    // (often ~54 chars with the "(Location - X)-" prefix), so eBay's own
+    // stored value is presumably truncated the same way. Query truncated,
+    // but key the result map by the original full sku so it still matches
+    // Item.sku for the DB update.
+    const truncated = new Map(batch.map((s) => [s.slice(0, 50), s]));
+    const skuArrayXml = [...truncated.keys()].map((s) => `<SKU>${xmlEscape(s)}</SKU>`).join("");
+    // GetSellerList requires a start-time window even when filtering by
+    // SKUArray — it filters by the listing's *current* cycle start (GTC
+    // listings silently renew every ~30 days, shifting this forward), so
+    // the widest window eBay allows (120 days) is used rather than trying
+    // to predict it from our own exportedAt timestamp.
+    const startTimeTo = new Date();
+    const startTimeFrom = new Date(startTimeTo.getTime() - 120 * 24 * 60 * 60 * 1000);
+    const xml = await tradingApiFetch(
+      "GetSellerList",
+      `<GetSellerListRequest xmlns="urn:ebay:apis:eBLBaseComponents"><SKUArray>${skuArrayXml}</SKUArray><StartTimeFrom>${startTimeFrom.toISOString()}</StartTimeFrom><StartTimeTo>${startTimeTo.toISOString()}</StartTimeTo><DetailLevel>ReturnAll</DetailLevel><GranularityLevel>Fine</GranularityLevel><Pagination><EntriesPerPage>${batchSize}</EntriesPerPage><PageNumber>1</PageNumber></Pagination></GetSellerListRequest>`
+    );
+    // Split on <Item> boundaries before extracting fields, so a SKU/ItemID
+    // pair is always read from within the same <Item> block rather than a
+    // global regex potentially pairing fields from different items.
+    for (const block of xml.split("<Item>").slice(1)) {
+      const itemId = block.match(/<ItemID>(.*?)<\/ItemID>/)?.[1];
+      const sku = block.match(/<SKU>(.*?)<\/SKU>/)?.[1];
+      const originalSku = sku ? truncated.get(sku) : undefined;
+      if (itemId && originalSku) found.set(originalSku, itemId);
+    }
+  }
+  return found;
+}
+
+// Price-only revision for a classic (Trading API) listing — unlike the
+// Inventory API's updateOffer, this is NOT a full-replace call; only the
+// fields included get changed.
+export async function reviseFixedPriceItemPrice(itemId: string, newPrice: number): Promise<void> {
+  await tradingApiFetch(
+    "ReviseFixedPriceItem",
+    `<ReviseFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents"><Item><ItemID>${xmlEscape(itemId)}</ItemID><StartPrice>${newPrice.toFixed(2)}</StartPrice></Item></ReviseFixedPriceItemRequest>`
+  );
+}
+
 export function listingUrl(environment: string, listingId: string): string {
   return environment === "production"
     ? `https://www.ebay.com/itm/${listingId}`

@@ -22,8 +22,17 @@ export async function GET() {
     prisma.item.count({ where: { status: "pending_review" } }),
     prisma.item.count({ where: { status: "ready" } }),
     prisma.item.count({ where: { status: "listed" } }),
+    // "Actionable" = has a real live eBay listing, however it got there —
+    // either published through this app's Inventory API flow (ebayOfferId)
+    // or an older CSV-uploaded one since linked up via
+    // /api/items/link-legacy (ebayListingId only). Excludes "sold" since a
+    // fully sold-out item has nothing left to discount/promote.
     prisma.item.findMany({
-      where: { status: "listed", expirationDate: { not: null, lte: expiringCutoff } },
+      where: {
+        status: { not: "sold" },
+        OR: [{ ebayOfferId: { not: null } }, { ebayListingId: { not: null } }],
+        expirationDate: { not: null, lte: expiringCutoff },
+      },
       orderBy: { expirationDate: "asc" },
       select: {
         id: true,
@@ -41,6 +50,8 @@ export async function GET() {
     prisma.item.findMany({
       where: {
         status: { in: ["pending_review", "ready", "exported"] },
+        ebayOfferId: null,
+        ebayListingId: null,
         expirationDate: { not: null, lte: expiringCutoff },
       },
       orderBy: { expirationDate: "asc" },
