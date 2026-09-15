@@ -1,14 +1,16 @@
-import { getEbayEnvironment } from "@/lib/ebay";
+import { getEbayEnvironment, getMissingScopes } from "@/lib/ebay";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
 
 export async function GET() {
   const environment = getEbayEnvironment();
   const token = await prisma.ebayAuthToken.findUnique({ where: { environment } });
+  const missingScopes = token ? await getMissingScopes() : [];
   return NextResponse.json({
     environment,
     connected: Boolean(token),
     connectedAt: token?.updatedAt ?? null,
+    missingScopes,
   });
 }
 

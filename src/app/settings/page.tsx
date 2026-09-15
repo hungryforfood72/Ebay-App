@@ -50,7 +50,14 @@ type EbayStatus = {
   environment: "sandbox" | "production";
   connected: boolean;
   connectedAt: string | null;
+  missingScopes: string[];
 };
+
+// Scopes come back as full URIs (".../oauth/api_scope/sell.fulfillment") —
+// just the trailing name reads better in a short banner.
+function shortScopeName(scope: string): string {
+  return scope.split("/").pop() ?? scope;
+}
 
 // Connect/disconnect the eBay account used by the "Publish to eBay" button
 // on the review page. Tokens are kept per environment (see EbayAuthToken),
@@ -116,8 +123,13 @@ function EbayConnectionStatus() {
                 Since {new Date(status.connectedAt).toLocaleString()}
               </p>
             )}
+            {status.connected && status.missingScopes.length > 0 && (
+              <p className="mt-1 text-xs text-amber-600">
+                Reconnect required — missing: {status.missingScopes.map(shortScopeName).join(", ")}
+              </p>
+            )}
           </div>
-          {status.connected ? (
+          {status.connected && status.missingScopes.length === 0 ? (
             <button
               type="button"
               onClick={disconnect}
@@ -128,7 +140,7 @@ function EbayConnectionStatus() {
             </button>
           ) : (
             <a href="/api/ebay/connect" className="rounded bg-black px-3 py-1 text-xs text-white">
-              Connect eBay account
+              {status.connected ? "Reconnect eBay account" : "Connect eBay account"}
             </a>
           )}
         </div>

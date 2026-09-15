@@ -9,7 +9,12 @@ import { AUTH_COOKIE_NAME, hashPassword } from "@/lib/auth";
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  if (pathname.startsWith("/login") || pathname.startsWith("/api/auth")) {
+  // /api/cron/* carries Vercel's own Authorization: Bearer $CRON_SECRET
+  // header, not the site_auth cookie — the route itself verifies that
+  // header, so bypassing the cookie gate here doesn't open anything
+  // unauthenticated. Without this bypass, Vercel Cron gets redirected to
+  // /login and the sync silently never runs.
+  if (pathname.startsWith("/login") || pathname.startsWith("/api/auth") || pathname.startsWith("/api/cron")) {
     return NextResponse.next();
   }
 

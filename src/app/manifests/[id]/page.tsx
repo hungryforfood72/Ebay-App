@@ -19,6 +19,10 @@ type Line = {
   accountedUnits: number;
   missingUnits: number;
   weightedCogsPerUnit: number | null;
+  soldUnits: number;
+  soldRevenue: number;
+  soldFees: number;
+  profit: number | null;
 };
 
 type ManifestDetail = {
@@ -30,6 +34,7 @@ type ManifestDetail = {
   lines: Line[];
   unmatchedReceived: { upc: string | null; units: number }[];
   unmatchedDamaged: { upc: string | null; units: number }[];
+  unmatchedSold: { upc: string | null; units: number; revenue: number; fees: number }[];
   summary: {
     totalExpectedUnits: number;
     totalReceivedUnits: number;
@@ -38,6 +43,11 @@ type ManifestDetail = {
     totalMissingUnits: number;
     totalManifestExtendedRetail: number;
     blendedCogsPerUnit: number | null;
+    totalSoldUnits: number;
+    totalSoldRevenue: number;
+    totalSoldFees: number;
+    totalProfit: number;
+    totalListedUnsoldItems: number;
   };
 };
 
@@ -47,6 +57,10 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
   const [landedCostInput, setLandedCostInput] = useState("");
   const [savingCost, setSavingCost] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [discountMode, setDiscountMode] = useState<"percent" | "amount">("percent");
+  const [discountValue, setDiscountValue] = useState("");
+  const [applyingDiscount, setApplyingDiscount] = useState(false);
+  const [discountResult, setDiscountResult] = useState<string | null>(null);
 
   function load() {
     fetch(`/api/manifests/${id}`)
@@ -74,6 +88,49 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
       setError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
       setSavingCost(false);
+    }
+  }
+
+  // Manual, human-triggered action — not automatic on any profit threshold.
+  // Discounts every currently-"listed" (published, not sold) item in this
+  // manifest relative to its own current price, not one shared target
+  // price, since a manifest's items are rarely priced the same to begin
+  // with.
+  async function applyDiscount() {
+    const value = Number(discountValue);
+    if (!value || value <= 0) return;
+    const count = manifest?.summary.totalListedUnsoldItems ?? 0;
+    if (count === 0) return;
+    const label = discountMode === "percent" ? `${value}% off` : `$${value.toFixed(2)} off`;
+    if (
+      !confirm(
+        `Apply ${label} to all ${count} listed, unsold item(s) in this manifest? This changes real live eBay prices and isn't easily undone.`
+      )
+    ) {
+      return;
+    }
+    setApplyingDiscount(true);
+    setDiscountResult(null);
+    try {
+      const res = await fetch(`/api/manifests/${id}/discount`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: discountMode, value }),
+      });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error ?? "Discount failed.");
+      setDiscountResult(
+        result.failed.length > 0
+          ? `Updated ${result.updated} of ${result.updated + result.failed.length}. Failed: ${result.failed
+              .map((f: { title: string }) => f.title)
+              .join(", ")}`
+          : `Updated ${result.updated} item(s).`
+      );
+      load();
+    } catch (e) {
+      setDiscountResult(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setApplyingDiscount(false);
     }
   }
 
@@ -114,6 +171,15 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
           value={s.totalMissingUnits}
           highlight={s.totalMissingUnits !== 0}
         />
+        <Stat label="Sold units" value={s.totalSoldUnits} />
+        <Stat label="Sold revenue" value={s.totalSoldRevenue} format="currency" />
+        <Stat label="Sold fees" value={s.totalSoldFees} format="currency" />
+        <Stat
+          label="Profit"
+          value={s.totalProfit}
+          format="currency"
+          highlight={s.totalSoldUnits > 0 && s.totalProfit < 0}
+        />
       </section>
 
       <section className="mb-6 flex flex-col gap-2 rounded-lg border p-4">
@@ -149,6 +215,42 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
         )}
       </section>
 
+      <section className="mb-6 flex flex-col gap-2 rounded-lg border p-4">
+        <label className="text-sm font-medium">Bulk discount remaining unsold listings</label>
+        <p className="text-xs text-gray-400">
+          {s.totalListedUnsoldItems} item(s) still listed, unsold. Discount is applied relative to each
+          item&apos;s own current price, not one shared price.
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={discountMode}
+            onChange={(e) => setDiscountMode(e.target.value as "percent" | "amount")}
+            className="rounded border px-2 py-2 text-sm"
+          >
+            <option value="percent">% off</option>
+            <option value="amount">$ off</option>
+          </select>
+          <input
+            type="number"
+            step="0.01"
+            min={0}
+            value={discountValue}
+            onChange={(e) => setDiscountValue(e.target.value)}
+            placeholder={discountMode === "percent" ? "e.g. 15" : "e.g. 5.00"}
+            className="w-28 rounded border px-3 py-2 text-sm"
+          />
+          <button
+            type="button"
+            onClick={applyDiscount}
+            disabled={applyingDiscount || !discountValue || s.totalListedUnsoldItems === 0}
+            className="rounded bg-black px-3 py-2 text-sm text-white disabled:opacity-40"
+          >
+            {applyingDiscount ? "Applying…" : "Apply"}
+          </button>
+        </div>
+        {discountResult && <p className="text-sm text-gray-600">{discountResult}</p>}
+      </section>
+
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
@@ -159,6 +261,9 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
               <th className="px-2 text-right">Damaged</th>
               <th className="px-2 text-right">Missing</th>
               <th className="px-2 text-right">Weighted COGS/unit</th>
+              <th className="px-2 text-right">Sold</th>
+              <th className="px-2 text-right">Sold Revenue</th>
+              <th className="px-2 text-right">Profit</th>
             </tr>
           </thead>
           <tbody>
@@ -179,13 +284,22 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
                 <td className="px-2 text-right">
                   {line.weightedCogsPerUnit != null ? `$${line.weightedCogsPerUnit.toFixed(4)}` : "—"}
                 </td>
+                <td className="px-2 text-right">{line.soldUnits}</td>
+                <td className="px-2 text-right">${line.soldRevenue.toFixed(2)}</td>
+                <td
+                  className={`px-2 text-right ${line.profit != null && line.profit < 0 ? "font-semibold text-red-600" : ""}`}
+                >
+                  {line.profit != null ? `$${line.profit.toFixed(2)}` : "—"}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
 
-      {(manifest.unmatchedReceived.length > 0 || manifest.unmatchedDamaged.length > 0) && (
+      {(manifest.unmatchedReceived.length > 0 ||
+        manifest.unmatchedDamaged.length > 0 ||
+        manifest.unmatchedSold.length > 0) && (
         <section className="mt-6 rounded-lg border border-orange-300 bg-orange-50 p-4 text-sm">
           <p className="mb-2 font-medium">Scanned items not on this manifest</p>
           {manifest.unmatchedReceived.map((u) => (
@@ -194,17 +308,35 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
           {manifest.unmatchedDamaged.map((u) => (
             <p key={`d-${u.upc}`}>Marked {u.units} unit(s) damaged for UPC {u.upc} — not on the manifest.</p>
           ))}
+          {manifest.unmatchedSold.map((u) => (
+            <p key={`s-${u.upc}`}>
+              Sold {u.units} unit(s) of UPC {u.upc ?? "(none)"} (${u.revenue.toFixed(2)} revenue) — not on the
+              manifest.
+            </p>
+          ))}
         </section>
       )}
     </main>
   );
 }
 
-function Stat({ label, value, highlight }: { label: string; value: number; highlight?: boolean }) {
+function Stat({
+  label,
+  value,
+  highlight,
+  format,
+}: {
+  label: string;
+  value: number;
+  highlight?: boolean;
+  format?: "currency";
+}) {
   return (
     <div className="rounded-lg border p-3">
       <p className="text-xs text-gray-500">{label}</p>
-      <p className={`text-2xl font-semibold ${highlight ? "text-red-600" : ""}`}>{value}</p>
+      <p className={`text-2xl font-semibold ${highlight ? "text-red-600" : ""}`}>
+        {format === "currency" ? `$${value.toFixed(2)}` : value}
+      </p>
     </div>
   );
 }

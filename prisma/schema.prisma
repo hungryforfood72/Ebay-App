@@ -18,6 +18,9 @@ enum ItemStatus {
   // "exported", which only means a File Exchange CSV was generated, not
   // that eBay ever confirmed receiving it.
   listed
+  // "sold" = soldQuantity has reached the item's full listed quantity. A
+  // partially-sold multi-unit item stays "listed" — see soldQuantity below.
+  sold
 }
 
 enum ItemCondition {
@@ -107,12 +110,61 @@ model Item {
   // is later flipped to the other environment.
   ebayEnvironment  String?
 
+  // Persisted eBay Inventory API SKU (toEbaySku(sku)), set once alongside
+  // ebayOfferId. toEbaySku() is lossy/non-reversible (strips punctuation,
+  // can truncate), so an incoming order's line-item SKU has to match
+  // against this stored value via an indexed exact lookup rather than get
+  // reverse-engineered or recomputed-and-compared against every Item.
+  ebaySku String? @unique
+
+  // Cumulative units sold via matched eBay orders and their accumulated
+  // revenue/fees — updated transactionally alongside each new EbayItemSale
+  // row, not recomputed by summing on every read. status only flips to
+  // "sold" once soldQuantity reaches quantity (the item's full listed
+  // amount); a partially-sold multi-unit item stays "listed" with
+  // soldQuantity > 0, which is why these are separate fields rather than a
+  // single before/after status flag.
+  soldQuantity     Int     @default(0)
+  soldRevenueTotal Decimal @default(0) @db.Decimal(10, 2)
+  soldFeesTotal    Decimal @default(0) @db.Decimal(10, 2)
+
+  sales EbayItemSale[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([status])
   @@index([scanSessionId])
   @@index([manifestId])
+}
+
+// One row per matched eBay order line item — not folded into Item directly
+// because one Item (quantity > 1) can sell out across several separate
+// orders over time. ebayOrderLineItemId is the sync job's idempotency
+// checkpoint: a repeated cron run skips any line item already recorded
+// here, the same non-clobbering philosophy as Item.ebayOfferId.
+model EbayItemSale {
+  id                  String   @id @default(uuid())
+  item                Item     @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  itemId              String
+  ebayOrderId         String
+  ebayOrderLineItemId String   @unique
+  quantity            Int
+  revenue             Decimal  @db.Decimal(10, 2) // buyer-paid total for this line item
+  fees                Decimal  @db.Decimal(10, 2) // summed from the Finances API; includes eBay's shipping-label deductions
+  soldAt              DateTime
+  createdAt           DateTime @default(now())
+
+  @@index([itemId])
+}
+
+// Incremental order-sync watermark, one row per environment (mirrors
+// EbayAuthToken's per-environment keying — kept separate since it's sync
+// bookkeeping, not auth state).
+model EbaySyncState {
+  environment     String    @id // "sandbox" | "production"
+  lastOrderSyncAt DateTime?
+  updatedAt       DateTime  @updatedAt
 }
 
 model ExportBatch {
@@ -238,5 +290,12 @@ model EbayAuthToken {
   accessTokenExpiresAt  DateTime
   refreshToken          String
   refreshTokenExpiresAt DateTime
+  // Space-delimited scopes actually granted, as returned by eBay's token
+  // endpoint. Null on a row issued before this field existed — treated as
+  // "sell.inventory only" (its original grant) by getValidAccessToken's
+  // refresh, and as "missing every newer scope" by getMissingScopes, which
+  // is exactly correct: that row needs reconnecting before order sync
+  // works.
+  scope                 String?
   updatedAt             DateTime @updatedAt
 }

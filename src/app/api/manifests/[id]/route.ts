@@ -9,6 +9,16 @@ function unitsFor(item: { quantity: number; isMultipack: boolean; packSize: numb
   return item.quantity * (item.isMultipack && item.packSize ? item.packSize : 1);
 }
 
+// Same multipack expansion as unitsFor, but for the eBay-order-derived
+// soldQuantity — an eBay listing's availableQuantity/lineItem quantity is
+// in terms of "how many of this listing" (pack count), the same scale as
+// Item.quantity, not the already-expanded physical-unit scale unitsFor
+// produces. Needed to keep the sold pool comparable to the received pool
+// below.
+function soldUnitsFor(item: { soldQuantity: number; isMultipack: boolean; packSize: number | null }): number {
+  return item.soldQuantity * (item.isMultipack && item.packSize ? item.packSize : 1);
+}
+
 // Fills each line's expected quantity in order before spilling into the
 // next — a UPC can legitimately appear on more than one manifest line (e.g.
 // the same item split across pallets/lots), and crediting the full total to
@@ -48,7 +58,16 @@ export async function GET(
       lines: { orderBy: { sortOrder: "asc" } },
       damaged: true,
       items: {
-        select: { upc: true, quantity: true, isMultipack: true, packSize: true, isBundle: true },
+        select: {
+          upc: true,
+          quantity: true,
+          isMultipack: true,
+          packSize: true,
+          isBundle: true,
+          soldQuantity: true,
+          soldRevenueTotal: true,
+          soldFeesTotal: true,
+        },
       },
     },
   });
@@ -69,6 +88,19 @@ export async function GET(
     damagedByUpc.set(d.upc, (damagedByUpc.get(d.upc) ?? 0) + d.quantity);
   }
 
+  // Sold units/revenue/fees, by UPC — summed regardless of Item.status,
+  // since a partially-sold multi-unit listing stays "listed" (not "sold")
+  // while still having real sold units and revenue to account for.
+  const soldByUpc = new Map<string, number>();
+  const soldRevenueByUpc = new Map<string, number>();
+  const soldFeesByUpc = new Map<string, number>();
+  for (const item of manifest.items) {
+    if (item.isBundle || !item.upc || item.soldQuantity === 0) continue;
+    soldByUpc.set(item.upc, (soldByUpc.get(item.upc) ?? 0) + soldUnitsFor(item));
+    soldRevenueByUpc.set(item.upc, (soldRevenueByUpc.get(item.upc) ?? 0) + Number(item.soldRevenueTotal));
+    soldFeesByUpc.set(item.upc, (soldFeesByUpc.get(item.upc) ?? 0) + Number(item.soldFeesTotal));
+  }
+
   const totalManifestExtendedRetail = manifest.lines.reduce(
     (sum, l) => sum + Number(l.extendedRetail),
     0
@@ -87,19 +119,27 @@ export async function GET(
 
   const receivedAllocation = new Array(manifest.lines.length).fill(0);
   const damagedAllocation = new Array(manifest.lines.length).fill(0);
+  const soldAllocation = new Array(manifest.lines.length).fill(0);
   for (const [upc, indexes] of lineIndexesByUpc) {
     const expectedQuantities = indexes.map((i) => manifest.lines[i].expectedQuantity);
     const received = allocateSequentially(expectedQuantities, receivedByUpc.get(upc) ?? 0, expectedQuantities.map(() => 0));
     const damaged = allocateSequentially(expectedQuantities, damagedByUpc.get(upc) ?? 0, received);
+    // Sold is a subset of received (you can only sell what actually
+    // arrived), not a second claimant on the line's expected capacity like
+    // damaged is — so its ceiling per line is that line's received count,
+    // not expectedQuantity minus something.
+    const sold = allocateSequentially(received, soldByUpc.get(upc) ?? 0, received.map(() => 0));
     indexes.forEach((lineIdx, j) => {
       receivedAllocation[lineIdx] = received[j];
       damagedAllocation[lineIdx] = damaged[j];
+      soldAllocation[lineIdx] = sold[j];
     });
   }
 
   const lines = manifest.lines.map((line, index) => {
     const receivedUnits = receivedAllocation[index];
     const damagedUnits = damagedAllocation[index];
+    const soldUnits = soldAllocation[index];
 
     // This line's proportional share of the load's total declared value —
     // used to weight the shared landed cost, so a pricier line absorbs more
@@ -113,6 +153,16 @@ export async function GET(
       totalLandedCost != null && receivedUnits > 0
         ? (valueShare * totalLandedCost) / receivedUnits
         : null;
+
+    // A UPC's real sold revenue/fees are dollar totals per UPC, not
+    // per-line — split across lines sharing that UPC proportionally to
+    // each line's share of that UPC's sold units, the same weighting
+    // philosophy as weightedCogsPerUnit's split of the shared landed cost.
+    const upcSoldUnits = line.upc ? (soldByUpc.get(line.upc) ?? 0) : 0;
+    const soldShare = upcSoldUnits > 0 ? soldUnits / upcSoldUnits : 0;
+    const soldRevenue = soldShare * (line.upc ? (soldRevenueByUpc.get(line.upc) ?? 0) : 0);
+    const soldFees = soldShare * (line.upc ? (soldFeesByUpc.get(line.upc) ?? 0) : 0);
+    const profit = soldUnits > 0 && weightedCogsPerUnit != null ? soldRevenue - soldFees - soldUnits * weightedCogsPerUnit : null;
 
     return {
       id: line.id,
@@ -130,6 +180,10 @@ export async function GET(
       accountedUnits: receivedUnits + damagedUnits,
       missingUnits: line.expectedQuantity - (receivedUnits + damagedUnits),
       weightedCogsPerUnit,
+      soldUnits,
+      soldRevenue,
+      soldFees,
+      profit,
     };
   });
 
@@ -144,15 +198,35 @@ export async function GET(
   for (const [upc, units] of damagedByUpc) {
     if (!matchedUpcs.has(upc)) unmatchedDamaged.push({ upc, units });
   }
+  const unmatchedSold: { upc: string | null; units: number; revenue: number; fees: number }[] = [];
+  for (const [upc, units] of soldByUpc) {
+    if (!matchedUpcs.has(upc)) {
+      unmatchedSold.push({
+        upc,
+        units,
+        revenue: soldRevenueByUpc.get(upc) ?? 0,
+        fees: soldFeesByUpc.get(upc) ?? 0,
+      });
+    }
+  }
 
   const totalExpectedUnits = lines.reduce((sum, l) => sum + l.expectedQuantity, 0);
   const totalReceivedUnits = lines.reduce((sum, l) => sum + l.receivedUnits, 0) +
     unmatchedReceived.reduce((sum, u) => sum + u.units, 0);
   const totalDamagedUnits = lines.reduce((sum, l) => sum + l.damagedUnits, 0) +
     unmatchedDamaged.reduce((sum, u) => sum + u.units, 0);
+  const totalSoldUnits = lines.reduce((sum, l) => sum + l.soldUnits, 0) +
+    unmatchedSold.reduce((sum, u) => sum + u.units, 0);
+  const totalSoldRevenue = lines.reduce((sum, l) => sum + l.soldRevenue, 0) +
+    unmatchedSold.reduce((sum, u) => sum + u.revenue, 0);
+  const totalSoldFees = lines.reduce((sum, l) => sum + l.soldFees, 0) +
+    unmatchedSold.reduce((sum, u) => sum + u.fees, 0);
+  const totalProfit = lines.reduce((sum, l) => sum + (l.profit ?? 0), 0);
 
   const blendedCogsPerUnit =
     totalLandedCost != null && totalReceivedUnits > 0 ? totalLandedCost / totalReceivedUnits : null;
+
+  const totalListedUnsoldItems = await prisma.item.count({ where: { manifestId: id, status: "listed" } });
 
   return NextResponse.json({
     id: manifest.id,
@@ -163,6 +237,7 @@ export async function GET(
     lines,
     unmatchedReceived,
     unmatchedDamaged,
+    unmatchedSold,
     summary: {
       totalExpectedUnits,
       totalReceivedUnits,
@@ -171,6 +246,11 @@ export async function GET(
       totalMissingUnits: totalExpectedUnits - (totalReceivedUnits + totalDamagedUnits),
       totalManifestExtendedRetail,
       blendedCogsPerUnit,
+      totalSoldUnits,
+      totalSoldRevenue,
+      totalSoldFees,
+      totalProfit,
+      totalListedUnsoldItems,
     },
   });
 }

@@ -1,4 +1,11 @@
-import { createOffer, createOrReplaceInventoryItem, EbayApiError, getEbayEnvironment, publishOffer } from "@/lib/ebay";
+import {
+  createOffer,
+  createOrReplaceInventoryItem,
+  EbayApiError,
+  getEbayEnvironment,
+  publishOffer,
+  toEbaySku,
+} from "@/lib/ebay";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -59,7 +66,13 @@ export async function POST(
     if (!offerId) {
       await createOrReplaceInventoryItem(publishData);
       offerId = await createOffer(publishData);
-      await prisma.item.update({ where: { id }, data: { ebayOfferId: offerId } });
+      // ebaySku is persisted here (not just computed on the fly) so a
+      // later eBay order's line-item sku can be matched back to this Item
+      // via an indexed exact lookup — see the field's schema comment.
+      await prisma.item.update({
+        where: { id },
+        data: { ebayOfferId: offerId, ebaySku: toEbaySku(item.sku) },
+      });
     }
     const listingId = await publishOffer(offerId);
     const updated = await prisma.item.update({

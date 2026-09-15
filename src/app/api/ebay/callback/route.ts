@@ -36,12 +36,14 @@ export async function GET(request: NextRequest) {
         accessTokenExpiresAt: tokens.accessTokenExpiresAt,
         refreshToken: tokens.refreshToken,
         refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
+        scope: tokens.scope,
       },
       update: {
         accessToken: tokens.accessToken,
         accessTokenExpiresAt: tokens.accessTokenExpiresAt,
         refreshToken: tokens.refreshToken,
         refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
+        scope: tokens.scope,
       },
     });
     settingsUrl.searchParams.set("ebay", "connected");

@@ -15,6 +15,9 @@ export function getEbayEnvironment(): EbayEnvironment {
 // eBay's OAuth scope URIs are always under api.ebay.com (not api.sandbox...)
 // even when requesting a Sandbox token — that's an eBay quirk, not a bug.
 const SELL_INVENTORY_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.inventory";
+const SELL_FULFILLMENT_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.fulfillment";
+const SELL_FINANCES_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.finances";
+const REQUIRED_SCOPES = [SELL_INVENTORY_SCOPE, SELL_FULFILLMENT_SCOPE, SELL_FINANCES_SCOPE];
 
 function getEbayConfig() {
   const environment = getEbayEnvironment();
@@ -63,7 +66,7 @@ export function buildAuthorizeUrl(state: string): string {
     client_id: config.clientId,
     redirect_uri: config.redirectUri,
     response_type: "code",
-    scope: SELL_INVENTORY_SCOPE,
+    scope: REQUIRED_SCOPES.join(" "),
     state,
   });
   return `${config.authBase}/oauth2/authorize?${params.toString()}`;
@@ -74,6 +77,7 @@ type TokenResult = {
   accessTokenExpiresAt: Date;
   refreshToken?: string;
   refreshTokenExpiresAt?: Date;
+  scope?: string;
 };
 
 async function requestToken(body: URLSearchParams): Promise<TokenResult> {
@@ -99,10 +103,13 @@ async function requestToken(body: URLSearchParams): Promise<TokenResult> {
     refreshTokenExpiresAt: json.refresh_token_expires_in
       ? new Date(now + json.refresh_token_expires_in * 1000)
       : undefined,
+    scope: json.scope,
   };
 }
 
-export async function exchangeCodeForToken(code: string): Promise<Required<TokenResult>> {
+export async function exchangeCodeForToken(
+  code: string
+): Promise<Required<Omit<TokenResult, "scope">> & { scope: string }> {
   const config = getEbayConfig();
   const result = await requestToken(
     new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: config.redirectUri })
@@ -110,13 +117,24 @@ export async function exchangeCodeForToken(code: string): Promise<Required<Token
   if (!result.refreshToken || !result.refreshTokenExpiresAt) {
     throw new Error("eBay didn't return a refresh token with the authorization code exchange.");
   }
-  return result as Required<TokenResult>;
+  // eBay's consent screen is all-or-nothing (accept/decline, not a
+  // per-scope picker), so if the token response ever omits `scope`,
+  // whatever was requested is exactly what was granted.
+  return { ...result, scope: result.scope ?? REQUIRED_SCOPES.join(" ") } as Required<Omit<TokenResult, "scope">> & {
+    scope: string;
+  };
 }
 
-async function refreshAccessToken(refreshToken: string): Promise<TokenResult> {
-  return requestToken(
-    new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken, scope: SELL_INVENTORY_SCOPE })
-  );
+// Takes scope explicitly rather than a hardcoded constant — OAuth refresh
+// can't widen a token's scope beyond what it was originally issued with. If
+// this always requested every currently-required scope, a token issued
+// before a new scope existed (like the production row from before this
+// feature) would fail to refresh the moment it's near expiry, breaking
+// whatever was already working, before there's ever a chance to
+// reconnect. getValidAccessToken always passes the scope actually stored
+// on that row.
+async function refreshAccessToken(refreshToken: string, scope: string): Promise<TokenResult> {
+  return requestToken(new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken, scope }));
 }
 
 // Reads the stored token for the current environment, refreshing it first if
@@ -131,12 +149,26 @@ async function getValidAccessToken(): Promise<string> {
   if (token.accessTokenExpiresAt.getTime() - Date.now() > 5 * 60 * 1000) {
     return token.accessToken;
   }
-  const refreshed = await refreshAccessToken(token.refreshToken);
+  // token.scope is null on a row issued before this field existed — that
+  // row was only ever granted sell.inventory, so falling back to it here
+  // is correct, not just a safe default.
+  const refreshed = await refreshAccessToken(token.refreshToken, token.scope ?? SELL_INVENTORY_SCOPE);
   await prisma.ebayAuthToken.update({
     where: { environment },
     data: { accessToken: refreshed.accessToken, accessTokenExpiresAt: refreshed.accessTokenExpiresAt },
   });
   return refreshed.accessToken;
+}
+
+// Which of the required scopes the current environment's connection is
+// missing — empty if not connected at all (a different case, handled by
+// callers checking `connected` separately) or fully connected.
+export async function getMissingScopes(): Promise<string[]> {
+  const environment = getEbayEnvironment();
+  const token = await prisma.ebayAuthToken.findUnique({ where: { environment } });
+  if (!token) return [];
+  const granted = token.scope ?? SELL_INVENTORY_SCOPE;
+  return REQUIRED_SCOPES.filter((s) => !granted.includes(s));
 }
 
 // ---------------------------------------------------------------------------
@@ -221,9 +253,11 @@ function buildAspects(specifics: Record<string, string> | null): Record<string, 
 // and the unique id is confirmed accepted by the real API (verified with a
 // throwaway test item) and keeps the result readable — "LocationA3_..."
 // instead of everything mashed together with no separator at all.
-// Deterministic and reusable — matching an eBay order's SKU back to an Item
-// later just means recomputing this same function over each candidate
-// Item.sku, no extra field needed.
+// Lossy/non-reversible (strips punctuation, can truncate a long location
+// label) — the publish route persists this output to Item.ebaySku right
+// after computing it, so order sync can match an incoming order line
+// item's sku back to an Item via an indexed exact lookup instead of trying
+// to reverse this function or recompute-and-compare against every Item.
 export function toEbaySku(sku: string): string {
   const match = sku.match(/^\(Location - (.+?)\)-(.+)$/);
   if (!match) {
@@ -264,32 +298,53 @@ export async function createOrReplaceInventoryItem(item: ItemForEbayPublish): Pr
   });
 }
 
-export async function createOffer(item: ItemForEbayPublish): Promise<string> {
+// Shared by createOffer and updateOfferPrice — updateOffer is a full-replace
+// endpoint (every field required again, not a partial patch), so a price
+// change has to resend the same body shape as creation, just with a new
+// price value.
+function buildOfferBody(item: ItemForEbayPublish, price: number) {
   const config = getEbayConfig();
+  return {
+    sku: toEbaySku(item.sku),
+    marketplaceId: "EBAY_US",
+    format: "FIXED_PRICE",
+    availableQuantity: item.quantity,
+    categoryId: item.categoryId,
+    listingDescription: item.finalDescription,
+    listingPolicies: {
+      fulfillmentPolicyId: config.fulfillmentPolicyId,
+      paymentPolicyId: config.paymentPolicyId,
+      returnPolicyId: config.returnPolicyId,
+      // Matches the CSV export's BestOfferEnabled=true — fixed-price
+      // listings that also take offers, with no auto-accept/auto-decline
+      // threshold set. Cristian reviews and accepts/declines/counters
+      // each one manually in Seller Hub.
+      bestOfferTerms: { bestOfferEnabled: true },
+    },
+    pricingSummary: { price: { value: price.toFixed(2), currency: "USD" } },
+    merchantLocationKey: config.merchantLocationKey,
+  };
+}
+
+export async function createOffer(item: ItemForEbayPublish): Promise<string> {
   const result = (await ebayFetch(`/sell/inventory/v1/offer`, {
     method: "POST",
-    body: JSON.stringify({
-      sku: toEbaySku(item.sku),
-      marketplaceId: "EBAY_US",
-      format: "FIXED_PRICE",
-      availableQuantity: item.quantity,
-      categoryId: item.categoryId,
-      listingDescription: item.finalDescription,
-      listingPolicies: {
-        fulfillmentPolicyId: config.fulfillmentPolicyId,
-        paymentPolicyId: config.paymentPolicyId,
-        returnPolicyId: config.returnPolicyId,
-        // Matches the CSV export's BestOfferEnabled=true — fixed-price
-        // listings that also take offers, with no auto-accept/auto-decline
-        // threshold set. Cristian reviews and accepts/declines/counters
-        // each one manually in Seller Hub.
-        bestOfferTerms: { bestOfferEnabled: true },
-      },
-      pricingSummary: { price: { value: item.price.toFixed(2), currency: "USD" } },
-      merchantLocationKey: config.merchantLocationKey,
-    }),
+    body: JSON.stringify(buildOfferBody(item, item.price)),
   })) as { offerId: string };
   return result.offerId;
+}
+
+// eBay's Inventory API has no batch endpoint that fits updating many
+// different items' prices at once — bulkUpdatePriceQuantity only batches
+// multiple offers of the *same* SKU (e.g. one product listed under several
+// offerIds), not many different SKUs. So the bulk-discount feature is just
+// this, called once per item — same "sequential, not parallel" shape as
+// publishAllToEbay in review/page.tsx.
+export async function updateOfferPrice(offerId: string, item: ItemForEbayPublish, newPrice: number): Promise<void> {
+  await ebayFetch(`/sell/inventory/v1/offer/${encodeURIComponent(offerId)}`, {
+    method: "PUT",
+    body: JSON.stringify(buildOfferBody(item, newPrice)),
+  });
 }
 
 export async function publishOffer(offerId: string): Promise<string> {
@@ -314,6 +369,90 @@ export async function createOrUpdateMerchantLocation(postalCode: string): Promis
       merchantLocationStatus: "ENABLED",
     }),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Order sync (Fulfillment API for orders, Finances API for real fees —
+// used by src/lib/ebayOrderSync.ts). Field names below are per eBay's
+// current published schema, not yet exercised against a real order at the
+// time this was written — ebayOrderSync.ts validates shapes defensively
+// and records a per-order error rather than guessing if something doesn't
+// match, so a wrong assumption here fails loud, not silently wrong.
+// ---------------------------------------------------------------------------
+
+export type EbayOrderLineItem = {
+  lineItemId: string;
+  sku: string;
+  quantity: number;
+  lineItemCostValue: number; // selling price × quantity for this line — already the full line revenue, not per-unit
+};
+
+export type EbayOrder = {
+  orderId: string;
+  orderPaymentStatus: string;
+  creationDate: string;
+  lineItems: EbayOrderLineItem[];
+};
+
+// Pages through GET /sell/fulfillment/v1/order for orders last-modified in
+// [from, to). Vercel Cron's own bearer-token check happens one layer up in
+// the route handler — this just does the paging.
+export async function getRecentOrders(from: Date, to: Date): Promise<EbayOrder[]> {
+  const orders: EbayOrder[] = [];
+  const limit = 50;
+  let offset = 0;
+  const filter = `lastmodifieddate:[${from.toISOString()}..${to.toISOString()}]`;
+  for (;;) {
+    const page = (await ebayFetch(
+      `/sell/fulfillment/v1/order?filter=${encodeURIComponent(filter)}&limit=${limit}&offset=${offset}`
+    )) as {
+      orders?: {
+        orderId: string;
+        orderPaymentStatus: string;
+        creationDate: string;
+        lineItems?: { lineItemId: string; sku?: string; quantity?: number; lineItemCost?: { value: string } }[];
+      }[];
+      total?: number;
+    };
+    const pageOrders = page.orders ?? [];
+    for (const o of pageOrders) {
+      orders.push({
+        orderId: o.orderId,
+        orderPaymentStatus: o.orderPaymentStatus,
+        creationDate: o.creationDate,
+        lineItems: (o.lineItems ?? [])
+          .filter((li): li is Required<typeof li> => Boolean(li.sku && li.quantity && li.lineItemCost))
+          .map((li) => ({
+            lineItemId: li.lineItemId,
+            sku: li.sku,
+            quantity: li.quantity,
+            lineItemCostValue: Number(li.lineItemCost.value),
+          })),
+      });
+    }
+    offset += limit;
+    if (pageOrders.length < limit || (page.total != null && offset >= page.total)) break;
+  }
+  return orders;
+}
+
+export type EbayOrderEarnings = {
+  lineItemId: string;
+  totalFees: number;
+}[];
+
+// GET /sell/finances/v1/order_earnings/{orderId} — the real fees (final
+// value fee, regulatory fee, shipping label cost if purchased through
+// eBay, etc.) actually deducted from the payout for each line item in this
+// order.
+export async function getOrderEarnings(orderId: string): Promise<EbayOrderEarnings> {
+  const result = (await ebayFetch(`/sell/finances/v1/order_earnings/${encodeURIComponent(orderId)}`)) as {
+    orderLineItems?: { lineItemId: string; marketplaceFees?: { amount: { value: string } }[] }[];
+  };
+  return (result.orderLineItems ?? []).map((li) => ({
+    lineItemId: li.lineItemId,
+    totalFees: (li.marketplaceFees ?? []).reduce((sum, f) => sum + Number(f.amount.value), 0),
+  }));
 }
 
 export function listingUrl(environment: string, listingId: string): string {
