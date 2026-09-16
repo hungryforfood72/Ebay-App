@@ -382,7 +382,7 @@ model SourcingLineEstimate {
   // the UI can show it (a real bug this caught live: sunscreen priced as
   // a 3-pack was read as $29.77 PER BOTTLE, tripling the estimate).
   typicalPackSize        Int                @default(1)
-  dataConfidence         String // "own_history" | "category_fallback" | "market_only"
+  dataConfidence         String // "own_history" | "historical_match" | "category_fallback" | "market_only"
   flaggedDud             Boolean            @default(false)
 
   @@index([evaluationId])
@@ -397,6 +397,33 @@ model SourcingKnowledge {
   scope     String   @unique // "supplier:bstock" | "category:Health & Beauty" | "brand:pringles" | "global"
   notes     String
   updatedAt DateTime @updatedAt
+}
+
+// A broader, standalone snapshot of real past eBay sales, pulled directly
+// from eBay's own order history (not this app's own EbayItemSale table) —
+// most of a year's real sales predate this app's tracking entirely, or
+// were never scanned/listed through it at all, so there's nothing to find
+// here on the dashboard/manifest pages, deliberately. Used ONLY as a wider
+// reference for the sourcing agent ("have we sold this brand before, at
+// what price, with what shipping cost") via loose title-text matching,
+// since most of these sales have no UPC linkage back to a specific
+// manifest line the way this app's own tracked sales do. Includes
+// everything on the account, including a VA's separate dropshipping sales
+// (no reliable way to tell those apart from real liquidation resale sales
+// — accepted as noise per Cristian's own call, not a bug).
+model HistoricalSaleRecord {
+  id                  String   @id @default(uuid())
+  ebayOrderId         String
+  ebayOrderLineItemId String   @unique
+  title               String
+  quantity            Int
+  soldPrice           Decimal  @db.Decimal(10, 2) // this line's full revenue (price × quantity), same convention as EbayItemSale.revenue
+  shippingCost        Decimal  @default(0) @db.Decimal(10, 2)
+  fees                Decimal  @default(0) @db.Decimal(10, 2)
+  soldAt              DateTime
+  importedAt          DateTime @default(now())
+
+  @@index([title])
 }
 
 // Minimal key/value settings store — first use is the sourcing agent's

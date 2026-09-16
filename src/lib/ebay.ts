@@ -593,6 +593,7 @@ export async function createOrUpdateMerchantLocation(postalCode: string): Promis
 export type EbayOrderLineItem = {
   lineItemId: string;
   sku: string;
+  title: string;
   quantity: number;
   lineItemCostValue: number; // selling price × quantity for this line — already the full line revenue, not per-unit
 };
@@ -612,7 +613,7 @@ export async function getOrder(orderId: string): Promise<EbayOrder> {
     orderId: string;
     orderPaymentStatus: string;
     creationDate: string;
-    lineItems?: { lineItemId: string; sku?: string; quantity?: number; lineItemCost?: { value: string } }[];
+    lineItems?: { lineItemId: string; sku?: string; title?: string; quantity?: number; lineItemCost?: { value: string } }[];
   };
   return {
     orderId: o.orderId,
@@ -623,6 +624,7 @@ export async function getOrder(orderId: string): Promise<EbayOrder> {
       .map((li) => ({
         lineItemId: li.lineItemId,
         sku: li.sku,
+        title: li.title ?? li.sku,
         quantity: li.quantity,
         lineItemCostValue: Number(li.lineItemCost.value),
       })),
@@ -645,7 +647,7 @@ export async function getRecentOrders(from: Date, to: Date): Promise<EbayOrder[]
         orderId: string;
         orderPaymentStatus: string;
         creationDate: string;
-        lineItems?: { lineItemId: string; sku?: string; quantity?: number; lineItemCost?: { value: string } }[];
+        lineItems?: { lineItemId: string; sku?: string; title?: string; quantity?: number; lineItemCost?: { value: string } }[];
       }[];
       total?: number;
     };
@@ -660,6 +662,7 @@ export async function getRecentOrders(from: Date, to: Date): Promise<EbayOrder[]
           .map((li) => ({
             lineItemId: li.lineItemId,
             sku: li.sku,
+            title: li.title ?? li.sku,
             quantity: li.quantity,
             lineItemCostValue: Number(li.lineItemCost.value),
           })),

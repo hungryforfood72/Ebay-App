@@ -101,6 +101,24 @@ function isResellerLot(title: string, packSize: number): boolean {
   return false;
 }
 
+// Manifest descriptions in this app's CSVs are catalog-style and
+// consistently lead with the brand ("Sun Bum SPF 50...", "First Response
+// Early Pregnancy Test...", "Wexford Pink Erasers...") rather than being a
+// sentence — so the first couple of real (non-numeric, non-trivial) tokens
+// double as a decent brand/product match key against HistoricalSaleRecord
+// titles, which have no UPC to join on. Best-effort and approximate by
+// design (see the HistoricalSaleRecord model comment) — this is a
+// directional signal, not a precise match.
+const BRAND_MATCH_STOPWORDS = new Set(["new", "set", "mini", "the", "and", "for", "with", "pack", "kit"]);
+
+function extractBrandMatchWords(description: string): string[] {
+  return description
+    .replace(/[^a-zA-Z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !/^\d+$/.test(w) && !BRAND_MATCH_STOPWORDS.has(w.toLowerCase()))
+    .slice(0, 2);
+}
+
 // Mode (most frequent value) of a list of pack sizes — used to decide what
 // this UPC is realistically LISTED as (one bottle vs. a 3-pack), which
 // matters for shipping/fixed-fee costs: those are charged once per
@@ -366,7 +384,7 @@ type LineEstimateResult = {
   estimatedNetPerUnit: number | null;
   effectiveUnits: number;
   typicalPackSize: number;
-  dataConfidence: "own_history" | "category_fallback" | "market_only";
+  dataConfidence: "own_history" | "historical_match" | "category_fallback" | "market_only";
   flaggedDud: boolean;
   eventEnded: boolean;
   postHolidayFiller: boolean;
@@ -454,6 +472,64 @@ async function estimateLine(
     }
   }
 
+  // Broader real-sales reference — HistoricalSaleRecord, the standalone
+  // year-back pull of every real eBay order on the account (see that
+  // model's comment). Matched loosely by title text since these rows have
+  // no UPC to join on precisely — this is the "have we sold this brand
+  // before" signal Cristian asked for when own_history above (exact UPC)
+  // comes up empty, which it does for the vast majority of manifest lines
+  // since most of a year's real sales predate this app's own tracking or
+  // were never scanned through it. Includes the VA's dropshipping sales
+  // too (no reliable way to separate them out) — accepted noise, not a bug.
+  let historicalSalesCount = 0;
+  let historicalAvgSalePrice = 0;
+  let historicalAvgShipping = 0;
+  let historicalFeeRate = FALLBACK_FEE_RATE;
+  const historicalPackSizes: number[] = [];
+  const brandMatchWords = extractBrandMatchWords(group.description);
+  if (brandMatchWords.length > 0) {
+    let historicalMatches = await prisma.historicalSaleRecord.findMany({
+      where: { AND: brandMatchWords.map((w) => ({ title: { contains: w, mode: "insensitive" as const } })) },
+      select: { title: true, quantity: true, soldPrice: true, shippingCost: true, fees: true },
+      take: 200,
+    });
+    // The strict AND (both leading words) is high-precision but often
+    // misses real matches — confirmed live: "Vicks Advanced Soothing
+    // Vapors Vaporizer" found nothing against a real "Vicks PURE Zzzs Kidz
+    // Liquid Melatonin" historical sale because "Advanced" isn't shared,
+    // even though "Vicks" alone is a perfectly good brand signal. Fall
+    // back to just the single leading word when the strict match comes up
+    // empty, rather than losing the signal entirely.
+    if (historicalMatches.length === 0) {
+      historicalMatches = await prisma.historicalSaleRecord.findMany({
+        where: { title: { contains: brandMatchWords[0], mode: "insensitive" as const } },
+        select: { title: true, quantity: true, soldPrice: true, shippingCost: true, fees: true },
+        take: 200,
+      });
+    }
+    let units = 0;
+    let revenue = 0;
+    let shipping = 0;
+    let fees = 0;
+    for (const m of historicalMatches) {
+      // Same pack-size normalization as own history / market comps above —
+      // a historical record's `quantity` is how many of that (possibly
+      // multi-pack) listing were bought, not physical units.
+      const packSize = detectPackSize(m.title);
+      historicalPackSizes.push(packSize);
+      units += m.quantity * packSize;
+      revenue += Number(m.soldPrice);
+      shipping += Number(m.shippingCost);
+      fees += Number(m.fees);
+    }
+    if (units > 0) {
+      historicalSalesCount = units;
+      historicalAvgSalePrice = revenue / units;
+      historicalAvgShipping = shipping / units;
+      historicalFeeRate = revenue > 0 ? fees / revenue : FALLBACK_FEE_RATE;
+    }
+  }
+
   // Live market signal — same shipping-inclusive comp search already built
   // for price research. Also the saturation signal for dud-flagging.
   //
@@ -492,15 +568,24 @@ async function estimateLine(
   // seen among live comps. Only matters for amortizing the flat per-listing
   // shipping/fixed-fee fallbacks below correctly (a percentage-of-price fee
   // needs no such adjustment — it already scales with the normalized price).
-  const typicalPackSize = ownPackSizes.length > 0 ? modePackSize(ownPackSizes) : modePackSize(marketPackSizes);
+  const typicalPackSize =
+    ownPackSizes.length > 0
+      ? modePackSize(ownPackSizes)
+      : historicalPackSizes.length > 0
+        ? modePackSize(historicalPackSizes)
+        : modePackSize(marketPackSizes);
 
   // Confidence-weighted blend — more real samples (capped) = more trust,
   // market signal always contributes some weight since it's always at least
-  // directionally available.
+  // directionally available. Historical (fuzzy title-matched, real past
+  // orders) sits between own-history (exact UPC) and category rollup —
+  // more specific than a whole category, less certain than an exact UPC
+  // match.
   const ownScore = Math.min(ownSalesCount, 8) * 3;
+  const historicalScore = Math.min(historicalSalesCount, 10) * 2;
   const categoryScore = Math.min(categorySalesCount, 15) * 1.5;
   const marketScore = Math.min(activeCompCount, 10) * 1;
-  const totalScore = ownScore + categoryScore + marketScore;
+  const totalScore = ownScore + historicalScore + categoryScore + marketScore;
 
   if (totalScore === 0) {
     // Nothing to go on at all — no comps, no history. Can't responsibly
@@ -525,14 +610,20 @@ async function estimateLine(
   }
 
   const dataConfidence: LineEstimateResult["dataConfidence"] =
-    ownScore >= categoryScore && ownScore >= marketScore && ownSalesCount >= 3
+    ownScore >= historicalScore && ownScore >= categoryScore && ownScore >= marketScore && ownSalesCount >= 3
       ? "own_history"
-      : categoryScore > marketScore || ownSalesCount > 0
-        ? "category_fallback"
-        : "market_only";
+      : historicalScore >= categoryScore && historicalScore >= marketScore && historicalSalesCount >= 3
+        ? "historical_match"
+        : categoryScore > marketScore || ownSalesCount > 0 || historicalSalesCount > 0
+          ? "category_fallback"
+          : "market_only";
 
   const blendedSalePrice =
-    (ownScore * ownAvgSalePrice + categoryScore * categoryAvgSalePrice + marketScore * marketMedian) / totalScore;
+    (ownScore * ownAvgSalePrice +
+      historicalScore * historicalAvgSalePrice +
+      categoryScore * categoryAvgSalePrice +
+      marketScore * marketMedian) /
+    totalScore;
   // market_only means there's no real sales history backing this number at
   // all — a comp with a pack size detectPackSize missed can still slip
   // through, so cap against the manifest's own declared retail as a
@@ -551,15 +642,27 @@ async function estimateLine(
   const fallbackShippingPerUnit = FALLBACK_SHIPPING_COST / typicalPackSize;
   const fallbackFeeFixedPerUnit = FALLBACK_FEE_FIXED / typicalPackSize;
   const estimatedUnitShipping =
-    ownSalesCount > 0 || categorySalesCount > 0
-      ? (ownScore * ownAvgShipping + categoryScore * categoryAvgShipping + marketScore * fallbackShippingPerUnit) / totalScore
+    ownSalesCount > 0 || historicalSalesCount > 0 || categorySalesCount > 0
+      ? (ownScore * ownAvgShipping +
+          historicalScore * historicalAvgShipping +
+          categoryScore * categoryAvgShipping +
+          marketScore * fallbackShippingPerUnit) /
+        totalScore
       : fallbackShippingPerUnit;
-  const estimatedUnitFees = estimatedUnitSalePrice * ownFeeRate + fallbackFeeFixedPerUnit;
+  // Real fee rate from our own sales when we have it; otherwise the
+  // historical pull's real fee rate is still a genuine eBay-charged rate
+  // (just for a fuzzily-matched product) and a better guess than the flat
+  // fallback constant.
+  const feeRate = ownSalesCount > 0 ? ownFeeRate : historicalSalesCount > 0 ? historicalFeeRate : FALLBACK_FEE_RATE;
+  const estimatedUnitFees = estimatedUnitSalePrice * feeRate + fallbackFeeFixedPerUnit;
   const rawNet = estimatedUnitSalePrice - estimatedUnitFees - estimatedUnitShipping;
 
   // Dud: heavily saturated market (lots of active comps) with no real sales
-  // history to back up that it actually moves, or the math is just negative.
-  let flaggedDud = rawNet <= 0 || (ownSalesCount === 0 && categorySalesCount === 0 && activeCompCount >= 15);
+  // history — own OR historical — to back up that it actually moves, or the
+  // math is just negative.
+  let flaggedDud =
+    rawNet <= 0 ||
+    (ownSalesCount === 0 && historicalSalesCount === 0 && categorySalesCount === 0 && activeCompCount >= 15);
 
   // Recurring-holiday filler (see POST_HOLIDAY_DUD_RULES above) — cheap,
   // no API call, calendar-based. Checked first so the live check below
