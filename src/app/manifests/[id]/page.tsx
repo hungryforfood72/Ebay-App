@@ -218,7 +218,7 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
       {manifest.sourcingEvaluation?.status === "complete" && (
         <section className="mb-6 rounded-lg border p-4 text-sm">
           <p className="mb-1 text-xs font-medium text-gray-500">
-            Sourcing agent prediction (at purchase time — read-only, run from the Analyzer before buying)
+            Estimated suggested bid (from the Analyzer, before this was purchased — read-only)
           </p>
           <div className="flex flex-wrap items-center gap-2">
             <span
@@ -242,6 +242,45 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
               </span>
             )}
           </div>
+
+          {/* Once the real landed cost is known (entered below), it's almost
+              always different from the pre-purchase max-bid estimate — this
+              reflects the same expected revenue against what was actually
+              paid, not the earlier guess, so profit/ROI stay accurate after
+              the fact. This is also the real predicted-vs-actual comparison
+              point the sourcing agent's learning loop is meant to build
+              toward. */}
+          {manifest.totalLandedCost != null && manifest.sourcingEvaluation.expectedNetContribution != null && (
+            <div className="mt-3 border-t pt-3">
+              <p className="mb-1 text-xs font-medium text-gray-500">
+                Updated numbers (based on the actual landed cost you paid)
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-gray-600">
+                  Actual landed cost: <strong>${manifest.totalLandedCost.toFixed(2)}</strong>
+                </span>
+                <span className="text-gray-600">
+                  Est. profit:{" "}
+                  <strong>
+                    ${(manifest.sourcingEvaluation.expectedNetContribution - manifest.totalLandedCost).toFixed(2)}
+                  </strong>
+                </span>
+                <span className="text-gray-600">
+                  Est. ROI:{" "}
+                  <strong>
+                    {manifest.totalLandedCost > 0
+                      ? (
+                          ((manifest.sourcingEvaluation.expectedNetContribution - manifest.totalLandedCost) /
+                            manifest.totalLandedCost) *
+                          100
+                        ).toFixed(0)
+                      : "—"}
+                    %
+                  </strong>
+                </span>
+              </div>
+            </div>
+          )}
         </section>
       )}
 
