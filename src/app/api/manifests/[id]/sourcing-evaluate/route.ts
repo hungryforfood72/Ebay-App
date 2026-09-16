@@ -50,6 +50,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             estimatedUnitShipping: e.estimatedUnitShipping,
             estimatedNetPerUnit: e.estimatedNetPerUnit,
             effectiveUnits: e.effectiveUnits,
+            typicalPackSize: e.typicalPackSize,
             dataConfidence: e.dataConfidence,
             flaggedDud: e.flaggedDud,
           })) satisfies Prisma.SourcingLineEstimateCreateManyInput[],

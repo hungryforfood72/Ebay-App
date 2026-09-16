@@ -376,6 +376,12 @@ model SourcingLineEstimate {
   estimatedUnitShipping  Decimal?           @db.Decimal(10, 2)
   estimatedNetPerUnit    Decimal?           @db.Decimal(10, 2)
   effectiveUnits         Int // expected units after the supplier's real historical receive-rate haircut
+  // What this UPC is realistically listed/sold as (1 = single unit, 3 = a
+  // "3-Pack", etc.) — estimatedUnitSalePrice/Fees/Shipping are already
+  // normalized to a true per-physical-unit basis using this, kept here so
+  // the UI can show it (a real bug this caught live: sunscreen priced as
+  // a 3-pack was read as $29.77 PER BOTTLE, tripling the estimate).
+  typicalPackSize        Int                @default(1)
   dataConfidence         String // "own_history" | "category_fallback" | "market_only"
   flaggedDud             Boolean            @default(false)
 

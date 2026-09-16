@@ -22,6 +22,7 @@ type SourcingLineEstimate = {
   estimatedUnitSalePrice: number | null;
   estimatedNetPerUnit: number | null;
   effectiveUnits: number;
+  typicalPackSize: number;
   dataConfidence: string;
   flaggedDud: boolean;
 };
@@ -261,7 +262,8 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
                   <thead>
                     <tr className="border-b text-left text-gray-500">
                       <th className="py-1 pr-2">Item</th>
-                      <th className="px-2 text-right">Est. sale price</th>
+                      <th className="px-2 text-right">Est. sale price (per unit)</th>
+                      <th className="px-2 text-right">Sells as</th>
                       <th className="px-2 text-right">Est. net/unit</th>
                       <th className="px-2 text-right">Units</th>
                       <th className="px-2 text-left">Confidence</th>
@@ -275,6 +277,9 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
                         </td>
                         <td className="px-2 text-right">
                           {e.estimatedUnitSalePrice != null ? `$${e.estimatedUnitSalePrice.toFixed(2)}` : "—"}
+                        </td>
+                        <td className="px-2 text-right">
+                          {e.typicalPackSize > 1 ? `${e.typicalPackSize}-pack` : "single"}
                         </td>
                         <td className="px-2 text-right">
                           {e.estimatedNetPerUnit != null ? `$${e.estimatedNetPerUnit.toFixed(2)}` : "—"}

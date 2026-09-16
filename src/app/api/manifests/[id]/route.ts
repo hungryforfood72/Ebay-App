@@ -301,6 +301,7 @@ export async function GET(
         estimatedUnitSalePrice: e.estimatedUnitSalePrice != null ? Number(e.estimatedUnitSalePrice) : null,
         estimatedNetPerUnit: e.estimatedNetPerUnit != null ? Number(e.estimatedNetPerUnit) : null,
         effectiveUnits: e.effectiveUnits,
+        typicalPackSize: e.typicalPackSize,
         dataConfidence: e.dataConfidence,
         flaggedDud: e.flaggedDud,
       })),

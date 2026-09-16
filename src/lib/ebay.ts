@@ -20,7 +20,7 @@ const SELL_FINANCES_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.finances"
 const SELL_MARKETING_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.marketing";
 const REQUIRED_SCOPES = [SELL_INVENTORY_SCOPE, SELL_FULFILLMENT_SCOPE, SELL_FINANCES_SCOPE, SELL_MARKETING_SCOPE];
 
-function getEbayConfig() {
+export function getEbayConfig() {
   const environment = getEbayEnvironment();
   const prefix = environment === "production" ? "EBAY_PRODUCTION_" : "EBAY_SANDBOX_";
   const get = (name: string): string => {
@@ -201,7 +201,7 @@ export async function getMissingScopes(): Promise<string[]> {
 
 const BROWSE_SCOPE = "https://api.ebay.com/oauth/api_scope";
 
-async function getAppAccessToken(): Promise<string> {
+export async function getAppAccessToken(): Promise<string> {
   const environment = getEbayEnvironment();
   const existing = await prisma.ebayAppToken.findUnique({ where: { environment } });
   if (existing && existing.expiresAt.getTime() - Date.now() > 5 * 60 * 1000) {
@@ -222,27 +222,14 @@ async function getAppAccessToken(): Promise<string> {
 // — those comps get shippingCost 0, same as genuinely free shipping,
 // since there's no other number to use). totalPrice is what a buyer
 // actually pays, and is what comps should be compared/sorted on.
-export type ActiveListingComp = { price: number; shippingCost: number; totalPrice: number; title: string };
+export type ActiveListingComp = { itemId: string; price: number; shippingCost: number; totalPrice: number; title: string };
 
-// GET /buy/browse/v1/item_summary/search — active (not sold) listings, the
-// only comp data actually available via API (see EbayApiError's callers
-// for the sold-comps research that confirmed Marketplace Insights is
-// closed to new applicants). Prefers a GTIN (UPC) search when the item has
-// one — far more precise than keyword matching — falling back to keywords
-// from the title for bundles/items with no UPC.
-export async function searchActiveListings(query: {
-  upc: string | null;
-  keywords: string;
-  excludeListingId?: string | null;
-}): Promise<ActiveListingComp[]> {
+async function fetchActiveListingComps(
+  params: URLSearchParams,
+  excludeListingId?: string | null
+): Promise<ActiveListingComp[]> {
   const config = getEbayConfig();
   const token = await getAppAccessToken();
-  const params = new URLSearchParams({ limit: "50" });
-  if (query.upc) {
-    params.set("gtin", query.upc);
-  } else {
-    params.set("q", query.keywords);
-  }
   const res = await fetch(`${config.apiBase}/buy/browse/v1/item_summary/search?${params.toString()}`, {
     headers: {
       Authorization: `Bearer ${token}`,
@@ -269,7 +256,7 @@ export async function searchActiveListings(query: {
     }[];
   };
   return (result.itemSummaries ?? [])
-    .filter((i) => i.itemId !== query.excludeListingId && i.price)
+    .filter((i) => i.itemId !== excludeListingId && i.price)
     .map((i) => {
       const price = Number(i.price!.value);
       // Only a FIXED shippingCostType actually carries a shippingCost value
@@ -280,8 +267,39 @@ export async function searchActiveListings(query: {
         shippingOption?.shippingCostType === "FIXED" && shippingOption.shippingCost
           ? Number(shippingOption.shippingCost.value)
           : 0;
-      return { price, shippingCost, totalPrice: price + shippingCost, title: i.title };
+      return { itemId: i.itemId, price, shippingCost, totalPrice: price + shippingCost, title: i.title };
     });
+}
+
+// GET /buy/browse/v1/item_summary/search — active (not sold) listings, the
+// only comp data actually available via API (see EbayApiError's callers
+// for the sold-comps research that confirmed Marketplace Insights is
+// closed to new applicants). Runs BOTH a GTIN (UPC) search and a keyword
+// search when a UPC is available, merged and deduped by itemId — GTIN
+// alone is precise but drastically under-samples: confirmed live, a real
+// UPC returned only 10 GTIN-tagged comps vs. 1,234 total available via
+// keyword search for the same product, because most sellers never fill in
+// the UPC field on their listing. Keyword-only (no UPC, e.g. bundles) is
+// unchanged.
+export async function searchActiveListings(query: {
+  upc: string | null;
+  keywords: string;
+  excludeListingId?: string | null;
+}): Promise<ActiveListingComp[]> {
+  if (!query.upc) {
+    const params = new URLSearchParams({ limit: "50", q: query.keywords });
+    return fetchActiveListingComps(params, query.excludeListingId);
+  }
+
+  const gtinParams = new URLSearchParams({ limit: "50", gtin: query.upc });
+  const keywordParams = new URLSearchParams({ limit: "50", q: query.keywords || query.upc });
+  const [gtinComps, keywordComps] = await Promise.all([
+    fetchActiveListingComps(gtinParams, query.excludeListingId),
+    fetchActiveListingComps(keywordParams, query.excludeListingId),
+  ]);
+  const merged = new Map<string, ActiveListingComp>();
+  for (const c of [...gtinComps, ...keywordComps]) merged.set(c.itemId, c);
+  return [...merged.values()];
 }
 
 export type LiveListingPrice = { price: number; originalPrice: number | null };

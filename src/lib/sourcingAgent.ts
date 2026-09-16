@@ -44,19 +44,90 @@ const FALLBACK_FEE_RATE = 0.1325;
 const FALLBACK_FEE_FIXED = 0.3;
 const FALLBACK_SHIPPING_COST = 5;
 
-// Comps whose own title signals a multi-unit lot/case/wholesale listing —
-// excluded from market-price estimation for no-UPC keyword-matched
-// searches, where there's no reliable way to tell a lot's total price
-// apart from a single unit's price (see estimateLine).
-const BULK_LISTING_PATTERN = /\b(lot of|case of|wholesale|bulk|pallet|box of \d+)\b/i;
+// A "3-Pack" is a totally normal single listing a real buyer buys directly
+// — its price is for 3 units, not 1. Confirmed live: sunscreen priced at
+// $29.77 for what turned out to be a 3-pack was treated as a
+// $29.77-per-bottle price, tripling the manifest's 35 single-bottle
+// physical units into ~$1,042 of phantom revenue instead of the real
+// ~$347. Every comp's price is normalized to a per-physical-unit basis by
+// dividing out its own detected pack size before it ever reaches the
+// blended estimate.
+//
+// "Lot of N" / "Case of N" are genuinely ambiguous phrasing — confirmed
+// live against a real 1,234-comp sample that the overwhelming majority of
+// "Lot of 2/3/4" listings for a household product (sunscreen) are just a
+// casual seller's wording for a small multi-buy bundle, not a reseller
+// wholesale lot, and they were consistently among the CHEAPEST per-unit
+// comps — exactly the real-world price a human would spot, and exactly
+// what got thrown out by blanket-excluding every "lot of"-titled comp.
+// Small lot/case quantities are now treated exactly like any other pack
+// size instead; only a large quantity (or an unambiguous wholesale/bulk/
+// pallet word, which signals reseller-to-reseller pricing that doesn't
+// reflect retail-buyer economics) is still excluded outright.
+const RESELLER_BULK_PATTERN = /\b(wholesale|bulk|pallet)\b/i;
+const LARGE_LOT_THRESHOLD = 10;
+
+function detectPackSize(title: string): number {
+  const patterns = [
+    /\bpack\s*of\s*(\d{1,3})\b/i,
+    /\b(\d{1,3})\s*-?\s*pack\b/i,
+    /\b(\d{1,3})\s*pk\b/i,
+    /\b(\d{1,3})\s*ct\b/i,
+    /\b(\d{1,3})\s*count\b/i,
+    /\bset\s*of\s*(\d{1,3})\b/i,
+    /\bbundle\s*of\s*(\d{1,3})\b/i,
+    /\blot\s*of\s*(\d{1,3})\b/i,
+    /\bcase\s*of\s*(\d{1,3})\b/i,
+    /\bbox\s*of\s*(\d{1,3})\b/i,
+  ];
+  for (const pattern of patterns) {
+    const match = title.match(pattern);
+    if (match) {
+      const n = parseInt(match[1], 10);
+      if (n >= 2 && n <= 48) return n; // sanity bounds — outside this range is more likely a false match (a model number, a size, etc.)
+    }
+  }
+  return 1;
+}
+
+// Excluded outright rather than normalized — a genuine reseller/wholesale
+// lot's pricing reflects business-to-business economics, not what an
+// individual retail listing of the same physical units would fetch, so
+// dividing its total by its quantity would understate a realistic retail
+// per-unit price.
+function isResellerLot(title: string, packSize: number): boolean {
+  if (RESELLER_BULK_PATTERN.test(title)) return true;
+  if (packSize > LARGE_LOT_THRESHOLD) return true;
+  return false;
+}
+
+// Mode (most frequent value) of a list of pack sizes — used to decide what
+// this UPC is realistically LISTED as (one bottle vs. a 3-pack), which
+// matters for shipping/fixed-fee costs: those are charged once per
+// listing, not once per physical unit, so amortizing them over the wrong
+// unit count either over- or under-states them (see estimateLine).
+function modePackSize(sizes: number[]): number {
+  if (sizes.length === 0) return 1;
+  const counts = new Map<number, number>();
+  for (const s of sizes) counts.set(s, (counts.get(s) ?? 0) + 1);
+  let best = 1;
+  let bestCount = 0;
+  for (const [size, count] of counts) {
+    if (count > bestCount) {
+      best = size;
+      bestCount = count;
+    }
+  }
+  return best;
+}
 
 // When there's no real sales history to trust a market estimate against
 // (market_only confidence), a per-unit price more than this many times the
 // manifest's own declared retail is more likely a comp-matching error
-// (e.g. a bundle/lot that slipped past BULK_LISTING_PATTERN) than a
-// genuine "sells for way above retail" item — liquidation merchandise
-// essentially never does. Capped, not discarded, so the line still
-// contributes something rather than being silently zeroed.
+// (e.g. a pack size detectPackSize missed) than a genuine "sells for way
+// above retail" item — liquidation merchandise essentially never does.
+// Capped, not discarded, so the line still contributes something rather
+// than being silently zeroed.
 const MARKET_ONLY_RETAIL_MULTIPLE_CAP = 3;
 
 // Commonsense seasonal fallback, used only until a category has enough real
@@ -294,6 +365,7 @@ type LineEstimateResult = {
   estimatedUnitShipping: number | null;
   estimatedNetPerUnit: number | null;
   effectiveUnits: number;
+  typicalPackSize: number;
   dataConfidence: "own_history" | "category_fallback" | "market_only";
   flaggedDud: boolean;
   eventEnded: boolean;
@@ -313,6 +385,7 @@ async function estimateLine(
   let ownAvgSalePrice = 0;
   let ownAvgShipping = 0;
   let ownFeeRate = FALLBACK_FEE_RATE;
+  const ownPackSizes: number[] = [];
   if (group.upc) {
     const items = await prisma.item.findMany({
       where: { upc: group.upc, soldQuantity: { gt: 0 } },
@@ -335,6 +408,9 @@ async function estimateLine(
       revenue += Number(i.soldRevenueTotal);
       fees += Number(i.soldFeesTotal);
       shipping += Number(i.soldShippingTotal);
+      // How this UPC was actually listed when we sold it before — the
+      // most reliable signal there is for what a "listing" of it means.
+      for (let n = 0; n < i.soldQuantity; n++) ownPackSizes.push(i.isMultipack && i.packSize ? i.packSize : 1);
     }
     if (units > 0) {
       ownSalesCount = units;
@@ -381,29 +457,42 @@ async function estimateLine(
   // Live market signal — same shipping-inclusive comp search already built
   // for price research. Also the saturation signal for dud-flagging.
   //
-  // A no-UPC line only has keyword matching to go on (no exact GTIN), which
-  // eBay's search treats as a loose/fuzzy match — a bulk/lot/case listing
-  // can match the same keywords as a single unit and be priced for the
-  // whole lot, badly inflating a per-unit estimate (confirmed live: an
-  // 8-count party-plate pack estimated at $42/unit turned out to be
-  // pulling in "lot of"/"case of" comps). Excluded outright rather than
-  // just down-weighted, since there's no reliable way to know how many
-  // units a mismatched comp's price actually covers.
+  // Every comp's price is normalized to a per-unit basis by dividing out
+  // its own detected pack size (see detectPackSize above) before it's
+  // used — a "3-Pack" or "Lot of 2" is a normal listing a real buyer buys
+  // directly, just priced for more than one unit. Only a genuine reseller/
+  // wholesale lot (see isResellerLot) is excluded outright, since there's
+  // no reliable way to translate business-to-business pricing into a
+  // realistic retail per-unit number.
   let marketMedian = 0;
   let activeCompCount = 0;
+  const marketPackSizes: number[] = [];
   try {
     const comps = await searchActiveListings({ upc: group.upc, keywords: group.description, excludeListingId: null });
-    const singleUnitComps = comps.filter((c) => !BULK_LISTING_PATTERN.test(c.title));
-    activeCompCount = singleUnitComps.length;
-    if (singleUnitComps.length > 0) {
-      const totals = singleUnitComps.map((c) => c.totalPrice).sort((a, b) => a - b);
-      const mid = Math.floor(totals.length / 2);
-      marketMedian = totals.length % 2 === 0 ? (totals[mid - 1] + totals[mid]) / 2 : totals[mid];
+    const perUnitPrices: number[] = [];
+    for (const c of comps) {
+      const packSize = detectPackSize(c.title);
+      if (isResellerLot(c.title, packSize)) continue;
+      marketPackSizes.push(packSize);
+      perUnitPrices.push(c.totalPrice / packSize);
+    }
+    activeCompCount = perUnitPrices.length;
+    if (perUnitPrices.length > 0) {
+      perUnitPrices.sort((a, b) => a - b);
+      const mid = Math.floor(perUnitPrices.length / 2);
+      marketMedian = perUnitPrices.length % 2 === 0 ? (perUnitPrices[mid - 1] + perUnitPrices[mid]) / 2 : perUnitPrices[mid];
     }
   } catch (e) {
     if (!(e instanceof EbayApiError)) throw e;
     console.error(`[sourcingAgent] comp search failed for UPC ${group.upc}`, e);
   }
+
+  // What this UPC is realistically LISTED as — own past sales are the most
+  // reliable signal when we have them, otherwise the most common pack size
+  // seen among live comps. Only matters for amortizing the flat per-listing
+  // shipping/fixed-fee fallbacks below correctly (a percentage-of-price fee
+  // needs no such adjustment — it already scales with the normalized price).
+  const typicalPackSize = ownPackSizes.length > 0 ? modePackSize(ownPackSizes) : modePackSize(marketPackSizes);
 
   // Confidence-weighted blend — more real samples (capped) = more trust,
   // market signal always contributes some weight since it's always at least
@@ -425,6 +514,7 @@ async function estimateLine(
       estimatedUnitShipping: null,
       estimatedNetPerUnit: null,
       effectiveUnits: Math.round(group.expectedQuantity * receiveRate),
+      typicalPackSize,
       dataConfidence: "market_only",
       flaggedDud: true,
       eventEnded: false,
@@ -444,19 +534,27 @@ async function estimateLine(
   const blendedSalePrice =
     (ownScore * ownAvgSalePrice + categoryScore * categoryAvgSalePrice + marketScore * marketMedian) / totalScore;
   // market_only means there's no real sales history backing this number at
-  // all — a keyword-matched comp that's actually a mispriced/mismatched
-  // bundle (see BULK_LISTING_PATTERN above) can still slip through, so cap
-  // against the manifest's own declared retail as a last-resort sanity
-  // check rather than trusting an implausible number outright.
+  // all — a comp with a pack size detectPackSize missed can still slip
+  // through, so cap against the manifest's own declared retail as a
+  // last-resort sanity check rather than trusting an implausible number
+  // outright.
   const estimatedUnitSalePrice =
     dataConfidence === "market_only" && group.retailPrice > 0
       ? Math.min(blendedSalePrice, group.retailPrice * MARKET_ONLY_RETAIL_MULTIPLE_CAP)
       : blendedSalePrice;
+  // FALLBACK_SHIPPING_COST/FALLBACK_FEE_FIXED are per-LISTING costs (one
+  // shipment, one order) — dividing by typicalPackSize amortizes them
+  // across the physical units in that listing, same reasoning as
+  // normalizing comp prices above. ownAvgShipping needs no such
+  // adjustment: it's a real recorded shipping cost already divided by
+  // real physical units sold (soldPhysicalUnits), not a flat guess.
+  const fallbackShippingPerUnit = FALLBACK_SHIPPING_COST / typicalPackSize;
+  const fallbackFeeFixedPerUnit = FALLBACK_FEE_FIXED / typicalPackSize;
   const estimatedUnitShipping =
     ownSalesCount > 0 || categorySalesCount > 0
-      ? (ownScore * ownAvgShipping + categoryScore * categoryAvgShipping + marketScore * FALLBACK_SHIPPING_COST) / totalScore
-      : FALLBACK_SHIPPING_COST;
-  const estimatedUnitFees = estimatedUnitSalePrice * ownFeeRate + FALLBACK_FEE_FIXED;
+      ? (ownScore * ownAvgShipping + categoryScore * categoryAvgShipping + marketScore * fallbackShippingPerUnit) / totalScore
+      : fallbackShippingPerUnit;
+  const estimatedUnitFees = estimatedUnitSalePrice * ownFeeRate + fallbackFeeFixedPerUnit;
   const rawNet = estimatedUnitSalePrice - estimatedUnitFees - estimatedUnitShipping;
 
   // Dud: heavily saturated market (lots of active comps) with no real sales
@@ -495,6 +593,7 @@ async function estimateLine(
     estimatedUnitShipping,
     estimatedNetPerUnit: flaggedDud ? 0 : rawNet,
     effectiveUnits: Math.round(group.expectedQuantity * receiveRate),
+    typicalPackSize,
     dataConfidence,
     flaggedDud,
     eventEnded,
