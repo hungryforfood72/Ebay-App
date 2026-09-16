@@ -17,6 +17,7 @@ type Line = {
   subcategory: string | null;
   receivedUnits: number;
   damagedUnits: number;
+  dudUnits: number;
   accountedUnits: number;
   missingUnits: number;
   weightedCogsPerUnit: number | null;
@@ -60,12 +61,14 @@ type ManifestDetail = {
   lines: Line[];
   unmatchedReceived: { upc: string | null; units: number }[];
   unmatchedDamaged: { upc: string | null; units: number }[];
+  unmatchedDud: { upc: string | null; units: number }[];
   unmatchedSold: { upc: string | null; units: number; revenue: number; fees: number }[];
   sourcingEvaluation: SourcingEvaluation | null;
   summary: {
     totalExpectedUnits: number;
     totalReceivedUnits: number;
     totalDamagedUnits: number;
+    totalDudUnits: number;
     totalAccountedUnits: number;
     totalMissingUnits: number;
     totalManifestExtendedRetail: number;
@@ -199,6 +202,7 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
         <Stat label="Expected units" value={s.totalExpectedUnits} />
         <Stat label="Received" value={s.totalReceivedUnits} />
         <Stat label="Damaged/expired" value={s.totalDamagedUnits} />
+        <Stat label="Dud/unsellable" value={s.totalDudUnits} />
         <Stat
           label="Missing"
           value={s.totalMissingUnits}
@@ -361,6 +365,7 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
               <th className="px-2 text-right">Expected</th>
               <th className="px-2 text-right">Received</th>
               <th className="px-2 text-right">Damaged</th>
+              <th className="px-2 text-right">Dud</th>
               <th className="px-2 text-right">Missing</th>
               <th className="px-2 text-right">Weighted COGS/unit</th>
               <th className="px-2 text-right">Sold</th>
@@ -380,6 +385,7 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
                 <td className="px-2 text-right">{line.expectedQuantity}</td>
                 <td className="px-2 text-right">{line.receivedUnits}</td>
                 <td className="px-2 text-right">{line.damagedUnits}</td>
+                <td className="px-2 text-right">{line.dudUnits}</td>
                 <td className={`px-2 text-right ${line.missingUnits !== 0 ? "font-semibold text-red-600" : ""}`}>
                   {line.missingUnits}
                 </td>
@@ -401,6 +407,7 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
 
       {(manifest.unmatchedReceived.length > 0 ||
         manifest.unmatchedDamaged.length > 0 ||
+        manifest.unmatchedDud.length > 0 ||
         manifest.unmatchedSold.length > 0) && (
         <section className="mt-6 rounded-lg border border-orange-300 bg-orange-50 p-4 text-sm">
           <p className="mb-2 font-medium">Scanned items not on this manifest</p>
@@ -409,6 +416,9 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
           ))}
           {manifest.unmatchedDamaged.map((u) => (
             <p key={`d-${u.upc}`}>Marked {u.units} unit(s) damaged for UPC {u.upc} — not on the manifest.</p>
+          ))}
+          {manifest.unmatchedDud.map((u) => (
+            <p key={`x-${u.upc}`}>Marked {u.units} unit(s) dud/unsellable for UPC {u.upc} — not on the manifest.</p>
           ))}
           {manifest.unmatchedSold.map((u) => (
             <p key={`s-${u.upc}`}>

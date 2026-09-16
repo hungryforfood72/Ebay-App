@@ -57,6 +57,7 @@ export async function GET(
     include: {
       lines: { orderBy: { sortOrder: "asc" } },
       damaged: true,
+      duds: true,
       items: {
         select: {
           upc: true,
@@ -96,6 +97,11 @@ export async function GET(
     damagedByUpc.set(d.upc, (damagedByUpc.get(d.upc) ?? 0) + d.quantity);
   }
 
+  const dudByUpc = new Map<string, number>();
+  for (const d of manifest.duds) {
+    dudByUpc.set(d.upc, (dudByUpc.get(d.upc) ?? 0) + d.quantity);
+  }
+
   // Sold units/revenue/fees, by UPC — summed regardless of Item.status,
   // since a partially-sold multi-unit listing stays "listed" (not "sold")
   // while still having real sold units and revenue to account for.
@@ -127,11 +133,21 @@ export async function GET(
 
   const receivedAllocation = new Array(manifest.lines.length).fill(0);
   const damagedAllocation = new Array(manifest.lines.length).fill(0);
+  const dudAllocation = new Array(manifest.lines.length).fill(0);
   const soldAllocation = new Array(manifest.lines.length).fill(0);
   for (const [upc, indexes] of lineIndexesByUpc) {
     const expectedQuantities = indexes.map((i) => manifest.lines[i].expectedQuantity);
     const received = allocateSequentially(expectedQuantities, receivedByUpc.get(upc) ?? 0, expectedQuantities.map(() => 0));
     const damaged = allocateSequentially(expectedQuantities, damagedByUpc.get(upc) ?? 0, received);
+    // Duds are a third claimant on the same expected-quantity capacity,
+    // run after received+damaged so all three pools split it without
+    // double-counting — physically arrived in good shape, just never
+    // going to be listed (see ManifestDudEntry).
+    const dud = allocateSequentially(
+      expectedQuantities,
+      dudByUpc.get(upc) ?? 0,
+      received.map((r, i) => r + damaged[i])
+    );
     // Sold is a subset of received (you can only sell what actually
     // arrived), not a second claimant on the line's expected capacity like
     // damaged is — so its ceiling per line is that line's received count,
@@ -140,6 +156,7 @@ export async function GET(
     indexes.forEach((lineIdx, j) => {
       receivedAllocation[lineIdx] = received[j];
       damagedAllocation[lineIdx] = damaged[j];
+      dudAllocation[lineIdx] = dud[j];
       soldAllocation[lineIdx] = sold[j];
     });
   }
@@ -147,6 +164,7 @@ export async function GET(
   const lines = manifest.lines.map((line, index) => {
     const receivedUnits = receivedAllocation[index];
     const damagedUnits = damagedAllocation[index];
+    const dudUnits = dudAllocation[index];
     const soldUnits = soldAllocation[index];
 
     // This line's proportional share of the load's total declared value —
@@ -185,8 +203,9 @@ export async function GET(
       subcategory: line.subcategory,
       receivedUnits,
       damagedUnits,
-      accountedUnits: receivedUnits + damagedUnits,
-      missingUnits: line.expectedQuantity - (receivedUnits + damagedUnits),
+      dudUnits,
+      accountedUnits: receivedUnits + damagedUnits + dudUnits,
+      missingUnits: line.expectedQuantity - (receivedUnits + damagedUnits + dudUnits),
       weightedCogsPerUnit,
       soldUnits,
       soldRevenue,
@@ -206,6 +225,10 @@ export async function GET(
   for (const [upc, units] of damagedByUpc) {
     if (!matchedUpcs.has(upc)) unmatchedDamaged.push({ upc, units });
   }
+  const unmatchedDud: { upc: string | null; units: number }[] = [];
+  for (const [upc, units] of dudByUpc) {
+    if (!matchedUpcs.has(upc)) unmatchedDud.push({ upc, units });
+  }
   const unmatchedSold: { upc: string | null; units: number; revenue: number; fees: number }[] = [];
   for (const [upc, units] of soldByUpc) {
     if (!matchedUpcs.has(upc)) {
@@ -223,6 +246,8 @@ export async function GET(
     unmatchedReceived.reduce((sum, u) => sum + u.units, 0);
   const totalDamagedUnits = lines.reduce((sum, l) => sum + l.damagedUnits, 0) +
     unmatchedDamaged.reduce((sum, u) => sum + u.units, 0);
+  const totalDudUnits = lines.reduce((sum, l) => sum + l.dudUnits, 0) +
+    unmatchedDud.reduce((sum, u) => sum + u.units, 0);
   const totalSoldUnits = lines.reduce((sum, l) => sum + l.soldUnits, 0) +
     unmatchedSold.reduce((sum, u) => sum + u.units, 0);
   const totalSoldRevenue = lines.reduce((sum, l) => sum + l.soldRevenue, 0) +
@@ -255,6 +280,7 @@ export async function GET(
     lines,
     unmatchedReceived,
     unmatchedDamaged,
+    unmatchedDud,
     unmatchedSold,
     sourcingEvaluation: latestEvaluation && {
       id: latestEvaluation.id,
@@ -283,8 +309,9 @@ export async function GET(
       totalExpectedUnits,
       totalReceivedUnits,
       totalDamagedUnits,
-      totalAccountedUnits: totalReceivedUnits + totalDamagedUnits,
-      totalMissingUnits: totalExpectedUnits - (totalReceivedUnits + totalDamagedUnits),
+      totalDudUnits,
+      totalAccountedUnits: totalReceivedUnits + totalDamagedUnits + totalDudUnits,
+      totalMissingUnits: totalExpectedUnits - (totalReceivedUnits + totalDamagedUnits + totalDudUnits),
       totalManifestExtendedRetail,
       blendedCogsPerUnit,
       totalSoldUnits,

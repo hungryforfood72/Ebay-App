@@ -104,6 +104,16 @@ function ScanPageInner() {
   const [damagedSaving, setDamagedSaving] = useState(false);
   const [damagedMessage, setDamagedMessage] = useState<string | null>(null);
 
+  // Physically arrived in good condition, just never going to be listed
+  // (dead event merch, no resale value, etc.) — same sorting-only tally
+  // pattern as damagedMode above, just a different reason/bucket so it
+  // still counts as accounted-for instead of showing up as "missing."
+  const [dudMode, setDudMode] = useState(false);
+  const [dudUpc, setDudUpc] = useState("");
+  const [dudQuantity, setDudQuantity] = useState("1");
+  const [dudSaving, setDudSaving] = useState(false);
+  const [dudMessage, setDudMessage] = useState<string | null>(null);
+
   const [step, setStep] = useState<Step>("mode");
   const [isBundle, setIsBundle] = useState(false);
 
@@ -207,6 +217,7 @@ function ScanPageInner() {
     setActiveManifestId(null);
     setManifestTitle(null);
     setDamagedMode(false);
+    setDudMode(false);
     setSavedThisSession(0);
     setSessions((prev) =>
       (prev ?? []).filter((s) => s.id !== activeSessionId)
@@ -238,6 +249,34 @@ function ScanPageInner() {
       setDamagedMessage(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
       setDamagedSaving(false);
+    }
+  }
+
+  async function saveDudEntry() {
+    if (!activeManifestId) return;
+    setDudMessage(null);
+    if (!dudUpc.trim()) return setDudMessage("Scan or enter a UPC first.");
+    const qty = Number(dudQuantity);
+    if (!qty || qty < 1) return setDudMessage("Enter a quantity of at least 1.");
+
+    setDudSaving(true);
+    try {
+      const res = await fetch(`/api/manifests/${activeManifestId}/duds`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ upc: dudUpc.trim(), quantity: qty }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? "Save failed.");
+      }
+      setDudUpc("");
+      setDudQuantity("1");
+      setDudMessage("Logged. Ready for the next one.");
+    } catch (e) {
+      setDudMessage(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setDudSaving(false);
     }
   }
 
@@ -536,6 +575,65 @@ function ScanPageInner() {
     );
   }
 
+  // Same sorting-only path as damagedMode above — physically arrived fine,
+  // just never getting listed (dead event merch, no resale value, etc.).
+  // Still counts as "accounted for" on the manifest, just not "received"
+  // in the sense of ever going through review/eBay.
+  if (dudMode) {
+    return (
+      <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-4 p-4">
+        <div className="flex items-center justify-between">
+          <h1 className="text-lg font-semibold">Scan as Dud/Unsellable</h1>
+          <button type="button" onClick={() => setDudMode(false)} className="text-sm underline">
+            Back to scanning
+          </button>
+        </div>
+        {manifestTitle && <p className="text-xs text-gray-400">Manifest: {manifestTitle}</p>}
+        <p className="text-xs text-gray-400">
+          For stuff that arrived fine but you&apos;re not listing — dead event merch, no resale value, etc.
+          Not damaged/expired.
+        </p>
+
+        <section className="flex flex-col gap-1">
+          <label className="text-sm font-medium">UPC</label>
+          <input
+            autoFocus
+            type="text"
+            inputMode="numeric"
+            value={dudUpc}
+            onChange={(e) => setDudUpc(e.target.value)}
+            onKeyDown={(e) => onScanEnter(e, saveDudEntry)}
+            placeholder="Scan or type UPC"
+            className="rounded border px-3 py-2"
+          />
+        </section>
+
+        <section>
+          <label className="text-sm font-medium">Quantity not sellable</label>
+          <input
+            type="number"
+            min={1}
+            value={dudQuantity}
+            onChange={(e) => setDudQuantity(e.target.value)}
+            onWheel={(e) => e.currentTarget.blur()}
+            className="w-full rounded border px-3 py-2"
+          />
+        </section>
+
+        {dudMessage && <p className="text-sm">{dudMessage}</p>}
+
+        <button
+          type="button"
+          onClick={saveDudEntry}
+          disabled={dudSaving}
+          className="rounded bg-orange-600 py-4 text-center text-white disabled:opacity-50"
+        >
+          {dudSaving ? "Logging…" : "Log dud/unsellable"}
+        </button>
+      </main>
+    );
+  }
+
   const isLastStep = stepIndex === steps.length - 1;
 
   return (
@@ -566,13 +664,22 @@ function ScanPageInner() {
               dashboard
             </Link>
           </span>
-          <button
-            type="button"
-            onClick={() => setDamagedMode(true)}
-            className="rounded bg-red-600 px-2 py-1 text-white"
-          >
-            Scan as Damaged/Expired
-          </button>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setDamagedMode(true)}
+              className="rounded bg-red-600 px-2 py-1 text-white"
+            >
+              Scan as Damaged/Expired
+            </button>
+            <button
+              type="button"
+              onClick={() => setDudMode(true)}
+              className="rounded bg-orange-600 px-2 py-1 text-white"
+            >
+              Scan as Dud/Unsellable
+            </button>
+          </div>
         </div>
       )}
 

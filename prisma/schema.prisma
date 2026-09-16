@@ -323,6 +323,7 @@ model Manifest {
 
   lines   ManifestLine[]
   damaged ManifestDamagedEntry[]
+  duds    ManifestDudEntry[]
   items   Item[]
 
   sourcingEvaluations SourcingEvaluation[]
@@ -429,6 +430,29 @@ model ManifestLine {
 // listing, just a count against the manifest's reconciliation, recorded via
 // the "Scan as Damaged/Expired" flow instead of the normal item flow.
 model ManifestDamagedEntry {
+  id         String   @id @default(uuid())
+  manifest   Manifest @relation(fields: [manifestId], references: [id], onDelete: Cascade)
+  manifestId String
+  upc        String
+  quantity   Int
+  note       String?
+  recordedBy String?
+  createdAt  DateTime @default(now())
+
+  @@index([manifestId, upc])
+}
+
+// Physically arrived in good condition — not damaged, not expired — but
+// won't be listed on eBay at all (dead licensed/seasonal merch, a UPC with
+// no realistic resale value, etc.). Same shape and same reconciliation role
+// as ManifestDamagedEntry (counts toward accountedUnits so it isn't
+// wrongly reported "missing"), recorded via its own "Scan as Dud/
+// Unsellable" flow so the received-units figure stays a true reflection of
+// what actually got reviewed and listed. Distinct from
+// SourcingLineEstimate.flaggedDud, which is a pre-purchase *prediction*
+// made before the manifest was ever bought — this is the real, physical
+// post-purchase tally of what turned out not to be worth listing.
+model ManifestDudEntry {
   id         String   @id @default(uuid())
   manifest   Manifest @relation(fields: [manifestId], references: [id], onDelete: Cascade)
   manifestId String
