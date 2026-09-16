@@ -35,6 +35,24 @@ function soldPhysicalUnits(item: { soldQuantity: number; isMultipack: boolean; p
   return item.soldQuantity * (item.isMultipack && item.packSize ? item.packSize : 1);
 }
 
+// A sale from last week should count more toward the estimated price than
+// one from 11 months ago — prices drift, and a stale average understates
+// what something actually sells for right now (Cristian's own example: sold
+// for $25 a while back, currently going for $35 on eBay — the honest answer
+// is somewhere in between, weighted toward the more recent number). Every
+// per-sale price/shipping/fee average below is now a weighted average using
+// this, not a flat mean. Exponential half-life rather than a hard cutoff —
+// a sale never drops to literally zero weight, since some old evidence is
+// still better than none for something rarely sold — just fades smoothly:
+// a sale RECENCY_HALF_LIFE_DAYS old counts half as much as a brand-new one,
+// twice that old a quarter, and so on.
+const RECENCY_HALF_LIFE_DAYS = 120; // ~4 months — a judgment call, not derived from data
+
+function recencyWeight(soldAt: Date): number {
+  const daysAgo = (Date.now() - soldAt.getTime()) / (1000 * 60 * 60 * 24);
+  return Math.pow(0.5, Math.max(0, daysAgo) / RECENCY_HALF_LIFE_DAYS);
+}
+
 // ---------------------------------------------------------------------------
 // Estimated eBay fee — real fee schedules run ~13% + a small fixed
 // component; refined over time via SourcingKnowledge's global scope rather
@@ -405,36 +423,43 @@ async function estimateLine(
   let ownFeeRate = FALLBACK_FEE_RATE;
   const ownPackSizes: number[] = [];
   if (group.upc) {
-    const items = await prisma.item.findMany({
-      where: { upc: group.upc, soldQuantity: { gt: 0 } },
+    // Per-sale rows (EbayItemSale), not the Item-level running totals — the
+    // per-sale soldAt is what recencyWeight needs. Item-level totals have
+    // no per-sale dates to weight by.
+    const sales = await prisma.ebayItemSale.findMany({
+      where: { item: { upc: group.upc } },
       select: {
-        soldQuantity: true,
-        isMultipack: true,
-        packSize: true,
-        soldRevenueTotal: true,
-        soldFeesTotal: true,
-        soldShippingTotal: true,
+        quantity: true,
+        revenue: true,
+        fees: true,
+        shipping: true,
+        soldAt: true,
+        item: { select: { isMultipack: true, packSize: true } },
       },
     });
-    let units = 0;
-    let revenue = 0;
-    let fees = 0;
-    let shipping = 0;
-    for (const i of items) {
-      const u = soldPhysicalUnits(i);
-      units += u;
-      revenue += Number(i.soldRevenueTotal);
-      fees += Number(i.soldFeesTotal);
-      shipping += Number(i.soldShippingTotal);
+    let rawUnits = 0; // unweighted — still the real-evidence count confidence scoring below relies on
+    let weightedUnits = 0;
+    let weightedRevenue = 0;
+    let weightedFees = 0;
+    let weightedShipping = 0;
+    for (const s of sales) {
+      const u = soldPhysicalUnits({ soldQuantity: s.quantity, isMultipack: s.item.isMultipack, packSize: s.item.packSize });
+      const weight = recencyWeight(s.soldAt);
+      rawUnits += u;
+      weightedUnits += u * weight;
+      weightedRevenue += Number(s.revenue) * weight;
+      weightedFees += Number(s.fees) * weight;
+      weightedShipping += Number(s.shipping) * weight;
       // How this UPC was actually listed when we sold it before — the
       // most reliable signal there is for what a "listing" of it means.
-      for (let n = 0; n < i.soldQuantity; n++) ownPackSizes.push(i.isMultipack && i.packSize ? i.packSize : 1);
+      const packSize = s.item.isMultipack && s.item.packSize ? s.item.packSize : 1;
+      for (let n = 0; n < s.quantity; n++) ownPackSizes.push(packSize);
     }
-    if (units > 0) {
-      ownSalesCount = units;
-      ownAvgSalePrice = revenue / units;
-      ownAvgShipping = shipping / units;
-      ownFeeRate = revenue > 0 ? fees / revenue : FALLBACK_FEE_RATE;
+    if (weightedUnits > 0) {
+      ownSalesCount = rawUnits;
+      ownAvgSalePrice = weightedRevenue / weightedUnits;
+      ownAvgShipping = weightedShipping / weightedUnits;
+      ownFeeRate = weightedRevenue > 0 ? weightedFees / weightedRevenue : FALLBACK_FEE_RATE;
     }
   }
 
@@ -451,23 +476,32 @@ async function estimateLine(
     });
     const upcs = linesInCategory.map((l) => l.upc).filter((u): u is string => Boolean(u));
     if (upcs.length > 0) {
-      const items = await prisma.item.findMany({
-        where: { upc: { in: upcs }, soldQuantity: { gt: 0 } },
-        select: { soldQuantity: true, isMultipack: true, packSize: true, soldRevenueTotal: true, soldShippingTotal: true },
+      const sales = await prisma.ebayItemSale.findMany({
+        where: { item: { upc: { in: upcs } } },
+        select: {
+          quantity: true,
+          revenue: true,
+          shipping: true,
+          soldAt: true,
+          item: { select: { isMultipack: true, packSize: true } },
+        },
       });
-      let units = 0;
-      let revenue = 0;
-      let shipping = 0;
-      for (const i of items) {
-        const u = soldPhysicalUnits(i);
-        units += u;
-        revenue += Number(i.soldRevenueTotal);
-        shipping += Number(i.soldShippingTotal);
+      let rawUnits = 0;
+      let weightedUnits = 0;
+      let weightedRevenue = 0;
+      let weightedShipping = 0;
+      for (const s of sales) {
+        const u = soldPhysicalUnits({ soldQuantity: s.quantity, isMultipack: s.item.isMultipack, packSize: s.item.packSize });
+        const weight = recencyWeight(s.soldAt);
+        rawUnits += u;
+        weightedUnits += u * weight;
+        weightedRevenue += Number(s.revenue) * weight;
+        weightedShipping += Number(s.shipping) * weight;
       }
-      if (units > 0) {
-        categorySalesCount = units;
-        categoryAvgSalePrice = revenue / units;
-        categoryAvgShipping = shipping / units;
+      if (weightedUnits > 0) {
+        categorySalesCount = rawUnits;
+        categoryAvgSalePrice = weightedRevenue / weightedUnits;
+        categoryAvgShipping = weightedShipping / weightedUnits;
       }
     }
   }
@@ -490,7 +524,7 @@ async function estimateLine(
   if (brandMatchWords.length > 0) {
     let historicalMatches = await prisma.historicalSaleRecord.findMany({
       where: { AND: brandMatchWords.map((w) => ({ title: { contains: w, mode: "insensitive" as const } })) },
-      select: { title: true, quantity: true, soldPrice: true, shippingCost: true, fees: true },
+      select: { title: true, quantity: true, soldPrice: true, shippingCost: true, fees: true, soldAt: true },
       take: 200,
     });
     // The strict AND (both leading words) is high-precision but often
@@ -503,30 +537,34 @@ async function estimateLine(
     if (historicalMatches.length === 0) {
       historicalMatches = await prisma.historicalSaleRecord.findMany({
         where: { title: { contains: brandMatchWords[0], mode: "insensitive" as const } },
-        select: { title: true, quantity: true, soldPrice: true, shippingCost: true, fees: true },
+        select: { title: true, quantity: true, soldPrice: true, shippingCost: true, fees: true, soldAt: true },
         take: 200,
       });
     }
-    let units = 0;
-    let revenue = 0;
-    let shipping = 0;
-    let fees = 0;
+    let rawUnits = 0;
+    let weightedUnits = 0;
+    let weightedRevenue = 0;
+    let weightedShipping = 0;
+    let weightedFees = 0;
     for (const m of historicalMatches) {
       // Same pack-size normalization as own history / market comps above —
       // a historical record's `quantity` is how many of that (possibly
       // multi-pack) listing were bought, not physical units.
       const packSize = detectPackSize(m.title);
       historicalPackSizes.push(packSize);
-      units += m.quantity * packSize;
-      revenue += Number(m.soldPrice);
-      shipping += Number(m.shippingCost);
-      fees += Number(m.fees);
+      const u = m.quantity * packSize;
+      const weight = recencyWeight(m.soldAt);
+      rawUnits += u;
+      weightedUnits += u * weight;
+      weightedRevenue += Number(m.soldPrice) * weight;
+      weightedShipping += Number(m.shippingCost) * weight;
+      weightedFees += Number(m.fees) * weight;
     }
-    if (units > 0) {
-      historicalSalesCount = units;
-      historicalAvgSalePrice = revenue / units;
-      historicalAvgShipping = shipping / units;
-      historicalFeeRate = revenue > 0 ? fees / revenue : FALLBACK_FEE_RATE;
+    if (weightedUnits > 0) {
+      historicalSalesCount = rawUnits;
+      historicalAvgSalePrice = weightedRevenue / weightedUnits;
+      historicalAvgShipping = weightedShipping / weightedUnits;
+      historicalFeeRate = weightedRevenue > 0 ? weightedFees / weightedRevenue : FALLBACK_FEE_RATE;
     }
   }
 
