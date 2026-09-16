@@ -75,6 +75,14 @@ export async function GET(
     return NextResponse.json({ error: "Manifest not found." }, { status: 404 });
   }
 
+  // Latest sourcing evaluation, if any — re-running keeps prior rows as
+  // history, so "latest" is just the most recently started one.
+  const latestEvaluation = await prisma.sourcingEvaluation.findFirst({
+    where: { manifestId: id },
+    orderBy: { startedAt: "desc" },
+    include: { lineEstimates: { orderBy: { extendedRetail: "desc" } } },
+  });
+
   const receivedByUpc = new Map<string, number>();
   const unmatchedReceived: { upc: string | null; units: number }[] = [];
   for (const item of manifest.items) {
@@ -247,6 +255,27 @@ export async function GET(
     unmatchedReceived,
     unmatchedDamaged,
     unmatchedSold,
+    sourcingEvaluation: latestEvaluation && {
+      id: latestEvaluation.id,
+      status: latestEvaluation.status,
+      recommendation: latestEvaluation.recommendation,
+      maxBid: latestEvaluation.maxBid != null ? Number(latestEvaluation.maxBid) : null,
+      reasoning: latestEvaluation.reasoning,
+      error: latestEvaluation.error,
+      startedAt: latestEvaluation.startedAt,
+      completedAt: latestEvaluation.completedAt,
+      lineEstimates: latestEvaluation.lineEstimates.map((e) => ({
+        id: e.id,
+        upc: e.upc,
+        description: e.description,
+        extendedRetail: Number(e.extendedRetail),
+        estimatedUnitSalePrice: e.estimatedUnitSalePrice != null ? Number(e.estimatedUnitSalePrice) : null,
+        estimatedNetPerUnit: e.estimatedNetPerUnit != null ? Number(e.estimatedNetPerUnit) : null,
+        effectiveUnits: e.effectiveUnits,
+        dataConfidence: e.dataConfidence,
+        flaggedDud: e.flaggedDud,
+      })),
+    },
     summary: {
       totalExpectedUnits,
       totalReceivedUnits,

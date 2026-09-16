@@ -26,6 +26,30 @@ type Line = {
   profit: number | null;
 };
 
+type SourcingLineEstimate = {
+  id: string;
+  upc: string | null;
+  description: string;
+  extendedRetail: number;
+  estimatedUnitSalePrice: number | null;
+  estimatedNetPerUnit: number | null;
+  effectiveUnits: number;
+  dataConfidence: string;
+  flaggedDud: boolean;
+};
+
+type SourcingEvaluation = {
+  id: string;
+  status: "running" | "complete" | "failed";
+  recommendation: "buy" | "dont_buy" | null;
+  maxBid: number | null;
+  reasoning: string | null;
+  error: string | null;
+  startedAt: string;
+  completedAt: string | null;
+  lineEstimates: SourcingLineEstimate[];
+};
+
 type ManifestDetail = {
   id: string;
   title: string;
@@ -36,6 +60,7 @@ type ManifestDetail = {
   unmatchedReceived: { upc: string | null; units: number }[];
   unmatchedDamaged: { upc: string | null; units: number }[];
   unmatchedSold: { upc: string | null; units: number; revenue: number; fees: number }[];
+  sourcingEvaluation: SourcingEvaluation | null;
   summary: {
     totalExpectedUnits: number;
     totalReceivedUnits: number;
@@ -62,6 +87,9 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
   const [discountValue, setDiscountValue] = useState("");
   const [applyingDiscount, setApplyingDiscount] = useState(false);
   const [discountResult, setDiscountResult] = useState<string | null>(null);
+  const [startingEvaluation, setStartingEvaluation] = useState(false);
+  const [evaluationError, setEvaluationError] = useState<string | null>(null);
+  const [showLineBreakdown, setShowLineBreakdown] = useState(false);
 
   function load() {
     fetch(`/api/manifests/${id}`)
@@ -73,6 +101,34 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
   }
 
   useEffect(load, [id]);
+
+  // Sourcing evaluation runs in the background (after()) — poll while one
+  // is "running" so the card updates without a manual refresh, same
+  // pattern src/app/review/page.tsx uses to catch AI-drafting background
+  // work.
+  useEffect(() => {
+    if (manifest?.sourcingEvaluation?.status !== "running") return;
+    const interval = setInterval(load, 5000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [manifest?.sourcingEvaluation?.status]);
+
+  async function runSourcingEvaluation() {
+    setStartingEvaluation(true);
+    setEvaluationError(null);
+    try {
+      const res = await fetch(`/api/manifests/${id}/sourcing-evaluate`, { method: "POST" });
+      if (!res.ok) {
+        const result = await res.json().catch(() => ({}));
+        throw new Error(result.error ?? "Failed to start evaluation.");
+      }
+      load();
+    } catch (e) {
+      setEvaluationError(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setStartingEvaluation(false);
+    }
+  }
 
   async function saveLandedCost() {
     setSavingCost(true);
@@ -184,6 +240,112 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
           format="currency"
           highlight={s.totalSoldUnits > 0 && s.totalProfit < 0}
         />
+      </section>
+
+      <section className="mb-6 flex flex-col gap-3 rounded-lg border p-4">
+        <div className="flex items-center justify-between">
+          <label className="text-sm font-medium">Sourcing recommendation</label>
+          {manifest.sourcingEvaluation?.status !== "running" && (
+            <button
+              type="button"
+              onClick={runSourcingEvaluation}
+              disabled={startingEvaluation}
+              className="rounded border px-3 py-1.5 text-xs disabled:opacity-40"
+            >
+              {startingEvaluation
+                ? "Starting…"
+                : manifest.sourcingEvaluation
+                  ? "Re-run evaluation"
+                  : "Run sourcing evaluation"}
+            </button>
+          )}
+        </div>
+        {evaluationError && <p className="text-sm text-red-600">{evaluationError}</p>}
+
+        {!manifest.sourcingEvaluation && !evaluationError && (
+          <p className="text-xs text-gray-400">
+            Not evaluated yet — checks real historical sold data, live eBay comps, and supplier patterns
+            to suggest a max bid before you commit to buying this manifest.
+          </p>
+        )}
+
+        {manifest.sourcingEvaluation?.status === "running" && (
+          <p className="text-sm text-gray-500">
+            Evaluating — checking historical sales, live comps, and market signal for each item. This can
+            take a couple minutes for a large manifest…
+          </p>
+        )}
+
+        {manifest.sourcingEvaluation?.status === "failed" && (
+          <p className="text-sm text-red-600">
+            Evaluation failed: {manifest.sourcingEvaluation.error ?? "unknown error"}
+          </p>
+        )}
+
+        {manifest.sourcingEvaluation?.status === "complete" && (
+          <div className="flex flex-col gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span
+                className={`rounded-full px-3 py-1 text-sm font-semibold ${
+                  manifest.sourcingEvaluation.recommendation === "buy"
+                    ? "bg-green-100 text-green-700"
+                    : "bg-red-100 text-red-700"
+                }`}
+              >
+                {manifest.sourcingEvaluation.recommendation === "buy" ? "Buy" : "Don't buy"}
+              </span>
+              <span className="text-sm text-gray-600">
+                Max recommended bid: <strong>${manifest.sourcingEvaluation.maxBid?.toFixed(2) ?? "—"}</strong>
+              </span>
+              <span className="text-xs text-gray-400">
+                {new Date(manifest.sourcingEvaluation.startedAt).toLocaleString()}
+              </span>
+            </div>
+            {manifest.sourcingEvaluation.reasoning && (
+              <p className="text-sm text-gray-700">{manifest.sourcingEvaluation.reasoning}</p>
+            )}
+            <button
+              type="button"
+              onClick={() => setShowLineBreakdown((v) => !v)}
+              className="w-fit text-left text-xs text-gray-500 underline"
+            >
+              {showLineBreakdown ? "Hide" : "Show"} per-item breakdown (
+              {manifest.sourcingEvaluation.lineEstimates.length} item{manifest.sourcingEvaluation.lineEstimates.length === 1 ? "" : "s"})
+            </button>
+            {showLineBreakdown && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b text-left text-gray-500">
+                      <th className="py-1 pr-2">Item</th>
+                      <th className="px-2 text-right">Est. sale price</th>
+                      <th className="px-2 text-right">Est. net/unit</th>
+                      <th className="px-2 text-right">Units</th>
+                      <th className="px-2 text-left">Confidence</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {manifest.sourcingEvaluation.lineEstimates.map((e) => (
+                      <tr key={e.id} className={`border-b ${e.flaggedDud ? "text-gray-400" : ""}`}>
+                        <td className="py-1 pr-2">
+                          {e.description} {e.flaggedDud && <span className="text-orange-500">(dud)</span>}
+                        </td>
+                        <td className="px-2 text-right">
+                          {e.estimatedUnitSalePrice != null ? `$${e.estimatedUnitSalePrice.toFixed(2)}` : "—"}
+                        </td>
+                        <td className="px-2 text-right">
+                          {e.estimatedNetPerUnit != null ? `$${e.estimatedNetPerUnit.toFixed(2)}` : "—"}
+                        </td>
+                        <td className="px-2 text-right">{e.effectiveUnits}</td>
+                        <td className="px-2 text-left">{e.dataConfidence.replace("_", " ")}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
       </section>
 
       <section className="mb-6 flex flex-col gap-2 rounded-lg border p-4">

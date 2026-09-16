@@ -45,7 +45,75 @@ function SettingsPageInner() {
       />
 
       <ShelfLocationsEditor />
+
+      <SourcingMarginSetting />
     </main>
+  );
+}
+
+// Target profit margin the sourcing agent solves the max-bid formula
+// against (maxBid = expected net contribution / (1 + margin)) — same
+// simple fetch/save pattern as the manifest page's landed-cost input, no
+// need for a generic settings component for one scalar value.
+function SourcingMarginSetting() {
+  const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  function load() {
+    fetch("/api/settings/sourcing-target-margin")
+      .then((r) => r.json())
+      .then((data: { targetMarginPct: number }) => setValue(String(data.targetMarginPct)));
+  }
+
+  useEffect(load, []);
+
+  async function save() {
+    setSaving(true);
+    setSaved(false);
+    try {
+      const res = await fetch("/api/settings/sourcing-target-margin", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targetMarginPct: Number(value) }),
+      });
+      if (res.ok) setSaved(true);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="mt-6 rounded-lg border p-4">
+      <label className="mb-1 block text-sm font-medium">Sourcing agent target margin</label>
+      <p className="mb-2 text-xs text-gray-400">
+        Used to solve for the max recommended bid on a manifest — higher means a more conservative
+        (lower) suggested bid for the same expected profit.
+      </p>
+      <div className="flex items-center gap-2">
+        <input
+          type="number"
+          step="1"
+          min={1}
+          value={value}
+          onChange={(e) => {
+            setValue(e.target.value);
+            setSaved(false);
+          }}
+          className="w-24 rounded border px-3 py-2 text-sm"
+        />
+        <span className="text-sm text-gray-500">%</span>
+        <button
+          type="button"
+          onClick={save}
+          disabled={saving || !value}
+          className="rounded bg-black px-3 py-2 text-sm text-white disabled:opacity-40"
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+        {saved && <span className="text-xs text-green-600">Saved</span>}
+      </div>
+    </section>
   );
 }
 

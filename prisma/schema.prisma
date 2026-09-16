@@ -314,6 +314,74 @@ model Manifest {
   lines   ManifestLine[]
   damaged ManifestDamagedEntry[]
   items   Item[]
+
+  sourcingEvaluations SourcingEvaluation[]
+}
+
+// One pre-purchase sourcing-agent run against a manifest's lines — created
+// by POST /api/manifests/[id]/sourcing-evaluate, the actual work runs in
+// after() (same fire-and-forget pattern as AI item drafting), so status
+// starts "running" and the manifest detail page polls until it flips to
+// "complete"/"failed". Re-running keeps prior rows (history) rather than
+// overwriting, so once a manifest sells through, predicted vs. actual is
+// still there to compare.
+model SourcingEvaluation {
+  id             String    @id @default(uuid())
+  manifest       Manifest  @relation(fields: [manifestId], references: [id], onDelete: Cascade)
+  manifestId     String
+  status         String // "running" | "complete" | "failed"
+  recommendation String? // "buy" | "dont_buy"
+  maxBid         Decimal?  @db.Decimal(10, 2)
+  reasoning      String? // plain-language explanation, written last from already-computed numbers
+  error          String?
+  startedAt      DateTime  @default(now())
+  completedAt    DateTime?
+
+  lineEstimates SourcingLineEstimate[]
+
+  @@index([manifestId])
+}
+
+// One row per unique UPC actually researched — manifest lines sharing a UPC
+// collapse to a single estimate (see src/lib/sourcingAgent.ts). Kept after
+// the evaluation completes both for the per-line breakdown UI and as the
+// prediction record the learning loop later compares against real
+// outcomes.
+model SourcingLineEstimate {
+  id                     String             @id @default(uuid())
+  evaluation             SourcingEvaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
+  evaluationId           String
+  upc                    String?
+  description            String
+  extendedRetail         Decimal            @db.Decimal(10, 2)
+  estimatedUnitSalePrice Decimal?           @db.Decimal(10, 2)
+  estimatedUnitFees      Decimal?           @db.Decimal(10, 2)
+  estimatedUnitShipping  Decimal?           @db.Decimal(10, 2)
+  estimatedNetPerUnit    Decimal?           @db.Decimal(10, 2)
+  effectiveUnits         Int // expected units after the supplier's real historical receive-rate haircut
+  dataConfidence         String // "own_history" | "category_fallback" | "market_only"
+  flaggedDud             Boolean            @default(false)
+
+  @@index([evaluationId])
+}
+
+// Persistent, evolving judgment the agent accumulates over time — read into
+// every evaluation's reasoning prompt, updated by a periodic learning pass
+// (see updateSourcingKnowledge in src/lib/sourcingAgent.ts), never
+// recomputed from scratch per manifest.
+model SourcingKnowledge {
+  id        String   @id @default(uuid())
+  scope     String   @unique // "supplier:bstock" | "category:Health & Beauty" | "brand:pringles" | "global"
+  notes     String
+  updatedAt DateTime @updatedAt
+}
+
+// Minimal key/value settings store — first use is the sourcing agent's
+// target profit margin, reusable for any future single-value setting
+// without new scaffolding.
+model AppSetting {
+  key   String @id
+  value String
 }
 
 // One expected line from the manifest CSV — what the supplier says should
