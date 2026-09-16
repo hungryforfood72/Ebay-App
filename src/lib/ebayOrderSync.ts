@@ -29,8 +29,10 @@ const NON_SALE_PAYMENT_STATUSES = ["FAILED", "PENDING", "CANCELLED", "NO_PAYMENT
 // sync run until it's this many days old, then whatever's on record is
 // accepted as final (a listing that genuinely has no shipping label, e.g.
 // buyer pickup or free shipping paid outside eBay, would otherwise get
-// re-checked forever for no reason).
-const SHIPPING_RECHECK_WINDOW_DAYS = 5;
+// re-checked forever for no reason). 7, not the original 5 — Cristian:
+// some orders take longer to process, and a long weekend can push the
+// actual label purchase past 5-6 days.
+const SHIPPING_RECHECK_WINDOW_DAYS = 7;
 
 // `since`, when passed, overrides the normal incremental watermark — for a
 // one-off historical catch-up (e.g. after linking legacy CSV-uploaded
