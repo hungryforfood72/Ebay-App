@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
+import { getTargetMarginPct } from "@/lib/sourcingAgent";
 
 // Units actually received for an item = the quantity scanned, times pack
 // size if it's a multipack — the same "3 of a 2-pack = 6 units" accounting
@@ -83,6 +84,10 @@ export async function GET(
     orderBy: { startedAt: "desc" },
     include: { lineEstimates: { orderBy: { extendedRetail: "desc" } } },
   });
+  // Only needed to let the bid calculator flag whether a hypothetical price
+  // clears Cristian's configured margin — skip the lookup when there's no
+  // evaluation to attach it to.
+  const targetMarginPct = latestEvaluation ? await getTargetMarginPct() : null;
 
   const receivedByUpc = new Map<string, number>();
   const unmatchedReceived: { upc: string | null; units: number }[] = [];
@@ -289,6 +294,7 @@ export async function GET(
       maxBid: latestEvaluation.maxBid != null ? Number(latestEvaluation.maxBid) : null,
       expectedNetContribution:
         latestEvaluation.expectedNetContribution != null ? Number(latestEvaluation.expectedNetContribution) : null,
+      targetMarginPct,
       reasoning: latestEvaluation.reasoning,
       error: latestEvaluation.error,
       startedAt: latestEvaluation.startedAt,

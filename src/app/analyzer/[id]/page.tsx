@@ -33,6 +33,7 @@ type SourcingEvaluation = {
   recommendation: "buy" | "dont_buy" | null;
   maxBid: number | null;
   expectedNetContribution: number | null;
+  targetMarginPct: number | null;
   reasoning: string | null;
   error: string | null;
   startedAt: string;
@@ -67,11 +68,22 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
   const [evaluationError, setEvaluationError] = useState<string | null>(null);
   const [showLineBreakdown, setShowLineBreakdown] = useState(false);
   const [markingPurchased, setMarkingPurchased] = useState(false);
+  const [customBid, setCustomBid] = useState("");
 
   function load() {
     fetch(`/api/manifests/${id}`)
       .then((r) => r.json())
-      .then(setCandidate);
+      .then((data: CandidateDetail) => {
+        setCandidate(data);
+        // Seed the "try a price" calculator with the max bid whenever a
+        // freshly-completed evaluation comes back — harmless to also run
+        // while a re-run is still "running" (maxBid is null then, so this
+        // just no-ops), and never overwrites a price Cristian's actively
+        // typing into it once polling has stopped.
+        if (data.sourcingEvaluation?.status === "complete" && data.sourcingEvaluation.maxBid != null) {
+          setCustomBid(data.sourcingEvaluation.maxBid.toFixed(2));
+        }
+      });
   }
 
   useEffect(load, [id]);
@@ -243,6 +255,64 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
                 improve, since the max bid is calibrated to hit your target margin (Settings) at that exact
                 price.
               </p>
+            )}
+            {candidate.sourcingEvaluation.expectedNetContribution != null && (
+              <div className="mt-1 flex flex-wrap items-end gap-3 rounded-lg border bg-gray-50 p-3">
+                <div>
+                  <label htmlFor="try-bid" className="block text-xs font-medium text-gray-500">
+                    What if I bid...
+                  </label>
+                  <input
+                    id="try-bid"
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={customBid}
+                    onChange={(e) => setCustomBid(e.target.value)}
+                    className="mt-1 w-32 rounded border px-2 py-1 text-sm"
+                    placeholder="0.00"
+                  />
+                </div>
+                {(() => {
+                  const bid = parseFloat(customBid);
+                  const contribution = candidate.sourcingEvaluation.expectedNetContribution!;
+                  if (!Number.isFinite(bid) || bid <= 0) return null;
+                  const profit = contribution - bid;
+                  const roi = (profit / bid) * 100;
+                  const targetMarginPct = candidate.sourcingEvaluation.targetMarginPct;
+                  const clearsTarget = targetMarginPct != null ? roi >= targetMarginPct : null;
+                  return (
+                    <>
+                      <span className="text-sm text-gray-600">
+                        Profit: <strong className={profit >= 0 ? "text-green-700" : "text-red-600"}>${profit.toFixed(2)}</strong>
+                      </span>
+                      <span className="text-sm text-gray-600">
+                        ROI: <strong className={profit >= 0 ? "text-green-700" : "text-red-600"}>{roi.toFixed(0)}%</strong>
+                      </span>
+                      {clearsTarget != null && (
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                            clearsTarget ? "bg-green-100 text-green-700" : "bg-orange-100 text-orange-700"
+                          }`}
+                        >
+                          {clearsTarget
+                            ? `Clears your ${targetMarginPct}% target`
+                            : `Below your ${targetMarginPct}% target`}
+                        </span>
+                      )}
+                      {candidate.sourcingEvaluation.maxBid != null && (
+                        <button
+                          type="button"
+                          onClick={() => setCustomBid(candidate.sourcingEvaluation!.maxBid!.toFixed(2))}
+                          className="text-xs text-gray-400 underline"
+                        >
+                          Reset to max bid
+                        </button>
+                      )}
+                    </>
+                  );
+                })()}
+              </div>
             )}
             {candidate.sourcingEvaluation.reasoning && (
               <p className="text-sm text-gray-700">{candidate.sourcingEvaluation.reasoning}</p>
