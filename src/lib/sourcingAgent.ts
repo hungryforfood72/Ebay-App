@@ -410,6 +410,7 @@ type LineEstimateResult = {
   typicalPackSize: number;
   dataConfidence: "own_history" | "historical_match" | "category_fallback" | "market_only";
   flaggedDud: boolean;
+  marketCheckFailed: boolean;
   eventEnded: boolean;
   postHolidayFiller: boolean;
   trendNudge: string | null;
@@ -587,6 +588,16 @@ async function estimateLine(
   let marketMedian = 0;
   let activeCompCount = 0;
   const marketPackSizes: number[] = [];
+  // Distinguishes "we asked eBay and it genuinely has nothing listed" from
+  // "we never got an answer" — confirmed live as a real, not theoretical,
+  // failure mode: a 40-line manifest of real, sellable L'Oreal Colorsonic
+  // cartridges came back 100% flagged as dud because every single comp
+  // search hit eBay's Browse API rate limit (429) mid-run, not because the
+  // product doesn't sell. With no own-sale or historical-match data either
+  // (barely any of the manifest had been scanned in yet), the fallback
+  // below would otherwise have no way to tell an API outage apart from a
+  // confirmed zero — and confidently called every line a dud on it.
+  let marketCheckFailed = false;
   try {
     const comps = await searchActiveListings({ upc: group.upc, keywords: group.description, excludeListingId: null });
     const perUnitPrices: number[] = [];
@@ -605,6 +616,7 @@ async function estimateLine(
   } catch (e) {
     if (!(e instanceof EbayApiError)) throw e;
     console.error(`[sourcingAgent] comp search failed for UPC ${group.upc}`, e);
+    marketCheckFailed = true;
   }
 
   // What this UPC is realistically LISTED as — own past sales are the most
@@ -632,8 +644,13 @@ async function estimateLine(
   const totalScore = ownScore + historicalScore + categoryScore + marketScore;
 
   if (totalScore === 0) {
-    // Nothing to go on at all — no comps, no history. Can't responsibly
-    // estimate; treated as a dud (zero contribution) rather than guessed.
+    // Nothing to go on at all — no comps, no history. Normally that's a
+    // fair "can't responsibly estimate, treat as a dud" call. But if the
+    // REASON there are no comps is that the market check itself errored
+    // (marketCheckFailed) rather than genuinely finding zero listings,
+    // that's an unknown, not a confirmed dead item — don't confidently
+    // flag it a dud on an API outage (see marketCheckFailed above for the
+    // real case this caught live).
     return {
       upc: group.upc,
       description: group.description,
@@ -645,7 +662,8 @@ async function estimateLine(
       effectiveUnits: Math.round(group.expectedQuantity * receiveRate),
       typicalPackSize,
       dataConfidence: "market_only",
-      flaggedDud: true,
+      flaggedDud: !marketCheckFailed,
+      marketCheckFailed,
       eventEnded: false,
       postHolidayFiller: isPostHolidayFiller(group.description),
       trendNudge: null,
@@ -743,6 +761,7 @@ async function estimateLine(
     typicalPackSize,
     dataConfidence,
     flaggedDud,
+    marketCheckFailed,
     eventEnded,
     postHolidayFiller,
     trendNudge,
@@ -875,6 +894,7 @@ export async function evaluateManifest(manifestId: string): Promise<{
       .sort((a, b) => (b.estimatedNetPerUnit ?? 0) * b.effectiveUnits - (a.estimatedNetPerUnit ?? 0) * a.effectiveUnits)
       .slice(0, 8),
     dudLines: lineEstimates.filter((e) => e.flaggedDud).slice(0, 5),
+    marketDataUnavailableCount: lineEstimates.filter((e) => e.marketCheckFailed).length,
     expiredEventLines: lineEstimates
       .filter((e) => e.eventEnded)
       .map((e) => `- ${e.description}`)
@@ -927,6 +947,7 @@ async function writeReasoning(input: {
   concentrationRisk: boolean;
   topLines: LineEstimateResult[];
   dudLines: LineEstimateResult[];
+  marketDataUnavailableCount: number;
   expiredEventLines: string[];
   postHolidayLines: string[];
   knowledgeNotes: string[];
@@ -949,6 +970,8 @@ ${input.topLines.map((l) => `- ${l.description} (UPC ${l.upc ?? "n/a"}): est. $$
 
 Lines flagged as likely duds:
 ${input.dudLines.map((l) => `- ${l.description} (UPC ${l.upc ?? "n/a"})`).join("\n") || "none"}
+
+Lines where live eBay market data couldn't be checked at all right now (API outage/rate limit, not a confirmed lack of demand — NOT counted as duds, but genuinely unpriced): ${input.marketDataUnavailableCount}${input.marketDataUnavailableCount > 0 ? " — mention this as a real caveat (worth a re-run later for a fuller read), don't imply these items don't sell." : ""}
 
 Lines flagged as licensed merch for an event that has already concluded (treated as dead stock regardless of live comps):
 ${input.expiredEventLines.join("\n") || "none"}
