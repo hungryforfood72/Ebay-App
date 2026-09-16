@@ -433,6 +433,31 @@ model HistoricalSaleRecord {
   @@index([title])
 }
 
+// A real, timestamped measurement of eBay's live active-listing market for
+// one UPC — every row is an actual snapshot taken at evaluation time (see
+// estimateLine in src/lib/sourcingAgent.ts), never overwritten, so the
+// table grows into a genuine time series per product instead of a single
+// "current price" cache. Serves two purposes at once: (1) a fresh-enough
+// snapshot (see MARKET_SNAPSHOT_FRESHNESS_HOURS) is reused instead of
+// re-querying eBay's Browse API, which is what was actually burning
+// through the daily rate limit — the same UPC was getting re-searched from
+// scratch on every single evaluation, even re-running the same manifest
+// minutes apart; (2) comparing a fresh live check against the most recent
+// PRIOR snapshot for the same UPC gives a real measured price/listing-
+// volume trend ("up 18% since we last checked 5 days ago") to feed the
+// agent's reasoning — a much more reliable signal than the existing
+// web-search-based trend nudge, since it's our own repeated measurement of
+// the same query rather than an LLM's read of news/social chatter.
+model MarketCompSnapshot {
+  id              String   @id @default(uuid())
+  upc             String
+  activeCompCount Int
+  medianPrice     Decimal? @db.Decimal(10, 2) // null when activeCompCount is 0 — nothing to take a median of
+  capturedAt      DateTime @default(now())
+
+  @@index([upc, capturedAt])
+}
+
 // Minimal key/value settings store — first use is the sourcing agent's
 // target profit margin, reusable for any future single-value setting
 // without new scaffolding.

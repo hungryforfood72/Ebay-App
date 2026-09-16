@@ -143,6 +143,31 @@ function extractBrandMatchWords(description: string): string[] {
     .slice(0, 2);
 }
 
+// How long a market snapshot stays "fresh enough" to reuse instead of
+// re-querying eBay's Browse API for the same UPC — see MarketCompSnapshot.
+// Long enough that re-running the same (or another) manifest containing the
+// same UPC multiple times in a day doesn't re-burn API calls (confirmed
+// live: this was the actual cause of a 7,190-call day against a 5,000/day
+// limit), short enough that the "trend since last check" comparison still
+// means something.
+const MARKET_SNAPSHOT_FRESHNESS_HOURS = 24;
+// Below this, a price/listing-count difference between two snapshots is
+// treated as normal day-to-day noise, not a real trend worth mentioning.
+const MARKET_TREND_NOTABLE_PCT = 15;
+
+function marketTrendNote(
+  previous: { activeCompCount: number; medianPrice: number | null },
+  current: { activeCompCount: number; medianPrice: number },
+  daysAgo: number
+): string | null {
+  if (previous.medianPrice == null || previous.medianPrice <= 0 || current.medianPrice <= 0) return null;
+  const priceChangePct = ((current.medianPrice - previous.medianPrice) / previous.medianPrice) * 100;
+  if (Math.abs(priceChangePct) < MARKET_TREND_NOTABLE_PCT) return null;
+  const direction = priceChangePct > 0 ? "up" : "down";
+  const roundedDays = Math.max(1, Math.round(daysAgo));
+  return `live asking price ${direction} ${Math.abs(priceChangePct).toFixed(0)}% since we last checked this UPC ${roundedDays} day${roundedDays === 1 ? "" : "s"} ago`;
+}
+
 // Mode (most frequent value) of a list of pack sizes — used to decide what
 // this UPC is realistically LISTED as (one bottle vs. a 3-pack), which
 // matters for shipping/fixed-fee costs: those are charged once per
@@ -411,6 +436,7 @@ type LineEstimateResult = {
   dataConfidence: "own_history" | "historical_match" | "category_fallback" | "market_only";
   flaggedDud: boolean;
   marketCheckFailed: boolean;
+  marketTrend: string | null;
   eventEnded: boolean;
   postHolidayFiller: boolean;
   trendNudge: string | null;
@@ -598,25 +624,63 @@ async function estimateLine(
   // below would otherwise have no way to tell an API outage apart from a
   // confirmed zero — and confidently called every line a dud on it.
   let marketCheckFailed = false;
-  try {
-    const comps = await searchActiveListings({ upc: group.upc, keywords: group.description, excludeListingId: null });
-    const perUnitPrices: number[] = [];
-    for (const c of comps) {
-      const packSize = detectPackSize(c.title);
-      if (isResellerLot(c.title, packSize)) continue;
-      marketPackSizes.push(packSize);
-      perUnitPrices.push(c.totalPrice / packSize);
+  // A real, measured price/listing-volume trend since the last time we
+  // actually checked this UPC's live market (see MarketCompSnapshot) — null
+  // when there's no prior snapshot to compare against, or when reusing a
+  // fresh-enough snapshot below means nothing new was measured this run.
+  let marketTrend: string | null = null;
+
+  const latestSnapshot = group.upc
+    ? await prisma.marketCompSnapshot.findFirst({ where: { upc: group.upc }, orderBy: { capturedAt: "desc" } })
+    : null;
+  const snapshotAgeHours = latestSnapshot ? (Date.now() - latestSnapshot.capturedAt.getTime()) / (1000 * 60 * 60) : Infinity;
+
+  if (latestSnapshot && snapshotAgeHours < MARKET_SNAPSHOT_FRESHNESS_HOURS) {
+    // Reuse rather than re-ask eBay — this is what was actually burning
+    // through the daily Browse API limit: the same UPC getting re-searched
+    // from scratch on every evaluation, even re-running the same manifest
+    // minutes apart. No per-comp titles are stored in a snapshot, so
+    // marketPackSizes stays empty for a reused hit — typicalPackSize still
+    // falls back to own/historical pack data when there is any.
+    activeCompCount = latestSnapshot.activeCompCount;
+    marketMedian = latestSnapshot.medianPrice != null ? Number(latestSnapshot.medianPrice) : 0;
+  } else {
+    try {
+      const comps = await searchActiveListings({ upc: group.upc, keywords: group.description, excludeListingId: null });
+      const perUnitPrices: number[] = [];
+      for (const c of comps) {
+        const packSize = detectPackSize(c.title);
+        if (isResellerLot(c.title, packSize)) continue;
+        marketPackSizes.push(packSize);
+        perUnitPrices.push(c.totalPrice / packSize);
+      }
+      activeCompCount = perUnitPrices.length;
+      if (perUnitPrices.length > 0) {
+        perUnitPrices.sort((a, b) => a - b);
+        const mid = Math.floor(perUnitPrices.length / 2);
+        marketMedian = perUnitPrices.length % 2 === 0 ? (perUnitPrices[mid - 1] + perUnitPrices[mid]) / 2 : perUnitPrices[mid];
+      }
+
+      if (group.upc) {
+        if (latestSnapshot) {
+          marketTrend = marketTrendNote(
+            { activeCompCount: latestSnapshot.activeCompCount, medianPrice: latestSnapshot.medianPrice != null ? Number(latestSnapshot.medianPrice) : null },
+            { activeCompCount, medianPrice: marketMedian },
+            snapshotAgeHours / 24
+          );
+        }
+        // Every genuinely fresh check is its own permanent row, never
+        // overwritten — that's what turns this into a real time series
+        // instead of just a cache (see MarketCompSnapshot).
+        await prisma.marketCompSnapshot.create({
+          data: { upc: group.upc, activeCompCount, medianPrice: marketMedian > 0 ? marketMedian : null },
+        });
+      }
+    } catch (e) {
+      if (!(e instanceof EbayApiError)) throw e;
+      console.error(`[sourcingAgent] comp search failed for UPC ${group.upc}`, e);
+      marketCheckFailed = true;
     }
-    activeCompCount = perUnitPrices.length;
-    if (perUnitPrices.length > 0) {
-      perUnitPrices.sort((a, b) => a - b);
-      const mid = Math.floor(perUnitPrices.length / 2);
-      marketMedian = perUnitPrices.length % 2 === 0 ? (perUnitPrices[mid - 1] + perUnitPrices[mid]) / 2 : perUnitPrices[mid];
-    }
-  } catch (e) {
-    if (!(e instanceof EbayApiError)) throw e;
-    console.error(`[sourcingAgent] comp search failed for UPC ${group.upc}`, e);
-    marketCheckFailed = true;
   }
 
   // What this UPC is realistically LISTED as — own past sales are the most
@@ -664,6 +728,7 @@ async function estimateLine(
       dataConfidence: "market_only",
       flaggedDud: !marketCheckFailed,
       marketCheckFailed,
+      marketTrend,
       eventEnded: false,
       postHolidayFiller: isPostHolidayFiller(group.description),
       trendNudge: null,
@@ -762,6 +827,7 @@ async function estimateLine(
     dataConfidence,
     flaggedDud,
     marketCheckFailed,
+    marketTrend,
     eventEnded,
     postHolidayFiller,
     trendNudge,
@@ -909,6 +975,10 @@ export async function evaluateManifest(manifestId: string): Promise<{
       .filter((e) => e.trendNudge)
       .map((e) => `${e.description}: ${e.trendNudge}`)
       .slice(0, MAX_TREND_CHECKS),
+    marketTrends: lineEstimates
+      .filter((e) => e.marketTrend)
+      .map((e) => `${e.description}: ${e.marketTrend}`)
+      .slice(0, 10),
   });
 
   return {
@@ -953,6 +1023,7 @@ async function writeReasoning(input: {
   knowledgeNotes: string[];
   seasonalNotes: string[];
   trendNudges: string[];
+  marketTrends: string[];
 }): Promise<string> {
   const prompt = `You are explaining a liquidation manifest sourcing decision that has ALREADY been computed. Do not redo the math or change the call — just write a clear, plain-language explanation a busy reseller can read in 10 seconds and trust.
 
@@ -988,7 +1059,10 @@ ${input.seasonalNotes.join("\n") || "none notable"}
 Trend signals (directional only, from live web search):
 ${input.trendNudges.join("\n") || "none notable"}
 
-Write 3-6 sentences: which items drove the call, any supplier/category patterns applied, seasonal timing if relevant, and any trend signal factored in. Plain language, no bullet points, no restating the raw numbers verbatim.`;
+Real measured market movement since we last checked these UPCs ourselves (our own repeated live comp checks over time — more reliable than the web-search signal above, since it's an actual price change we observed, not an LLM's read of outside chatter):
+${input.marketTrends.join("\n") || "none notable — either no prior check to compare against yet, or nothing moved enough to be worth mentioning"}
+
+Write 3-6 sentences: which items drove the call, any supplier/category patterns applied, seasonal timing if relevant, and any trend signal factored in (the measured market movement above and the web-search trend signal are different kinds of evidence — don't conflate them if both are mentioned). Plain language, no bullet points, no restating the raw numbers verbatim.`;
 
   try {
     const response = await anthropic.messages.create(
