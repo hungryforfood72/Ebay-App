@@ -676,6 +676,16 @@ export async function getRecentOrders(from: Date, to: Date): Promise<EbayOrder[]
 
 export type EbayOrderEarnings = {
   lineItemFees: { lineItemId: string; totalFees: number }[];
+  // Promoted Listings ad fees are their OWN transaction (transactionType
+  // NON_SALE_CHARGE, feeType AD_FEE) — confirmed live NOT part of the SALE
+  // transaction's orderLineItems.marketplaceFees at all, so getOrderEarnings
+  // was silently dropping them from every promoted-listing sale's fee total
+  // (confirmed live: a $17.99 sale with a $1.98 ad fee only ever recorded
+  // the $2.68 final value fee). No lineItemId on this transaction type —
+  // only an ITEM_ID reference (the classic numeric eBay item ID, same
+  // format as Item.ebayListingId / listingUrl()), so the caller matches it
+  // to a line item by that rather than lineItemId.
+  adFees: { legacyItemId: string; amount: number }[];
   // Shipping label cost is its OWN transaction (transactionType
   // SHIPPING_LABEL, a DEBIT), separate from the SALE transaction and not
   // itemized per line item — confirmed live on a real order. Order-level,
@@ -740,6 +750,8 @@ export async function getOrderEarnings(orderId: string): Promise<EbayOrderEarnin
       transactionId?: string;
       amount?: { value: string };
       transactionDate?: string;
+      feeType?: string;
+      references?: { referenceId: string; referenceType: string }[];
       orderLineItems?: { lineItemId: string; marketplaceFees?: { amount: { value: string } }[] }[];
     }[];
   };
@@ -754,6 +766,14 @@ export async function getOrderEarnings(orderId: string): Promise<EbayOrderEarnin
   const shippingLabels = transactions
     .filter((t) => t.transactionType === "SHIPPING_LABEL" && t.transactionId)
     .map((t) => ({ transactionId: t.transactionId!, amount: Number(t.amount?.value ?? 0) }));
+
+  const adFees = transactions
+    .filter((t) => t.transactionType === "NON_SALE_CHARGE" && t.feeType === "AD_FEE")
+    .map((t) => ({
+      legacyItemId: t.references?.find((r) => r.referenceType === "ITEM_ID")?.referenceId ?? "",
+      amount: Number(t.amount?.value ?? 0),
+    }))
+    .filter((f) => f.legacyItemId);
 
   const refunds = transactions
     .filter((t) => t.transactionType === "REFUND" && t.transactionId)
@@ -773,6 +793,7 @@ export async function getOrderEarnings(orderId: string): Promise<EbayOrderEarnin
       lineItemId: li.lineItemId,
       totalFees: (li.marketplaceFees ?? []).reduce((sum, f) => sum + Number(f.amount.value), 0),
     })),
+    adFees,
     shippingLabels,
     refunds,
   };

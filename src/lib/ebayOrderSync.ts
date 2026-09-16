@@ -19,6 +19,19 @@ export type EbayOrderSyncResult = {
 // cancelled orders are excluded.
 const NON_SALE_PAYMENT_STATUSES = ["FAILED", "PENDING", "CANCELLED", "NO_PAYMENT_NEEDED"];
 
+// Confirmed live: eBay's Finances API can take several minutes to post a
+// sale's SHIPPING_LABEL transaction after the order itself is created (one
+// real order's shipping label posted ~4 minutes after the sale) — a sync
+// that runs (or is triggered) right after the sale, before the label
+// posts, permanently recorded $0 shipping with no way to ever revisit it,
+// since an existing sale row was always skipped outright. A sale still
+// missing shipping data gets re-checked against fresh earnings on each
+// sync run until it's this many days old, then whatever's on record is
+// accepted as final (a listing that genuinely has no shipping label, e.g.
+// buyer pickup or free shipping paid outside eBay, would otherwise get
+// re-checked forever for no reason).
+const SHIPPING_RECHECK_WINDOW_DAYS = 5;
+
 // `since`, when passed, overrides the normal incremental watermark — for a
 // one-off historical catch-up (e.g. after linking legacy CSV-uploaded
 // listings via /api/items/link-legacy, whose sales could predate this sync
@@ -110,14 +123,44 @@ export async function syncEbayOrders(options?: { since?: Date }): Promise<EbayOr
           const existingSale = await prisma.ebayItemSale.findUnique({
             where: { ebayOrderLineItemId: lineItem.lineItemId },
           });
-          if (existingSale) {
-            result.itemsAlreadySynced++;
-            continue;
-          }
 
-          const fees = earnings.lineItemFees.find((e) => e.lineItemId === lineItem.lineItemId)?.totalFees ?? 0;
+          const adFee = item.ebayListingId
+            ? earnings.adFees.find((f) => f.legacyItemId === item.ebayListingId)?.amount ?? 0
+            : 0;
+          const fees = (earnings.lineItemFees.find((e) => e.lineItemId === lineItem.lineItemId)?.totalFees ?? 0) + adFee;
           const shipping =
             orderTotalRevenue > 0 ? (lineItem.lineItemCostValue / orderTotalRevenue) * orderShippingPool : 0;
+
+          if (existingSale) {
+            const isMissingShipping = Number(existingSale.shipping) === 0 && !existingSale.shippingTransactionId;
+            const ageDays = (syncStartedAt.getTime() - existingSale.soldAt.getTime()) / (1000 * 60 * 60 * 24);
+            if (!isMissingShipping || ageDays > SHIPPING_RECHECK_WINDOW_DAYS) {
+              result.itemsAlreadySynced++;
+              continue;
+            }
+            // Still within the recheck window and still missing shipping —
+            // apply whatever fresh earnings now show as a DELTA against the
+            // item's running totals, not a blind re-increment (the sale row
+            // already contributed its original fees/shipping once).
+            const feesDelta = fees - Number(existingSale.fees);
+            const shippingDelta = shipping - Number(existingSale.shipping);
+            if (feesDelta === 0 && shippingDelta === 0) {
+              result.itemsAlreadySynced++;
+              continue;
+            }
+            await prisma.$transaction([
+              prisma.ebayItemSale.update({
+                where: { id: existingSale.id },
+                data: { fees, shipping, shippingTransactionId: orderShippingTxnId ?? existingSale.shippingTransactionId },
+              }),
+              prisma.item.update({
+                where: { id: item.id },
+                data: { soldFeesTotal: { increment: feesDelta }, soldShippingTotal: { increment: shippingDelta } },
+              }),
+            ]);
+            result.itemsUpdated++;
+            continue;
+          }
 
           const newSoldQuantity = item.soldQuantity + lineItem.quantity;
           await prisma.$transaction([
