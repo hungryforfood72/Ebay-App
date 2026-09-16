@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
-import { getTargetMarginPct } from "@/lib/sourcingAgent";
+import { getTargetMarginPct, MIN_BID_FLOOR } from "@/lib/sourcingAgent";
 
 // Units actually received for an item = the quantity scanned, times pack
 // size if it's a multipack — the same "3 of a 2-pack = 6 units" accounting
@@ -295,6 +295,9 @@ export async function GET(
       expectedNetContribution:
         latestEvaluation.expectedNetContribution != null ? Number(latestEvaluation.expectedNetContribution) : null,
       targetMarginPct,
+      minBidFloor: MIN_BID_FLOOR,
+      dudShare: latestEvaluation.dudShare,
+      concentrationRisk: latestEvaluation.concentrationRisk,
       reasoning: latestEvaluation.reasoning,
       error: latestEvaluation.error,
       startedAt: latestEvaluation.startedAt,

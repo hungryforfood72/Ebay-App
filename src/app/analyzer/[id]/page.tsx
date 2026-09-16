@@ -34,6 +34,9 @@ type SourcingEvaluation = {
   maxBid: number | null;
   expectedNetContribution: number | null;
   targetMarginPct: number | null;
+  minBidFloor: number | null;
+  dudShare: number | null;
+  concentrationRisk: boolean | null;
   reasoning: string | null;
   error: string | null;
   startedAt: string;
@@ -310,6 +313,59 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
                         </button>
                       )}
                     </>
+                  );
+                })()}
+                {(() => {
+                  const bid = parseFloat(customBid);
+                  if (!Number.isFinite(bid) || bid <= 0) return null;
+                  const { dudShare, concentrationRisk, targetMarginPct, minBidFloor, expectedNetContribution } =
+                    candidate.sourcingEvaluation;
+                  if (expectedNetContribution == null) return null;
+
+                  // The original recommendation can land on "dont_buy" for
+                  // reasons that have nothing to do with the price paid —
+                  // too many duds, or one weak item dominating the manifest
+                  // (see evaluateManifest's recommendation logic). No bid,
+                  // however low, fixes those, so a hypothetical price never
+                  // gets to override them — Cristian's own instruction:
+                  // only let the price change the verdict when the original
+                  // "no" actually was about price.
+                  const structuralReasons: string[] = [];
+                  if (dudShare != null && dudShare >= 0.6) {
+                    structuralReasons.push(`${(dudShare * 100).toFixed(0)}% of lines are likely duds`);
+                  }
+                  if (concentrationRisk) {
+                    structuralReasons.push("one item dominates the manifest's value and looks weak");
+                  }
+
+                  let good: boolean;
+                  let label: string;
+                  if (structuralReasons.length > 0) {
+                    good = false;
+                    label = "Still don't buy";
+                  } else {
+                    const roi = ((expectedNetContribution - bid) / bid) * 100;
+                    const clearsFloor = minBidFloor == null || bid >= minBidFloor;
+                    const clearsMargin = targetMarginPct == null || roi >= targetMarginPct;
+                    good = clearsFloor && clearsMargin;
+                    label = good ? "Buy at this price" : "Don't buy at this price";
+                  }
+
+                  return (
+                    <div className="mt-1 flex w-full items-center gap-2 border-t pt-2">
+                      <span
+                        className={`rounded-full px-3 py-1 text-sm font-semibold ${
+                          good ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
+                        }`}
+                      >
+                        {label}
+                      </span>
+                      {structuralReasons.length > 0 && (
+                        <span className="text-xs text-gray-500">
+                          Not a price issue — {structuralReasons.join(" and ")}. No bid price fixes this.
+                        </span>
+                      )}
+                    </div>
                   );
                 })()}
               </div>

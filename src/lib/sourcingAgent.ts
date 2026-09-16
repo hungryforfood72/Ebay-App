@@ -10,6 +10,12 @@ import type { ManifestSupplier } from "@/generated/prisma/client";
 const TARGET_MARGIN_KEY = "sourcing_target_margin_pct";
 const DEFAULT_TARGET_MARGIN_PCT = 35;
 
+// Below this a manifest just isn't worth the trip/effort even if the math
+// is technically positive. Exported so the bid calculator UI can apply the
+// exact same floor to a hypothetical price, rather than duplicating "20"
+// as a second, driftable copy of this judgment call.
+export const MIN_BID_FLOOR = 20;
+
 export async function getTargetMarginPct(): Promise<number> {
   const row = await prisma.appSetting.findUnique({ where: { key: TARGET_MARGIN_KEY } });
   const value = row ? Number(row.value) : NaN;
@@ -774,6 +780,8 @@ export async function evaluateManifest(manifestId: string): Promise<{
   recommendation: "buy" | "dont_buy";
   maxBid: number;
   expectedNetContribution: number;
+  dudShare: number;
+  concentrationRisk: boolean;
   reasoning: string;
   lineEstimates: LineEstimateResult[];
 }> {
@@ -843,7 +851,6 @@ export async function evaluateManifest(manifestId: string): Promise<{
   // Buy/Don't-Buy is code-computed and deterministic — the LLM only
   // explains it afterward, never re-decides it, so the call stays
   // reproducible instead of depending on model sampling.
-  const MIN_BID_FLOOR = 20; // below this it's not worth the trip/effort even if technically positive
   const recommendation: "buy" | "dont_buy" =
     maxBid >= MIN_BID_FLOOR && dudShare < 0.6 && !concentrationRisk ? "buy" : "dont_buy";
 
@@ -884,7 +891,15 @@ export async function evaluateManifest(manifestId: string): Promise<{
       .slice(0, MAX_TREND_CHECKS),
   });
 
-  return { recommendation, maxBid, expectedNetContribution: totalExpectedNetContribution, reasoning, lineEstimates };
+  return {
+    recommendation,
+    maxBid,
+    expectedNetContribution: totalExpectedNetContribution,
+    dudShare,
+    concentrationRisk,
+    reasoning,
+    lineEstimates,
+  };
 }
 
 async function mapWithConcurrency<T, R>(items: T[], concurrency: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {

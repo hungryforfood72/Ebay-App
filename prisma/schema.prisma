@@ -349,6 +349,13 @@ model SourcingEvaluation {
   // (this minus maxBid) and ROI at the recommended bid, not just the bid
   // number alone.
   expectedNetContribution Decimal? @db.Decimal(10, 2)
+  // The two non-price reasons the code-computed recommendation can land on
+  // "dont_buy" (see evaluateManifest) — persisted so the bid calculator can
+  // tell "the price was too high" apart from "this manifest just isn't
+  // good, no price fixes it" when Cristian tries a hypothetical bid. Null
+  // while status is "running"/"failed", same as maxBid.
+  dudShare         Float?
+  concentrationRisk Boolean?
   reasoning      String? // plain-language explanation, written last from already-computed numbers
   error          String?
   startedAt      DateTime  @default(now())
