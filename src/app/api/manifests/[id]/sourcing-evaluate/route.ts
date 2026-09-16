@@ -34,6 +34,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             status: "complete",
             recommendation: result.recommendation,
             maxBid: result.maxBid,
+            expectedNetContribution: result.expectedNetContribution,
             reasoning: result.reasoning,
             completedAt: new Date(),
           },

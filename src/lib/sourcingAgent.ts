@@ -83,17 +83,38 @@ const SEASONAL_HINTS: { pattern: RegExp; months: number[]; note: string }[] = [
 // sell-through window, based directly on how Cristian actually sorts
 // these loads rather than a live check, since the calendar dates
 // themselves don't need looking up.
-const POST_HOLIDAY_DUD_RULES: { pattern: RegExp; sellMonths: number[]; exception?: RegExp }[] = [
-  // Halloween: real sell window is Aug-Oct: candy still moves afterward
-  // (a consumable, not seasonal decor), everything else is dead until next
-  // year's season.
-  { pattern: /halloween|costume/i, sellMonths: [7, 8, 9], exception: /candy|chocolate/i },
-  // Christmas: real sell window is Oct-Dec — advent calendars, ornaments,
-  // gift bags/wrap specifically called out as dead filler once it passes.
-  { pattern: /christmas|advent calendar|ornament|gift ?wrap|santa/i, sellMonths: [9, 10, 11] },
-  // Easter: real sell window is roughly Feb-Apr (the holiday itself moves
-  // year to year, so this stays deliberately wide).
-  { pattern: /\beaster\b/i, sellMonths: [1, 2, 3] },
+// Expressed as deadMonths (the real aftermath window, right after the
+// holiday until a reasonable pre-season ramp-up begins) rather than a
+// narrow "sellMonths" allowlist — buying stock a couple months *ahead* of
+// a holiday is completely normal and should never be flagged, only stock
+// still sitting around *after* it already passed. An earlier version of
+// this used sellMonths and wrongly flagged pre-season stock too (caught
+// live: Christmas ornaments in September — 3+ months of lead time,
+// perfectly sellable — came back flagged as a dud).
+const POST_HOLIDAY_DUD_RULES: { pattern: RegExp; deadMonths: number[]; exception?: RegExp }[] = [
+  // Halloween (Oct 31): dead Nov-Jun, candy still moves afterward (a
+  // consumable, not seasonal decor).
+  { pattern: /halloween|costume/i, deadMonths: [10, 11, 0, 1, 2, 3, 4, 5], exception: /candy|chocolate/i },
+  // Christmas (Dec 25): dead Jan-Jul.
+  { pattern: /christmas|advent calendar|ornament|gift ?wrap|santa/i, deadMonths: [0, 1, 2, 3, 4, 5, 6] },
+  // Easter (~Mar/Apr, moves year to year — stays wide): dead May-Dec.
+  { pattern: /\beaster\b/i, deadMonths: [4, 5, 6, 7, 8, 9, 10, 11] },
+  // Valentine's Day (Feb 14): dead Mar-Sep.
+  { pattern: /valentine/i, deadMonths: [2, 3, 4, 5, 6, 7, 8] },
+  // St. Patrick's Day (Mar 17): dead Apr-Nov.
+  { pattern: /st\.? ?patrick/i, deadMonths: [3, 4, 5, 6, 7, 8, 9, 10] },
+  // Mother's Day (~early May): dead Jun-Dec.
+  { pattern: /mother'?s day/i, deadMonths: [5, 6, 7, 8, 9, 10, 11] },
+  // Father's Day (~mid-June): dead Jul-Jan.
+  { pattern: /father'?s day/i, deadMonths: [6, 7, 8, 9, 10, 11, 0] },
+  // Independence Day (Jul 4): dead Aug-Feb.
+  { pattern: /independence day|4th of july|fourth of july/i, deadMonths: [7, 8, 9, 10, 11, 0, 1] },
+  // Thanksgiving (late Nov): dead Dec-Jun.
+  { pattern: /thanksgiving/i, deadMonths: [11, 0, 1, 2, 3, 4, 5] },
+  // New Year's (Jan 1): dead Feb-Aug.
+  { pattern: /new ?year'?s (eve|day)/i, deadMonths: [1, 2, 3, 4, 5, 6, 7] },
+  // Graduation (~May/Jun): dead Jul-Dec.
+  { pattern: /graduation/i, deadMonths: [6, 7, 8, 9, 10, 11] },
 ];
 
 function isPostHolidayFiller(description: string): boolean {
@@ -101,7 +122,7 @@ function isPostHolidayFiller(description: string): boolean {
   for (const rule of POST_HOLIDAY_DUD_RULES) {
     if (!rule.pattern.test(description)) continue;
     if (rule.exception && rule.exception.test(description)) return false;
-    if (!rule.sellMonths.includes(currentMonth)) return true;
+    if (rule.deadMonths.includes(currentMonth)) return true;
   }
   return false;
 }
@@ -202,24 +223,28 @@ async function getTrendNudge(description: string): Promise<string | null> {
 }
 
 // ---------------------------------------------------------------------------
-// Expired one-off event merchandise — a real gap found live: a "FIFA World
-// Cup '26" line was scored using live market comps without any awareness
-// that the tournament itself had already concluded, when in reality
-// licensed merch for a now-over one-off event (World Cup, Super Bowl,
-// Olympics, etc.) is close to dead stock regardless of how many comps are
-// still listed (other liquidators dumping the same dead inventory looks
-// like "market activity" but isn't real demand). Different from
-// SEASONAL_HINTS above, which is about recurring calendar seasonality, not
-// a specific event that has already happened and won't recur this cycle.
-// Gated by a cheap regex pre-filter (free) before ever spending a web
-// search call, and capped per evaluation so a manifest dominated by event
-// merch (exactly this FIFA case) can't blow the budget.
+// Occasion-tied merchandise not covered by the cheap deterministic checks
+// above — either a one-time event (World Cup, Super Bowl, Olympics — never
+// recurs the same way) or a named holiday/observance not in
+// POST_HOLIDAY_DUD_RULES (that list only covers the handful of most common
+// gift-holidays; liquidation manifests turn up plenty of others —
+// Hanukkah, Diwali, Mardi Gras, Cinco de Mayo, Lunar New Year, and more
+// neither of us thought to hardcode). Rather than keep expanding a
+// hardcoded list forever, anything matching this broader pattern gets a
+// live check instead. Real gap found live: a "FIFA World Cup '26" line was
+// scored using live market comps with no awareness the tournament itself
+// had already concluded — dead licensed merch still shows plenty of
+// "active" comps (other liquidators dumping the same dead stock), which
+// looks like market activity but isn't real demand. Gated by a cheap regex
+// pre-filter (free) before ever spending a web search call, and capped per
+// evaluation so a manifest dominated by this kind of merch (exactly the
+// FIFA case) can't blow the budget.
 // ---------------------------------------------------------------------------
-const EVENT_MERCH_PATTERN =
-  /\b(world cup|super bowl|olympics?|world series|championship|playoffs?|final four|all-?star game|grammys?|oscars?)\b/i;
+const OCCASION_MERCH_PATTERN =
+  /\b(world cup|super bowl|olympics?|world series|championship|playoffs?|final four|all-?star game|grammys?|oscars?|hanukkah|kwanzaa|diwali|cinco de mayo|mardi gras|lunar new year|chinese new year|bastille day|passover|eid|nba finals|stanley cup)\b/i;
 const MAX_EVENT_CHECKS = 20;
 
-async function hasEventAlreadyEnded(description: string): Promise<boolean> {
+async function isOccasionOutOfSeason(description: string): Promise<boolean> {
   try {
     const response = await anthropic.messages.create(
       {
@@ -229,7 +254,7 @@ async function hasEventAlreadyEnded(description: string): Promise<boolean> {
         messages: [
           {
             role: "user",
-            content: `Today's date is ${new Date().toISOString().slice(0, 10)}. The product "${description}" appears to be licensed merchandise tied to a specific one-time event. Has that specific event already concluded as of today? Answer with exactly one word: YES, NO, or UNSURE.`,
+            content: `Today's date is ${new Date().toISOString().slice(0, 10)}. The product "${description}" appears to be merchandise tied to a specific event, holiday, or observance. Answer YES only if this is now genuinely hard to sell because: (a) a one-time event has already concluded, or (b) a recurring holiday's most recent occurrence has already passed and it's still months away from coming back around. Answer NO if the relevant occasion hasn't happened yet this year (buying seasonal stock a couple months ahead of a holiday is normal and NOT a reason to answer YES) or if it's close enough to be selling now. If genuinely unsure, answer UNSURE. Answer with exactly one word: YES, NO, or UNSURE.`,
           },
         ],
       },
@@ -242,7 +267,7 @@ async function hasEventAlreadyEnded(description: string): Promise<boolean> {
     const text = extractText(response.content).toUpperCase();
     return /\bYES\b/.test(text);
   } catch (e) {
-    console.error(`[sourcingAgent] event-ended check failed for "${description}"`, e);
+    console.error(`[sourcingAgent] occasion-season check failed for "${description}"`, e);
     return false; // fail open — an unconfirmed guess is worse than no check at all
   }
 }
@@ -438,24 +463,26 @@ async function estimateLine(
   // history to back up that it actually moves, or the math is just negative.
   let flaggedDud = rawNet <= 0 || (ownSalesCount === 0 && categorySalesCount === 0 && activeCompCount >= 15);
 
-  // Licensed merch for a one-time event that's already concluded (see
-  // EVENT_MERCH_PATTERN above) — active comps right now don't mean real
-  // demand, they're as likely to be other liquidators dumping the same
-  // dead stock. Overrides everything else computed above: real sales
-  // history for this exact UPC would already be reflected in ownAvgSalePrice
-  // (which only counts actual completed sales), but a positive live-comp
-  // signal alone isn't trustworthy once the event itself is over.
-  let eventEnded = false;
-  if (EVENT_MERCH_PATTERN.test(group.description) && eventCheckBudget.remaining > 0) {
-    eventCheckBudget.remaining--;
-    eventEnded = await hasEventAlreadyEnded(group.description);
-    if (eventEnded) flaggedDud = true;
-  }
-
   // Recurring-holiday filler (see POST_HOLIDAY_DUD_RULES above) — cheap,
-  // no API call, calendar-based.
+  // no API call, calendar-based. Checked first so the live check below
+  // never spends budget re-confirming something already resolved for free.
   const postHolidayFiller = isPostHolidayFiller(group.description);
   if (postHolidayFiller) flaggedDud = true;
+
+  // Anything occasion-tied that isn't one of the hardcoded holidays above
+  // (a one-time event, or a holiday we didn't think to hardcode) — active
+  // comps right now don't mean real demand, they're as likely to be other
+  // liquidators dumping the same dead stock. Overrides everything else
+  // computed above: real sales history for this exact UPC would already
+  // be reflected in ownAvgSalePrice (which only counts actual completed
+  // sales), but a positive live-comp signal alone isn't trustworthy once
+  // the occasion itself has passed.
+  let eventEnded = false;
+  if (!postHolidayFiller && OCCASION_MERCH_PATTERN.test(group.description) && eventCheckBudget.remaining > 0) {
+    eventCheckBudget.remaining--;
+    eventEnded = await isOccasionOutOfSeason(group.description);
+    if (eventEnded) flaggedDud = true;
+  }
 
   const trendNudge = runTrendCheck ? await getTrendNudge(group.description) : null;
 
@@ -506,6 +533,7 @@ const MAX_TREND_CHECKS = 10;
 export async function evaluateManifest(manifestId: string): Promise<{
   recommendation: "buy" | "dont_buy";
   maxBid: number;
+  expectedNetContribution: number;
   reasoning: string;
   lineEstimates: LineEstimateResult[];
 }> {
@@ -616,7 +644,7 @@ export async function evaluateManifest(manifestId: string): Promise<{
       .slice(0, MAX_TREND_CHECKS),
   });
 
-  return { recommendation, maxBid, reasoning, lineEstimates };
+  return { recommendation, maxBid, expectedNetContribution: totalExpectedNetContribution, reasoning, lineEstimates };
 }
 
 async function mapWithConcurrency<T, R>(items: T[], concurrency: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {

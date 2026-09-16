@@ -342,6 +342,12 @@ model SourcingEvaluation {
   status         String // "running" | "complete" | "failed"
   recommendation String? // "buy" | "dont_buy"
   maxBid         Decimal?  @db.Decimal(10, 2)
+  // Total expected revenue across the manifest minus fees/shipping, BEFORE
+  // subtracting the bid itself (that's what maxBid solves against — see
+  // evaluateManifest). Persisted so the UI can show expected profit
+  // (this minus maxBid) and ROI at the recommended bid, not just the bid
+  // number alone.
+  expectedNetContribution Decimal? @db.Decimal(10, 2)
   reasoning      String? // plain-language explanation, written last from already-computed numbers
   error          String?
   startedAt      DateTime  @default(now())

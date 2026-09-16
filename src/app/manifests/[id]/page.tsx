@@ -43,6 +43,7 @@ type SourcingEvaluation = {
   status: "running" | "complete" | "failed";
   recommendation: "buy" | "dont_buy" | null;
   maxBid: number | null;
+  expectedNetContribution: number | null;
   reasoning: string | null;
   error: string | null;
   startedAt: string;
@@ -232,6 +233,14 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
             <span className="text-gray-600">
               Predicted max bid: <strong>${manifest.sourcingEvaluation.maxBid?.toFixed(2) ?? "—"}</strong>
             </span>
+            {manifest.sourcingEvaluation.maxBid != null && manifest.sourcingEvaluation.expectedNetContribution != null && (
+              <span className="text-gray-600">
+                Predicted profit at that bid:{" "}
+                <strong>
+                  ${(manifest.sourcingEvaluation.expectedNetContribution - manifest.sourcingEvaluation.maxBid).toFixed(2)}
+                </strong>
+              </span>
+            )}
           </div>
         </section>
       )}

@@ -261,6 +261,8 @@ export async function GET(
       status: latestEvaluation.status,
       recommendation: latestEvaluation.recommendation,
       maxBid: latestEvaluation.maxBid != null ? Number(latestEvaluation.maxBid) : null,
+      expectedNetContribution:
+        latestEvaluation.expectedNetContribution != null ? Number(latestEvaluation.expectedNetContribution) : null,
       reasoning: latestEvaluation.reasoning,
       error: latestEvaluation.error,
       startedAt: latestEvaluation.startedAt,

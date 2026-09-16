@@ -31,6 +31,7 @@ type SourcingEvaluation = {
   status: "running" | "complete" | "failed";
   recommendation: "buy" | "dont_buy" | null;
   maxBid: number | null;
+  expectedNetContribution: number | null;
   reasoning: string | null;
   error: string | null;
   startedAt: string;
@@ -208,10 +209,40 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
               <span className="text-sm text-gray-600">
                 Max recommended bid: <strong>${candidate.sourcingEvaluation.maxBid?.toFixed(2) ?? "—"}</strong>
               </span>
+              {candidate.sourcingEvaluation.maxBid != null && candidate.sourcingEvaluation.expectedNetContribution != null && (
+                <>
+                  <span className="text-sm text-gray-600">
+                    Est. profit at that bid:{" "}
+                    <strong>
+                      ${(candidate.sourcingEvaluation.expectedNetContribution - candidate.sourcingEvaluation.maxBid).toFixed(2)}
+                    </strong>
+                  </span>
+                  <span className="text-sm text-gray-600">
+                    Est. ROI:{" "}
+                    <strong>
+                      {candidate.sourcingEvaluation.maxBid > 0
+                        ? (
+                            ((candidate.sourcingEvaluation.expectedNetContribution - candidate.sourcingEvaluation.maxBid) /
+                              candidate.sourcingEvaluation.maxBid) *
+                            100
+                          ).toFixed(0)
+                        : "—"}
+                      %
+                    </strong>
+                  </span>
+                </>
+              )}
               <span className="text-xs text-gray-400">
                 {new Date(candidate.sourcingEvaluation.startedAt).toLocaleString()}
               </span>
             </div>
+            {candidate.sourcingEvaluation.maxBid != null && (
+              <p className="text-xs text-gray-400">
+                Profit/ROI shown are what to expect if you win at exactly the max bid — bid lower and both
+                improve, since the max bid is calibrated to hit your target margin (Settings) at that exact
+                price.
+              </p>
+            )}
             {candidate.sourcingEvaluation.reasoning && (
               <p className="text-sm text-gray-700">{candidate.sourcingEvaluation.reasoning}</p>
             )}
