@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
-type Manifest = {
+type Candidate = {
   id: string;
   title: string;
   supplier: string;
@@ -18,17 +18,23 @@ const SUPPLIER_LABELS: Record<string, string> = {
   unknown: "Unknown",
 };
 
-export default function ManifestsPage() {
-  const [manifests, setManifests] = useState<Manifest[] | null>(null);
+// Separate from /manifests on purpose — that page is for loads Cristian has
+// already bought and is receiving/reconciling. This is for manifests he's
+// still deciding on: upload the CSV, run the sourcing agent, and either
+// pass (never touch it again) or mark it purchased, which graduates the
+// same record into the real Manifests list (see purchased on Manifest in
+// prisma/schema.prisma).
+export default function AnalyzerPage() {
+  const [candidates, setCandidates] = useState<Candidate[] | null>(null);
   const [title, setTitle] = useState("");
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   function load() {
-    fetch("/api/manifests")
+    fetch("/api/manifests?purchased=false")
       .then((r) => r.json())
-      .then(setManifests);
+      .then(setCandidates);
   }
 
   useEffect(load, []);
@@ -37,8 +43,6 @@ export default function ManifestsPage() {
     setError(null);
     const csvContent = await file.text();
 
-    // Detected supplier prefills a reasonable title, but only if the user
-    // hasn't already typed their own.
     let prefill = title.trim();
     if (!prefill) {
       const supplierGuess = /Pallet ID/.test(csvContent) ? "BStock" : /Total Retail Price/.test(csvContent) ? "Liquidation.com" : null;
@@ -50,7 +54,7 @@ export default function ManifestsPage() {
       const res = await fetch("/api/manifests", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: prefill, csvContent }),
+        body: JSON.stringify({ title: prefill, csvContent, purchased: false }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Upload failed.");
@@ -67,10 +71,13 @@ export default function ManifestsPage() {
   return (
     <main className="mx-auto max-w-2xl p-6">
       <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Manifests</h1>
+        <h1 className="text-xl font-semibold">Analyzer</h1>
         <div className="flex items-center gap-3">
           <Link href="/" className="text-sm underline">
             Dashboard
+          </Link>
+          <Link href="/manifests" className="text-sm underline">
+            Manifests
           </Link>
           <Link href="/scan" className="text-sm underline">
             Scan
@@ -78,14 +85,15 @@ export default function ManifestsPage() {
           <Link href="/review" className="text-sm underline">
             Review
           </Link>
-          <Link href="/analyzer" className="text-sm underline">
-            Analyzer
-          </Link>
         </div>
       </div>
+      <p className="mb-6 text-sm text-gray-500">
+        Upload a manifest you&apos;re considering buying to get a Buy/Don&apos;t-Buy call and a max bid
+        before you commit — separate from Manifests, which is for loads you&apos;ve already bought.
+      </p>
 
       <section className="mb-8 flex flex-col gap-2 rounded-lg border p-4">
-        <label className="text-sm font-medium">Upload a new manifest</label>
+        <label className="text-sm font-medium">Upload a manifest to evaluate</label>
         <input
           type="text"
           value={title}
@@ -109,30 +117,27 @@ export default function ManifestsPage() {
         <p className="text-xs text-gray-400">Supports BStock and Liquidation.com CSV exports — the format is detected automatically.</p>
       </section>
 
-      {manifests === null && <p className="text-sm text-gray-500">Loading…</p>}
+      {candidates === null && <p className="text-sm text-gray-500">Loading…</p>}
 
-      {manifests && manifests.length === 0 && (
-        <p className="text-sm text-gray-500">No manifests uploaded yet.</p>
+      {candidates && candidates.length === 0 && (
+        <p className="text-sm text-gray-500">Nothing uploaded to evaluate yet.</p>
       )}
 
-      {manifests && manifests.length > 0 && (
+      {candidates && candidates.length > 0 && (
         <ul className="flex flex-col gap-2">
-          {manifests.map((m) => (
-            <li key={m.id}>
+          {candidates.map((c) => (
+            <li key={c.id}>
               <Link
-                href={`/manifests/${m.id}`}
+                href={`/analyzer/${c.id}`}
                 className="flex items-center justify-between rounded-lg border p-4 hover:bg-gray-50"
               >
                 <div>
-                  <p className="font-medium">{m.title}</p>
+                  <p className="font-medium">{c.title}</p>
                   <p className="text-xs text-gray-500">
-                    {SUPPLIER_LABELS[m.supplier] ?? m.supplier} · {m._count.lines} line items ·{" "}
-                    {m._count.items} scanned in · {new Date(m.createdAt).toLocaleDateString()}
+                    {SUPPLIER_LABELS[c.supplier] ?? c.supplier} · {c._count.lines} line items ·{" "}
+                    {new Date(c.createdAt).toLocaleDateString()}
                   </p>
                 </div>
-                {m.totalLandedCost && (
-                  <span className="text-sm text-gray-500">${Number(m.totalLandedCost).toFixed(2)}</span>
-                )}
               </Link>
             </li>
           ))}

@@ -162,6 +162,9 @@ export default function DashboardPage() {
           <Link href="/manifests" className="text-sm underline">
             Manifests
           </Link>
+          <Link href="/analyzer" className="text-sm underline">
+            Analyzer
+          </Link>
           <Link href="/settings" className="text-sm underline">
             Settings
           </Link>

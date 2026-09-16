@@ -310,6 +310,16 @@ model Manifest {
   totalLandedCost Decimal?         @db.Decimal(10, 2)
   createdAt       DateTime         @default(now())
   createdBy       String?
+  // false = uploaded via the Analyzer (a candidate being evaluated before
+  // buying — not shown in the real Manifests list, nothing gets scanned
+  // into it). true = a real, bought load — the normal receiving/
+  // reconciliation flow. Defaults true so existing rows (all real,
+  // predating this field) come along unaffected; the Analyzer's upload
+  // route is the only caller that ever passes false. Flips true via
+  // "Mark as purchased" once a candidate is actually bought — same record,
+  // no data migration, so its sourcing prediction stays attached for
+  // later predicted-vs-actual comparison.
+  purchased       Boolean          @default(true)
 
   lines   ManifestLine[]
   damaged ManifestDamagedEntry[]

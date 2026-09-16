@@ -284,6 +284,9 @@ export default function ReviewPage() {
           <Link href="/scan" className="text-sm underline">
             Scan
           </Link>
+          <Link href="/analyzer" className="text-sm underline">
+            Analyzer
+          </Link>
           <Link href="/settings" className="text-sm underline">
             Settings
           </Link>

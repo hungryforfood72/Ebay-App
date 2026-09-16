@@ -249,6 +249,7 @@ export async function GET(
     id: manifest.id,
     title: manifest.title,
     supplier: manifest.supplier,
+    purchased: manifest.purchased,
     totalLandedCost,
     createdAt: manifest.createdAt,
     lines,
@@ -307,6 +308,11 @@ export async function PATCH(
       ? null
       : Number(body.totalLandedCost);
   }
+  // "Mark as purchased" — a candidate uploaded via the Analyzer graduates
+  // into the real Manifests list. Never goes the other direction from this
+  // route (no un-marking), matching the Analyzer being a one-way decision
+  // point, not a toggle.
+  if ("purchased" in body) data.purchased = Boolean(body.purchased);
 
   const manifest = await prisma.manifest.update({ where: { id }, data });
   return NextResponse.json(manifest);

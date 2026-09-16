@@ -32,6 +32,9 @@ function SettingsPageInner() {
           <Link href="/review" className="text-sm underline">
             Review
           </Link>
+          <Link href="/analyzer" className="text-sm underline">
+            Analyzer
+          </Link>
         </div>
       </div>
 
