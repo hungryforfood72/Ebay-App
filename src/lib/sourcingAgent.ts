@@ -44,6 +44,21 @@ const FALLBACK_FEE_RATE = 0.1325;
 const FALLBACK_FEE_FIXED = 0.3;
 const FALLBACK_SHIPPING_COST = 5;
 
+// Comps whose own title signals a multi-unit lot/case/wholesale listing —
+// excluded from market-price estimation for no-UPC keyword-matched
+// searches, where there's no reliable way to tell a lot's total price
+// apart from a single unit's price (see estimateLine).
+const BULK_LISTING_PATTERN = /\b(lot of|case of|wholesale|bulk|pallet|box of \d+)\b/i;
+
+// When there's no real sales history to trust a market estimate against
+// (market_only confidence), a per-unit price more than this many times the
+// manifest's own declared retail is more likely a comp-matching error
+// (e.g. a bundle/lot that slipped past BULK_LISTING_PATTERN) than a
+// genuine "sells for way above retail" item — liquidation merchandise
+// essentially never does. Capped, not discarded, so the line still
+// contributes something rather than being silently zeroed.
+const MARKET_ONLY_RETAIL_MULTIPLE_CAP = 3;
+
 // Commonsense seasonal fallback, used only until a category has enough real
 // sold-data spread across months to compute its own pattern (see
 // seasonalNote below). Deliberately coarse — a placeholder to be corrected
@@ -55,6 +70,41 @@ const SEASONAL_HINTS: { pattern: RegExp; months: number[]; note: string }[] = [
   { pattern: /costume|halloween|candy/i, months: [7, 8, 9], note: "Halloween-adjacent items typically pick up starting late summer" },
   { pattern: /skin ?care|beauty|cosmetic/i, months: [10, 11], note: "beauty/skincare often sees a gift-season bump" },
 ];
+
+// Recurring-holiday "aftermath filler" — a liquidation load's Halloween/
+// Easter/Christmas merch very often shows up *after* that holiday already
+// passed (Cristian's own described experience: these loads routinely
+// arrive post-holiday, and outside of Halloween candy specifically, this
+// stuff is filler he sorts out to toss or donate, not sell). Different
+// from SEASONAL_HINTS above (a soft pre-holiday demand nudge) and from the
+// one-time-event check below (World Cup, Super Bowl — events that don't
+// recur on a predictable yearly calendar) — this is a hard dud override
+// for calendar-recurring holiday merch found outside its narrow real
+// sell-through window, based directly on how Cristian actually sorts
+// these loads rather than a live check, since the calendar dates
+// themselves don't need looking up.
+const POST_HOLIDAY_DUD_RULES: { pattern: RegExp; sellMonths: number[]; exception?: RegExp }[] = [
+  // Halloween: real sell window is Aug-Oct: candy still moves afterward
+  // (a consumable, not seasonal decor), everything else is dead until next
+  // year's season.
+  { pattern: /halloween|costume/i, sellMonths: [7, 8, 9], exception: /candy|chocolate/i },
+  // Christmas: real sell window is Oct-Dec — advent calendars, ornaments,
+  // gift bags/wrap specifically called out as dead filler once it passes.
+  { pattern: /christmas|advent calendar|ornament|gift ?wrap|santa/i, sellMonths: [9, 10, 11] },
+  // Easter: real sell window is roughly Feb-Apr (the holiday itself moves
+  // year to year, so this stays deliberately wide).
+  { pattern: /\beaster\b/i, sellMonths: [1, 2, 3] },
+];
+
+function isPostHolidayFiller(description: string): boolean {
+  const currentMonth = new Date().getMonth(); // 0-indexed
+  for (const rule of POST_HOLIDAY_DUD_RULES) {
+    if (!rule.pattern.test(description)) continue;
+    if (rule.exception && rule.exception.test(description)) return false;
+    if (!rule.sellMonths.includes(currentMonth)) return true;
+  }
+  return false;
+}
 
 function seasonalHint(category: string | null, description: string): string | null {
   const text = `${category ?? ""} ${description}`;
@@ -104,6 +154,22 @@ async function seasonalNote(category: string | null, description: string): Promi
   return null;
 }
 
+// A web-search-enabled response splits its answer across several separate
+// "text" content blocks whenever it cites a source (a citation ends one
+// text block and starts a new one) — grabbing only the first block (as an
+// earlier version of this file did) silently returns just the opening
+// clause ("Based on the search results, ") instead of the actual answer,
+// which usually comes later. Confirmed live: this was why the FIFA
+// World-Cup-ended check returned false even though the model's full answer
+// correctly said "YES" — string concatenation across every text block on
+// the full response, not `.find()`.
+function extractText(content: Array<{ type: string; text?: string }>): string {
+  return content
+    .filter((b) => b.type === "text" && typeof b.text === "string")
+    .map((b) => b.text)
+    .join("");
+}
+
 // ---------------------------------------------------------------------------
 // Trend signal — directional only, never overrides real sales history.
 // Uses Anthropic's server-side web search tool (executed entirely within
@@ -116,7 +182,7 @@ async function getTrendNudge(description: string): Promise<string | null> {
       {
         model: "claude-haiku-4-5",
         max_tokens: 300,
-        tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 2 }],
+        tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 2, allowed_callers: ["direct"] }],
         messages: [
           {
             role: "user",
@@ -126,13 +192,58 @@ async function getTrendNudge(description: string): Promise<string | null> {
       },
       { timeout: 30_000, maxRetries: 0 }
     );
-    const textBlock = response.content.find((b) => b.type === "text");
-    const text = textBlock && "text" in textBlock ? textBlock.text.trim() : null;
+    const text = extractText(response.content).trim();
     if (!text || /no notable signal/i.test(text)) return null;
     return text;
   } catch (e) {
     console.error(`[sourcingAgent] trend nudge failed for "${description}"`, e);
     return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Expired one-off event merchandise — a real gap found live: a "FIFA World
+// Cup '26" line was scored using live market comps without any awareness
+// that the tournament itself had already concluded, when in reality
+// licensed merch for a now-over one-off event (World Cup, Super Bowl,
+// Olympics, etc.) is close to dead stock regardless of how many comps are
+// still listed (other liquidators dumping the same dead inventory looks
+// like "market activity" but isn't real demand). Different from
+// SEASONAL_HINTS above, which is about recurring calendar seasonality, not
+// a specific event that has already happened and won't recur this cycle.
+// Gated by a cheap regex pre-filter (free) before ever spending a web
+// search call, and capped per evaluation so a manifest dominated by event
+// merch (exactly this FIFA case) can't blow the budget.
+// ---------------------------------------------------------------------------
+const EVENT_MERCH_PATTERN =
+  /\b(world cup|super bowl|olympics?|world series|championship|playoffs?|final four|all-?star game|grammys?|oscars?)\b/i;
+const MAX_EVENT_CHECKS = 20;
+
+async function hasEventAlreadyEnded(description: string): Promise<boolean> {
+  try {
+    const response = await anthropic.messages.create(
+      {
+        model: "claude-haiku-4-5",
+        max_tokens: 200,
+        tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 2, allowed_callers: ["direct"] }],
+        messages: [
+          {
+            role: "user",
+            content: `Today's date is ${new Date().toISOString().slice(0, 10)}. The product "${description}" appears to be licensed merchandise tied to a specific one-time event. Has that specific event already concluded as of today? Answer with exactly one word: YES, NO, or UNSURE.`,
+          },
+        ],
+      },
+      { timeout: 30_000, maxRetries: 0 }
+    );
+    // The model reasons through search results before its final verdict
+    // (see extractText above) rather than leading with it, so check for a
+    // standalone YES anywhere in the full answer rather than requiring it
+    // as the very first word.
+    const text = extractText(response.content).toUpperCase();
+    return /\bYES\b/.test(text);
+  } catch (e) {
+    console.error(`[sourcingAgent] event-ended check failed for "${description}"`, e);
+    return false; // fail open — an unconfirmed guess is worse than no check at all
   }
 }
 
@@ -160,6 +271,8 @@ type LineEstimateResult = {
   effectiveUnits: number;
   dataConfidence: "own_history" | "category_fallback" | "market_only";
   flaggedDud: boolean;
+  eventEnded: boolean;
+  postHolidayFiller: boolean;
   trendNudge: string | null;
   seasonal: string | null;
 };
@@ -167,7 +280,8 @@ type LineEstimateResult = {
 async function estimateLine(
   group: LineGroup,
   receiveRate: number,
-  runTrendCheck: boolean
+  runTrendCheck: boolean,
+  eventCheckBudget: { remaining: number }
 ): Promise<LineEstimateResult> {
   // Own-history: exact UPC, across every manifest ever sold, not just this one.
   let ownSalesCount = 0;
@@ -241,13 +355,23 @@ async function estimateLine(
 
   // Live market signal — same shipping-inclusive comp search already built
   // for price research. Also the saturation signal for dud-flagging.
+  //
+  // A no-UPC line only has keyword matching to go on (no exact GTIN), which
+  // eBay's search treats as a loose/fuzzy match — a bulk/lot/case listing
+  // can match the same keywords as a single unit and be priced for the
+  // whole lot, badly inflating a per-unit estimate (confirmed live: an
+  // 8-count party-plate pack estimated at $42/unit turned out to be
+  // pulling in "lot of"/"case of" comps). Excluded outright rather than
+  // just down-weighted, since there's no reliable way to know how many
+  // units a mismatched comp's price actually covers.
   let marketMedian = 0;
   let activeCompCount = 0;
   try {
     const comps = await searchActiveListings({ upc: group.upc, keywords: group.description, excludeListingId: null });
-    activeCompCount = comps.length;
-    if (comps.length > 0) {
-      const totals = comps.map((c) => c.totalPrice).sort((a, b) => a - b);
+    const singleUnitComps = comps.filter((c) => !BULK_LISTING_PATTERN.test(c.title));
+    activeCompCount = singleUnitComps.length;
+    if (singleUnitComps.length > 0) {
+      const totals = singleUnitComps.map((c) => c.totalPrice).sort((a, b) => a - b);
       const mid = Math.floor(totals.length / 2);
       marketMedian = totals.length % 2 === 0 ? (totals[mid - 1] + totals[mid]) / 2 : totals[mid];
     }
@@ -278,13 +402,31 @@ async function estimateLine(
       effectiveUnits: Math.round(group.expectedQuantity * receiveRate),
       dataConfidence: "market_only",
       flaggedDud: true,
+      eventEnded: false,
+      postHolidayFiller: isPostHolidayFiller(group.description),
       trendNudge: null,
       seasonal: await seasonalNote(group.category, group.description),
     };
   }
 
-  const estimatedUnitSalePrice =
+  const dataConfidence: LineEstimateResult["dataConfidence"] =
+    ownScore >= categoryScore && ownScore >= marketScore && ownSalesCount >= 3
+      ? "own_history"
+      : categoryScore > marketScore || ownSalesCount > 0
+        ? "category_fallback"
+        : "market_only";
+
+  const blendedSalePrice =
     (ownScore * ownAvgSalePrice + categoryScore * categoryAvgSalePrice + marketScore * marketMedian) / totalScore;
+  // market_only means there's no real sales history backing this number at
+  // all — a keyword-matched comp that's actually a mispriced/mismatched
+  // bundle (see BULK_LISTING_PATTERN above) can still slip through, so cap
+  // against the manifest's own declared retail as a last-resort sanity
+  // check rather than trusting an implausible number outright.
+  const estimatedUnitSalePrice =
+    dataConfidence === "market_only" && group.retailPrice > 0
+      ? Math.min(blendedSalePrice, group.retailPrice * MARKET_ONLY_RETAIL_MULTIPLE_CAP)
+      : blendedSalePrice;
   const estimatedUnitShipping =
     ownSalesCount > 0 || categorySalesCount > 0
       ? (ownScore * ownAvgShipping + categoryScore * categoryAvgShipping + marketScore * FALLBACK_SHIPPING_COST) / totalScore
@@ -294,14 +436,26 @@ async function estimateLine(
 
   // Dud: heavily saturated market (lots of active comps) with no real sales
   // history to back up that it actually moves, or the math is just negative.
-  const flaggedDud = rawNet <= 0 || (ownSalesCount === 0 && categorySalesCount === 0 && activeCompCount >= 15);
+  let flaggedDud = rawNet <= 0 || (ownSalesCount === 0 && categorySalesCount === 0 && activeCompCount >= 15);
 
-  const dataConfidence: LineEstimateResult["dataConfidence"] =
-    ownScore >= categoryScore && ownScore >= marketScore && ownSalesCount >= 3
-      ? "own_history"
-      : categoryScore > marketScore || ownSalesCount > 0
-        ? "category_fallback"
-        : "market_only";
+  // Licensed merch for a one-time event that's already concluded (see
+  // EVENT_MERCH_PATTERN above) — active comps right now don't mean real
+  // demand, they're as likely to be other liquidators dumping the same
+  // dead stock. Overrides everything else computed above: real sales
+  // history for this exact UPC would already be reflected in ownAvgSalePrice
+  // (which only counts actual completed sales), but a positive live-comp
+  // signal alone isn't trustworthy once the event itself is over.
+  let eventEnded = false;
+  if (EVENT_MERCH_PATTERN.test(group.description) && eventCheckBudget.remaining > 0) {
+    eventCheckBudget.remaining--;
+    eventEnded = await hasEventAlreadyEnded(group.description);
+    if (eventEnded) flaggedDud = true;
+  }
+
+  // Recurring-holiday filler (see POST_HOLIDAY_DUD_RULES above) — cheap,
+  // no API call, calendar-based.
+  const postHolidayFiller = isPostHolidayFiller(group.description);
+  if (postHolidayFiller) flaggedDud = true;
 
   const trendNudge = runTrendCheck ? await getTrendNudge(group.description) : null;
 
@@ -316,6 +470,8 @@ async function estimateLine(
     effectiveUnits: Math.round(group.expectedQuantity * receiveRate),
     dataConfidence,
     flaggedDud,
+    eventEnded,
+    postHolidayFiller,
     trendNudge,
     seasonal: await seasonalNote(group.category, group.description),
   };
@@ -389,10 +545,13 @@ export async function evaluateManifest(manifestId: string): Promise<{
   const deepGroups = sortedGroups.slice(0, MAX_DEEP_RESEARCH_LINES);
   const shallowGroups = sortedGroups.slice(MAX_DEEP_RESEARCH_LINES);
 
+  const eventCheckBudget = { remaining: MAX_EVENT_CHECKS };
   const deepEstimates = await mapWithConcurrency(deepGroups, 5, async (group, index) =>
-    estimateLine(group, receiveRate, index < MAX_TREND_CHECKS)
+    estimateLine(group, receiveRate, index < MAX_TREND_CHECKS, eventCheckBudget)
   );
-  const shallowEstimates = await mapWithConcurrency(shallowGroups, 5, (group) => estimateLine(group, receiveRate, false));
+  const shallowEstimates = await mapWithConcurrency(shallowGroups, 5, (group) =>
+    estimateLine(group, receiveRate, false, eventCheckBudget)
+  );
 
   const lineEstimates = [...deepEstimates, ...shallowEstimates];
 
@@ -441,6 +600,14 @@ export async function evaluateManifest(manifestId: string): Promise<{
       .sort((a, b) => (b.estimatedNetPerUnit ?? 0) * b.effectiveUnits - (a.estimatedNetPerUnit ?? 0) * a.effectiveUnits)
       .slice(0, 8),
     dudLines: lineEstimates.filter((e) => e.flaggedDud).slice(0, 5),
+    expiredEventLines: lineEstimates
+      .filter((e) => e.eventEnded)
+      .map((e) => `- ${e.description}`)
+      .slice(0, 10),
+    postHolidayLines: lineEstimates
+      .filter((e) => e.postHolidayFiller)
+      .map((e) => `- ${e.description}`)
+      .slice(0, 10),
     knowledgeNotes: knowledgeNotes.map((n) => `[${n.scope}] ${n.notes}`),
     seasonalNotes: [...new Set(lineEstimates.map((e) => e.seasonal).filter((s): s is string => Boolean(s)))].slice(0, 3),
     trendNudges: lineEstimates
@@ -477,6 +644,8 @@ async function writeReasoning(input: {
   concentrationRisk: boolean;
   topLines: LineEstimateResult[];
   dudLines: LineEstimateResult[];
+  expiredEventLines: string[];
+  postHolidayLines: string[];
   knowledgeNotes: string[];
   seasonalNotes: string[];
   trendNudges: string[];
@@ -498,6 +667,12 @@ ${input.topLines.map((l) => `- ${l.description} (UPC ${l.upc ?? "n/a"}): est. $$
 Lines flagged as likely duds:
 ${input.dudLines.map((l) => `- ${l.description} (UPC ${l.upc ?? "n/a"})`).join("\n") || "none"}
 
+Lines flagged as licensed merch for an event that has already concluded (treated as dead stock regardless of live comps):
+${input.expiredEventLines.join("\n") || "none"}
+
+Lines flagged as recurring-holiday filler found outside its real sell window (e.g. Christmas ornaments in spring, Halloween decor outside Aug-Oct) — treated as dead stock:
+${input.postHolidayLines.join("\n") || "none"}
+
 Accumulated notes from past manifests:
 ${input.knowledgeNotes.join("\n") || "none yet"}
 
@@ -514,8 +689,8 @@ Write 3-6 sentences: which items drove the call, any supplier/category patterns 
       { model: "claude-opus-4-8", max_tokens: 600, messages: [{ role: "user", content: prompt }] },
       { timeout: 45_000, maxRetries: 0 }
     );
-    const textBlock = response.content.find((b) => b.type === "text");
-    return textBlock && "text" in textBlock ? textBlock.text.trim() : "Reasoning unavailable.";
+    const text = extractText(response.content).trim();
+    return text || "Reasoning unavailable.";
   } catch (e) {
     console.error("[sourcingAgent] writeReasoning failed", e);
     return `${input.recommendation === "buy" ? "Buy" : "Don't buy"} — max bid $${input.maxBid.toFixed(2)} (reasoning text failed to generate, see line breakdown below).`;
@@ -594,8 +769,7 @@ async function updateScopeKnowledge(scope: string, computeUpdate: (since: Date) 
       },
       { timeout: 30_000, maxRetries: 0 }
     );
-    const textBlock = response.content.find((b) => b.type === "text");
-    const updated = textBlock && "text" in textBlock ? textBlock.text.trim() : null;
+    const updated = extractText(response.content).trim();
     await prisma.sourcingKnowledge.update({ where: { scope }, data: { notes: updated || newFacts } });
   } catch (e) {
     console.error(`[sourcingAgent] updateScopeKnowledge failed for ${scope}`, e);
