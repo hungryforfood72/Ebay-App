@@ -67,9 +67,13 @@ async function main() {
           }
         }
 
+        // Epsilon, not === 0 — re-deriving from floats each run vs. a
+        // Decimal(10,2) column rounded once at storage produces sub-cent
+        // noise (e.g. 2.6799999999999997 + 1.98 vs. a stored 4.66) that
+        // isn't a real correction and shouldn't count as one.
         const feesDelta = correctedFees - Number(sale.fees);
         const shippingDelta = correctedShipping - Number(sale.shipping);
-        if (feesDelta === 0 && shippingDelta === 0) continue;
+        if (Math.abs(feesDelta) < 0.005 && Math.abs(shippingDelta) < 0.005) continue;
 
         await prisma.$transaction([
           prisma.ebayItemSale.update({
@@ -82,12 +86,12 @@ async function main() {
           }),
         ]);
 
-        if (feesDelta !== 0) {
+        if (Math.abs(feesDelta) >= 0.005) {
           feesFixed++;
           totalFeesDelta += feesDelta;
           console.log(`  [fees]     order ${orderId} line ${sale.ebayOrderLineItemId} (${sale.item.sku}): ${Number(sale.fees).toFixed(2)} -> ${correctedFees.toFixed(2)}`);
         }
-        if (shippingDelta !== 0) {
+        if (Math.abs(shippingDelta) >= 0.005) {
           shippingFixed++;
           totalShippingDelta += shippingDelta;
           console.log(`  [shipping] order ${orderId} line ${sale.ebayOrderLineItemId} (${sale.item.sku}): ${Number(sale.shipping).toFixed(2)} -> ${correctedShipping.toFixed(2)}`);

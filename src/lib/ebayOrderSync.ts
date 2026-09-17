@@ -34,6 +34,22 @@ const NON_SALE_PAYMENT_STATUSES = ["FAILED", "PENDING", "CANCELLED", "NO_PAYMENT
 // actual label purchase past 5-6 days.
 const SHIPPING_RECHECK_WINDOW_DAYS = 7;
 
+// Same idea, separate window — Cristian: the Promoted Listings "General
+// fee" (NON_SALE_CHARGE/AD_FEE, see getOrderEarnings) can take 1-4 days to
+// post, not just minutes like a shipping label. NOT gated on Item.ebayAdId
+// ("was this ever promoted through this app") — confirmed live that field
+// is null on a real order that definitely had an ad fee, so it's not a
+// reliable signal (listings can get promoted straight from eBay's Seller
+// Hub too, outside this app entirely). There's also no "still missing"
+// signal to check the way shippingTransactionId gives one for shipping —
+// fees is always a real number, never null — so instead every sale within
+// this window gets its fees re-verified against fresh earnings on every
+// sync run, whether or not it turns out to have an ad fee. This costs
+// nothing extra: earnings for the order are already fetched once per
+// order (see earningsCache) for the shipping-label logic regardless, so
+// the ad fee data is already sitting right there.
+const AD_FEE_RECHECK_WINDOW_DAYS = 4;
+
 // `since`, when passed, overrides the normal incremental watermark — for a
 // one-off historical catch-up (e.g. after linking legacy CSV-uploaded
 // listings via /api/items/link-legacy, whose sales could predate this sync
@@ -134,19 +150,30 @@ export async function syncEbayOrders(options?: { since?: Date }): Promise<EbayOr
             orderTotalRevenue > 0 ? (lineItem.lineItemCostValue / orderTotalRevenue) * orderShippingPool : 0;
 
           if (existingSale) {
-            const isMissingShipping = Number(existingSale.shipping) === 0 && !existingSale.shippingTransactionId;
             const ageDays = (syncStartedAt.getTime() - existingSale.soldAt.getTime()) / (1000 * 60 * 60 * 24);
-            if (!isMissingShipping || ageDays > SHIPPING_RECHECK_WINDOW_DAYS) {
+            const shippingRecheckDue =
+              Number(existingSale.shipping) === 0 && !existingSale.shippingTransactionId && ageDays <= SHIPPING_RECHECK_WINDOW_DAYS;
+            // No "still missing" signal for an ad fee the way shippingTransactionId
+            // gives one for shipping — fees is always a real number, never null —
+            // so a promoted item's sale is re-checked on every run within its own
+            // window regardless of whether the fee already posted, not just once.
+            const adFeeRecheckDue = ageDays <= AD_FEE_RECHECK_WINDOW_DAYS;
+            if (!shippingRecheckDue && !adFeeRecheckDue) {
               result.itemsAlreadySynced++;
               continue;
             }
-            // Still within the recheck window and still missing shipping —
-            // apply whatever fresh earnings now show as a DELTA against the
-            // item's running totals, not a blind re-increment (the sale row
-            // already contributed its original fees/shipping once).
+            // Within at least one recheck window — apply whatever fresh
+            // earnings now show as a DELTA against the item's running
+            // totals, not a blind re-increment (the sale row already
+            // contributed its original fees/shipping once). Epsilon, not
+            // === 0 — re-deriving fees/shipping from floats each run vs. a
+            // Decimal(10,2) column rounded once at storage time produces
+            // sub-cent noise (e.g. 2.6799999999999997 + 1.98 vs. a stored
+            // 4.66) that isn't a real correction and shouldn't trigger a
+            // write.
             const feesDelta = fees - Number(existingSale.fees);
             const shippingDelta = shipping - Number(existingSale.shipping);
-            if (feesDelta === 0 && shippingDelta === 0) {
+            if (Math.abs(feesDelta) < 0.005 && Math.abs(shippingDelta) < 0.005) {
               result.itemsAlreadySynced++;
               continue;
             }
