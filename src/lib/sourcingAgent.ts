@@ -41,6 +41,77 @@ function soldPhysicalUnits(item: { soldQuantity: number; isMultipack: boolean; p
   return item.soldQuantity * (item.isMultipack && item.packSize ? item.packSize : 1);
 }
 
+function remainingPhysicalUnits(item: { quantity: number; soldQuantity: number; isMultipack: boolean; packSize: number | null }): number {
+  const remainingListingUnits = Math.max(0, item.quantity - item.soldQuantity);
+  return remainingListingUnits * (item.isMultipack && item.packSize ? item.packSize : 1);
+}
+
+// ---------------------------------------------------------------------------
+// Inventory load — a portfolio-wide capacity signal, computed once per
+// evaluation, not per line. Cristian's own framing: a saturated market with
+// no track record is a real caution (see the saturation dud rule below),
+// but how much that caution should weigh depends on whether there's
+// actually room to sit on more stock right now. Non-perishable liquidation
+// goods (his example: hair color cartridges that don't expire) can sit on
+// a shelf indefinitely — the real cost of being wrong isn't spoilage, it's
+// tying up cash and shelf space that could've gone to something that
+// clears faster. Measured as weeks of inventory on hand (currently listed,
+// unsold physical units ÷ recent weekly sell-through rate) rather than a
+// raw unit count, since a lot of listed inventory isn't a problem if it's
+// also moving fast — only when it's piling up relative to how quickly
+// things actually sell.
+// ---------------------------------------------------------------------------
+
+const INVENTORY_LOOKBACK_DAYS = 30;
+
+async function getWeeksOfInventoryOnHand(): Promise<{ weeksOnHand: number; activeListedUnits: number; recentSoldUnitsPerWeek: number }> {
+  const [listedItems, recentSales] = await Promise.all([
+    prisma.item.findMany({
+      where: { status: "listed" },
+      select: { quantity: true, soldQuantity: true, isMultipack: true, packSize: true },
+    }),
+    prisma.ebayItemSale.findMany({
+      where: { soldAt: { gte: new Date(Date.now() - INVENTORY_LOOKBACK_DAYS * 24 * 60 * 60 * 1000) } },
+      select: { quantity: true, item: { select: { isMultipack: true, packSize: true } } },
+    }),
+  ]);
+
+  const activeListedUnits = listedItems.reduce((sum, i) => sum + remainingPhysicalUnits(i), 0);
+  const recentSoldUnits = recentSales.reduce(
+    (sum, s) => sum + soldPhysicalUnits({ soldQuantity: s.quantity, isMultipack: s.item.isMultipack, packSize: s.item.packSize }),
+    0
+  );
+  const recentSoldUnitsPerWeek = recentSoldUnits / (INVENTORY_LOOKBACK_DAYS / 7);
+  // Floored at 1/week rather than a bare divide-by-zero guard — with
+  // genuinely no recent sales, treat velocity as "very slow" (a large but
+  // finite weeksOnHand), not an undefined/infinite one.
+  const weeksOnHand = activeListedUnits / Math.max(1, recentSoldUnitsPerWeek);
+
+  return { weeksOnHand, activeListedUnits, recentSoldUnitsPerWeek };
+}
+
+// How many active comps at once counts as "saturated" for the no-track-
+// record dud rule (see estimateLine) — not a fixed number anymore. Lean
+// inventory (plenty of sell-through room) gets more benefit of the doubt
+// in a crowded market; a shelf already full of slow-moving stock gets the
+// original, stricter read. Four tiers for explainability, not a smooth
+// formula — matches how every other threshold in this file is expressed.
+// Calibrated against a real case (Infinity, not just "generous" — the
+// initial 40-cap version was tested live against Cristian's actual
+// account state at the time (~0.05 weeks on hand, essentially sold
+// through) and STILL would have blocked a 51-comp line he specifically
+// said should get the benefit of the doubt given how little he had
+// tied up — near-zero inventory risk means the saturation caution
+// shouldn't second-guess an otherwise-positive price at all; rawNet <= 0
+// still zeroes a line regardless of this threshold, so this only ever
+// removes the "no track record" caution on top of real positive math).
+function saturationThreshold(weeksOnHand: number): number {
+  if (weeksOnHand < 2) return Infinity; // essentially nothing tied up — let the price math decide
+  if (weeksOnHand < 6) return 60;
+  if (weeksOnHand > 12) return 15; // already sitting on a lot — stay cautious
+  return 30; // middle ground
+}
+
 // A sale from last week should count more toward the estimated price than
 // one from 11 months ago — prices drift, and a stale average understates
 // what something actually sells for right now (Cristian's own example: sold
@@ -447,7 +518,8 @@ async function estimateLine(
   group: LineGroup,
   receiveRate: number,
   runTrendCheck: boolean,
-  eventCheckBudget: { remaining: number }
+  eventCheckBudget: { remaining: number },
+  compSaturationThreshold: number
 ): Promise<LineEstimateResult> {
   // Own-history: exact UPC, across every manifest ever sold, not just this one.
   let ownSalesCount = 0;
@@ -786,10 +858,20 @@ async function estimateLine(
 
   // Dud: heavily saturated market (lots of active comps) with no real sales
   // history — own OR historical — to back up that it actually moves, or the
-  // math is just negative.
+  // math is just negative. The saturation threshold itself flexes with
+  // current inventory load (see saturationThreshold) — confirmed live this
+  // was overriding a genuinely healthy price ($15.27/unit, ~$7.95 net)
+  // purely because 51 other sellers had the same SKU listed and Cristian
+  // had never sold it before; his own read was that's just everyone
+  // getting the same liquidation load right now, not proof it doesn't
+  // move, and it's non-perishable so sitting on it a while isn't costly —
+  // exactly the case this threshold now leans more permissive for.
   let flaggedDud =
     rawNet <= 0 ||
-    (ownSalesCount === 0 && historicalSalesCount === 0 && categorySalesCount === 0 && activeCompCount >= 15);
+    (ownSalesCount === 0 &&
+      historicalSalesCount === 0 &&
+      categorySalesCount === 0 &&
+      activeCompCount >= compSaturationThreshold);
 
   // Recurring-holiday filler (see POST_HOLIDAY_DUD_RULES above) — cheap,
   // no API call, calendar-based. Checked first so the live check below
@@ -877,6 +959,8 @@ export async function evaluateManifest(manifestId: string): Promise<{
 
   const targetMarginPct = await getTargetMarginPct();
   const receiveRate = await getSupplierReceiveRate(manifest.supplier);
+  const inventoryLoad = await getWeeksOfInventoryOnHand();
+  const compSaturationThreshold = saturationThreshold(inventoryLoad.weeksOnHand);
 
   // Group lines by UPC (duplicates collapse into one group) — a liquidation
   // manifest's line count usually collapses to far fewer unique UPCs.
@@ -908,10 +992,10 @@ export async function evaluateManifest(manifestId: string): Promise<{
 
   const eventCheckBudget = { remaining: MAX_EVENT_CHECKS };
   const deepEstimates = await mapWithConcurrency(deepGroups, 5, async (group, index) =>
-    estimateLine(group, receiveRate, index < MAX_TREND_CHECKS, eventCheckBudget)
+    estimateLine(group, receiveRate, index < MAX_TREND_CHECKS, eventCheckBudget, compSaturationThreshold)
   );
   const shallowEstimates = await mapWithConcurrency(shallowGroups, 5, (group) =>
-    estimateLine(group, receiveRate, false, eventCheckBudget)
+    estimateLine(group, receiveRate, false, eventCheckBudget, compSaturationThreshold)
   );
 
   const lineEstimates = [...deepEstimates, ...shallowEstimates];
@@ -955,6 +1039,7 @@ export async function evaluateManifest(manifestId: string): Promise<{
     recommendation,
     dudShare,
     concentrationRisk,
+    inventoryLoad,
     topLines: lineEstimates
       .slice()
       .sort((a, b) => (b.estimatedNetPerUnit ?? 0) * b.effectiveUnits - (a.estimatedNetPerUnit ?? 0) * a.effectiveUnits)
@@ -1015,6 +1100,7 @@ async function writeReasoning(input: {
   recommendation: "buy" | "dont_buy";
   dudShare: number;
   concentrationRisk: boolean;
+  inventoryLoad: { weeksOnHand: number; activeListedUnits: number; recentSoldUnitsPerWeek: number };
   topLines: LineEstimateResult[];
   dudLines: LineEstimateResult[];
   marketDataUnavailableCount: number;
@@ -1035,6 +1121,7 @@ Target margin used: ${input.targetMarginPct}%
 Supplier's real historical receive rate (after damage/expired): ${(input.receiveRate * 100).toFixed(0)}%
 Share of lines flagged as likely duds: ${(input.dudShare * 100).toFixed(0)}%
 Concentration risk flagged: ${input.concentrationRisk ? "yes — one item dominates the manifest's value and looks weak" : "no"}
+Current inventory load: ~${Math.round(input.inventoryLoad.weeksOnHand)} weeks of unsold stock on hand at the recent sell-through pace (${input.inventoryLoad.activeListedUnits} units currently listed, ~${input.inventoryLoad.recentSoldUnitsPerWeek.toFixed(1)}/week selling) — ${input.inventoryLoad.weeksOnHand < 4 ? "lean, so crowded-market lines were given more benefit of the doubt than usual" : input.inventoryLoad.weeksOnHand > 12 ? "already sitting on a lot, so crowded-market lines were held to a stricter bar than usual" : "moderate, normal caution applied"}
 
 Top contributing lines:
 ${input.topLines.map((l) => `- ${l.description} (UPC ${l.upc ?? "n/a"}): est. $${l.estimatedNetPerUnit?.toFixed(2) ?? "?"} net/unit × ${l.effectiveUnits} units, confidence: ${l.dataConfidence}`).join("\n") || "none"}
@@ -1062,7 +1149,7 @@ ${input.trendNudges.join("\n") || "none notable"}
 Real measured market movement since we last checked these UPCs ourselves (our own repeated live comp checks over time — more reliable than the web-search signal above, since it's an actual price change we observed, not an LLM's read of outside chatter):
 ${input.marketTrends.join("\n") || "none notable — either no prior check to compare against yet, or nothing moved enough to be worth mentioning"}
 
-Write 3-6 sentences: which items drove the call, any supplier/category patterns applied, seasonal timing if relevant, and any trend signal factored in (the measured market movement above and the web-search trend signal are different kinds of evidence — don't conflate them if both are mentioned). Plain language, no bullet points, no restating the raw numbers verbatim.`;
+Write 3-6 sentences: which items drove the call, any supplier/category patterns applied, seasonal timing if relevant, any trend signal factored in (the measured market movement above and the web-search trend signal are different kinds of evidence — don't conflate them if both are mentioned), and if the inventory load meaningfully affected how a crowded-market line was judged, say so plainly. Plain language, no bullet points, no restating the raw numbers verbatim.`;
 
   try {
     const response = await anthropic.messages.create(
