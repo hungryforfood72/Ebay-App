@@ -383,7 +383,13 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
                   </p>
                 </td>
                 <td className="px-2 text-right">{line.expectedQuantity}</td>
-                <td className="px-2 text-right">{line.receivedUnits}</td>
+                <td
+                  className={`px-2 text-right ${
+                    line.expectedQuantity > 0 && line.receivedUnits >= line.expectedQuantity ? "bg-green-100" : ""
+                  }`}
+                >
+                  {line.receivedUnits}
+                </td>
                 <td className="px-2 text-right">{line.damagedUnits}</td>
                 <td className="px-2 text-right">{line.dudUnits}</td>
                 <td className={`px-2 text-right ${line.missingUnits !== 0 ? "font-semibold text-red-600" : ""}`}>
