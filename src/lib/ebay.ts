@@ -629,7 +629,7 @@ export async function updateOfferPrice(offerId: string, item: ItemForEbayPublish
 // full listing revision for a quantity-only edit.
 export async function updateOfferQuantity(
   offerId: string,
-  item: ItemForEbayPublish,
+  item: { sku: string; soldQuantity: number },
   newAvailableQuantity: number
 ): Promise<number> {
   const newQuantity = newAvailableQuantity + item.soldQuantity;

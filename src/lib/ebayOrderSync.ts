@@ -1,5 +1,13 @@
-import { getEbayEnvironment, getMissingScopes, getOrderEarnings, getRecentOrders } from "./ebay";
+import {
+  getEbayEnvironment,
+  getMissingScopes,
+  getOrderEarnings,
+  getRecentOrders,
+  reviseFixedPriceItemQuantity,
+  updateOfferQuantity,
+} from "./ebay";
 import { prisma } from "./prisma";
+import type { Prisma } from "@/generated/prisma/client";
 
 export type EbayOrderSyncResult = {
   skipped?: string;
@@ -8,6 +16,7 @@ export type EbayOrderSyncResult = {
   itemsAlreadySynced: number;
   itemsUnmatched: number;
   refundsRecorded: number;
+  salesReversed: number;
   errors: string[];
 };
 
@@ -50,6 +59,75 @@ const SHIPPING_RECHECK_WINDOW_DAYS = 7;
 // the ad fee data is already sitting right there.
 const AD_FEE_RECHECK_WINDOW_DAYS = 4;
 
+// Walks back a previously-recorded sale — used when an order that WAS a
+// real, synced sale later transitions to a non-sale payment status (a
+// buyer cancellation or a reversed payment after the order had already
+// been marked PAID and synced). Confirmed as a real, live gap: the
+// original NON_SALE_PAYMENT_STATUSES check only ever prevented recording a
+// sale for an order that was ALREADY non-sale the first time it was seen —
+// it never looked at whether a previously-good sale needed undoing, so a
+// cancelled-after-the-fact order left soldQuantity and revenue/fee/
+// shipping totals permanently wrong with nothing to ever correct them.
+// Deletes the sale row entirely (and any refunds against it, which cascade
+// — see EbayItemRefund's onDelete: Cascade) rather than flagging it
+// cancelled, matching how a from-the-start-cancelled order is already
+// treated (never recorded at all) — nothing else in the app needs to
+// learn to filter out a "reversed" sale this way.
+async function reverseSale(
+  sale: { id: string; quantity: number; revenue: Prisma.Decimal; fees: Prisma.Decimal; shipping: Prisma.Decimal },
+  item: {
+    id: string;
+    sku: string;
+    status: string;
+    quantity: number;
+    soldQuantity: number;
+    ebayOfferId: string | null;
+    ebayListingId: string | null;
+  }
+): Promise<void> {
+  const refunds = await prisma.ebayItemRefund.findMany({ where: { saleId: sale.id }, select: { amount: true } });
+  const refundedAmount = refunds.reduce((sum, r) => sum + Number(r.amount), 0);
+  const newSoldQuantity = Math.max(0, item.soldQuantity - sale.quantity);
+
+  await prisma.$transaction([
+    prisma.ebayItemSale.delete({ where: { id: sale.id } }),
+    prisma.item.update({
+      where: { id: item.id },
+      data: {
+        soldQuantity: newSoldQuantity,
+        soldRevenueTotal: { decrement: sale.revenue },
+        soldFeesTotal: { decrement: sale.fees },
+        soldShippingTotal: { decrement: sale.shipping },
+        ...(refundedAmount > 0 ? { refundedTotal: { decrement: refundedAmount } } : {}),
+        // Only walk status back if THIS reversal is what would make it no
+        // longer fully sold — never touch a status this sale didn't cause
+        // (an item manually set to something else stays that way).
+        status: item.status === "sold" && newSoldQuantity < item.quantity ? "listed" : undefined,
+      },
+    }),
+  ]);
+
+  // Push the restored stock back to the live eBay listing too, not just
+  // our own records — Cristian asked directly: does eBay itself add
+  // cancelled stock back automatically? Everything observed today says no,
+  // reliably — the exact listing this whole fix was built around kept
+  // showing a stale, un-restored count through multiple real sales and
+  // (per Cristian) at least one cancellation. Best-effort: our own DB is
+  // already correct even if this push fails, so a failure here is logged,
+  // not thrown — it shouldn't take down the rest of the sync run over a
+  // single listing's eBay-side push.
+  const newAvailableQuantity = Math.max(0, item.quantity - newSoldQuantity);
+  try {
+    if (item.ebayOfferId) {
+      await updateOfferQuantity(item.ebayOfferId, { sku: item.sku, soldQuantity: newSoldQuantity }, newAvailableQuantity);
+    } else if (item.ebayListingId) {
+      await reviseFixedPriceItemQuantity(item.ebayListingId, item.quantity);
+    }
+  } catch (e) {
+    console.error(`[ebayOrderSync] reverseSale: failed to push restored quantity to eBay for item ${item.id}`, e);
+  }
+}
+
 // `since`, when passed, overrides the normal incremental watermark — for a
 // one-off historical catch-up (e.g. after linking legacy CSV-uploaded
 // listings via /api/items/link-legacy, whose sales could predate this sync
@@ -62,6 +140,7 @@ export async function syncEbayOrders(options?: { since?: Date }): Promise<EbayOr
     itemsAlreadySynced: 0,
     itemsUnmatched: 0,
     refundsRecorded: 0,
+    salesReversed: 0,
     errors: [],
   };
 
@@ -95,7 +174,29 @@ export async function syncEbayOrders(options?: { since?: Date }): Promise<EbayOr
     result.ordersScanned = orders.length;
 
     for (const order of orders) {
-      if (NON_SALE_PAYMENT_STATUSES.includes(order.orderPaymentStatus)) continue;
+      if (NON_SALE_PAYMENT_STATUSES.includes(order.orderPaymentStatus)) {
+        // Might be a real, already-recorded sale that later got cancelled
+        // or reversed (PAID -> CANCELLED after the fact) — walk it back if
+        // so. An order that was non-sale from the very first time we ever
+        // saw it has no existing sale to find, so this is a no-op for the
+        // ordinary case, same as before this existed.
+        for (const lineItem of order.lineItems) {
+          try {
+            const existingSale = await prisma.ebayItemSale.findUnique({
+              where: { ebayOrderLineItemId: lineItem.lineItemId },
+              include: { item: true },
+            });
+            if (!existingSale) continue;
+            await reverseSale(existingSale, existingSale.item);
+            result.salesReversed++;
+          } catch (e) {
+            result.errors.push(
+              `Order ${order.orderId} line ${lineItem.lineItemId} (reversal): ${e instanceof Error ? e.message : String(e)}`
+            );
+          }
+        }
+        continue;
+      }
 
       // Shipping label cost is order-level, not per line item — split it
       // across line items proportional to each one's share of the order's

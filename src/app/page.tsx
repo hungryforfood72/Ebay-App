@@ -73,6 +73,7 @@ type SyncResult = {
   itemsAlreadySynced: number;
   itemsUnmatched: number;
   refundsRecorded: number;
+  salesReversed: number;
   errors: string[];
 };
 
@@ -110,6 +111,7 @@ export default function DashboardPage() {
         itemsAlreadySynced: 0,
         itemsUnmatched: 0,
         refundsRecorded: 0,
+        salesReversed: 0,
         errors: ["Sync request failed."],
       });
     } finally {
@@ -256,7 +258,8 @@ export default function DashboardPage() {
               <p>
                 Scanned {syncResult.ordersScanned} order(s) — {syncResult.itemsUpdated} item(s) updated,{" "}
                 {syncResult.itemsAlreadySynced} already synced, {syncResult.itemsUnmatched} unmatched,{" "}
-                {syncResult.refundsRecorded} refund(s) recorded.
+                {syncResult.refundsRecorded} refund(s) recorded
+                {syncResult.salesReversed > 0 ? `, ${syncResult.salesReversed} sale(s) reversed (cancelled after being recorded)` : ""}.
               </p>
             )}
             {syncResult.errors.length > 0 && (
