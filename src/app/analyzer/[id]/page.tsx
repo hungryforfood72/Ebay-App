@@ -234,14 +234,22 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
         {candidate.summary.totalManifestExtendedRetail.toFixed(2)} total retail value
       </p>
 
-      <button
-        type="button"
-        onClick={markPurchased}
-        disabled={markingPurchased}
-        className="mb-6 rounded-lg bg-black px-4 py-3 text-center text-white disabled:opacity-40"
-      >
-        {markingPurchased ? "Marking…" : "Mark as purchased → move to Manifests"}
-      </button>
+      <div className="mb-6 flex flex-wrap gap-3">
+        <button
+          type="button"
+          onClick={markPurchased}
+          disabled={markingPurchased}
+          className="rounded-lg bg-black px-4 py-3 text-center text-white disabled:opacity-40"
+        >
+          {markingPurchased ? "Marking…" : "Mark as purchased → move to Manifests"}
+        </button>
+        <Link
+          href="/analyzer"
+          className="rounded-lg border px-4 py-3 text-center text-sm font-medium hover:bg-gray-50"
+        >
+          + Upload another manifest
+        </Link>
+      </div>
 
       <section className="mb-6 flex flex-col gap-3 rounded-lg border p-4">
         <div className="flex items-center justify-between">

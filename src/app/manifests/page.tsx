@@ -104,7 +104,7 @@ export default function ManifestsPage() {
             if (file) handleFile(file);
           }}
           disabled={uploading}
-          className="text-sm"
+          className="cursor-pointer text-sm file:mr-3 file:cursor-pointer file:rounded-lg file:border-0 file:bg-black file:px-3 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-gray-800 disabled:cursor-not-allowed"
         />
         {uploading && <p className="text-sm text-gray-500">Parsing…</p>}
         {error && <p className="text-sm text-red-600">{error}</p>}
