@@ -369,6 +369,7 @@ model Manifest {
   items   Item[]
 
   sourcingEvaluations SourcingEvaluation[]
+  walkupSales         ManifestWalkupSale[]
 }
 
 // One pre-purchase sourcing-agent run against a manifest's lines — created
@@ -575,6 +576,28 @@ model ManifestDudEntry {
   note       String?
   recordedBy String?
   createdAt  DateTime @default(now())
+
+  @@index([manifestId, upc])
+}
+
+// An in-person, cash, no-fee/no-shipping sale — an employee or customer
+// buying an item straight out of a manifest before it's ever listed (garage
+// sale walk-ups). Same tally shape as ManifestDamagedEntry/ManifestDudEntry
+// plus the real negotiated price, so it can fold into the exact same
+// receivedByUpc/soldByUpc/soldRevenueByUpc accounting the manifest detail
+// route already does for eBay sales — a walk-up sale is just as real for
+// profit purposes, it just skipped the normal scan-in step (see
+// GET /api/manifests/[id] for where this gets folded in).
+model ManifestWalkupSale {
+  id           String   @id @default(uuid())
+  manifest     Manifest @relation(fields: [manifestId], references: [id], onDelete: Cascade)
+  manifestId   String
+  upc          String
+  quantity     Int
+  pricePerUnit Decimal  @db.Decimal(10, 2)
+  note         String?
+  recordedBy   String?
+  createdAt    DateTime @default(now())
 
   @@index([manifestId, upc])
 }

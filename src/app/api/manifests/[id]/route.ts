@@ -94,6 +94,7 @@ export async function GET(
       lines: { orderBy: { sortOrder: "asc" } },
       damaged: true,
       duds: true,
+      walkupSales: true,
       items: {
         select: {
           upc: true,
@@ -142,6 +143,12 @@ export async function GET(
     const units = unitsFor(item);
     receivedByUpc.set(item.upc, (receivedByUpc.get(item.upc) ?? 0) + units);
   }
+  // A walk-up sale skipped the normal scan-in step, but the unit was still
+  // physically received in the same instant it was sold — counts here too,
+  // or the line would wrongly show it as still missing.
+  for (const w of manifest.walkupSales) {
+    receivedByUpc.set(w.upc, (receivedByUpc.get(w.upc) ?? 0) + w.quantity);
+  }
 
   const damagedByUpc = new Map<string, number>();
   for (const d of manifest.damaged) {
@@ -181,6 +188,12 @@ export async function GET(
     soldByUpc.set(item.upc, (soldByUpc.get(item.upc) ?? 0) + soldUnitsFor(item));
     soldRevenueByUpc.set(item.upc, (soldRevenueByUpc.get(item.upc) ?? 0) + Number(item.soldRevenueTotal));
     soldFeesByUpc.set(item.upc, (soldFeesByUpc.get(item.upc) ?? 0) + Number(item.soldFeesTotal));
+  }
+  // Walk-up sales are just as real as an eBay sale for profit purposes —
+  // no fees (cash, in person), no shipping, so only revenue is added.
+  for (const w of manifest.walkupSales) {
+    soldByUpc.set(w.upc, (soldByUpc.get(w.upc) ?? 0) + w.quantity);
+    soldRevenueByUpc.set(w.upc, (soldRevenueByUpc.get(w.upc) ?? 0) + w.quantity * Number(w.pricePerUnit));
   }
 
   const totalManifestExtendedRetail = manifest.lines.reduce(

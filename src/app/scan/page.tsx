@@ -115,6 +115,25 @@ function ScanPageInner() {
   const [dudSaving, setDudSaving] = useState(false);
   const [dudMessage, setDudMessage] = useState<string | null>(null);
 
+  // In-person, cash, no-fee/no-shipping sale straight out of the manifest —
+  // scan the UPC, get instant pricing (no math at the table), mark it sold,
+  // loop back for the next one. See /api/manifests/[id]/walkup-sale/lookup.
+  const [walkupMode, setWalkupMode] = useState(false);
+  const [walkupUpc, setWalkupUpc] = useState("");
+  const [walkupLooking, setWalkupLooking] = useState(false);
+  const [walkupMessage, setWalkupMessage] = useState<string | null>(null);
+  const [walkupLookup, setWalkupLookup] = useState<{
+    description: string;
+    retailPrice: number;
+    floorPrice: number | null;
+    idealPrice: number;
+    nearExpiryPrice: number;
+  } | null>(null);
+  const [walkupNearExpiry, setWalkupNearExpiry] = useState(false);
+  const [walkupQuantity, setWalkupQuantity] = useState("1");
+  const [walkupPricePerUnit, setWalkupPricePerUnit] = useState("");
+  const [walkupSaving, setWalkupSaving] = useState(false);
+
   const [step, setStep] = useState<Step>("mode");
   const [isBundle, setIsBundle] = useState(false);
 
@@ -219,6 +238,8 @@ function ScanPageInner() {
     setManifestTitle(null);
     setDamagedMode(false);
     setDudMode(false);
+    setWalkupMode(false);
+    resetWalkupSale();
     setSavedThisSession(0);
     setSessions((prev) =>
       (prev ?? []).filter((s) => s.id !== activeSessionId)
@@ -278,6 +299,65 @@ function ScanPageInner() {
       setDudMessage(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
       setDudSaving(false);
+    }
+  }
+
+  function resetWalkupSale() {
+    setWalkupUpc("");
+    setWalkupLookup(null);
+    setWalkupNearExpiry(false);
+    setWalkupQuantity("1");
+    setWalkupPricePerUnit("");
+    setWalkupMessage(null);
+  }
+
+  async function lookupWalkupUpc() {
+    if (!activeManifestId) return;
+    setWalkupMessage(null);
+    if (!walkupUpc.trim()) return setWalkupMessage("Scan or enter a UPC first.");
+
+    setWalkupLooking(true);
+    try {
+      const res = await fetch(
+        `/api/manifests/${activeManifestId}/walkup-sale/lookup?upc=${encodeURIComponent(walkupUpc.trim())}`
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Lookup failed.");
+      setWalkupLookup(data);
+      setWalkupPricePerUnit(data.idealPrice.toFixed(2));
+    } catch (e) {
+      setWalkupLookup(null);
+      setWalkupMessage(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setWalkupLooking(false);
+    }
+  }
+
+  async function saveWalkupSale() {
+    if (!activeManifestId || !walkupLookup) return;
+    setWalkupMessage(null);
+    const qty = Number(walkupQuantity);
+    if (!qty || qty < 1) return setWalkupMessage("Enter a quantity of at least 1.");
+    const price = Number(walkupPricePerUnit);
+    if (!price || price <= 0) return setWalkupMessage("Enter a price per unit.");
+
+    setWalkupSaving(true);
+    try {
+      const res = await fetch(`/api/manifests/${activeManifestId}/walkup-sale`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ upc: walkupUpc.trim(), quantity: qty, pricePerUnit: price }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? "Save failed.");
+      }
+      resetWalkupSale();
+      setWalkupMessage("Sold! Ready for the next one.");
+    } catch (e) {
+      setWalkupMessage(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setWalkupSaving(false);
     }
   }
 
@@ -635,6 +715,136 @@ function ScanPageInner() {
     );
   }
 
+  // In-person cash sale, right now — scan a UPC on this manifest, get an
+  // instant floor/ideal/near-expiry price with no math required, mark it
+  // sold, then straight back to the UPC step for the next item.
+  if (walkupMode) {
+    return (
+      <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-4 p-4">
+        <div className="flex items-center justify-between">
+          <h1 className="text-lg font-semibold">Walk-up Sale</h1>
+          <button
+            type="button"
+            onClick={() => {
+              setWalkupMode(false);
+              resetWalkupSale();
+            }}
+            className="text-sm underline"
+          >
+            Back to scanning
+          </button>
+        </div>
+        {manifestTitle && <p className="text-xs text-gray-400">Manifest: {manifestTitle}</p>}
+        <p className="text-xs text-gray-400">In-person cash sale, right now — no eBay fees, no shipping.</p>
+
+        {!walkupLookup && (
+          <section className="flex flex-col gap-1">
+            <label className="text-sm font-medium">UPC</label>
+            <input
+              autoFocus
+              type="text"
+              inputMode="numeric"
+              value={walkupUpc}
+              onChange={(e) => setWalkupUpc(e.target.value)}
+              onKeyDown={(e) => onScanEnter(e, lookupWalkupUpc)}
+              placeholder="Scan or type UPC"
+              className="rounded border px-3 py-2"
+            />
+            <button
+              type="button"
+              onClick={lookupWalkupUpc}
+              disabled={walkupLooking}
+              className="mt-2 rounded bg-black py-3 text-center text-white disabled:opacity-50"
+            >
+              {walkupLooking ? "Looking up…" : "Look up price"}
+            </button>
+          </section>
+        )}
+
+        {walkupMessage && <p className="text-sm">{walkupMessage}</p>}
+
+        {walkupLookup && (
+          <>
+            <section className="rounded border p-3">
+              <p className="font-medium">{walkupLookup.description}</p>
+              <p className="text-xs text-gray-400">Retail price: ${walkupLookup.retailPrice.toFixed(2)}</p>
+              <div className="mt-2 flex flex-col gap-1 text-sm">
+                <p>
+                  Floor (min acceptable):{" "}
+                  {walkupLookup.floorPrice != null ? (
+                    <strong>${walkupLookup.floorPrice.toFixed(2)}</strong>
+                  ) : (
+                    <span className="text-xs text-gray-400">
+                      Enter a landed cost on the manifest to get a floor price
+                    </span>
+                  )}
+                </p>
+                <p>
+                  Ideal: <strong>${walkupLookup.idealPrice.toFixed(2)}</strong>
+                </p>
+                <p>
+                  Near-expiry: <strong>${walkupLookup.nearExpiryPrice.toFixed(2)}</strong>
+                </p>
+              </div>
+            </section>
+
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={walkupNearExpiry}
+                onChange={(e) => {
+                  const checked = e.target.checked;
+                  setWalkupNearExpiry(checked);
+                  setWalkupPricePerUnit(
+                    (checked ? walkupLookup.nearExpiryPrice : walkupLookup.idealPrice).toFixed(2)
+                  );
+                }}
+              />
+              Expiring within 6 months
+            </label>
+
+            <section>
+              <label className="text-sm font-medium">Quantity sold</label>
+              <input
+                type="number"
+                min={1}
+                value={walkupQuantity}
+                onChange={(e) => setWalkupQuantity(e.target.value)}
+                onWheel={(e) => e.currentTarget.blur()}
+                className="w-full rounded border px-3 py-2"
+              />
+            </section>
+
+            <section>
+              <label className="text-sm font-medium">Price per unit</label>
+              <input
+                type="number"
+                step="0.01"
+                min={0}
+                value={walkupPricePerUnit}
+                onChange={(e) => setWalkupPricePerUnit(e.target.value)}
+                onWheel={(e) => e.currentTarget.blur()}
+                className="w-full rounded border px-3 py-2"
+              />
+            </section>
+
+            <button
+              type="button"
+              onClick={saveWalkupSale}
+              disabled={walkupSaving}
+              className="rounded bg-green-600 py-4 text-center text-white disabled:opacity-50"
+            >
+              {walkupSaving ? "Saving…" : "Mark as sold"}
+            </button>
+            <button type="button" onClick={resetWalkupSale} className="text-sm text-gray-500 underline">
+              Scan a different item instead
+            </button>
+          </>
+        )}
+      </main>
+    );
+  }
+
   const isLastStep = stepIndex === steps.length - 1;
 
   return (
@@ -680,6 +890,13 @@ function ScanPageInner() {
               className="rounded bg-orange-600 px-2 py-1 text-white"
             >
               Scan as Dud/Unsellable
+            </button>
+            <button
+              type="button"
+              onClick={() => setWalkupMode(true)}
+              className="rounded bg-green-600 px-2 py-1 text-white"
+            >
+              Walk-up Sale
             </button>
           </div>
         </div>

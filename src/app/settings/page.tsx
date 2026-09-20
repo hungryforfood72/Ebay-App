@@ -53,6 +53,8 @@ function SettingsPageInner() {
 
       <SourcingMarginSetting />
 
+      <WalkupSaleMarginSettings />
+
       <UsersManager />
     </main>
   );
@@ -248,6 +250,119 @@ function SourcingMarginSetting() {
           {saving ? "Saving…" : "Save"}
         </button>
         {saved && <span className="text-xs text-green-600">Saved</span>}
+      </div>
+    </section>
+  );
+}
+
+// Pricing for in-person walk-up sales (scan/page.tsx's "Walk-up sale" mode)
+// — floor is a markup over that item's landed cost (protects real profit),
+// ideal/near-expiry are a % of the manifest line's retail price (always
+// present, and a much more realistic walk-up price than a thin cost
+// markup — see src/lib/walkupSale.ts's own comment for why).
+function WalkupSaleMarginSettings() {
+  const [floorMarginPct, setFloorMarginPct] = useState("");
+  const [idealRetailPct, setIdealRetailPct] = useState("");
+  const [nearExpiryRetailPct, setNearExpiryRetailPct] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  function load() {
+    fetch("/api/settings/walkup-sale-margins")
+      .then((r) => r.json())
+      .then((data: { floorMarginPct: number; idealRetailPct: number; nearExpiryRetailPct: number }) => {
+        setFloorMarginPct(String(data.floorMarginPct));
+        setIdealRetailPct(String(data.idealRetailPct));
+        setNearExpiryRetailPct(String(data.nearExpiryRetailPct));
+      });
+  }
+
+  useEffect(load, []);
+
+  async function save() {
+    setSaving(true);
+    setSaved(false);
+    try {
+      const res = await fetch("/api/settings/walkup-sale-margins", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          floorMarginPct: Number(floorMarginPct),
+          idealRetailPct: Number(idealRetailPct),
+          nearExpiryRetailPct: Number(nearExpiryRetailPct),
+        }),
+      });
+      if (res.ok) setSaved(true);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="mt-6 rounded-lg border p-4">
+      <label className="mb-1 block text-sm font-medium">Walk-up sale pricing</label>
+      <p className="mb-3 text-xs text-gray-400">
+        Used by the Scan page&apos;s &quot;Walk-up sale&quot; mode for instant in-person pricing. Floor is a
+        minimum-profit markup over what that item actually cost; the other two are a percentage of the
+        item&apos;s retail price.
+      </p>
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-2">
+          <span className="w-40 text-sm text-gray-600">Floor (min profit over cost)</span>
+          <input
+            type="number"
+            step="1"
+            min={1}
+            value={floorMarginPct}
+            onChange={(e) => {
+              setFloorMarginPct(e.target.value);
+              setSaved(false);
+            }}
+            className="w-24 rounded border px-3 py-2 text-sm"
+          />
+          <span className="text-sm text-gray-500">%</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="w-40 text-sm text-gray-600">Ideal (% of retail)</span>
+          <input
+            type="number"
+            step="1"
+            min={1}
+            value={idealRetailPct}
+            onChange={(e) => {
+              setIdealRetailPct(e.target.value);
+              setSaved(false);
+            }}
+            className="w-24 rounded border px-3 py-2 text-sm"
+          />
+          <span className="text-sm text-gray-500">%</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="w-40 text-sm text-gray-600">Near-expiry (% of retail)</span>
+          <input
+            type="number"
+            step="1"
+            min={1}
+            value={nearExpiryRetailPct}
+            onChange={(e) => {
+              setNearExpiryRetailPct(e.target.value);
+              setSaved(false);
+            }}
+            className="w-24 rounded border px-3 py-2 text-sm"
+          />
+          <span className="text-sm text-gray-500">%</span>
+        </div>
+        <div>
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving || !floorMarginPct || !idealRetailPct || !nearExpiryRetailPct}
+            className="rounded bg-black px-3 py-2 text-sm text-white disabled:opacity-40"
+          >
+            {saving ? "Saving…" : "Save"}
+          </button>
+          {saved && <span className="ml-2 text-xs text-green-600">Saved</span>}
+        </div>
       </div>
     </section>
   );
