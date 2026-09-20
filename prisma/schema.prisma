@@ -30,6 +30,47 @@ enum ItemCondition {
   for_parts
 }
 
+enum UserRole {
+  owner
+  employee
+}
+
+// Real per-user accounts, replacing the old single shared SITE_PASSWORD
+// gate — Cristian wanted to know who made a given change (stock
+// adjustments, scans, etc.) and to limit what employees can see/do (no
+// financial numbers, can't delete records, no Settings access), neither
+// of which a single shared password could ever support. passwordSalt is
+// stored separately from passwordHash (not concatenated into one string)
+// so the hashing scheme is legible at a glance rather than needing to
+// parse a packed format — see src/lib/auth.ts for the actual scrypt call.
+model User {
+  id           String   @id @default(uuid())
+  username     String   @unique
+  passwordHash String
+  passwordSalt String
+  role         UserRole
+  createdAt    DateTime @default(now())
+
+  sessions Session[]
+}
+
+// DB-backed, not a stateless signed cookie — Next.js 16 runs proxy.ts on
+// the Node.js runtime by default (confirmed against the bundled docs,
+// not assumed), so a real per-request lookup here is cheap and simple,
+// and — unlike a signed JWT-style cookie — lets a session be revoked
+// instantly (deleting a user, or a future "log out everywhere") rather
+// than only ever expiring on its own.
+model Session {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
 model ScanSession {
   id        String    @id @default(uuid())
   label     String?

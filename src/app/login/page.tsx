@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 function LoginForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -18,10 +19,11 @@ function LoginForm() {
       const res = await fetch("/api/auth", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ username, password }),
       });
       if (!res.ok) {
-        setError("Wrong password.");
+        const result = await res.json().catch(() => ({}));
+        setError(result.error ?? "Sign-in failed.");
         return;
       }
       router.replace(searchParams.get("next") || "/");
@@ -36,8 +38,15 @@ function LoginForm() {
       <h1 className="text-center text-lg font-semibold">eBay Listing Tool</h1>
       <form onSubmit={handleSubmit} className="flex flex-col gap-3">
         <input
-          type="password"
+          type="text"
           autoFocus
+          placeholder="Username"
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          className="rounded border px-3 py-2"
+        />
+        <input
+          type="password"
           placeholder="Password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
@@ -46,10 +55,10 @@ function LoginForm() {
         {error && <p className="text-sm text-red-600">{error}</p>}
         <button
           type="submit"
-          disabled={submitting || !password}
+          disabled={submitting || !username || !password}
           className="rounded bg-black py-2 text-white disabled:opacity-40"
         >
-          {submitting ? "Checking…" : "Enter"}
+          {submitting ? "Signing in…" : "Sign in"}
         </button>
       </form>
     </main>

@@ -3,15 +3,20 @@
 import { Stat } from "@/components/Stat";
 import Link from "next/link";
 import { useEffect, useState, use as usePromise } from "react";
+import { UserNavLinks, useCurrentUser } from "@/components/UserNav";
 
+// retailPrice/extendedRetail/weightedCogsPerUnit/soldRevenue/soldFees/profit
+// are all financial fields the API omits for an employee (see
+// /api/manifests/[id]'s isOwner gating) — optional here so the page can
+// render a reduced view for them instead of crashing on an undefined field.
 type Line = {
   id: string;
   supplierSku: string | null;
   upc: string | null;
   description: string;
   expectedQuantity: number;
-  retailPrice: number;
-  extendedRetail: number;
+  retailPrice?: number;
+  extendedRetail?: number;
   condition: string | null;
   category: string | null;
   subcategory: string | null;
@@ -20,11 +25,11 @@ type Line = {
   dudUnits: number;
   accountedUnits: number;
   missingUnits: number;
-  weightedCogsPerUnit: number | null;
+  weightedCogsPerUnit?: number | null;
   soldUnits: number;
-  soldRevenue: number;
-  soldFees: number;
-  profit: number | null;
+  soldRevenue?: number;
+  soldFees?: number;
+  profit?: number | null;
 };
 
 type SourcingLineEstimate = {
@@ -56,14 +61,14 @@ type ManifestDetail = {
   id: string;
   title: string;
   supplier: string;
-  totalLandedCost: number | null;
+  totalLandedCost?: number | null;
   createdAt: string;
   lines: Line[];
   unmatchedReceived: { upc: string | null; units: number }[];
   unmatchedDamaged: { upc: string | null; units: number }[];
   unmatchedDud: { upc: string | null; units: number }[];
-  unmatchedSold: { upc: string | null; units: number; revenue: number; fees: number }[];
-  sourcingEvaluation: SourcingEvaluation | null;
+  unmatchedSold: { upc: string | null; units: number; revenue?: number; fees?: number }[];
+  sourcingEvaluation?: SourcingEvaluation | null;
   summary: {
     totalExpectedUnits: number;
     totalReceivedUnits: number;
@@ -71,12 +76,12 @@ type ManifestDetail = {
     totalDudUnits: number;
     totalAccountedUnits: number;
     totalMissingUnits: number;
-    totalManifestExtendedRetail: number;
-    blendedCogsPerUnit: number | null;
+    totalManifestExtendedRetail?: number;
+    blendedCogsPerUnit?: number | null;
     totalSoldUnits: number;
-    totalSoldRevenue: number;
-    totalSoldFees: number;
-    totalProfit: number;
+    totalSoldRevenue?: number;
+    totalSoldFees?: number;
+    totalProfit?: number;
     totalListedUnsoldItems: number;
   };
 };
@@ -189,6 +194,9 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
     }
   }
 
+  const user = useCurrentUser();
+  const isOwner = user?.role === "owner";
+
   if (!manifest) return <main className="p-6">Loading…</main>;
 
   const s = manifest.summary;
@@ -246,12 +254,15 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
           <Link href="/manifests" className="text-sm underline">
             All manifests
           </Link>
-          <Link href="/analyzer" className="text-sm underline">
-            Analyzer
-          </Link>
+          {isOwner && (
+            <Link href="/analyzer" className="text-sm underline">
+              Analyzer
+            </Link>
+          )}
           <Link href="/review" className="text-sm underline">
             Review
           </Link>
+          <UserNavLinks />
         </div>
       </div>
       <p className="mb-6 text-sm text-gray-500">
@@ -276,17 +287,19 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
           highlight={s.totalMissingUnits !== 0}
         />
         <Stat label="Sold units" value={s.totalSoldUnits} />
-        <Stat label="Sold revenue" value={s.totalSoldRevenue} format="currency" />
-        <Stat label="Sold fees" value={s.totalSoldFees} format="currency" />
-        <Stat
-          label="Profit"
-          value={s.totalProfit}
-          format="currency"
-          highlight={s.totalSoldUnits > 0 && s.totalProfit < 0}
-        />
+        {isOwner && s.totalSoldRevenue != null && <Stat label="Sold revenue" value={s.totalSoldRevenue} format="currency" />}
+        {isOwner && s.totalSoldFees != null && <Stat label="Sold fees" value={s.totalSoldFees} format="currency" />}
+        {isOwner && s.totalProfit != null && (
+          <Stat
+            label="Profit"
+            value={s.totalProfit}
+            format="currency"
+            highlight={s.totalSoldUnits > 0 && s.totalProfit < 0}
+          />
+        )}
       </section>
 
-      {manifest.sourcingEvaluation?.status === "complete" && (
+      {isOwner && manifest.sourcingEvaluation?.status === "complete" && (
         <section className="mb-6 rounded-lg border p-4 text-sm">
           <p className="mb-1 text-xs font-medium text-gray-500">
             Estimated suggested bid (from the Analyzer, before this was purchased — read-only)
@@ -355,38 +368,40 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
         </section>
       )}
 
-      <section className="mb-6 flex flex-col gap-2 rounded-lg border p-4">
-        <label className="text-sm font-medium">Total landed cost for this load</label>
-        <div className="flex gap-2">
-          <input
-            type="number"
-            step="0.01"
-            value={landedCostInput}
-            onChange={(e) => setLandedCostInput(e.target.value)}
-            placeholder="e.g. 1200.00"
-            className="flex-1 rounded border px-3 py-2 text-sm"
-          />
-          <button
-            type="button"
-            onClick={saveLandedCost}
-            disabled={savingCost}
-            className="rounded bg-black px-3 py-2 text-sm text-white disabled:opacity-40"
-          >
-            Save
-          </button>
-        </div>
-        {error && <p className="text-sm text-red-600">{error}</p>}
-        {s.blendedCogsPerUnit != null ? (
-          <p className="text-sm text-gray-600">
-            Blended COGS: <strong>${s.blendedCogsPerUnit.toFixed(4)}</strong> per unit (landed cost ÷{" "}
-            {s.totalReceivedUnits} units received). Per-line weighted cost below accounts for each
-            item&apos;s share of the load&apos;s declared value, divided by that line&apos;s good units
-            received — damaged/expired and still-missing units aren&apos;t counted.
-          </p>
-        ) : (
-          <p className="text-xs text-gray-400">Enter a landed cost to see COGS per unit.</p>
-        )}
-      </section>
+      {isOwner && (
+        <section className="mb-6 flex flex-col gap-2 rounded-lg border p-4">
+          <label className="text-sm font-medium">Total landed cost for this load</label>
+          <div className="flex gap-2">
+            <input
+              type="number"
+              step="0.01"
+              value={landedCostInput}
+              onChange={(e) => setLandedCostInput(e.target.value)}
+              placeholder="e.g. 1200.00"
+              className="flex-1 rounded border px-3 py-2 text-sm"
+            />
+            <button
+              type="button"
+              onClick={saveLandedCost}
+              disabled={savingCost}
+              className="rounded bg-black px-3 py-2 text-sm text-white disabled:opacity-40"
+            >
+              Save
+            </button>
+          </div>
+          {error && <p className="text-sm text-red-600">{error}</p>}
+          {s.blendedCogsPerUnit != null ? (
+            <p className="text-sm text-gray-600">
+              Blended COGS: <strong>${s.blendedCogsPerUnit.toFixed(4)}</strong> per unit (landed cost ÷{" "}
+              {s.totalReceivedUnits} units received). Per-line weighted cost below accounts for each
+              item&apos;s share of the load&apos;s declared value, divided by that line&apos;s good units
+              received — damaged/expired and still-missing units aren&apos;t counted.
+            </p>
+          ) : (
+            <p className="text-xs text-gray-400">Enter a landed cost to see COGS per unit.</p>
+          )}
+        </section>
+      )}
 
       <section className="mb-6 flex flex-col gap-2 rounded-lg border p-4">
         <label className="text-sm font-medium">Bulk discount remaining unsold listings</label>
@@ -434,10 +449,10 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
               <th className="px-2 text-right">Damaged</th>
               <th className="px-2 text-right">Dud</th>
               <th className="px-2 text-right">Missing</th>
-              <th className="px-2 text-right">Weighted COGS/unit</th>
+              {isOwner && <th className="px-2 text-right">Weighted COGS/unit</th>}
               <th className="px-2 text-right">Sold</th>
-              <th className="px-2 text-right">Sold Revenue</th>
-              <th className="px-2 text-right">Profit</th>
+              {isOwner && <th className="px-2 text-right">Sold Revenue</th>}
+              {isOwner && <th className="px-2 text-right">Profit</th>}
             </tr>
           </thead>
           <tbody>
@@ -446,7 +461,8 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
                 <td className="py-2 pr-2">
                   <p className="font-medium">{line.description}</p>
                   <p className="text-xs text-gray-400">
-                    {line.upc ?? "no UPC"} · ${line.retailPrice.toFixed(2)} retail
+                    {line.upc ?? "no UPC"}
+                    {isOwner && line.retailPrice != null ? ` · $${line.retailPrice.toFixed(2)} retail` : ""}
                   </p>
                 </td>
                 <td className="px-2 text-right">{line.expectedQuantity}</td>
@@ -462,16 +478,22 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
                 <td className={`px-2 text-right ${line.missingUnits !== 0 ? "font-semibold text-red-600" : ""}`}>
                   {line.missingUnits}
                 </td>
-                <td className="px-2 text-right">
-                  {line.weightedCogsPerUnit != null ? `$${line.weightedCogsPerUnit.toFixed(4)}` : "—"}
-                </td>
+                {isOwner && (
+                  <td className="px-2 text-right">
+                    {line.weightedCogsPerUnit != null ? `$${line.weightedCogsPerUnit.toFixed(4)}` : "—"}
+                  </td>
+                )}
                 <td className="px-2 text-right">{line.soldUnits}</td>
-                <td className="px-2 text-right">${line.soldRevenue.toFixed(2)}</td>
-                <td
-                  className={`px-2 text-right ${line.profit != null && line.profit < 0 ? "font-semibold text-red-600" : ""}`}
-                >
-                  {line.profit != null ? `$${line.profit.toFixed(2)}` : "—"}
-                </td>
+                {isOwner && (
+                  <td className="px-2 text-right">{line.soldRevenue != null ? `$${line.soldRevenue.toFixed(2)}` : "—"}</td>
+                )}
+                {isOwner && (
+                  <td
+                    className={`px-2 text-right ${line.profit != null && line.profit < 0 ? "font-semibold text-red-600" : ""}`}
+                  >
+                    {line.profit != null ? `$${line.profit.toFixed(2)}` : "—"}
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
@@ -495,8 +517,8 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
           ))}
           {manifest.unmatchedSold.map((u) => (
             <p key={`s-${u.upc}`}>
-              Sold {u.units} unit(s) of UPC {u.upc ?? "(none)"} (${u.revenue.toFixed(2)} revenue) — not on the
-              manifest.
+              Sold {u.units} unit(s) of UPC {u.upc ?? "(none)"}
+              {isOwner && u.revenue != null ? ` ($${u.revenue.toFixed(2)} revenue)` : ""} — not on the manifest.
             </p>
           ))}
         </section>

@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { UserNavLinks } from "@/components/UserNav";
 
 type Candidate = {
   id: string;
   title: string;
   supplier: string;
-  totalLandedCost: string | null;
+  totalLandedCost?: string | null;
   createdAt: string;
   _count: { lines: number; items: number };
 };
@@ -85,6 +86,7 @@ export default function AnalyzerPage() {
           <Link href="/review" className="text-sm underline">
             Review
           </Link>
+          <UserNavLinks />
         </div>
       </div>
       <p className="mb-6 text-sm text-gray-500">

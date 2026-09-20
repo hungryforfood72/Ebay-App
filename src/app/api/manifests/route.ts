@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { parseManifestCsv } from "@/lib/manifestParsers";
+import { getRequestUser } from "@/lib/auth";
 import { NextRequest, NextResponse } from "next/server";
 
 // ?purchased=false returns Analyzer candidates (not yet bought); anything
@@ -7,13 +8,23 @@ import { NextRequest, NextResponse } from "next/server";
 // plain /api/manifests call has always meant, kept that way so the
 // existing Manifests page's fetch doesn't need to change.
 export async function GET(request: NextRequest) {
+  const isOwner = getRequestUser(request)?.role === "owner";
   const purchased = request.nextUrl.searchParams.get("purchased") !== "false";
   const manifests = await prisma.manifest.findMany({
     where: { purchased },
     orderBy: { createdAt: "desc" },
     include: { _count: { select: { lines: true, items: true } } },
   });
-  return NextResponse.json(manifests);
+  // totalLandedCost is what the load cost — a money figure, stripped for
+  // employees same as everywhere else financial.
+  const shaped = isOwner
+    ? manifests
+    : manifests.map((m) => {
+        const { totalLandedCost, ...rest } = m;
+        void totalLandedCost;
+        return rest;
+      });
+  return NextResponse.json(shaped);
 }
 
 // Upload + parse a manifest CSV. csvContent is sent as plain text (read

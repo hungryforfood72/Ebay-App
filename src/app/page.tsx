@@ -1,6 +1,7 @@
 "use client";
 
 import { Stat } from "@/components/Stat";
+import { UserNavLinks } from "@/components/UserNav";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
@@ -46,12 +47,15 @@ type DashboardData = {
     readyToPublish: number;
     listed: number;
     expiringCount: number;
-    soldThisMonthRevenue: number;
     soldThisMonthUnits: number;
-    soldThisMonthFees: number;
-    soldThisMonthShipping: number;
-    soldThisMonthRefunded: number;
-    soldThisMonthProfit: number;
+    // Present only for the owner — an employee's dashboard response omits
+    // these entirely (not just hides them client-side), see
+    // /api/dashboard's isOwner check.
+    soldThisMonthRevenue?: number;
+    soldThisMonthFees?: number;
+    soldThisMonthShipping?: number;
+    soldThisMonthRefunded?: number;
+    soldThisMonthProfit?: number;
   };
   ebay: { connected: boolean; missingScopes: string[] };
   expiringListed: ExpiringListedItem[];
@@ -170,9 +174,7 @@ export default function DashboardPage() {
           <Link href="/inventory" className="text-sm underline">
             Inventory
           </Link>
-          <Link href="/settings" className="text-sm underline">
-            Settings
-          </Link>
+          <UserNavLinks />
         </div>
       </div>
       <p className="mb-6 text-sm text-gray-500">Sticker Peak eBay tool — overview</p>
@@ -213,27 +215,42 @@ export default function DashboardPage() {
         <Stat label="Ready to publish" value={stats.readyToPublish} />
         <Stat label="Listed" value={stats.listed} />
         <Stat label="Expiring ≤21 days" value={stats.expiringCount} highlight={stats.expiringCount > 0} />
-        <Stat label="Sold this month" value={stats.soldThisMonthRevenue} format="currency" />
         <Stat label="Units sold this month" value={stats.soldThisMonthUnits} />
-        <Stat label="Fees this month" value={stats.soldThisMonthFees} format="currency" />
-        <Stat label="Shipping this month" value={stats.soldThisMonthShipping} format="currency" />
-        <Stat
-          label="Refunds this month"
-          value={stats.soldThisMonthRefunded}
-          format="currency"
-          highlight={stats.soldThisMonthRefunded > 0}
-        />
-        <Stat
-          label="Profit this month"
-          value={stats.soldThisMonthProfit}
-          format="currency"
-          highlight={stats.soldThisMonthUnits > 0 && stats.soldThisMonthProfit < 0}
-        />
+        {/* Money figures are only present in the response at all for the
+            owner — see the DashboardData type comment — so this whole
+            block simply doesn't render for an employee. */}
+        {stats.soldThisMonthRevenue != null && (
+          <Stat label="Sold this month" value={stats.soldThisMonthRevenue} format="currency" />
+        )}
+        {stats.soldThisMonthFees != null && (
+          <Stat label="Fees this month" value={stats.soldThisMonthFees} format="currency" />
+        )}
+        {stats.soldThisMonthShipping != null && (
+          <Stat label="Shipping this month" value={stats.soldThisMonthShipping} format="currency" />
+        )}
+        {stats.soldThisMonthRefunded != null && (
+          <Stat
+            label="Refunds this month"
+            value={stats.soldThisMonthRefunded}
+            format="currency"
+            highlight={stats.soldThisMonthRefunded > 0}
+          />
+        )}
+        {stats.soldThisMonthProfit != null && (
+          <Stat
+            label="Profit this month"
+            value={stats.soldThisMonthProfit}
+            format="currency"
+            highlight={stats.soldThisMonthUnits > 0 && stats.soldThisMonthProfit < 0}
+          />
+        )}
       </section>
-      <p className="mb-6 -mt-4 text-xs text-gray-400">
-        Only counts items scanned and listed through this app — Profit uses manifest COGS where available,
-        $0 for anything with no manifest.
-      </p>
+      {stats.soldThisMonthProfit != null && (
+        <p className="mb-6 -mt-4 text-xs text-gray-400">
+          Only counts items scanned and listed through this app — Profit uses manifest COGS where available,
+          $0 for anything with no manifest.
+        </p>
+      )}
 
       <section className="mb-6 flex flex-col gap-2 rounded-lg border p-4">
         <div className="flex items-center justify-between">

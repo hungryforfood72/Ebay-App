@@ -1,6 +1,7 @@
 "use client";
 
 import BarcodeScanner from "@/components/BarcodeScanner";
+import { UserNavLinks } from "@/components/UserNav";
 import { uploadPhoto } from "@/lib/uploadPhoto";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
@@ -653,6 +654,7 @@ function ScanPageInner() {
           >
             Finish session
           </button>
+          <UserNavLinks />
         </div>
       </div>
 

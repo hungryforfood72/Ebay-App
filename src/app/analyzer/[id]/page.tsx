@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState, use as usePromise } from "react";
 import { useRouter } from "next/navigation";
+import { UserNavLinks } from "@/components/UserNav";
 
 type Line = {
   id: string;
@@ -220,6 +221,7 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
           <Link href="/manifests" className="text-sm underline">
             Manifests
           </Link>
+          <UserNavLinks />
         </div>
       </div>
       <p className="mb-6 text-sm text-gray-500">

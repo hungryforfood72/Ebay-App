@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { UserNavLinks } from "@/components/UserNav";
 
 type Manifest = {
   id: string;
   title: string;
   supplier: string;
-  totalLandedCost: string | null;
+  totalLandedCost?: string | null;
   createdAt: string;
   _count: { lines: number; items: number };
 };
@@ -81,6 +82,7 @@ export default function ManifestsPage() {
           <Link href="/analyzer" className="text-sm underline">
             Analyzer
           </Link>
+          <UserNavLinks />
         </div>
       </div>
 

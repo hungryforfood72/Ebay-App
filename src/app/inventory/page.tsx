@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { UserNavLinks } from "@/components/UserNav";
 
 type InventoryItem = {
   id: string;
@@ -154,6 +155,7 @@ export default function InventoryPage() {
           <Link href="/analyzer" className="text-sm underline">
             Analyzer
           </Link>
+          <UserNavLinks />
         </div>
       </div>
       <p className="mb-6 text-sm text-gray-500">Every active eBay listing this app has published or linked.</p>

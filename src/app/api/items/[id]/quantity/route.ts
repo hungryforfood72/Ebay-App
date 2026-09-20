@@ -4,6 +4,7 @@ import {
   reviseFixedPriceItemQuantity,
   updateOfferQuantity,
 } from "@/lib/ebay";
+import { getRequestUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -72,6 +73,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const body = await request.json().catch(() => ({}));
+  const recordedBy = getRequestUser(request)?.username ?? null;
 
   const direction = body.direction === "add" || body.direction === "remove" ? body.direction : null;
   const amount = Number(body.amount);
@@ -131,6 +133,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           previousAvailable: currentAvailableQuantity,
           newAvailable: newAvailableQuantity,
           note,
+          recordedBy,
         },
       }),
     ]);
@@ -152,6 +155,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         previousAvailable: currentAvailableQuantity,
         newAvailable: currentAvailableQuantity,
         note: `${note} [FAILED: ${message}]`,
+        recordedBy,
       },
     });
     return NextResponse.json({ error: message }, { status: 502 });

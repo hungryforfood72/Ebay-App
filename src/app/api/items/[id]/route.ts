@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { AuthError, requireOwner } from "@/lib/auth";
 import { NextRequest, NextResponse } from "next/server";
 
 const EDITABLE_FIELDS = [
@@ -40,10 +41,17 @@ export async function PATCH(
 
 // Delete an item (e.g. a scan mistake or duplicate). Only removes the
 // database record — any Cloudinary photos it referenced are left as-is.
+// Owner-only — Cristian's explicit "deleting records" restriction.
 export async function DELETE(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  try {
+    requireOwner(request);
+  } catch (e) {
+    if (e instanceof AuthError) return NextResponse.json({ error: e.message }, { status: e.status });
+    throw e;
+  }
   const { id } = await params;
   await prisma.item.delete({ where: { id } });
   return NextResponse.json({ ok: true });

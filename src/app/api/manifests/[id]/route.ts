@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 import { getTargetMarginPct, MIN_BID_FLOOR } from "@/lib/sourcingAgent";
+import { getRequestUser } from "@/lib/auth";
 
 // Units actually received for an item = the quantity scanned, times pack
 // size if it's a multipack — the same "3 of a 2-pack = 6 units" accounting
@@ -52,6 +53,13 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
+  // Cristian's instruction: employees don't see COGS, profit, revenue, or
+  // sourcing/bid decisions — receiving and listing counts only. Same
+  // strip-before-send pattern as /api/dashboard, applied at the bottom of
+  // this handler rather than skipping the underlying queries (the cost of
+  // computing it is the same either way, and this route is one big shared
+  // shape for both roles).
+  const isOwner = getRequestUser(request)?.role === "owner";
 
   const manifest = await prisma.manifest.findUnique({
     where: { id },
@@ -280,14 +288,38 @@ export async function GET(
     title: manifest.title,
     supplier: manifest.supplier,
     purchased: manifest.purchased,
-    totalLandedCost,
+    ...(isOwner ? { totalLandedCost } : {}),
     createdAt: manifest.createdAt,
-    lines,
+    lines: lines.map((l) =>
+      isOwner
+        ? l
+        : {
+            id: l.id,
+            supplierSku: l.supplierSku,
+            upc: l.upc,
+            description: l.description,
+            expectedQuantity: l.expectedQuantity,
+            condition: l.condition,
+            category: l.category,
+            subcategory: l.subcategory,
+            receivedUnits: l.receivedUnits,
+            damagedUnits: l.damagedUnits,
+            dudUnits: l.dudUnits,
+            accountedUnits: l.accountedUnits,
+            missingUnits: l.missingUnits,
+            soldUnits: l.soldUnits,
+          }
+    ),
     unmatchedReceived,
     unmatchedDamaged,
     unmatchedDud,
-    unmatchedSold,
-    sourcingEvaluation: latestEvaluation && {
+    unmatchedSold: unmatchedSold.map((u) => (isOwner ? u : { upc: u.upc, units: u.units })),
+    // Sourcing evaluation is entirely a pre-purchase bid decision (buy/don't
+    // buy, max bid, reasoning) — Cristian's explicit "bid decisions" callout
+    // for what employees shouldn't see. Omitted outright rather than
+    // stripped field-by-field since none of it is operationally relevant to
+    // receiving/listing work.
+    sourcingEvaluation: isOwner && latestEvaluation && {
       id: latestEvaluation.id,
       status: latestEvaluation.status,
       recommendation: latestEvaluation.recommendation,
@@ -322,13 +354,11 @@ export async function GET(
       totalDudUnits,
       totalAccountedUnits: totalReceivedUnits + totalDamagedUnits + totalDudUnits,
       totalMissingUnits: totalExpectedUnits - (totalReceivedUnits + totalDamagedUnits + totalDudUnits),
-      totalManifestExtendedRetail,
-      blendedCogsPerUnit,
       totalSoldUnits,
-      totalSoldRevenue,
-      totalSoldFees,
-      totalProfit,
       totalListedUnsoldItems,
+      ...(isOwner
+        ? { totalManifestExtendedRetail, blendedCogsPerUnit, totalSoldRevenue, totalSoldFees, totalProfit }
+        : {}),
     },
   });
 }

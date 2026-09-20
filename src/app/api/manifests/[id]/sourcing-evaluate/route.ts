@@ -2,6 +2,7 @@ import { evaluateManifest } from "@/lib/sourcingAgent";
 import { prisma } from "@/lib/prisma";
 import { after, NextRequest, NextResponse } from "next/server";
 import type { Prisma } from "@/generated/prisma/client";
+import { AuthError, requireOwner } from "@/lib/auth";
 
 export const maxDuration = 180;
 
@@ -13,6 +14,15 @@ export const maxDuration = 180;
 // /api/manifests/[id] (which already embeds the latest evaluation) until
 // status flips to "complete"/"failed".
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  // Buy/don't-buy is squarely a bid decision — owner only, same as the
+  // financial-data restriction on the rest of this manifest's numbers.
+  try {
+    requireOwner(request);
+  } catch (e) {
+    if (e instanceof AuthError) return NextResponse.json({ error: e.message }, { status: e.status });
+    throw e;
+  }
+
   const { id } = await params;
 
   const manifest = await prisma.manifest.findUnique({ where: { id }, select: { id: true } });

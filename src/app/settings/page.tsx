@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
+import { UserNavLinks } from "@/components/UserNav";
 
 type LabeledEntry = {
   id: string;
@@ -35,6 +36,7 @@ function SettingsPageInner() {
           <Link href="/analyzer" className="text-sm underline">
             Analyzer
           </Link>
+          <UserNavLinks showSettings={false} />
         </div>
       </div>
 
@@ -50,7 +52,138 @@ function SettingsPageInner() {
       <ShelfLocationsEditor />
 
       <SourcingMarginSetting />
+
+      <UsersManager />
     </main>
+  );
+}
+
+type AppUser = { id: string; username: string; role: "owner" | "employee"; createdAt: string };
+
+// Owner-only (this whole page is — proxy.ts blocks /settings entirely for
+// employees). Employees get their own accounts here so stock/scan changes
+// can be attributed to a real person and financial data can stay hidden
+// from their view — see the role check baked into each relevant API route
+// (dashboard, manifests, inventory), not anything client-side here.
+function UsersManager() {
+  const [users, setUsers] = useState<AppUser[] | null>(null);
+  const [newUsername, setNewUsername] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [newRole, setNewRole] = useState<"employee" | "owner">("employee");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function load() {
+    fetch("/api/users")
+      .then((r) => r.json())
+      .then((data: { users: AppUser[] }) => setUsers(data.users));
+  }
+
+  useEffect(load, []);
+
+  async function addUser() {
+    if (!newUsername.trim() || !newPassword) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: newUsername.trim(), password: newPassword, role: newRole }),
+      });
+      if (!res.ok) {
+        const result = await res.json().catch(() => ({}));
+        throw new Error(result.error ?? "Failed to create user.");
+      }
+      setNewUsername("");
+      setNewPassword("");
+      setNewRole("employee");
+      load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function removeUser(user: AppUser) {
+    if (!confirm(`Remove "${user.username}"? They'll be signed out immediately.`)) return;
+    setError(null);
+    try {
+      const res = await fetch(`/api/users/${user.id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const result = await res.json().catch(() => ({}));
+        throw new Error(result.error ?? "Failed to remove user.");
+      }
+      load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong.");
+    }
+  }
+
+  return (
+    <section className="mb-8">
+      <h2 className="mb-2 text-sm font-medium text-gray-500">Users</h2>
+      <p className="mb-3 text-xs text-gray-400">
+        Employee accounts see no financial numbers anywhere in the app (profit, COGS, revenue, sourcing
+        agent bid decisions), and can&apos;t delete records or reach this Settings page.
+      </p>
+
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <input
+          type="text"
+          placeholder="Username"
+          value={newUsername}
+          onChange={(e) => setNewUsername(e.target.value)}
+          className="rounded border px-3 py-2 text-sm"
+        />
+        <input
+          type="password"
+          placeholder="Password (min. 8 characters)"
+          value={newPassword}
+          onChange={(e) => setNewPassword(e.target.value)}
+          className="rounded border px-3 py-2 text-sm"
+        />
+        <select
+          value={newRole}
+          onChange={(e) => setNewRole(e.target.value as "employee" | "owner")}
+          className="rounded border px-3 py-2 text-sm"
+        >
+          <option value="employee">Employee</option>
+          <option value="owner">Owner</option>
+        </select>
+        <button
+          type="button"
+          onClick={addUser}
+          disabled={saving || !newUsername.trim() || !newPassword}
+          className="rounded bg-black px-4 py-2 text-sm text-white disabled:opacity-40"
+        >
+          Add user
+        </button>
+      </div>
+
+      {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
+
+      {!users ? (
+        <p className="text-sm text-gray-400">Loading…</p>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {users.map((user) => (
+            <li key={user.id} className="flex items-center justify-between rounded border px-3 py-2 text-sm">
+              <span>
+                {user.username}{" "}
+                <span className="text-xs text-gray-400">
+                  ({user.role}, since {new Date(user.createdAt).toLocaleDateString()})
+                </span>
+              </span>
+              <button type="button" onClick={() => removeUser(user)} className="text-xs text-red-600">
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 

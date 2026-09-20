@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { UserNavLinks } from "@/components/UserNav";
 
 type CategoryRule = {
   id: string;
@@ -287,9 +288,7 @@ export default function ReviewPage() {
           <Link href="/analyzer" className="text-sm underline">
             Analyzer
           </Link>
-          <Link href="/settings" className="text-sm underline">
-            Settings
-          </Link>
+          <UserNavLinks />
         </div>
       </div>
 

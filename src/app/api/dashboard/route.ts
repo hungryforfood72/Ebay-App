@@ -1,5 +1,6 @@
 import { cogsPerUnitByManifest } from "@/lib/cogs";
 import { getEbayEnvironment, getLiveListingPrice, getMissingScopes } from "@/lib/ebay";
+import { getRequestUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
 
@@ -7,7 +8,17 @@ export const maxDuration = 30;
 
 const EXPIRING_WINDOW_DAYS = 21;
 
-export async function GET() {
+export async function GET(request: Request) {
+  // Cristian's explicit instruction: employees see workflow counts
+  // (pending review, ready to publish, listed, expiring) and nothing
+  // about money — no revenue, fees, shipping cost, refunds, or profit.
+  // The dollar figures are computed the same either way (the query cost
+  // is the same regardless, and conditionally reshaping the Promise.all
+  // below isn't worth the complexity) but stripped from the response
+  // before it's ever sent to an employee's browser — never just hidden
+  // client-side.
+  const isOwner = getRequestUser(request)?.role === "owner";
+
   const expiringCutoff = new Date(Date.now() + EXPIRING_WINDOW_DAYS * 24 * 60 * 60 * 1000);
   const startOfMonth = new Date();
   startOfMonth.setDate(1);
@@ -150,12 +161,17 @@ export async function GET() {
       readyToPublish,
       listed,
       expiringCount: expiringListed.length,
-      soldThisMonthRevenue,
       soldThisMonthUnits,
-      soldThisMonthFees,
-      soldThisMonthShipping,
-      soldThisMonthRefunded: refundedThisMonthAmount,
-      soldThisMonthProfit,
+      // Dollar figures only for the owner — see the isOwner comment above.
+      ...(isOwner
+        ? {
+            soldThisMonthRevenue,
+            soldThisMonthFees,
+            soldThisMonthShipping,
+            soldThisMonthRefunded: refundedThisMonthAmount,
+            soldThisMonthProfit,
+          }
+        : {}),
     },
     ebay: {
       connected: Boolean(token),
