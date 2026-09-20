@@ -138,6 +138,7 @@ model Item {
   refundedTotal     Decimal @default(0) @db.Decimal(10, 2)
 
   sales EbayItemSale[]
+  stockAdjustments StockAdjustment[]
 
   // eBay Promoted Listings ad state — set by /api/items/[id]/promote,
   // never by the client. One campaign is shared across every item in an
@@ -528,6 +529,31 @@ model ManifestDudEntry {
   createdAt  DateTime @default(now())
 
   @@index([manifestId, upc])
+}
+
+// A manual add/remove stock adjustment on the Inventory page — every one
+// requires a note (Cristian's explicit instruction: any manual stock
+// change needs a reason on record, not just a bare number change). delta
+// is signed (positive = added, negative = removed); previousAvailable/
+// newAvailable are captured at write time from the freshest available
+// number the server had right then (a live eBay check when possible — see
+// the quantity route), not whatever was on screen when the edit started,
+// so this doubles as the actual record of what was true at the moment of
+// the change, not just an audit note. recordedBy is free-text for now
+// (matches ManifestDudEntry/ManifestDamagedEntry's existing convention) —
+// ready to become a real user reference once accounts exist.
+model StockAdjustment {
+  id                String   @id @default(uuid())
+  item              Item     @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  itemId            String
+  delta             Int
+  previousAvailable Int
+  newAvailable      Int
+  note              String
+  recordedBy        String?
+  createdAt         DateTime @default(now())
+
+  @@index([itemId, createdAt])
 }
 
 // eBay OAuth user token, one row per environment (sandbox/production) —

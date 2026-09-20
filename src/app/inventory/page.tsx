@@ -21,23 +21,45 @@ type InventoryItem = {
   photoUrl: string | null;
 };
 
+type StockAdjustment = {
+  id: string;
+  delta: number;
+  previousAvailable: number;
+  newAvailable: number;
+  note: string;
+  recordedBy: string | null;
+  createdAt: string;
+};
+
 type LiveCheck = {
   liveAvailableQuantity: number | null;
   livePrice: number | null;
   storedAvailableQuantity: number;
+  recentAdjustments: StockAdjustment[];
 };
 
 // Search by eBay Item ID, title, UPC, or our own SKU across every listing
 // this app has published/linked to eBay — the fix for eBay's Seller Hub
 // blocking manual quantity edits on API-managed listings ("refer to the
 // tool used to create this listing"). This IS that tool.
+//
+// Add/remove by a signed amount, not "set the total to X" — typing a new
+// absolute total based on whatever the screen showed when editing opened
+// races a real-time sale (Cristian's own example: 5 available, means to
+// add 5 more, types "10" — but if it's really down to 4 by submit time,
+// "10" silently overwrites that sale instead of landing on the correct
+// 9). The server re-checks the live eBay quantity again right before
+// applying the delta, so what actually gets used is whatever was true at
+// submit time, not open time.
 export default function InventoryPage() {
   const [items, setItems] = useState<InventoryItem[] | null>(null);
   const [query, setQuery] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [liveCheck, setLiveCheck] = useState<LiveCheck | null>(null);
   const [checkingLive, setCheckingLive] = useState(false);
-  const [quantityInput, setQuantityInput] = useState("");
+  const [direction, setDirection] = useState<"add" | "remove">("add");
+  const [amountInput, setAmountInput] = useState("");
+  const [noteInput, setNoteInput] = useState("");
   const [saving, setSaving] = useState(false);
   const [rowError, setRowError] = useState<string | null>(null);
 
@@ -58,21 +80,17 @@ export default function InventoryPage() {
     setEditingId(item.id);
     setRowError(null);
     setLiveCheck(null);
-    setQuantityInput(String(item.availableQuantity));
+    setDirection("add");
+    setAmountInput("");
+    setNoteInput("");
     setCheckingLive(true);
     try {
       const res = await fetch(`/api/items/${item.id}/quantity`);
       const data: LiveCheck = await res.json();
       setLiveCheck(data);
-      // The live number from eBay itself is the more trustworthy starting
-      // point once we have it — the whole reason this page's edit exists
-      // is that the stored/DB number can drift from what's actually live.
-      if (data.liveAvailableQuantity != null) {
-        setQuantityInput(String(data.liveAvailableQuantity));
-      }
     } catch {
-      // Best-effort — editing still works off the stored number if the
-      // live check itself fails.
+      // Best-effort — the amount/note fields still work even if this
+      // preview check fails; the actual save re-checks live again anyway.
     } finally {
       setCheckingLive(false);
     }
@@ -84,10 +102,14 @@ export default function InventoryPage() {
     setRowError(null);
   }
 
-  async function saveQuantity(item: InventoryItem) {
-    const value = Number(quantityInput);
-    if (!Number.isInteger(value) || value < 0) {
-      setRowError("Enter a whole number, 0 or more.");
+  async function saveAdjustment(item: InventoryItem) {
+    const amount = Number(amountInput);
+    if (!Number.isInteger(amount) || amount <= 0) {
+      setRowError("Enter a whole number greater than 0.");
+      return;
+    }
+    if (!noteInput.trim()) {
+      setRowError("A note is required — say why this stock is changing.");
       return;
     }
     setSaving(true);
@@ -96,7 +118,7 @@ export default function InventoryPage() {
       const res = await fetch(`/api/items/${item.id}/quantity`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ availableQuantity: value }),
+        body: JSON.stringify({ direction, amount, note: noteInput.trim() }),
       });
       const result = await res.json();
       if (!res.ok) throw new Error(result.error ?? "Failed to update quantity.");
@@ -174,6 +196,14 @@ export default function InventoryPage() {
                 : `https://sandbox.ebay.com/itm/${item.ebayListingId}`
               : null;
             const isEditing = editingId === item.id;
+            const currentKnown = liveCheck?.liveAvailableQuantity ?? liveCheck?.storedAvailableQuantity ?? item.availableQuantity;
+            const amount = Number(amountInput);
+            const preview =
+              Number.isInteger(amount) && amount > 0
+                ? direction === "add"
+                  ? currentKnown + amount
+                  : currentKnown - amount
+                : null;
 
             return (
               <div key={item.id} className="rounded-lg border p-3">
@@ -209,7 +239,7 @@ export default function InventoryPage() {
                       onClick={() => startEdit(item)}
                       className="flex-shrink-0 rounded border px-3 py-1.5 text-xs"
                     >
-                      Edit quantity
+                      Adjust stock
                     </button>
                   )}
                 </div>
@@ -225,9 +255,10 @@ export default function InventoryPage() {
                           {liveCheck.liveAvailableQuantity !== liveCheck.storedAvailableQuantity && (
                             <span className="text-orange-600">
                               {" "}
-                              (our records said {liveCheck.storedAvailableQuantity} — using the live number)
+                              (our records said {liveCheck.storedAvailableQuantity})
                             </span>
                           )}
+                          {" — the server re-checks this again right before saving, so it stays accurate even if a sale lands while you type."}
                         </p>
                       ) : (
                         <p className="text-xs text-gray-500">
@@ -235,20 +266,53 @@ export default function InventoryPage() {
                         </p>
                       )
                     ) : null}
-                    <div className="mt-2 flex items-center gap-2">
-                      <label className="text-xs font-medium text-gray-500">Set available quantity to</label>
+
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <div className="flex rounded border overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={() => setDirection("add")}
+                          className={`px-3 py-1.5 text-sm ${direction === "add" ? "bg-black text-white" : "bg-white text-gray-700"}`}
+                        >
+                          Add
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDirection("remove")}
+                          className={`px-3 py-1.5 text-sm ${direction === "remove" ? "bg-black text-white" : "bg-white text-gray-700"}`}
+                        >
+                          Remove
+                        </button>
+                      </div>
                       <input
                         type="number"
-                        min="0"
+                        min="1"
                         step="1"
-                        value={quantityInput}
-                        onChange={(e) => setQuantityInput(e.target.value)}
+                        value={amountInput}
+                        onChange={(e) => setAmountInput(e.target.value)}
+                        placeholder="Amount"
                         className="w-24 rounded border px-2 py-1 text-sm"
                         autoFocus
                       />
+                      {preview != null && (
+                        <span className="text-xs text-gray-500">
+                          → new available: <strong>{Math.max(0, preview)}</strong>
+                        </span>
+                      )}
+                    </div>
+
+                    <input
+                      type="text"
+                      value={noteInput}
+                      onChange={(e) => setNoteInput(e.target.value)}
+                      placeholder="Note — why is this stock changing? (required)"
+                      className="mt-2 w-full rounded border px-2 py-1.5 text-sm"
+                    />
+
+                    <div className="mt-2 flex items-center gap-2">
                       <button
                         type="button"
-                        onClick={() => saveQuantity(item)}
+                        onClick={() => saveAdjustment(item)}
                         disabled={saving}
                         className="rounded bg-black px-3 py-1.5 text-sm text-white disabled:opacity-40"
                       >
@@ -259,6 +323,23 @@ export default function InventoryPage() {
                       </button>
                     </div>
                     {rowError && <p className="mt-2 text-sm text-red-600">{rowError}</p>}
+
+                    {liveCheck && liveCheck.recentAdjustments.length > 0 && (
+                      <div className="mt-3 border-t pt-2">
+                        <p className="mb-1 text-xs font-medium text-gray-500">Recent adjustments</p>
+                        <ul className="flex flex-col gap-1">
+                          {liveCheck.recentAdjustments.map((adj) => (
+                            <li key={adj.id} className="text-xs text-gray-500">
+                              {new Date(adj.createdAt).toLocaleString()} —{" "}
+                              <span className={adj.delta >= 0 ? "text-green-700" : "text-red-600"}>
+                                {adj.delta >= 0 ? `+${adj.delta}` : adj.delta}
+                              </span>{" "}
+                              ({adj.previousAvailable} → {adj.newAvailable}): {adj.note}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
