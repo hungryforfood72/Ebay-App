@@ -172,6 +172,7 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
 
   return (
     <main className="mx-auto max-w-4xl p-6">
+      <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Analyzer</p>
       <div className="mb-2 flex items-center justify-between">
         {editingTitle ? (
           <div className="flex items-center gap-2">
