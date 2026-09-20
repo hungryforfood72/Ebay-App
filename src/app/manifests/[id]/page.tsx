@@ -87,6 +87,9 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
   const [landedCostInput, setLandedCostInput] = useState("");
   const [savingCost, setSavingCost] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleInput, setTitleInput] = useState("");
+  const [savingTitle, setSavingTitle] = useState(false);
   const [discountMode, setDiscountMode] = useState<"percent" | "amount">("percent");
   const [discountValue, setDiscountValue] = useState("");
   const [applyingDiscount, setApplyingDiscount] = useState(false);
@@ -98,10 +101,32 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
       .then((data: ManifestDetail) => {
         setManifest(data);
         setLandedCostInput(data.totalLandedCost != null ? String(data.totalLandedCost) : "");
+        setTitleInput(data.title);
       });
   }
 
   useEffect(load, [id]);
+
+  async function saveTitle() {
+    const trimmed = titleInput.trim();
+    if (!trimmed) return;
+    setSavingTitle(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/manifests/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: trimmed }),
+      });
+      if (!res.ok) throw new Error("Failed to rename.");
+      setEditingTitle(false);
+      load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setSavingTitle(false);
+    }
+  }
 
   async function saveLandedCost() {
     setSavingCost(true);
@@ -171,7 +196,49 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
   return (
     <main className="mx-auto max-w-4xl p-6">
       <div className="mb-2 flex items-center justify-between">
-        <h1 className="text-xl font-semibold">{manifest.title}</h1>
+        {editingTitle ? (
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={titleInput}
+              onChange={(e) => setTitleInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") saveTitle();
+                if (e.key === "Escape") {
+                  setEditingTitle(false);
+                  setTitleInput(manifest.title);
+                }
+              }}
+              className="rounded border px-2 py-1 text-xl font-semibold"
+              autoFocus
+            />
+            <button
+              type="button"
+              onClick={saveTitle}
+              disabled={savingTitle || !titleInput.trim()}
+              className="rounded bg-black px-3 py-1 text-sm text-white disabled:opacity-40"
+            >
+              {savingTitle ? "Saving…" : "Save"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setEditingTitle(false);
+                setTitleInput(manifest.title);
+              }}
+              className="text-sm text-gray-500 underline"
+            >
+              Cancel
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl font-semibold">{manifest.title}</h1>
+            <button type="button" onClick={() => setEditingTitle(true)} className="text-xs text-gray-400 underline">
+              Rename
+            </button>
+          </div>
+        )}
         <div className="flex items-center gap-3">
           <Link href="/" className="text-sm underline">
             Dashboard
