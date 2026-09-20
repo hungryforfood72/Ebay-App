@@ -5,8 +5,13 @@ import { getRequestUser } from "@/lib/auth";
 
 // Units actually received for an item = the quantity scanned, times pack
 // size if it's a multipack — the same "3 of a 2-pack = 6 units" accounting
-// Cristian described. Bundles have no single UPC and can't be matched to a
-// manifest line, so they're excluded from reconciliation entirely.
+// Cristian described. Bundles are handled separately (see
+// bundleComponentUnitsByUpc below) — a bundle usually mixes several
+// unrelated UPCs that can't be matched to any one manifest line, but when
+// its components DO carry real UPCs (e.g. the same product bought as a
+// bundle only because two lots have different expiration dates), those
+// UPCs still need to be credited as received/sold against their manifest
+// lines, or reconciliation silently shows them as missing forever.
 function unitsFor(item: { quantity: number; isMultipack: boolean; packSize: number | null }): number {
   return item.quantity * (item.isMultipack && item.packSize ? item.packSize : 1);
 }
@@ -19,6 +24,28 @@ function unitsFor(item: { quantity: number; isMultipack: boolean; packSize: numb
 // below.
 function soldUnitsFor(item: { soldQuantity: number; isMultipack: boolean; packSize: number | null }): number {
   return item.soldQuantity * (item.isMultipack && item.packSize ? item.packSize : 1);
+}
+
+type BundleComponentUnits = { upc: string; unitsPerBundle: number };
+
+// bundleComponents is stored as loose Json ({ upc, quantity, photoUrls,
+// name, upcLookupData, expirationDate }[] — see Item.bundleComponents in
+// schema.prisma), so this validates shape defensively rather than trusting
+// it. Components with no UPC (a "mystery" item with nothing scannable) or
+// a non-positive quantity contribute nothing — there's no manifest line
+// they could ever match.
+function parseBundleComponentUnits(json: unknown): BundleComponentUnits[] {
+  if (!Array.isArray(json)) return [];
+  const result: BundleComponentUnits[] = [];
+  for (const raw of json) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const upc = "upc" in raw ? String((raw as { upc?: unknown }).upc ?? "") : "";
+    const quantity = "quantity" in raw ? Number((raw as { quantity?: unknown }).quantity) : NaN;
+    if (upc && Number.isFinite(quantity) && quantity > 0) {
+      result.push({ upc, unitsPerBundle: quantity });
+    }
+  }
+  return result;
 }
 
 // Fills each line's expected quantity in order before spilling into the
@@ -74,6 +101,7 @@ export async function GET(
           isMultipack: true,
           packSize: true,
           isBundle: true,
+          bundleComponents: true,
           soldQuantity: true,
           soldRevenueTotal: true,
           soldFeesTotal: true,
@@ -100,7 +128,17 @@ export async function GET(
   const receivedByUpc = new Map<string, number>();
   const unmatchedReceived: { upc: string | null; units: number }[] = [];
   for (const item of manifest.items) {
-    if (item.isBundle || !item.upc) continue;
+    if (item.isBundle) {
+      // item.quantity here is "how many complete bundles", not multipack —
+      // each component's own quantity is already "per bundle" (see
+      // Item.bundleComponents' own comment in schema.prisma).
+      for (const c of parseBundleComponentUnits(item.bundleComponents)) {
+        const units = c.unitsPerBundle * item.quantity;
+        receivedByUpc.set(c.upc, (receivedByUpc.get(c.upc) ?? 0) + units);
+      }
+      continue;
+    }
+    if (!item.upc) continue;
     const units = unitsFor(item);
     receivedByUpc.set(item.upc, (receivedByUpc.get(item.upc) ?? 0) + units);
   }
@@ -122,7 +160,24 @@ export async function GET(
   const soldRevenueByUpc = new Map<string, number>();
   const soldFeesByUpc = new Map<string, number>();
   for (const item of manifest.items) {
-    if (item.isBundle || !item.upc || item.soldQuantity === 0) continue;
+    if (item.soldQuantity === 0) continue;
+    if (item.isBundle) {
+      // A bundle sale's revenue/fees are for the whole bundle, with no
+      // per-UPC price breakdown to draw on — split evenly per physical
+      // unit across the bundle's components (documented approximation,
+      // not a real per-item price). Unit counts themselves are exact.
+      const components = parseBundleComponentUnits(item.bundleComponents);
+      const totalUnitsPerBundle = components.reduce((sum, c) => sum + c.unitsPerBundle, 0);
+      if (totalUnitsPerBundle === 0) continue;
+      for (const c of components) {
+        const share = c.unitsPerBundle / totalUnitsPerBundle;
+        soldByUpc.set(c.upc, (soldByUpc.get(c.upc) ?? 0) + c.unitsPerBundle * item.soldQuantity);
+        soldRevenueByUpc.set(c.upc, (soldRevenueByUpc.get(c.upc) ?? 0) + Number(item.soldRevenueTotal) * share);
+        soldFeesByUpc.set(c.upc, (soldFeesByUpc.get(c.upc) ?? 0) + Number(item.soldFeesTotal) * share);
+      }
+      continue;
+    }
+    if (!item.upc) continue;
     soldByUpc.set(item.upc, (soldByUpc.get(item.upc) ?? 0) + soldUnitsFor(item));
     soldRevenueByUpc.set(item.upc, (soldRevenueByUpc.get(item.upc) ?? 0) + Number(item.soldRevenueTotal));
     soldFeesByUpc.set(item.upc, (soldFeesByUpc.get(item.upc) ?? 0) + Number(item.soldFeesTotal));
