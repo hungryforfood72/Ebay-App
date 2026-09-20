@@ -400,6 +400,13 @@ model SourcingEvaluation {
   concentrationRisk Boolean?
   reasoning      String? // plain-language explanation, written last from already-computed numbers
   error          String?
+  // Live progress while status is "running" — totalSteps is set once, right
+  // before per-line research starts, to (unique UPC groups + 1 for the
+  // final reasoning call), so the bar reflects real work done rather than
+  // a guess. Both stay at their last value once status flips to
+  // "complete"/"failed", just no longer polled.
+  processedSteps Int       @default(0)
+  totalSteps     Int       @default(0)
   startedAt      DateTime  @default(now())
   completedAt    DateTime?
 

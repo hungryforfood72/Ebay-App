@@ -943,7 +943,10 @@ async function getSupplierReceiveRate(supplier: ManifestSupplier): Promise<numbe
 const MAX_DEEP_RESEARCH_LINES = 150;
 const MAX_TREND_CHECKS = 10;
 
-export async function evaluateManifest(manifestId: string): Promise<{
+export async function evaluateManifest(
+  manifestId: string,
+  onProgress?: (processedSteps: number, totalSteps: number) => void
+): Promise<{
   recommendation: "buy" | "dont_buy";
   maxBid: number;
   expectedNetContribution: number;
@@ -990,12 +993,31 @@ export async function evaluateManifest(manifestId: string): Promise<{
   const deepGroups = sortedGroups.slice(0, MAX_DEEP_RESEARCH_LINES);
   const shallowGroups = sortedGroups.slice(MAX_DEEP_RESEARCH_LINES);
 
+  // +1 for the final reasoning call below, so the bar doesn't sit at 100%
+  // while that (often multi-second) LLM call is still running.
+  const totalSteps = sortedGroups.length + 1;
+  let processedSteps = 0;
+  const reportProgress = () => onProgress?.(processedSteps, totalSteps);
+  reportProgress();
+
   const eventCheckBudget = { remaining: MAX_EVENT_CHECKS };
-  const deepEstimates = await mapWithConcurrency(deepGroups, 5, async (group, index) =>
-    estimateLine(group, receiveRate, index < MAX_TREND_CHECKS, eventCheckBudget, compSaturationThreshold)
+  const deepEstimates = await mapWithConcurrency(
+    deepGroups,
+    5,
+    async (group, index) => estimateLine(group, receiveRate, index < MAX_TREND_CHECKS, eventCheckBudget, compSaturationThreshold),
+    () => {
+      processedSteps++;
+      reportProgress();
+    }
   );
-  const shallowEstimates = await mapWithConcurrency(shallowGroups, 5, (group) =>
-    estimateLine(group, receiveRate, false, eventCheckBudget, compSaturationThreshold)
+  const shallowEstimates = await mapWithConcurrency(
+    shallowGroups,
+    5,
+    (group) => estimateLine(group, receiveRate, false, eventCheckBudget, compSaturationThreshold),
+    () => {
+      processedSteps++;
+      reportProgress();
+    }
   );
 
   const lineEstimates = [...deepEstimates, ...shallowEstimates];
@@ -1066,6 +1088,9 @@ export async function evaluateManifest(manifestId: string): Promise<{
       .slice(0, 10),
   });
 
+  processedSteps++;
+  reportProgress();
+
   return {
     recommendation,
     maxBid,
@@ -1077,13 +1102,19 @@ export async function evaluateManifest(manifestId: string): Promise<{
   };
 }
 
-async function mapWithConcurrency<T, R>(items: T[], concurrency: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T, index: number) => Promise<R>,
+  onItemDone?: () => void
+): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let next = 0;
   async function worker() {
     while (next < items.length) {
       const i = next++;
       results[i] = await fn(items[i], i);
+      onItemDone?.();
     }
   }
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));

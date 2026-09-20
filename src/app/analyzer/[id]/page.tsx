@@ -40,6 +40,8 @@ type SourcingEvaluation = {
   concentrationRisk: boolean | null;
   reasoning: string | null;
   error: string | null;
+  processedSteps: number;
+  totalSteps: number;
   startedAt: string;
   completedAt: string | null;
   lineEstimates: SourcingLineEstimate[];
@@ -98,7 +100,10 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
 
   useEffect(() => {
     if (candidate?.sourcingEvaluation?.status !== "running") return;
-    const interval = setInterval(load, 5000);
+    // 2s while running so the progress bar actually reads as live; the
+    // evaluation itself already throttles its own DB writes to ~700ms, so
+    // polling faster than that wouldn't show anything new anyway.
+    const interval = setInterval(load, 2000);
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [candidate?.sourcingEvaluation?.status]);
@@ -266,10 +271,31 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
         )}
 
         {candidate.sourcingEvaluation?.status === "running" && (
-          <p className="text-sm text-gray-500">
-            Evaluating — checking historical sales, live comps, and market signal for each item. This can
-            take a couple minutes for a large manifest…
-          </p>
+          <div className="flex flex-col gap-1.5">
+            <p className="text-sm text-gray-500">
+              Evaluating — checking historical sales, live comps, and market signal for each item. This can
+              take a couple minutes for a large manifest…
+            </p>
+            {(() => {
+              const { processedSteps, totalSteps } = candidate.sourcingEvaluation;
+              const pct = totalSteps > 0 ? Math.min(100, Math.round((processedSteps / totalSteps) * 100)) : 0;
+              return (
+                <>
+                  <div className="h-2 w-full overflow-hidden rounded-full bg-gray-100">
+                    <div
+                      className="h-full rounded-full bg-black transition-[width] duration-500 ease-out"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                  <p className="text-xs text-gray-400">
+                    {totalSteps > 0
+                      ? `${pct}% · ${processedSteps} of ${totalSteps} items checked`
+                      : "Starting…"}
+                  </p>
+                </>
+              );
+            })()}
+          </div>
         )}
 
         {candidate.sourcingEvaluation?.status === "failed" && (

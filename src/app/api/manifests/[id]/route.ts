@@ -387,6 +387,8 @@ export async function GET(
       concentrationRisk: latestEvaluation.concentrationRisk,
       reasoning: latestEvaluation.reasoning,
       error: latestEvaluation.error,
+      processedSteps: latestEvaluation.processedSteps,
+      totalSteps: latestEvaluation.totalSteps,
       startedAt: latestEvaluation.startedAt,
       completedAt: latestEvaluation.completedAt,
       lineEstimates: latestEvaluation.lineEstimates.map((e) => ({

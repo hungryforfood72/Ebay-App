@@ -35,8 +35,26 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   });
 
   after(async () => {
+    // Throttled, fire-and-forget progress writes — evaluateManifest's
+    // callback fires once per line (up to ~1000+ for a huge manifest), and
+    // awaiting a DB round-trip on every single one would slow the actual
+    // work down for no benefit to a UI that only polls every 5s anyway.
+    // Always let the final (processed === total) write through so the row
+    // never gets stuck mid-progress if the last few calls land inside one
+    // throttle window.
+    let lastReportedAt = 0;
+    function reportProgress(processedSteps: number, totalSteps: number) {
+      const now = Date.now();
+      const isFinal = processedSteps >= totalSteps;
+      if (!isFinal && now - lastReportedAt < 700) return;
+      lastReportedAt = now;
+      prisma.sourcingEvaluation
+        .update({ where: { id: evaluation.id }, data: { processedSteps, totalSteps } })
+        .catch((e) => console.error(`[sourcing-evaluate] manifest ${id} progress update failed`, e));
+    }
+
     try {
-      const result = await evaluateManifest(id);
+      const result = await evaluateManifest(id, reportProgress);
       await prisma.$transaction([
         prisma.sourcingEvaluation.update({
           where: { id: evaluation.id },
