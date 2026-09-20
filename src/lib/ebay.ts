@@ -438,21 +438,44 @@ const CONDITION_ENUM: Record<ItemForEbayPublish["condition"], string> = {
 // eBay item aspects, one value per name — mirrors the same C: item-specific
 // fields csv.ts populates for File Exchange, so a category that needed
 // Dosage/Size/Department there needs the same aspect here.
+const KNOWN_ASPECT_NAMES: Record<string, string> = {
+  brand: "Brand",
+  color: "Color",
+  type: "Type",
+  product: "Product",
+  size: "Size",
+  department: "Department",
+  sizeType: "Size Type",
+  volume: "Volume",
+  dosage: "Dosage",
+};
+
+// Reverse of KNOWN_ASPECT_NAMES — lets publishRemediation.ts map an
+// eBay-reported missing aspect name (e.g. "Dosage") back to the short key
+// already used for it elsewhere (manual entry, the AI draft schema), so an
+// auto-filled well-known field stays consistent instead of creating a
+// second, differently-keyed duplicate.
+const ASPECT_NAME_TO_KEY: Record<string, string> = Object.fromEntries(
+  Object.entries(KNOWN_ASPECT_NAMES).map(([key, name]) => [name, key])
+);
+
+// Any aspect eBay asks for that ISN'T one of the known short keys above
+// gets looked up by exact name instead of guessing a camelCase equivalent
+// (see ebayAspectNameToSpecificsKey) — a lossy round-trip through
+// camelCase and back (spacing/capitalization) risks not matching what
+// eBay's category actually requires verbatim.
+export function ebayAspectNameToSpecificsKey(aspectName: string): string {
+  return ASPECT_NAME_TO_KEY[aspectName] ?? aspectName;
+}
+
 function buildAspects(specifics: Record<string, string> | null): Record<string, string[]> {
   const s = specifics ?? {};
   const aspects: Record<string, string[]> = {};
-  const add = (name: string, value?: string) => {
-    if (value) aspects[name] = [value];
-  };
-  add("Brand", s.brand);
-  add("Color", s.color);
-  add("Type", s.type);
-  add("Product", s.product);
-  add("Size", s.size);
-  add("Department", s.department);
-  add("Size Type", s.sizeType);
-  add("Volume", s.volume);
-  add("Dosage", s.dosage);
+  for (const [key, value] of Object.entries(s)) {
+    if (!value) continue;
+    const aspectName = KNOWN_ASPECT_NAMES[key] ?? key;
+    aspects[aspectName] = [value];
+  }
   return aspects;
 }
 

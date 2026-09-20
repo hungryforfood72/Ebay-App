@@ -7,10 +7,40 @@ import {
   toEbaySku,
   toItemForEbayPublish,
 } from "@/lib/ebay";
+import { tryFixMissingAspect } from "@/lib/publishRemediation";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
+import type { Item } from "@/generated/prisma/client";
 
-export const maxDuration = 60;
+// Auto-remediation (tryFixMissingAspect) needs its own web-search call on
+// top of the real eBay round-trips below — 60s was already tight for just
+// those.
+export const maxDuration = 90;
+
+async function attemptPublish(id: string, item: Item): Promise<{ listingId: string }> {
+  const publishData = toItemForEbayPublish(item);
+  // Always re-pushed, not just on the very first attempt — a retry (manual
+  // edit, or the auto-fix below) that changed price/title/specifics since
+  // the offer was first created needs eBay's inventory item to actually
+  // reflect that before publishing again. The old "only on first attempt"
+  // gate meant a fixed item specific would never actually reach eBay on
+  // retry — publishOffer would just fail the exact same way a second time.
+  await createOrReplaceInventoryItem(publishData);
+
+  let offerId = item.ebayOfferId;
+  if (!offerId) {
+    offerId = await createOffer(publishData);
+    // ebaySku is persisted here (not just computed on the fly) so a later
+    // eBay order's line-item sku can be matched back to this Item via an
+    // indexed exact lookup — see the field's schema comment.
+    await prisma.item.update({
+      where: { id },
+      data: { ebayOfferId: offerId, ebaySku: toEbaySku(item.sku) },
+    });
+  }
+  const listingId = await publishOffer(offerId);
+  return { listingId };
+}
 
 // Publishes one item live via the real eBay Inventory API. Deliberately its
 // own explicit action, separate from "Mark ready" — Cristian reviews every
@@ -44,30 +74,26 @@ export async function POST(
     );
   }
 
-  const publishData = toItemForEbayPublish(item);
-
   try {
-    // ebayOfferId is checked first so a retry after a publish failure skips
-    // straight to publishing the existing offer instead of creating a
-    // second one for the same SKU, which eBay rejects outright.
-    let offerId = item.ebayOfferId;
-    if (!offerId) {
-      await createOrReplaceInventoryItem(publishData);
-      offerId = await createOffer(publishData);
-      // ebaySku is persisted here (not just computed on the fly) so a
-      // later eBay order's line-item sku can be matched back to this Item
-      // via an indexed exact lookup — see the field's schema comment.
-      await prisma.item.update({
-        where: { id },
-        data: { ebayOfferId: offerId, ebaySku: toEbaySku(item.sku) },
-      });
+    let result;
+    try {
+      result = await attemptPublish(id, item);
+    } catch (e) {
+      const message = e instanceof EbayApiError || e instanceof Error ? e.message : "Publish failed.";
+      // eBay rejected over a missing required item specific (e.g. "Dosage")
+      // — look up the real value and retry exactly once. Any other failure
+      // (or a remediation attempt that couldn't find a confident value)
+      // falls straight through to the outer catch, unchanged from before.
+      const fixed = await tryFixMissingAspect(id, message);
+      if (!fixed) throw e;
+      const refreshedItem = await prisma.item.findUniqueOrThrow({ where: { id } });
+      result = await attemptPublish(id, refreshedItem);
     }
-    const listingId = await publishOffer(offerId);
     const updated = await prisma.item.update({
       where: { id },
       data: {
         status: "listed",
-        ebayListingId: listingId,
+        ebayListingId: result.listingId,
         ebayPublishedAt: new Date(),
         ebayPublishError: null,
         ebayEnvironment: getEbayEnvironment(),
