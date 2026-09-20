@@ -125,11 +125,18 @@ function ScanPageInner() {
   const [walkupLookup, setWalkupLookup] = useState<{
     description: string;
     retailPrice: number;
+    landedCostPerUnit: number | null;
     floorPrice: number | null;
     idealPrice: number;
     nearExpiryPrice: number;
+    alreadyListed: { itemId: string; availableQuantity: number } | null;
   } | null>(null);
   const [walkupNearExpiry, setWalkupNearExpiry] = useState(false);
+  // Defaults to whatever the lookup found (checked when the UPC matches an
+  // already-listed Item) — see lookupWalkupUpc. Checked = reduce the live
+  // eBay listing and record the sale on that Item directly; unchecked =
+  // today's "fresh off the manifest" tally.
+  const [walkupAlreadyInventoried, setWalkupAlreadyInventoried] = useState(false);
   const [walkupQuantity, setWalkupQuantity] = useState("1");
   const [walkupPricePerUnit, setWalkupPricePerUnit] = useState("");
   const [walkupSaving, setWalkupSaving] = useState(false);
@@ -306,6 +313,7 @@ function ScanPageInner() {
     setWalkupUpc("");
     setWalkupLookup(null);
     setWalkupNearExpiry(false);
+    setWalkupAlreadyInventoried(false);
     setWalkupQuantity("1");
     setWalkupPricePerUnit("");
     setWalkupMessage(null);
@@ -325,6 +333,9 @@ function ScanPageInner() {
       if (!res.ok) throw new Error(data.error ?? "Lookup failed.");
       setWalkupLookup(data);
       setWalkupPricePerUnit(data.idealPrice.toFixed(2));
+      // Finding a matching active listing strongly implies this IS that
+      // case — default checked, but let it be unchecked manually.
+      setWalkupAlreadyInventoried(Boolean(data.alreadyListed));
     } catch (e) {
       setWalkupLookup(null);
       setWalkupMessage(e instanceof Error ? e.message : "Something went wrong.");
@@ -346,14 +357,22 @@ function ScanPageInner() {
       const res = await fetch(`/api/manifests/${activeManifestId}/walkup-sale`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ upc: walkupUpc.trim(), quantity: qty, pricePerUnit: price }),
+        body: JSON.stringify({
+          upc: walkupUpc.trim(),
+          quantity: qty,
+          pricePerUnit: price,
+          itemId: walkupAlreadyInventoried ? walkupLookup.alreadyListed?.itemId : undefined,
+        }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error ?? "Save failed.");
       }
+      const wasInventoried = walkupAlreadyInventoried;
       resetWalkupSale();
-      setWalkupMessage("Sold! Ready for the next one.");
+      setWalkupMessage(
+        wasInventoried ? "Sold — eBay listing updated. Ready for the next one." : "Sold! Ready for the next one."
+      );
     } catch (e) {
       setWalkupMessage(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
@@ -767,7 +786,12 @@ function ScanPageInner() {
           <>
             <section className="rounded border p-3">
               <p className="font-medium">{walkupLookup.description}</p>
-              <p className="text-xs text-gray-400">Retail price: ${walkupLookup.retailPrice.toFixed(2)}</p>
+              <p className="text-xs text-gray-400">
+                Retail price: ${walkupLookup.retailPrice.toFixed(2)} · COGS:{" "}
+                {walkupLookup.landedCostPerUnit != null
+                  ? `$${walkupLookup.landedCostPerUnit.toFixed(2)}`
+                  : "enter a landed cost on the manifest to see this"}
+              </p>
               <div className="mt-2 flex flex-col gap-1 text-sm">
                 <p>
                   Floor (min acceptable):{" "}
@@ -787,6 +811,18 @@ function ScanPageInner() {
                 </p>
               </div>
             </section>
+
+            {walkupLookup.alreadyListed && (
+              <label className="flex items-center gap-2 rounded border border-blue-200 bg-blue-50 p-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={walkupAlreadyInventoried}
+                  onChange={(e) => setWalkupAlreadyInventoried(e.target.checked)}
+                />
+                Already inventoried — {walkupLookup.alreadyListed.availableQuantity} available on eBay. Reduce that
+                listing instead of logging a fresh receive.
+              </label>
+            )}
 
             <label className="flex items-center gap-2 text-sm">
               <input

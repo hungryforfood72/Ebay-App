@@ -1,4 +1,5 @@
 import { computeWalkupPrices, getWalkupSaleSettings } from "@/lib/walkupSale";
+import { getOfferDetails } from "@/lib/ebay";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -47,9 +48,37 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const settings = await getWalkupSaleSettings();
   const prices = computeWalkupPrices({ retailPrice: Number(line.retailPrice), landedCostPerUnit }, settings);
 
+  // If this UPC is already a real, currently-listed Item (scanned in and
+  // published, not just sitting on the manifest CSV), selling it walk-up
+  // needs a different path — see .../walkup-sale POST's itemId branch:
+  // reduce the live eBay listing instead of logging a fresh "received"
+  // tally, or the manifest would double-count it. Bundles are excluded —
+  // Item.upc is always null for a bundle, its components carry their own
+  // UPCs, and matching into those here isn't worth the complexity for how
+  // rarely it'd come up.
+  const listedItem = await prisma.item.findFirst({
+    where: {
+      manifestId: id,
+      upc,
+      isBundle: false,
+      status: { in: ["listed", "exported"] },
+      OR: [{ ebayOfferId: { not: null } }, { ebayListingId: { not: null } }],
+    },
+    select: { id: true, sku: true, quantity: true, soldQuantity: true, ebayOfferId: true },
+  });
+
+  let alreadyListed: { itemId: string; availableQuantity: number } | null = null;
+  if (listedItem) {
+    const storedAvailable = Math.max(0, listedItem.quantity - listedItem.soldQuantity);
+    const live = listedItem.ebayOfferId ? await getOfferDetails(listedItem.ebayOfferId) : null;
+    alreadyListed = { itemId: listedItem.id, availableQuantity: live?.availableQuantity ?? storedAvailable };
+  }
+
   return NextResponse.json({
     description: line.description,
     retailPrice: Number(line.retailPrice),
+    landedCostPerUnit,
+    alreadyListed,
     ...prices,
   });
 }
