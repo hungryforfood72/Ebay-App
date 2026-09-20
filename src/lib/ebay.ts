@@ -380,11 +380,38 @@ export type ItemForEbayPublish = {
   condition: "new" | "new_other" | "used" | "for_parts";
   itemSpecifics: Record<string, string> | null;
   photoUrls: string[];
+  // Total ever listed (this SKU's own listing-quantity units, e.g. a count
+  // of "2-pack" bundles, not individual bottles) — NOT what should be sent
+  // to eBay as available-to-buy. See availableQuantity below.
   quantity: number;
+  // How many of `quantity` have already sold, per our own order sync —
+  // confirmed live as a real, active bug: every quantity-bearing eBay call
+  // (createOrReplaceInventoryItem's availability, buildOfferBody's
+  // availableQuantity) used to send the raw `quantity` total verbatim,
+  // with no way to know this number at all. On a listing that had already
+  // sold some units, ANY later price update (a discount, a markdown, the
+  // publish-retry path) silently reset the live listing's available count
+  // back to the ORIGINAL total — effectively re-stocking already-sold
+  // units on eBay's side. Caught live: a real item (18 listed, 16 sold)
+  // should have had 2 left, but eBay's live Seller Hub showed 4 — a
+  // discrepancy of exactly this shape. availableQuantity below is the
+  // actually-correct field to send; quantity/soldQuantity are kept
+  // separately since other things (weighted COGS, sold-unit accounting)
+  // need the original total, not the shrinking remainder.
+  soldQuantity: number;
   weightLbs: number | null;
   weightOz: number | null;
   upc: string | null;
 };
+
+// How many of this listing are actually still available to buy — the
+// number that should reach eBay, never the raw original `quantity`. Never
+// negative even if soldQuantity has somehow overtaken quantity (a
+// still-processing return/refund edge case) — 0 is the honest floor, not
+// a negative "available" count.
+function availableQuantity(item: Pick<ItemForEbayPublish, "quantity" | "soldQuantity">): number {
+  return Math.max(0, item.quantity - item.soldQuantity);
+}
 
 // Maps a raw Prisma Item row (or the subset of its fields needed here) into
 // the shape createOrReplaceInventoryItem/createOffer/updateOfferPrice
@@ -402,6 +429,7 @@ export function toItemForEbayPublish(
     itemSpecifics: unknown;
     photoUrls: string[];
     quantity: number;
+    soldQuantity: number;
     weightLbs: number | null;
     weightOz: number | null;
     upc: string | null;
@@ -418,6 +446,7 @@ export function toItemForEbayPublish(
     itemSpecifics: item.itemSpecifics as Record<string, string> | null,
     photoUrls: item.photoUrls,
     quantity: item.quantity,
+    soldQuantity: item.soldQuantity,
     weightLbs: item.weightLbs,
     weightOz: item.weightOz,
     upc: item.upc,
@@ -526,7 +555,7 @@ export async function createOrReplaceInventoryItem(item: ItemForEbayPublish): Pr
       ...(totalWeightLbs > 0
         ? { packageWeightAndSize: { weight: { value: totalWeightLbs, unit: "POUND" } } }
         : {}),
-      availability: { shipToLocationAvailability: { quantity: item.quantity } },
+      availability: { shipToLocationAvailability: { quantity: availableQuantity(item) } },
     }),
   });
 }
@@ -541,7 +570,7 @@ function buildOfferBody(item: ItemForEbayPublish, price: number) {
     sku: toEbaySku(item.sku),
     marketplaceId: "EBAY_US",
     format: "FIXED_PRICE",
-    availableQuantity: item.quantity,
+    availableQuantity: availableQuantity(item),
     categoryId: item.categoryId,
     listingDescription: item.finalDescription,
     listingPolicies: {
@@ -578,6 +607,81 @@ export async function updateOfferPrice(offerId: string, item: ItemForEbayPublish
     method: "PUT",
     body: JSON.stringify(buildOfferBody(item, newPrice)),
   });
+}
+
+// Sets the live available-to-buy quantity directly to newAvailableQuantity
+// (not a delta) — the Inventory section's quantity editor. Internally
+// re-derives item.quantity (the original-total field, not the shrinking
+// remainder — see ItemForEbayPublish) so availableQuantity(item) comes back
+// out to exactly newAvailableQuantity; the caller persists that same
+// derived quantity back to the DB. Updates both the inventory item's own
+// availability and the offer's, same as a normal publish, since either one
+// alone can drift from the other otherwise.
+// Uses bulk_update_price_quantity, NOT a full createOrReplaceInventoryItem +
+// offer PUT — confirmed live those full-replace calls hit "Cannot revise
+// listing. Item specifics cannot be changed if... a fixed price listing has
+// a pending Best Offer" on a real listing, even though only quantity was
+// actually changing. This endpoint is a narrow, dedicated price/quantity
+// update — doesn't touch title/description/specifics/photos at all — and
+// confirmed live it goes through cleanly on the exact same Best-Offer-
+// pending listing the full-replace path was blocked on. Strictly the
+// better tool for this even where nothing's pending: no reason to risk a
+// full listing revision for a quantity-only edit.
+export async function updateOfferQuantity(
+  offerId: string,
+  item: ItemForEbayPublish,
+  newAvailableQuantity: number
+): Promise<number> {
+  const newQuantity = newAvailableQuantity + item.soldQuantity;
+  // The HTTP call itself can come back 200 while one of its two internal
+  // sub-updates (the inventory item's own availability vs. the offer's)
+  // individually failed — bulk_update_price_quantity reports each
+  // separately inside the body rather than failing the whole request, so
+  // ebayFetch's plain res.ok check alone isn't enough here.
+  const result = (await ebayFetch(`/sell/inventory/v1/bulk_update_price_quantity`, {
+    method: "POST",
+    body: JSON.stringify({
+      requests: [
+        {
+          sku: toEbaySku(item.sku),
+          offers: [{ offerId, availableQuantity: newAvailableQuantity }],
+          shipToLocationAvailability: { quantity: newAvailableQuantity },
+        },
+      ],
+    }),
+  })) as { responses?: { statusCode?: number; errors?: { message?: string }[] }[] };
+  const failed = (result.responses ?? []).find((r) => r.statusCode != null && r.statusCode >= 300);
+  if (failed) {
+    throw new EbayApiError(
+      failed.errors?.map((e) => e.message).join("; ") ?? "bulk_update_price_quantity reported a failure.",
+      failed.statusCode ?? 502,
+      failed
+    );
+  }
+  return newQuantity;
+}
+
+// Live, seller-side read of an offer's actual current state directly from
+// the Inventory API (authoritative — this is our own listing data, not the
+// Browse API's buyer-facing, sometimes-capped "estimated" availability).
+// Used by the Inventory section to show real numbers before editing, not
+// whatever this app's own DB last recorded.
+export async function getOfferDetails(offerId: string): Promise<{ availableQuantity: number; price: number } | null> {
+  try {
+    const result = (await ebayFetch(`/sell/inventory/v1/offer/${encodeURIComponent(offerId)}`)) as {
+      availableQuantity?: number;
+      pricingSummary?: { price?: { value: string } };
+    };
+    if (result.availableQuantity == null) return null;
+    return {
+      availableQuantity: result.availableQuantity,
+      price: result.pricingSummary?.price ? Number(result.pricingSummary.price.value) : 0,
+    };
+  } catch (e) {
+    if (!(e instanceof EbayApiError)) throw e;
+    console.error(`[ebay] getOfferDetails failed for offer ${offerId}`, e);
+    return null; // best-effort — caller falls back to stored data
+  }
 }
 
 export async function publishOffer(offerId: string): Promise<string> {
@@ -1091,6 +1195,20 @@ export async function reviseFixedPriceItemPrice(itemId: string, newPrice: number
   await tradingApiFetch(
     "ReviseFixedPriceItem",
     `<ReviseFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents"><Item><ItemID>${xmlEscape(itemId)}</ItemID><StartPrice>${newPrice.toFixed(2)}</StartPrice></Item></ReviseFixedPriceItemRequest>`
+  );
+}
+
+// Quantity counterpart to reviseFixedPriceItemPrice, for the same classic
+// (Trading API) listings — a legacy CSV-uploaded item linked up via
+// /api/items/link-legacy, which has no ebayOfferId to go through the
+// Inventory API path with. No active listing needs this path today (every
+// current "listed" item has an ebayOfferId), but the Inventory section
+// treats both kinds of listing uniformly, same as the existing discount
+// routes already do for price.
+export async function reviseFixedPriceItemQuantity(itemId: string, newQuantity: number): Promise<void> {
+  await tradingApiFetch(
+    "ReviseFixedPriceItem",
+    `<ReviseFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents"><Item><ItemID>${xmlEscape(itemId)}</ItemID><Quantity>${newQuantity}</Quantity></Item></ReviseFixedPriceItemRequest>`
   );
 }
 

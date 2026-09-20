@@ -165,6 +165,9 @@ export default function DashboardPage() {
           <Link href="/analyzer" className="text-sm underline">
             Analyzer
           </Link>
+          <Link href="/inventory" className="text-sm underline">
+            Inventory
+          </Link>
           <Link href="/settings" className="text-sm underline">
             Settings
           </Link>
