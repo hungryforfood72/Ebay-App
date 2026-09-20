@@ -377,7 +377,17 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
                   const profit = contribution - bid;
                   const roi = (profit / bid) * 100;
                   const targetMarginPct = candidate.sourcingEvaluation.targetMarginPct;
-                  const clearsTarget = targetMarginPct != null ? roi >= targetMarginPct : null;
+                  // Compare against the ROUNDED figure, same as what's shown
+                  // (roi.toFixed(0) below) — maxBid/expectedNetContribution
+                  // are themselves rounded-to-cents Decimals, so recomputing
+                  // ROI from them lands a hair off the exact target (e.g.
+                  // 34.97% instead of 35.00%). Comparing the raw float
+                  // against the integer target made bidding exactly at the
+                  // recommended max bid show "35%" right next to "Below
+                  // your 35% target" — a real contradiction, not just a
+                  // display quirk, since the max bid is defined as the
+                  // price that exactly clears the target.
+                  const clearsTarget = targetMarginPct != null ? Math.round(roi) >= targetMarginPct : null;
                   return (
                     <>
                       <span className="text-sm text-gray-600">
@@ -440,7 +450,11 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
                   } else {
                     const roi = ((expectedNetContribution - bid) / bid) * 100;
                     const clearsFloor = minBidFloor == null || bid >= minBidFloor;
-                    const clearsMargin = targetMarginPct == null || roi >= targetMarginPct;
+                    // Same rounding-consistency fix as the ROI badge above —
+                    // compare the displayed whole-percent figure, not the
+                    // raw float, so this can't disagree with the number
+                    // shown right next to it.
+                    const clearsMargin = targetMarginPct == null || Math.round(roi) >= targetMarginPct;
                     good = clearsFloor && clearsMargin;
                     label = good ? "Buy at this price" : "Don't buy at this price";
                   }
