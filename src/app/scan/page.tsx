@@ -76,6 +76,23 @@ function onScanEnter(e: React.KeyboardEvent<HTMLInputElement>, action: () => voi
   }
 }
 
+// The walk-up sale's floor/ideal/near-expiry prices come from the manifest
+// LINE (per single physical unit — ManifestLine has no pack concept at
+// all), but "already inventoried" quantity is in eBay LISTING units, which
+// for a multipack Item means packs, not loose singles. Selling "1" of an
+// already-listed 2-pack means 1 pack = 2 physical units for a price that
+// should be ~2x the manifest line's single-unit price, not the same number.
+// Only applies when actually selling against the already-listed Item — a
+// fresh-off-the-manifest sale is always single physical units regardless
+// of how some OTHER already-listed Item for the same UPC happens to be
+// packed.
+function walkupPackMultiplier(
+  alreadyListed: { isMultipack: boolean; packSize: number | null } | null,
+  alreadyInventoried: boolean
+): number {
+  return alreadyInventoried && alreadyListed?.isMultipack && alreadyListed.packSize ? alreadyListed.packSize : 1;
+}
+
 export default function ScanPage() {
   return (
     <Suspense>
@@ -129,7 +146,12 @@ function ScanPageInner() {
     floorPrice: number | null;
     idealPrice: number;
     nearExpiryPrice: number;
-    alreadyListed: { itemId: string; availableQuantity: number } | null;
+    alreadyListed: {
+      itemId: string;
+      availableQuantity: number;
+      isMultipack: boolean;
+      packSize: number | null;
+    } | null;
   } | null>(null);
   const [walkupNearExpiry, setWalkupNearExpiry] = useState(false);
   // Defaults to whatever the lookup found (checked when the UPC matches an
@@ -332,10 +354,12 @@ function ScanPageInner() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Lookup failed.");
       setWalkupLookup(data);
-      setWalkupPricePerUnit(data.idealPrice.toFixed(2));
       // Finding a matching active listing strongly implies this IS that
       // case — default checked, but let it be unchecked manually.
-      setWalkupAlreadyInventoried(Boolean(data.alreadyListed));
+      const alreadyInventoried = Boolean(data.alreadyListed);
+      setWalkupAlreadyInventoried(alreadyInventoried);
+      const multiplier = walkupPackMultiplier(data.alreadyListed, alreadyInventoried);
+      setWalkupPricePerUnit((data.idealPrice * multiplier).toFixed(2));
     } catch (e) {
       setWalkupLookup(null);
       setWalkupMessage(e instanceof Error ? e.message : "Something went wrong.");
@@ -738,6 +762,9 @@ function ScanPageInner() {
   // instant floor/ideal/near-expiry price with no math required, mark it
   // sold, then straight back to the UPC step for the next item.
   if (walkupMode) {
+    const packMultiplier = walkupLookup
+      ? walkupPackMultiplier(walkupLookup.alreadyListed, walkupAlreadyInventoried)
+      : 1;
     return (
       <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-4 p-4">
         <div className="flex items-center justify-between">
@@ -796,7 +823,7 @@ function ScanPageInner() {
                 <p>
                   Floor (min acceptable):{" "}
                   {walkupLookup.floorPrice != null ? (
-                    <strong>${walkupLookup.floorPrice.toFixed(2)}</strong>
+                    <strong>${(walkupLookup.floorPrice * packMultiplier).toFixed(2)}</strong>
                   ) : (
                     <span className="text-xs text-gray-400">
                       Enter a landed cost on the manifest to get a floor price
@@ -804,11 +831,14 @@ function ScanPageInner() {
                   )}
                 </p>
                 <p>
-                  Ideal: <strong>${walkupLookup.idealPrice.toFixed(2)}</strong>
+                  Ideal: <strong>${(walkupLookup.idealPrice * packMultiplier).toFixed(2)}</strong>
                 </p>
                 <p>
-                  Near-expiry: <strong>${walkupLookup.nearExpiryPrice.toFixed(2)}</strong>
+                  Near-expiry: <strong>${(walkupLookup.nearExpiryPrice * packMultiplier).toFixed(2)}</strong>
                 </p>
+                {packMultiplier > 1 && (
+                  <p className="text-xs text-gray-400">Prices above are per pack of {packMultiplier}.</p>
+                )}
               </div>
             </section>
 
@@ -817,10 +847,24 @@ function ScanPageInner() {
                 <input
                   type="checkbox"
                   checked={walkupAlreadyInventoried}
-                  onChange={(e) => setWalkupAlreadyInventoried(e.target.checked)}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setWalkupAlreadyInventoried(checked);
+                    const multiplier = walkupPackMultiplier(walkupLookup.alreadyListed, checked);
+                    setWalkupPricePerUnit(
+                      ((walkupNearExpiry ? walkupLookup.nearExpiryPrice : walkupLookup.idealPrice) * multiplier).toFixed(
+                        2
+                      )
+                    );
+                  }}
                 />
-                Already inventoried — {walkupLookup.alreadyListed.availableQuantity} available on eBay. Reduce that
-                listing instead of logging a fresh receive.
+                Already inventoried —{" "}
+                {walkupLookup.alreadyListed.isMultipack && walkupLookup.alreadyListed.packSize
+                  ? `${walkupLookup.alreadyListed.availableQuantity} pack(s) of ${walkupLookup.alreadyListed.packSize} available on eBay (${
+                      walkupLookup.alreadyListed.availableQuantity * walkupLookup.alreadyListed.packSize
+                    } units total)`
+                  : `${walkupLookup.alreadyListed.availableQuantity} available on eBay`}
+                . Reduce that listing instead of logging a fresh receive.
               </label>
             )}
 
@@ -832,7 +876,7 @@ function ScanPageInner() {
                   const checked = e.target.checked;
                   setWalkupNearExpiry(checked);
                   setWalkupPricePerUnit(
-                    (checked ? walkupLookup.nearExpiryPrice : walkupLookup.idealPrice).toFixed(2)
+                    ((checked ? walkupLookup.nearExpiryPrice : walkupLookup.idealPrice) * packMultiplier).toFixed(2)
                   );
                 }}
               />
@@ -840,7 +884,7 @@ function ScanPageInner() {
             </label>
 
             <section>
-              <label className="text-sm font-medium">Quantity sold</label>
+              <label className="text-sm font-medium">{packMultiplier > 1 ? "Packs sold" : "Quantity sold"}</label>
               <input
                 type="number"
                 min={1}
@@ -852,7 +896,7 @@ function ScanPageInner() {
             </section>
 
             <section>
-              <label className="text-sm font-medium">Price per unit</label>
+              <label className="text-sm font-medium">{packMultiplier > 1 ? "Price per pack" : "Price per unit"}</label>
               <input
                 type="number"
                 step="0.01"

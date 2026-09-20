@@ -64,14 +64,31 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       status: { in: ["listed", "exported"] },
       OR: [{ ebayOfferId: { not: null } }, { ebayListingId: { not: null } }],
     },
-    select: { id: true, sku: true, quantity: true, soldQuantity: true, ebayOfferId: true },
+    select: { id: true, sku: true, quantity: true, soldQuantity: true, ebayOfferId: true, isMultipack: true, packSize: true },
   });
 
-  let alreadyListed: { itemId: string; availableQuantity: number } | null = null;
+  let alreadyListed: {
+    itemId: string;
+    availableQuantity: number;
+    isMultipack: boolean;
+    packSize: number | null;
+  } | null = null;
   if (listedItem) {
     const storedAvailable = Math.max(0, listedItem.quantity - listedItem.soldQuantity);
     const live = listedItem.ebayOfferId ? await getOfferDetails(listedItem.ebayOfferId) : null;
-    alreadyListed = { itemId: listedItem.id, availableQuantity: live?.availableQuantity ?? storedAvailable };
+    alreadyListed = {
+      itemId: listedItem.id,
+      // eBay's own "available quantity" for a multipack listing is in
+      // LISTING units (packs), not physical units — e.g. "8 available" on
+      // an "Lot of 2" listing means 8 packs, 16 individual boxes. The
+      // manifest-line retailPrice/floor/ideal prices below are per single
+      // physical unit (see ManifestLine — no pack concept at that level),
+      // so the scan page multiplies by packSize before showing/pre-filling
+      // a suggested price for a pack sale.
+      availableQuantity: live?.availableQuantity ?? storedAvailable,
+      isMultipack: listedItem.isMultipack,
+      packSize: listedItem.packSize,
+    };
   }
 
   return NextResponse.json({
