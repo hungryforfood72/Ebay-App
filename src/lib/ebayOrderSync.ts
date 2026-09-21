@@ -170,15 +170,6 @@ export async function syncEbayOrders(
   const syncStartedAt = new Date();
 
   const earningsCache = new Map<string, Awaited<ReturnType<typeof getOrderEarnings>>>();
-  // Shipping-label transactions claimed so far *in this run* — Cristian
-  // combine-ships multiple eBay orders under one physical label, and eBay
-  // returns the same shipping transaction for every order in the shipment.
-  // Without this, each sibling order would independently allocate the
-  // FULL label cost to itself, multiplying the real cost by however many
-  // orders shared it. Whichever order is processed first claims the label;
-  // the DB check below (ebayOrderId: { not: order.orderId }) makes this
-  // durable across separate sync runs too, not just within one.
-  const claimedShippingTxnIdsThisRun = new Set<string>();
 
   try {
     const orders = await getRecentOrders(from, syncStartedAt);
@@ -219,6 +210,81 @@ export async function syncEbayOrders(
 
     result.ordersScanned = orders.length;
 
+    // Resolve every combine-shipped label's group BEFORE processing
+    // individual orders — Cristian: split a shared label's cost evenly
+    // across however many orders it covers, rather than the old
+    // first-claimer-takes-100%-of-it design. That needs the FULL known
+    // membership up front (from this run's orders AND any sibling already
+    // recorded from an earlier run), not a one-at-a-time exclusivity
+    // claim, since adding a sibling changes everyone's fair share.
+    // shippingTransactionId is already a shared, non-unique key across
+    // sibling EbayItemSale rows — no schema change needed to group by it.
+    const salesOrders = orders.filter((o) => !NON_SALE_PAYMENT_STATUSES.includes(o.orderPaymentStatus));
+    const labelOrdersThisRun = new Map<string, Set<string>>();
+    const labelAmountByTxnId = new Map<string, number>();
+    for (const order of salesOrders) {
+      if (!earningsCache.has(order.orderId)) {
+        earningsCache.set(order.orderId, await getOrderEarnings(order.orderId));
+      }
+      const earnings = earningsCache.get(order.orderId)!;
+      for (const label of earnings.shippingLabels) {
+        const set = labelOrdersThisRun.get(label.transactionId) ?? new Set<string>();
+        set.add(order.orderId);
+        labelOrdersThisRun.set(label.transactionId, set);
+        labelAmountByTxnId.set(label.transactionId, label.amount);
+      }
+    }
+
+    const resolvedPoolPerOrder = new Map<string, number>();
+    const inRunOrderIds = new Set(salesOrders.map((o) => o.orderId));
+    for (const [transactionId, inRunSiblingIds] of labelOrdersThisRun) {
+      const knownSiblings = await prisma.ebayItemSale.findMany({
+        where: { shippingTransactionId: transactionId },
+        select: { ebayOrderId: true },
+        distinct: ["ebayOrderId"],
+      });
+      const siblingOrderIds = new Set(knownSiblings.map((s) => s.ebayOrderId));
+      for (const id of inRunSiblingIds) siblingOrderIds.add(id);
+
+      const labelAmount = labelAmountByTxnId.get(transactionId)!;
+      const sharePerOrder = labelAmount / siblingOrderIds.size;
+      resolvedPoolPerOrder.set(transactionId, sharePerOrder);
+
+      // Rebalance whichever siblings this run's main loop won't otherwise
+      // touch — already recorded from an earlier run, either a legacy $0
+      // "loser" row from the old first-claim design or a previously-
+      // resolved nonzero share that needs adjusting now the known group
+      // size has changed. Derived entirely from each sale's own stored
+      // revenue (no eBay API call needed) — same revenue-proportional
+      // split already used within one order's own line items below, just
+      // dividing this order's share of the label instead of the full
+      // amount.
+      for (const siblingOrderId of siblingOrderIds) {
+        if (inRunOrderIds.has(siblingOrderId)) continue;
+        try {
+          const siblingSales = await prisma.ebayItemSale.findMany({ where: { ebayOrderId: siblingOrderId } });
+          const orderRevenueTotal = siblingSales.reduce((sum, s) => sum + Number(s.revenue), 0);
+          for (const sale of siblingSales) {
+            const share = orderRevenueTotal > 0 ? Number(sale.revenue) / orderRevenueTotal : 1 / siblingSales.length;
+            const newShipping = share * sharePerOrder;
+            const delta = newShipping - Number(sale.shipping);
+            if (Math.abs(delta) < 0.005) continue;
+            await prisma.$transaction([
+              prisma.ebayItemSale.update({
+                where: { id: sale.id },
+                data: { shipping: newShipping, shippingTransactionId: transactionId },
+              }),
+              prisma.item.update({ where: { id: sale.itemId }, data: { soldShippingTotal: { increment: delta } } }),
+            ]);
+          }
+        } catch (e) {
+          result.errors.push(
+            `Order ${siblingOrderId} (shipping rebalance for ${transactionId}): ${e instanceof Error ? e.message : String(e)}`
+          );
+        }
+      }
+    }
+
     for (const order of orders) {
       if (NON_SALE_PAYMENT_STATUSES.includes(order.orderPaymentStatus)) {
         // Might be a real, already-recorded sale that later got cancelled
@@ -258,23 +324,17 @@ export async function syncEbayOrders(
       }
       const earnings = earningsCache.get(order.orderId)!;
 
-      // Claim whichever of this order's shipping labels haven't already
-      // been claimed by a sibling order (this run or a previous one).
-      // Usually 0 or 1 label; more than 1 only for a genuinely split
-      // shipment, in which case only the last transactionId gets stored as
-      // the reference — a rare edge case, not worth a many-to-many schema.
+      // This order's even share of each of its shipping labels — already
+      // resolved above (across the FULL known sibling group, not just
+      // whichever order got here first). Usually 0 or 1 label; more than 1
+      // only for a genuinely split shipment, in which case only the last
+      // transactionId gets stored as the reference — a rare edge case, not
+      // worth a many-to-many schema.
       let orderShippingPool = 0;
       let orderShippingTxnId: string | null = null;
       for (const label of earnings.shippingLabels) {
-        if (claimedShippingTxnIdsThisRun.has(label.transactionId)) continue;
-        const claimedByAnotherOrder = await prisma.ebayItemSale.findFirst({
-          where: { shippingTransactionId: label.transactionId, ebayOrderId: { not: order.orderId } },
-          select: { id: true },
-        });
-        if (claimedByAnotherOrder) continue;
-        orderShippingPool += label.amount;
+        orderShippingPool += resolvedPoolPerOrder.get(label.transactionId) ?? 0;
         orderShippingTxnId = label.transactionId;
-        claimedShippingTxnIdsThisRun.add(label.transactionId);
       }
 
       for (const lineItem of order.lineItems) {
@@ -298,17 +358,11 @@ export async function syncEbayOrders(
 
           if (existingSale) {
             const ageDays = (syncStartedAt.getTime() - existingSale.soldAt.getTime()) / (1000 * 60 * 60 * 24);
-            const shippingRecheckDue =
-              Number(existingSale.shipping) === 0 && !existingSale.shippingTransactionId && ageDays <= shippingRecheckWindowDays;
             // No "still missing" signal for an ad fee the way shippingTransactionId
             // gives one for shipping — fees is always a real number, never null —
             // so a promoted item's sale is re-checked on every run within its own
             // window regardless of whether the fee already posted, not just once.
             const adFeeRecheckDue = ageDays <= AD_FEE_RECHECK_WINDOW_DAYS;
-            if (!shippingRecheckDue && !adFeeRecheckDue) {
-              result.itemsAlreadySynced++;
-              continue;
-            }
             // Within at least one recheck window — apply whatever fresh
             // earnings now show as a DELTA against the item's running
             // totals, not a blind re-increment (the sale row already
@@ -320,6 +374,18 @@ export async function syncEbayOrders(
             // write.
             const feesDelta = fees - Number(existingSale.fees);
             const shippingDelta = shipping - Number(existingSale.shipping);
+            // Shipping has no age gate here (unlike fees above) — being in
+            // `orders` this run already means it was worth fetching
+            // earnings for (recently modified, within the shipping
+            // recheck window, or a combine-ship sibling whose group just
+            // got resolved above), so any real shipping delta — including
+            // a PREVIOUSLY nonzero share that needs adjusting because a
+            // new sibling joined the group — always gets applied, not
+            // re-gated behind a window meant for a different purpose.
+            if (!adFeeRecheckDue && Math.abs(shippingDelta) < 0.005) {
+              result.itemsAlreadySynced++;
+              continue;
+            }
             if (Math.abs(feesDelta) < 0.005 && Math.abs(shippingDelta) < 0.005) {
               result.itemsAlreadySynced++;
               continue;
