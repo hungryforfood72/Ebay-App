@@ -21,6 +21,14 @@ enum ItemStatus {
   // "sold" = soldQuantity has reached the item's full listed quantity. A
   // partially-sold multi-unit item stays "listed" — see soldQuantity below.
   sold
+  // "expired" = the daily expiration sweep (src/lib/expireListings.ts)
+  // successfully ended this listing on eBay because its expirationDate
+  // passed. Only ever set once the eBay-side removal actually succeeded —
+  // never flipped speculatively, since that would tell staff to pull
+  // physical stock for something eBay might still show as buyable. See
+  // Item.ebayEndError for the "tried and failed" case, which leaves
+  // status untouched instead.
+  expired
 }
 
 enum ItemCondition {
@@ -201,6 +209,21 @@ model Item {
   markdownStartedAt     DateTime?
   markdownEndsAt        DateTime?
   ebayMarkdownError     String?
+
+  // Daily expiration sweep (src/lib/expireListings.ts / the
+  // /api/cron/expire-listings cron) state. expiredAt is only set once the
+  // eBay-side end call actually succeeded (status flips to "expired" at
+  // the same time) — see Item.status's own comment for why this ordering
+  // matters. ebayEndError is best-effort: set on a failed end-attempt so
+  // it's visible and gets retried next run, cleared back to null on
+  // success. shelfPullAcknowledged* records who physically pulled the
+  // item off the shelf and when — free-text username, matching the exact
+  // convention already used by StockAdjustment.recordedBy and
+  // ManifestWalkupSale.recordedBy elsewhere in this schema, not a User FK.
+  expiredAt               DateTime?
+  ebayEndError            String?
+  shelfPullAcknowledgedAt DateTime?
+  shelfPullAcknowledgedBy String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

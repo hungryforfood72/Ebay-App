@@ -41,6 +41,23 @@ type ExpiringUnlistedItem = {
   status: string;
 };
 
+type ExpiredNeedingPullItem = {
+  id: string;
+  finalTitle: string | null;
+  sku: string;
+  shelfLocation: string;
+  expirationDate: string | null;
+  expiredAt: string;
+};
+
+type ExpiredEndFailedItem = {
+  id: string;
+  finalTitle: string | null;
+  sku: string;
+  expirationDate: string | null;
+  ebayEndError: string;
+};
+
 type DashboardData = {
   stats: {
     pendingReview: number;
@@ -60,6 +77,9 @@ type DashboardData = {
   ebay: { connected: boolean; missingScopes: string[] };
   expiringListed: ExpiringListedItem[];
   expiringUnlisted: ExpiringUnlistedItem[];
+  expiredNeedingPull: ExpiredNeedingPullItem[];
+  // Owner-only — see /api/dashboard's isOwner check.
+  expiredEndFailed?: ExpiredEndFailedItem[];
 };
 
 function shortScopeName(scope: string): string {
@@ -150,9 +170,15 @@ export default function DashboardPage() {
     );
   }
 
+  function removeExpiredNeedingPull(id: string) {
+    setData((prev) =>
+      prev ? { ...prev, expiredNeedingPull: prev.expiredNeedingPull.filter((i) => i.id !== id) } : prev
+    );
+  }
+
   if (!data) return <main className="p-6">Loading…</main>;
 
-  const { stats, ebay, expiringListed, expiringUnlisted } = data;
+  const { stats, ebay, expiringListed, expiringUnlisted, expiredNeedingPull, expiredEndFailed } = data;
 
   return (
     <main className="mx-auto max-w-4xl p-6">
@@ -344,7 +370,98 @@ export default function DashboardPage() {
           </Link>
         </section>
       )}
+
+      {expiredNeedingPull.length > 0 && (
+        <section className="mb-6 rounded-lg border border-red-300 bg-red-50 p-4">
+          <h2 className="mb-2 text-sm font-medium">
+            Expired — needs shelf pull ({expiredNeedingPull.length})
+          </h2>
+          <p className="mb-2 text-xs text-gray-500">
+            These listings were automatically removed from eBay because their expiration date passed.
+            Pull the physical stock off the shelf, then mark it done below.
+          </p>
+          <div className="flex flex-col gap-2">
+            {expiredNeedingPull.map((item) => (
+              <ShelfPullRow key={item.id} item={item} onAcknowledged={() => removeExpiredNeedingPull(item.id)} />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {expiredEndFailed && expiredEndFailed.length > 0 && (
+        <section className="mb-6 rounded-lg border border-red-500 bg-red-100 p-4">
+          <h2 className="mb-2 text-sm font-medium text-red-800">
+            Expired listings eBay wouldn&apos;t remove ({expiredEndFailed.length})
+          </h2>
+          <p className="mb-2 text-xs text-gray-600">
+            Past their expiration date, but the automatic removal failed — still genuinely live on eBay,
+            so nothing&apos;s been pulled off the shelf for these. Retried automatically every hour; check
+            the eBay connection in Settings if this persists.
+          </p>
+          <div className="flex flex-col gap-1">
+            {expiredEndFailed.map((item) => (
+              <div key={item.id} className="text-sm">
+                <div className="flex items-center justify-between">
+                  <span>{item.finalTitle ?? item.sku}</span>
+                  <span className="text-gray-500">
+                    {item.expirationDate ? new Date(item.expirationDate).toLocaleDateString() : "—"}
+                  </span>
+                </div>
+                <p className="text-xs text-red-700">{item.ebayEndError}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
     </main>
+  );
+}
+
+function ShelfPullRow({
+  item,
+  onAcknowledged,
+}: {
+  item: ExpiredNeedingPullItem;
+  onAcknowledged: () => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function acknowledge() {
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/items/${item.id}/acknowledge-shelf-pull`, { method: "POST" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error ?? "Failed to acknowledge.");
+      }
+      onAcknowledged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong.");
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="flex items-center justify-between gap-3 rounded border border-red-200 bg-white px-3 py-2 text-sm">
+      <div>
+        <p className="font-medium">{item.finalTitle ?? item.sku}</p>
+        <p className="text-xs text-gray-500">
+          Shelf: {item.shelfLocation || "—"} · Expired{" "}
+          {item.expirationDate ? new Date(item.expirationDate).toLocaleDateString() : new Date(item.expiredAt).toLocaleDateString()}
+        </p>
+        {error && <p className="text-xs text-red-600">{error}</p>}
+      </div>
+      <button
+        type="button"
+        onClick={acknowledge}
+        disabled={saving}
+        className="shrink-0 rounded bg-black px-3 py-1.5 text-xs text-white disabled:opacity-40"
+      >
+        {saving ? "Saving…" : "Mark as pulled"}
+      </button>
+    </div>
   );
 }
 

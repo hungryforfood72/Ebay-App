@@ -33,6 +33,8 @@ export async function GET(request: Request) {
     salesThisMonth,
     token,
     refundsThisMonth,
+    expiredNeedingPull,
+    expiredEndFailed,
   ] = await Promise.all([
     prisma.item.count({ where: { status: "pending_review" } }),
     prisma.item.count({ where: { status: "ready" } }),
@@ -100,6 +102,24 @@ export async function GET(request: Request) {
     prisma.ebayItemRefund.findMany({
       where: { refundedAt: { gte: startOfMonth } },
       select: { amount: true, feeCredit: true },
+    }),
+    // Daily expiration sweep already ended these on eBay — now someone
+    // needs to physically pull the shelf stock and acknowledge it. Visible
+    // to both roles (no dollar fields here), unlike everything else this
+    // route gates by isOwner.
+    prisma.item.findMany({
+      where: { status: "expired", shelfPullAcknowledgedAt: null },
+      orderBy: { expiredAt: "asc" },
+      select: { id: true, finalTitle: true, sku: true, shelfLocation: true, expirationDate: true, expiredAt: true },
+    }),
+    // Owner-only operational alert: the sweep tried and failed to end
+    // these on eBay (still genuinely live, past their date) — needs
+    // investigation, not a shelf-pull instruction, since nothing's
+    // actually been removed yet.
+    prisma.item.findMany({
+      where: { status: { in: ["listed", "exported"] }, ebayEndError: { not: null } },
+      orderBy: { expirationDate: "asc" },
+      select: { id: true, finalTitle: true, sku: true, expirationDate: true, ebayEndError: true },
     }),
   ]);
 
@@ -187,5 +207,7 @@ export async function GET(request: Request) {
       };
     }),
     expiringUnlisted,
+    expiredNeedingPull,
+    ...(isOwner ? { expiredEndFailed } : {}),
   });
 }

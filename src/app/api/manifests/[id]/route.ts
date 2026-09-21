@@ -2,51 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 import { getTargetMarginPct, MIN_BID_FLOOR } from "@/lib/sourcingAgent";
 import { getRequestUser } from "@/lib/auth";
-
-// Units actually received for an item = the quantity scanned, times pack
-// size if it's a multipack — the same "3 of a 2-pack = 6 units" accounting
-// Cristian described. Bundles are handled separately (see
-// bundleComponentUnitsByUpc below) — a bundle usually mixes several
-// unrelated UPCs that can't be matched to any one manifest line, but when
-// its components DO carry real UPCs (e.g. the same product bought as a
-// bundle only because two lots have different expiration dates), those
-// UPCs still need to be credited as received/sold against their manifest
-// lines, or reconciliation silently shows them as missing forever.
-function unitsFor(item: { quantity: number; isMultipack: boolean; packSize: number | null }): number {
-  return item.quantity * (item.isMultipack && item.packSize ? item.packSize : 1);
-}
-
-// Same multipack expansion as unitsFor, but for the eBay-order-derived
-// soldQuantity — an eBay listing's availableQuantity/lineItem quantity is
-// in terms of "how many of this listing" (pack count), the same scale as
-// Item.quantity, not the already-expanded physical-unit scale unitsFor
-// produces. Needed to keep the sold pool comparable to the received pool
-// below.
-function soldUnitsFor(item: { soldQuantity: number; isMultipack: boolean; packSize: number | null }): number {
-  return item.soldQuantity * (item.isMultipack && item.packSize ? item.packSize : 1);
-}
-
-type BundleComponentUnits = { upc: string; unitsPerBundle: number };
-
-// bundleComponents is stored as loose Json ({ upc, quantity, photoUrls,
-// name, upcLookupData, expirationDate }[] — see Item.bundleComponents in
-// schema.prisma), so this validates shape defensively rather than trusting
-// it. Components with no UPC (a "mystery" item with nothing scannable) or
-// a non-positive quantity contribute nothing — there's no manifest line
-// they could ever match.
-function parseBundleComponentUnits(json: unknown): BundleComponentUnits[] {
-  if (!Array.isArray(json)) return [];
-  const result: BundleComponentUnits[] = [];
-  for (const raw of json) {
-    if (typeof raw !== "object" || raw === null) continue;
-    const upc = "upc" in raw ? String((raw as { upc?: unknown }).upc ?? "") : "";
-    const quantity = "quantity" in raw ? Number((raw as { quantity?: unknown }).quantity) : NaN;
-    if (upc && Number.isFinite(quantity) && quantity > 0) {
-      result.push({ upc, unitsPerBundle: quantity });
-    }
-  }
-  return result;
-}
+import { parseBundleComponentUnits, soldUnitsFor, unitsFor } from "@/lib/itemUnits";
 
 // Fills each line's expected quantity in order before spilling into the
 // next — a UPC can legitimately appear on more than one manifest line (e.g.

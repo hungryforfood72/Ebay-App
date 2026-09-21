@@ -691,6 +691,13 @@ export async function publishOffer(offerId: string): Promise<string> {
   return result.listingId;
 }
 
+// Ends the live listing entirely (not just zeroing its quantity) — used by
+// the daily expiration sweep (src/lib/expireListings.ts). No request body;
+// a 204 (ebayFetch returns null) is success.
+export async function withdrawOffer(offerId: string): Promise<void> {
+  await ebayFetch(`/sell/inventory/v1/offer/${encodeURIComponent(offerId)}/withdraw`, { method: "POST" });
+}
+
 // One-time setup (see scripts/ebay-setup-location.ts) — createOffer requires
 // a merchantLocationKey to already exist; it's a ship-from location, not
 // something created per listing. A 409 (already exists) is treated as
@@ -1209,6 +1216,17 @@ export async function reviseFixedPriceItemQuantity(itemId: string, newQuantity: 
   await tradingApiFetch(
     "ReviseFixedPriceItem",
     `<ReviseFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents"><Item><ItemID>${xmlEscape(itemId)}</ItemID><Quantity>${newQuantity}</Quantity></Item></ReviseFixedPriceItemRequest>`
+  );
+}
+
+// withdrawOffer's classic-listing counterpart — ends the listing entirely,
+// used by the daily expiration sweep (src/lib/expireListings.ts).
+// EndingReason NotAvailable is the standard, no-fault reason for ending a
+// listing programmatically for inventory-management purposes.
+export async function endFixedPriceItem(itemId: string): Promise<void> {
+  await tradingApiFetch(
+    "EndFixedPriceItem",
+    `<EndFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents"><ItemID>${xmlEscape(itemId)}</ItemID><EndingReason>NotAvailable</EndingReason></EndFixedPriceItemRequest>`
   );
 }
 
