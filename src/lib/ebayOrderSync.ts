@@ -1,6 +1,7 @@
 import {
   getEbayEnvironment,
   getMissingScopes,
+  getOrder,
   getOrderEarnings,
   getRecentOrders,
   reviseFixedPriceItemQuantity,
@@ -133,7 +134,17 @@ async function reverseSale(
 // listings via /api/items/link-legacy, whose sales could predate this sync
 // feature entirely and would otherwise never be picked up, since the
 // regular run only ever looks forward from the last successful sync).
-export async function syncEbayOrders(options?: { since?: Date }): Promise<EbayOrderSyncResult> {
+// `shippingRecheckWindowDays`, when passed, overrides
+// SHIPPING_RECHECK_WINDOW_DAYS for both the recheck-due query and the
+// in-loop check below — for a one-off backfill of sales that were already
+// stuck at $0 shipping before the getOrder-based recheck fetch existed
+// (see the comment above the orders-merge block) and have since aged past
+// the normal 7-day window, permanently. Not meant for routine use — the
+// whole point of the normal window is to eventually stop re-checking a
+// sale that genuinely has no shipping label.
+export async function syncEbayOrders(
+  options?: { since?: Date; shippingRecheckWindowDays?: number }
+): Promise<EbayOrderSyncResult> {
   const result: EbayOrderSyncResult = {
     ordersScanned: 0,
     itemsUpdated: 0,
@@ -171,6 +182,41 @@ export async function syncEbayOrders(options?: { since?: Date }): Promise<EbayOr
 
   try {
     const orders = await getRecentOrders(from, syncStartedAt);
+
+    // A shipping label purchase doesn't reliably bump an order's
+    // lastmodifieddate on eBay's side — confirmed live: orders over 40
+    // days old still had a real, unclaimed shipping label sitting on
+    // eBay, despite the incremental lastmodifieddate window having long
+    // since moved past them. Without this, SHIPPING_RECHECK_WINDOW_DAYS
+    // below never actually gets a chance to run for most sales, since
+    // getRecentOrders alone would just never surface them again.
+    // getOrder (a single-order lookup, not a date-range scan) fills that
+    // gap: directly re-fetch any order that still has a sale on record
+    // with no shipping data and is still within the recheck window, and
+    // fold it into the same orders list so it goes through the identical
+    // processing loop below — no separate code path to keep in sync.
+    const shippingRecheckWindowDays = options?.shippingRecheckWindowDays ?? SHIPPING_RECHECK_WINDOW_DAYS;
+    const shippingRecheckCutoff = new Date(
+      syncStartedAt.getTime() - shippingRecheckWindowDays * 24 * 60 * 60 * 1000
+    );
+    const alreadyFetchedOrderIds = new Set(orders.map((o) => o.orderId));
+    const shippingRecheckDueOrderIds = await prisma.ebayItemSale.findMany({
+      where: { shipping: 0, shippingTransactionId: null, soldAt: { gte: shippingRecheckCutoff } },
+      select: { ebayOrderId: true },
+      distinct: ["ebayOrderId"],
+    });
+    for (const { ebayOrderId } of shippingRecheckDueOrderIds) {
+      if (alreadyFetchedOrderIds.has(ebayOrderId)) continue;
+      try {
+        orders.push(await getOrder(ebayOrderId));
+        alreadyFetchedOrderIds.add(ebayOrderId);
+      } catch (e) {
+        result.errors.push(
+          `Order ${ebayOrderId} (shipping recheck fetch): ${e instanceof Error ? e.message : String(e)}`
+        );
+      }
+    }
+
     result.ordersScanned = orders.length;
 
     for (const order of orders) {
@@ -253,7 +299,7 @@ export async function syncEbayOrders(options?: { since?: Date }): Promise<EbayOr
           if (existingSale) {
             const ageDays = (syncStartedAt.getTime() - existingSale.soldAt.getTime()) / (1000 * 60 * 60 * 24);
             const shippingRecheckDue =
-              Number(existingSale.shipping) === 0 && !existingSale.shippingTransactionId && ageDays <= SHIPPING_RECHECK_WINDOW_DAYS;
+              Number(existingSale.shipping) === 0 && !existingSale.shippingTransactionId && ageDays <= shippingRecheckWindowDays;
             // No "still missing" signal for an ad fee the way shippingTransactionId
             // gives one for shipping — fees is always a real number, never null —
             // so a promoted item's sale is re-checked on every run within its own
