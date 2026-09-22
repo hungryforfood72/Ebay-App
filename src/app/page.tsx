@@ -377,8 +377,9 @@ export default function DashboardPage() {
             Expired — needs shelf pull ({expiredNeedingPull.length})
           </h2>
           <p className="mb-2 text-xs text-gray-500">
-            These listings were automatically removed from eBay because their expiration date passed.
-            Pull the physical stock off the shelf, then mark it done below.
+            These listings were automatically removed from eBay ahead of their expiration date (per the
+            removal buffer in Settings, to stay compliant with eBay&apos;s food policy — items must be
+            delivered before they expire). Pull the physical stock off the shelf, then mark it done below.
           </p>
           <div className="flex flex-col gap-2">
             {expiredNeedingPull.map((item) => (
@@ -394,9 +395,10 @@ export default function DashboardPage() {
             Expired listings eBay wouldn&apos;t remove ({expiredEndFailed.length})
           </h2>
           <p className="mb-2 text-xs text-gray-600">
-            Past their expiration date, but the automatic removal failed — still genuinely live on eBay,
-            so nothing&apos;s been pulled off the shelf for these. Retried automatically every hour; check
-            the eBay connection in Settings if this persists.
+            Inside their removal window (expiring soon, per the buffer in Settings), but the automatic
+            eBay removal failed — still genuinely live and buyable, so nothing&apos;s been pulled off the
+            shelf for these. Retried automatically every hour; check the eBay connection in Settings if
+            this persists.
           </p>
           <div className="flex flex-col gap-1">
             {expiredEndFailed.map((item) => (

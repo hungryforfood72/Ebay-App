@@ -55,6 +55,8 @@ function SettingsPageInner() {
 
       <WalkupSaleMarginSettings />
 
+      <ExpirationBufferSetting />
+
       <UsersManager />
     </main>
   );
@@ -730,7 +732,6 @@ function ShelfLocationsEditor() {
       <p className="mb-4 text-xs text-gray-400">
         1&quot; x 2&quot; labels — one per location, each with a scannable barcode.
       </p>
-
       {!entries ? (
         <p className="text-sm text-gray-400">Loading…</p>
       ) : entries.length === 0 ? (
@@ -754,6 +755,75 @@ function ShelfLocationsEditor() {
           ))}
         </ul>
       )}
+    </section>
+  );
+}
+
+// How many days BEFORE an item's printed expiration date the daily sweep
+// actually ends its eBay listing — eBay's food policy requires the item to
+// be *delivered* before that date, not just for the listing to come down
+// on it, so this needs to cover order processing + shipping transit time,
+// not just be a same-day cutoff.
+function ExpirationBufferSetting() {
+  const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  function load() {
+    fetch("/api/settings/expiration-buffer")
+      .then((r) => r.json())
+      .then((data: { bufferDays: number }) => setValue(String(data.bufferDays)));
+  }
+
+  useEffect(load, []);
+
+  async function save() {
+    setSaving(true);
+    setSaved(false);
+    try {
+      const res = await fetch("/api/settings/expiration-buffer", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bufferDays: Number(value) }),
+      });
+      if (res.ok) setSaved(true);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="mt-6 rounded-lg border p-4">
+      <label className="mb-1 block text-sm font-medium">Expiration removal buffer</label>
+      <p className="mb-2 text-xs text-gray-400">
+        The daily sweep ends a listing this many days <strong>before</strong> its printed expiration
+        date — not on the date itself — so a sale made right before removal still has time to process
+        and ship before the item actually expires. Applies to both the eBay removal and the
+        &quot;needs shelf pull&quot; notification on the dashboard.
+      </p>
+      <div className="flex items-center gap-2">
+        <input
+          type="number"
+          step="1"
+          min={0}
+          value={value}
+          onChange={(e) => {
+            setValue(e.target.value);
+            setSaved(false);
+          }}
+          className="w-24 rounded border px-3 py-2 text-sm"
+        />
+        <span className="text-sm text-gray-500">days before expiration</span>
+        <button
+          type="button"
+          onClick={save}
+          disabled={saving || !value}
+          className="rounded bg-black px-3 py-2 text-sm text-white disabled:opacity-40"
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+        {saved && <span className="text-xs text-green-600">Saved</span>}
+      </div>
     </section>
   );
 }

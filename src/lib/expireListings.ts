@@ -9,6 +9,34 @@ export type ExpireListingsResult = {
   errors: string[];
 };
 
+// eBay's own food policy doesn't set a "pull the listing by X" deadline —
+// it requires the item to be *delivered* to the buyer before the printed
+// expiration date. Ending a listing ON its expiration date is not
+// compliant: a sale made hours before removal still needs days to process
+// and ship, landing well after the date has passed. This buffer is how
+// many days BEFORE the printed expirationDate the listing actually comes
+// down, sized to cover that gap. Configurable (Settings) rather than
+// hardcoded, same reasoning as the other business-judgment percentages
+// elsewhere in this app (target margins, etc.) — Cristian's own stated
+// worst case ("sometimes it takes 7 days to process the order") plus
+// shipping transit is what the default is based on.
+const EXPIRATION_BUFFER_DAYS_KEY = "expiration_removal_buffer_days";
+const DEFAULT_EXPIRATION_BUFFER_DAYS = 7;
+
+export async function getExpirationBufferDays(): Promise<number> {
+  const row = await prisma.appSetting.findUnique({ where: { key: EXPIRATION_BUFFER_DAYS_KEY } });
+  const value = row ? Number(row.value) : NaN;
+  return Number.isFinite(value) && value >= 0 ? value : DEFAULT_EXPIRATION_BUFFER_DAYS;
+}
+
+export async function setExpirationBufferDays(days: number): Promise<void> {
+  await prisma.appSetting.upsert({
+    where: { key: EXPIRATION_BUFFER_DAYS_KEY },
+    create: { key: EXPIRATION_BUFFER_DAYS_KEY, value: String(days) },
+    update: { value: String(days) },
+  });
+}
+
 // "Today" in America/Chicago, as a YYYY-MM-DD string — expirationDate is
 // stored as a plain date (midnight UTC, from a date-only <input>), so
 // comparing calendar dates this way sidesteps converting between an actual
@@ -18,16 +46,20 @@ function chicagoTodayDateString(now: Date): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago" }).format(now);
 }
 
-// Ends every live eBay listing whose expirationDate has reached today (or
-// earlier) in Chicago, and — for anything still listed and expired that
-// eBay hasn't confirmed removed — leaves it alone for the next run to
-// retry. Called by /api/cron/expire-listings, gated there to roughly
-// once a day around 8PM Chicago; safe to call more than once since an
-// already-"expired" item won't match the eligibility query again.
+// Ends every live eBay listing whose expirationDate is within the
+// configured buffer window (today + bufferDays, in Chicago) — not just
+// ones that have already reached their date, per the compliance reasoning
+// above. For anything still listed and expired that eBay hasn't confirmed
+// removed, leaves it alone for the next run to retry. Called by
+// /api/cron/expire-listings, gated there to roughly once a day around 8PM
+// Chicago; safe to call more than once since an already-"expired" item
+// won't match the eligibility query again.
 export async function expireDueListings(now: Date = new Date()): Promise<ExpireListingsResult> {
   const result: ExpireListingsResult = { scanned: 0, expired: 0, failed: 0, errors: [] };
 
-  const cutoff = new Date(`${chicagoTodayDateString(now)}T23:59:59.999Z`);
+  const bufferDays = await getExpirationBufferDays();
+  const chicagoToday = chicagoTodayDateString(now);
+  const cutoff = new Date(new Date(`${chicagoToday}T23:59:59.999Z`).getTime() + bufferDays * 24 * 60 * 60 * 1000);
 
   const items = await prisma.item.findMany({
     where: {
