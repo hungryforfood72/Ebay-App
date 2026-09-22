@@ -43,10 +43,12 @@ export async function GET(request: Request) {
     // either published through this app's Inventory API flow (ebayOfferId)
     // or an older CSV-uploaded one since linked up via
     // /api/items/link-legacy (ebayListingId only). Excludes "sold" since a
-    // fully sold-out item has nothing left to discount/promote.
+    // fully sold-out item has nothing left to discount/promote, and
+    // "expired" since the daily expiration sweep has already pulled that
+    // one off eBay — it belongs in the shelf-pull list below, not here.
     prisma.item.findMany({
       where: {
-        status: { not: "sold" },
+        status: { notIn: ["sold", "expired"] },
         OR: [{ ebayOfferId: { not: null } }, { ebayListingId: { not: null } }],
         expirationDate: { not: null, lte: expiringCutoff },
       },
