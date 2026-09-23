@@ -1,5 +1,6 @@
 import { computeWalkupPrices, getWalkupSaleSettings } from "@/lib/walkupSale";
 import { getOfferDetails } from "@/lib/ebay";
+import { parseBundleComponentUnits } from "@/lib/itemUnits";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -19,15 +20,17 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "A UPC is required." }, { status: 400 });
   }
 
-  // Bundles are excluded — Item.upc is always null for a bundle, its
-  // components carry their own UPCs, and matching into those here isn't
-  // worth the complexity for how rarely a bundle would be the thing a
-  // walk-up customer points at.
-  const matches = await prisma.item.findMany({
+  // Item.upc is always null for a bundle — its components carry their own
+  // UPCs inside bundleComponents instead (see Item.bundleComponents in
+  // schema.prisma), so a bundle can never match on upc directly at the DB
+  // level. Fetch everything at this shelf location once, then match in JS
+  // against either a direct upc (a normal listing) or a component upc
+  // (this UPC is part of a bundle that has to be sold as a whole) —
+  // scanning a component's UPC should surface the bundle it belongs to,
+  // not come back empty.
+  const candidates = await prisma.item.findMany({
     where: {
       shelfLocation: { equals: shelfLocation, mode: "insensitive" },
-      upc,
-      isBundle: false,
       status: { in: ["listed", "exported"] },
       OR: [{ ebayOfferId: { not: null } }, { ebayListingId: { not: null } }],
     },
@@ -42,8 +45,16 @@ export async function GET(request: NextRequest) {
       ebayOfferId: true,
       isMultipack: true,
       packSize: true,
+      isBundle: true,
+      upc: true,
+      bundleComponents: true,
     },
   });
+  const matches = candidates.filter(
+    (i) =>
+      (!i.isBundle && i.upc === upc) ||
+      (i.isBundle && parseBundleComponentUnits(i.bundleComponents).some((c) => c.upc === upc))
+  );
 
   if (matches.length === 0) {
     return NextResponse.json({ error: "No listed item at that shelf location with that UPC." }, { status: 404 });
@@ -69,6 +80,28 @@ export async function GET(request: NextRequest) {
     isMultipack: item.isMultipack,
     packSize: item.packSize,
   };
+
+  if (item.isBundle) {
+    // A bundle's price isn't any single manifest line's price (it's
+    // several different UPCs' worth of stock sold together) — always use
+    // the bundle's own listed price rather than trying to pick one
+    // component's line to price against. manifestId is still reported as
+    // null here on purpose so the client always routes the sale through
+    // the manifest-less /api/items/[id]/shelf-sale route below — the
+    // bundle's soldQuantity/soldRevenueTotal still fold into each
+    // component's manifest line automatically once recorded (see
+    // parseBundleComponentUnits' use in GET /api/manifests/[id]), so
+    // nothing is lost by not going through the manifest-scoped route.
+    return NextResponse.json({
+      itemId: item.id,
+      manifestId: null,
+      isBundle: true,
+      description: item.finalTitle ?? item.aiTitle ?? "Untitled bundle",
+      currentListedPrice: item.price != null ? Number(item.price) : null,
+      alreadyListed,
+      note: "This UPC is part of a bundle — it has to be sold as the whole bundle, not on its own.",
+    });
+  }
 
   if (!item.manifestId) {
     // Scanned outside manifest mode — no manifest line to price against, so

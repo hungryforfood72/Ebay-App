@@ -1,4 +1,5 @@
 import { getRequestUser } from "@/lib/auth";
+import { parseBundleComponentUnits } from "@/lib/itemUnits";
 import { prisma } from "@/lib/prisma";
 import { ItemSaleError, recordItemSale } from "@/lib/walkupSale";
 import { NextRequest, NextResponse } from "next/server";
@@ -29,7 +30,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   }
 
   const item = await prisma.item.findUnique({ where: { id } });
-  if (!item || item.upc !== upc) {
+  // A bundle's own upc is always null — the scanned UPC is one of its
+  // components' instead (see the matching comment in GET
+  // /api/items/shelf-lookup), so it's checked against bundleComponents
+  // rather than item.upc directly.
+  const matchesUpc = item
+    ? item.isBundle
+      ? parseBundleComponentUnits(item.bundleComponents).some((c) => c.upc === upc)
+      : item.upc === upc
+    : false;
+  if (!item || !matchesUpc) {
     return NextResponse.json({ error: "That item doesn't match this UPC." }, { status: 400 });
   }
 

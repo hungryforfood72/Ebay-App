@@ -186,6 +186,8 @@ function ScanPageInner() {
     idealPrice?: number;
     nearExpiryPrice?: number;
     currentListedPrice?: number | null;
+    isBundle?: boolean;
+    note?: string;
     alreadyListed: {
       itemId: string;
       availableQuantity: number;
@@ -778,9 +780,21 @@ function ScanPageInner() {
 
         {shelfSaleLookup && (
           <>
+            {shelfSaleLookup.isBundle && (
+              <p className="rounded border border-amber-300 bg-amber-50 p-2 text-sm font-medium text-amber-900">
+                {shelfSaleLookup.note ?? "This UPC is part of a bundle — it has to be sold as the whole bundle."}
+              </p>
+            )}
             <section className="rounded border p-3">
               <p className="font-medium">{shelfSaleLookup.description}</p>
-              {shelfSaleLookup.manifestId != null ? (
+              {shelfSaleLookup.isBundle ? (
+                <p className="mt-1 text-xs text-gray-400">
+                  Bundle pricing is the listing&apos;s own current price, not a single manifest line.
+                  {shelfSaleLookup.currentListedPrice != null && (
+                    <> Currently listed at ${shelfSaleLookup.currentListedPrice.toFixed(2)}.</>
+                  )}
+                </p>
+              ) : shelfSaleLookup.manifestId != null ? (
                 <>
                   <p className="text-xs text-gray-400">
                     Retail price: ${shelfSaleLookup.retailPrice?.toFixed(2)} · COGS:{" "}
