@@ -174,7 +174,7 @@ Write a clear, keyword-appropriate eBay title (80 characters max) and a short, h
   // background job's time budget and starve the category lookup after it.
   const response = await anthropic.messages.create(
     {
-      model: "claude-opus-4-8",
+      model: "claude-opus-5-5",
       max_tokens: 1024,
       output_config: { format: { type: "json_schema", schema: DRAFT_SCHEMA } },
       messages: [{ role: "user", content }],
@@ -334,7 +334,7 @@ Write a title (80 characters max) and a short intro paragraph (2-4 sentences) de
 
   const response = await anthropic.messages.create(
     {
-      model: "claude-opus-4-8",
+      model: "claude-opus-5-5",
       max_tokens: 1024,
       output_config: { format: { type: "json_schema", schema: BUNDLE_SUMMARY_SCHEMA } },
       messages: [{ role: "user", content }],

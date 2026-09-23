@@ -1184,7 +1184,7 @@ Write 3-6 sentences: which items drove the call, any supplier/category patterns 
 
   try {
     const response = await anthropic.messages.create(
-      { model: "claude-opus-4-8", max_tokens: 600, messages: [{ role: "user", content: prompt }] },
+      { model: "claude-opus-5-5", max_tokens: 600, messages: [{ role: "user", content: prompt }] },
       { timeout: 45_000, maxRetries: 0 }
     );
     const text = extractText(response.content).trim();
