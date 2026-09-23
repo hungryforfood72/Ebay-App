@@ -1,4 +1,6 @@
+import { EbayApiError, getOfferDetails, reviseFixedPriceItemQuantity, updateOfferQuantity } from "./ebay";
 import { prisma } from "./prisma";
+import type { Item, StockAdjustment } from "@/generated/prisma/client";
 
 // Same key/value AppSetting store already used for the sourcing agent's
 // target margin (see getTargetMarginPct in sourcingAgent.ts) — separate
@@ -80,4 +82,92 @@ export function computeWalkupPrices(
   const idealPrice = floorPrice != null ? Math.max(rawIdealPrice, floorPrice) : rawIdealPrice;
   const nearExpiryPrice = item.retailPrice * (settings.nearExpiryRetailPct / 100);
   return { floorPrice, idealPrice, nearExpiryPrice };
+}
+
+// Thrown by recordItemSale — carries the HTTP status a caller route should
+// respond with, so the same logic can be shared by both the manifest-scoped
+// walk-up-sale route and the manifest-less shelf-sale route without either
+// one re-deriving status codes from message text.
+export class ItemSaleError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ItemSaleError";
+    this.status = status;
+  }
+}
+
+// Records a sale of an already-listed Item — in-person/cash, no fees, no
+// shipping — regardless of whether that item happens to have a manifest.
+// Extracted from what was originally inline in POST /api/manifests/[id]/
+// walkup-sale (the itemId branch) so the new manifest-less shelf-sale route
+// can share the exact same eBay-push + DB-update behavior rather than
+// duplicating it. Callers are responsible for whatever validation is
+// specific to how they found this item (e.g. confirming it belongs to a
+// particular manifest/UPC) before calling this.
+export async function recordItemSale(
+  item: Pick<Item, "id" | "sku" | "quantity" | "soldQuantity" | "ebayOfferId" | "ebayListingId">,
+  input: { quantity: number; pricePerUnit: number; note: string; recordedBy: string | null }
+): Promise<{ item: Item; adjustment: StockAdjustment }> {
+  if (!item.ebayOfferId && !item.ebayListingId) {
+    throw new ItemSaleError("This item isn't currently listed on eBay.", 400);
+  }
+
+  const storedAvailable = Math.max(0, item.quantity - item.soldQuantity);
+  const live = item.ebayOfferId ? await getOfferDetails(item.ebayOfferId) : null;
+  const currentAvailable = live?.availableQuantity ?? storedAvailable;
+
+  const newAvailable = currentAvailable - input.quantity;
+  if (newAvailable < 0) {
+    throw new ItemSaleError(
+      `Only ${currentAvailable} currently available on eBay — can't sell ${input.quantity}.`,
+      400
+    );
+  }
+  const newSoldQuantity = item.soldQuantity + input.quantity;
+
+  try {
+    if (item.ebayOfferId) {
+      await updateOfferQuantity(item.ebayOfferId, { sku: item.sku, soldQuantity: newSoldQuantity }, newAvailable);
+    } else {
+      await reviseFixedPriceItemQuantity(item.ebayListingId!, newAvailable + newSoldQuantity);
+    }
+    const [updatedItem, adjustment] = await prisma.$transaction([
+      prisma.item.update({
+        where: { id: item.id },
+        data: {
+          soldQuantity: newSoldQuantity,
+          soldRevenueTotal: { increment: input.quantity * input.pricePerUnit },
+          status: newSoldQuantity >= item.quantity ? "sold" : undefined,
+        },
+      }),
+      prisma.stockAdjustment.create({
+        data: {
+          itemId: item.id,
+          delta: -input.quantity,
+          previousAvailable: currentAvailable,
+          newAvailable,
+          note: input.note,
+          recordedBy: input.recordedBy,
+        },
+      }),
+    ]);
+    return { item: updatedItem, adjustment };
+  } catch (e) {
+    // eBay push failed — don't touch the Item (DB and the live listing must
+    // never disagree, same reasoning as /api/items/[id]/quantity), but
+    // still record the attempted sale so the intent isn't lost.
+    const message = e instanceof EbayApiError || e instanceof Error ? e.message : "Failed to update eBay listing.";
+    await prisma.stockAdjustment.create({
+      data: {
+        itemId: item.id,
+        delta: -input.quantity,
+        previousAvailable: currentAvailable,
+        newAvailable: currentAvailable,
+        note: `${input.note} [FAILED: ${message}]`,
+        recordedBy: input.recordedBy,
+      },
+    });
+    throw new ItemSaleError(message, 502);
+  }
 }

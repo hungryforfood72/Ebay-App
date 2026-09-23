@@ -163,6 +163,41 @@ function ScanPageInner() {
   const [walkupPricePerUnit, setWalkupPricePerUnit] = useState("");
   const [walkupSaving, setWalkupSaving] = useState(false);
 
+  // "Sell Shelf Item" — same in-person/cash sale as Walk-up Sale above, but
+  // for something that's already on the shelf (already scanned in and
+  // listed) rather than mid-sort on a manifest. Found by shelf location +
+  // UPC instead of requiring an active manifest session, since there's no
+  // way to know which manifest a shelf item came from just by looking at
+  // it — see GET /api/items/shelf-lookup. Reachable with no scan session or
+  // manifest picked first (rendered before the activeSessionId check
+  // below), unlike Walk-up Sale.
+  const [shelfSaleMode, setShelfSaleMode] = useState(false);
+  const [shelfSaleLocation, setShelfSaleLocation] = useState("");
+  const [shelfSaleUpc, setShelfSaleUpc] = useState("");
+  const [shelfSaleLooking, setShelfSaleLooking] = useState(false);
+  const [shelfSaleMessage, setShelfSaleMessage] = useState<string | null>(null);
+  const [shelfSaleLookup, setShelfSaleLookup] = useState<{
+    itemId: string;
+    manifestId: string | null;
+    description: string;
+    retailPrice?: number;
+    landedCostPerUnit?: number | null;
+    floorPrice?: number | null;
+    idealPrice?: number;
+    nearExpiryPrice?: number;
+    currentListedPrice?: number | null;
+    alreadyListed: {
+      itemId: string;
+      availableQuantity: number;
+      isMultipack: boolean;
+      packSize: number | null;
+    };
+  } | null>(null);
+  const [shelfSaleNearExpiry, setShelfSaleNearExpiry] = useState(false);
+  const [shelfSaleQuantity, setShelfSaleQuantity] = useState("1");
+  const [shelfSalePricePerUnit, setShelfSalePricePerUnit] = useState("");
+  const [shelfSaleSaving, setShelfSaleSaving] = useState(false);
+
   const [step, setStep] = useState<Step>("mode");
   const [isBundle, setIsBundle] = useState(false);
 
@@ -269,6 +304,8 @@ function ScanPageInner() {
     setDudMode(false);
     setWalkupMode(false);
     resetWalkupSale();
+    setShelfSaleMode(false);
+    resetShelfSale();
     setSavedThisSession(0);
     setSessions((prev) =>
       (prev ?? []).filter((s) => s.id !== activeSessionId)
@@ -401,6 +438,83 @@ function ScanPageInner() {
       setWalkupMessage(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
       setWalkupSaving(false);
+    }
+  }
+
+  function resetShelfSale() {
+    setShelfSaleLocation("");
+    setShelfSaleUpc("");
+    setShelfSaleLookup(null);
+    setShelfSaleNearExpiry(false);
+    setShelfSaleQuantity("1");
+    setShelfSalePricePerUnit("");
+    setShelfSaleMessage(null);
+  }
+
+  async function lookupShelfSaleItem() {
+    setShelfSaleMessage(null);
+    if (!shelfSaleLocation.trim()) return setShelfSaleMessage("Scan or enter a shelf location first.");
+    if (!shelfSaleUpc.trim()) return setShelfSaleMessage("Scan or enter a UPC first.");
+
+    setShelfSaleLooking(true);
+    try {
+      const res = await fetch(
+        `/api/items/shelf-lookup?shelfLocation=${encodeURIComponent(shelfSaleLocation.trim())}&upc=${encodeURIComponent(shelfSaleUpc.trim())}`
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Lookup failed.");
+      setShelfSaleLookup(data);
+      // Every shelf-sale match is, by definition, already an active
+      // listing — unlike Walk-up Sale there's no "fresh off the manifest"
+      // branch to choose between.
+      const multiplier = walkupPackMultiplier(data.alreadyListed, true);
+      const basePrice = data.manifestId != null ? data.idealPrice : (data.currentListedPrice ?? 0);
+      setShelfSalePricePerUnit((basePrice * multiplier).toFixed(2));
+    } catch (e) {
+      setShelfSaleLookup(null);
+      setShelfSaleMessage(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setShelfSaleLooking(false);
+    }
+  }
+
+  async function saveShelfSale() {
+    if (!shelfSaleLookup) return;
+    setShelfSaleMessage(null);
+    const qty = Number(shelfSaleQuantity);
+    if (!qty || qty < 1) return setShelfSaleMessage("Enter a quantity of at least 1.");
+    const price = Number(shelfSalePricePerUnit);
+    if (!price || price <= 0) return setShelfSaleMessage("Enter a price per unit.");
+
+    setShelfSaleSaving(true);
+    try {
+      // A manifest to update means the existing walk-up-sale route (which
+      // also keeps that manifest's sold/profit numbers current); no
+      // manifest means the lighter item-only route instead — see
+      // GET /api/items/shelf-lookup's manifestId: null case.
+      const url = shelfSaleLookup.manifestId
+        ? `/api/manifests/${shelfSaleLookup.manifestId}/walkup-sale`
+        : `/api/items/${shelfSaleLookup.itemId}/shelf-sale`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          upc: shelfSaleUpc.trim(),
+          quantity: qty,
+          pricePerUnit: price,
+          itemId: shelfSaleLookup.itemId,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? "Save failed.");
+      }
+      resetShelfSale();
+      setShelfSaleMessage("Sold — eBay listing updated. Scan the next shelf location.");
+    } catch (e) {
+      setShelfSaleMessage(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setShelfSaleSaving(false);
     }
   }
 
@@ -597,6 +711,189 @@ function ScanPageInner() {
     }
   }
 
+  // Selling something already on the shelf — no session or manifest needs
+  // to be picked first, so this is checked ahead of the activeSessionId
+  // landing screen below rather than nested inside it.
+  if (shelfSaleMode) {
+    const packMultiplier = shelfSaleLookup ? walkupPackMultiplier(shelfSaleLookup.alreadyListed, true) : 1;
+    return (
+      <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-4 p-4">
+        <div className="flex items-center justify-between">
+          <h1 className="text-lg font-semibold">Sell Shelf Item</h1>
+          <button
+            type="button"
+            onClick={() => {
+              setShelfSaleMode(false);
+              resetShelfSale();
+            }}
+            className="text-sm underline"
+          >
+            Back
+          </button>
+        </div>
+        <p className="text-xs text-gray-400">
+          For something already on the shelf — scan its shelf location, then its UPC. In-person cash sale, no eBay
+          fees, no shipping.
+        </p>
+
+        {!shelfSaleLookup && (
+          <>
+            <section className="flex flex-col gap-1">
+              <label className="text-sm font-medium">Shelf location</label>
+              <input
+                autoFocus
+                type="text"
+                value={shelfSaleLocation}
+                onChange={(e) => setShelfSaleLocation(e.target.value)}
+                onKeyDown={(e) => onScanEnter(e, () => document.getElementById("shelf-sale-upc")?.focus())}
+                placeholder="Scan or type shelf location"
+                className="rounded border px-3 py-2"
+              />
+            </section>
+            <section className="flex flex-col gap-1">
+              <label className="text-sm font-medium">UPC</label>
+              <input
+                id="shelf-sale-upc"
+                type="text"
+                inputMode="numeric"
+                value={shelfSaleUpc}
+                onChange={(e) => setShelfSaleUpc(e.target.value)}
+                onKeyDown={(e) => onScanEnter(e, lookupShelfSaleItem)}
+                placeholder="Scan or type UPC"
+                className="rounded border px-3 py-2"
+              />
+              <button
+                type="button"
+                onClick={lookupShelfSaleItem}
+                disabled={shelfSaleLooking}
+                className="mt-2 rounded bg-black py-3 text-center text-white disabled:opacity-50"
+              >
+                {shelfSaleLooking ? "Looking up…" : "Look up price"}
+              </button>
+            </section>
+          </>
+        )}
+
+        {shelfSaleMessage && <p className="text-sm">{shelfSaleMessage}</p>}
+
+        {shelfSaleLookup && (
+          <>
+            <section className="rounded border p-3">
+              <p className="font-medium">{shelfSaleLookup.description}</p>
+              {shelfSaleLookup.manifestId != null ? (
+                <>
+                  <p className="text-xs text-gray-400">
+                    Retail price: ${shelfSaleLookup.retailPrice?.toFixed(2)} · COGS:{" "}
+                    {shelfSaleLookup.landedCostPerUnit != null
+                      ? `$${shelfSaleLookup.landedCostPerUnit.toFixed(2)}`
+                      : "enter a landed cost on the manifest to see this"}
+                  </p>
+                  <div className="mt-2 flex flex-col gap-1 text-sm">
+                    <p>
+                      Floor (min acceptable):{" "}
+                      {shelfSaleLookup.floorPrice != null ? (
+                        <strong>${(shelfSaleLookup.floorPrice * packMultiplier).toFixed(2)}</strong>
+                      ) : (
+                        <span className="text-xs text-gray-400">
+                          Enter a landed cost on the manifest to get a floor price
+                        </span>
+                      )}
+                    </p>
+                    <p>
+                      Ideal: <strong>${((shelfSaleLookup.idealPrice ?? 0) * packMultiplier).toFixed(2)}</strong>
+                    </p>
+                    <p>
+                      Near-expiry:{" "}
+                      <strong>${((shelfSaleLookup.nearExpiryPrice ?? 0) * packMultiplier).toFixed(2)}</strong>
+                    </p>
+                    {packMultiplier > 1 && (
+                      <p className="text-xs text-gray-400">Prices above are per pack of {packMultiplier}.</p>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <p className="mt-1 text-xs text-gray-400">
+                  This item wasn&apos;t scanned under a manifest, so there&apos;s no floor/ideal pricing breakdown or
+                  manifest profit tracking for it — its current eBay listing price is shown below as a reference;
+                  enter whatever you actually charged.
+                  {shelfSaleLookup.currentListedPrice != null && (
+                    <> Currently listed at ${shelfSaleLookup.currentListedPrice.toFixed(2)}.</>
+                  )}
+                </p>
+              )}
+            </section>
+
+            <p className="rounded border border-blue-200 bg-blue-50 p-2 text-sm">
+              {shelfSaleLookup.alreadyListed.isMultipack && shelfSaleLookup.alreadyListed.packSize
+                ? `${shelfSaleLookup.alreadyListed.availableQuantity} pack(s) of ${shelfSaleLookup.alreadyListed.packSize} available on eBay (${
+                    shelfSaleLookup.alreadyListed.availableQuantity * shelfSaleLookup.alreadyListed.packSize
+                  } units total)`
+                : `${shelfSaleLookup.alreadyListed.availableQuantity} available on eBay`}
+              . Selling this reduces that listing.
+            </p>
+
+            {shelfSaleLookup.manifestId != null && (
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={shelfSaleNearExpiry}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setShelfSaleNearExpiry(checked);
+                    setShelfSalePricePerUnit(
+                      (
+                        (checked ? (shelfSaleLookup.nearExpiryPrice ?? 0) : (shelfSaleLookup.idealPrice ?? 0)) *
+                        packMultiplier
+                      ).toFixed(2)
+                    );
+                  }}
+                />
+                Expiring within 6 months
+              </label>
+            )}
+
+            <section>
+              <label className="text-sm font-medium">{packMultiplier > 1 ? "Packs sold" : "Quantity sold"}</label>
+              <input
+                type="number"
+                min={1}
+                value={shelfSaleQuantity}
+                onChange={(e) => setShelfSaleQuantity(e.target.value)}
+                onWheel={(e) => e.currentTarget.blur()}
+                className="w-full rounded border px-3 py-2"
+              />
+            </section>
+
+            <section>
+              <label className="text-sm font-medium">{packMultiplier > 1 ? "Price per pack" : "Price per unit"}</label>
+              <input
+                type="number"
+                step="0.01"
+                min={0}
+                value={shelfSalePricePerUnit}
+                onChange={(e) => setShelfSalePricePerUnit(e.target.value)}
+                onWheel={(e) => e.currentTarget.blur()}
+                className="w-full rounded border px-3 py-2"
+              />
+            </section>
+
+            <button
+              type="button"
+              onClick={saveShelfSale}
+              disabled={shelfSaleSaving}
+              className="rounded bg-green-600 py-4 text-center text-white disabled:opacity-50"
+            >
+              {shelfSaleSaving ? "Saving…" : "Mark as sold"}
+            </button>
+            <button type="button" onClick={resetShelfSale} className="text-sm text-gray-500 underline">
+              Scan a different item instead
+            </button>
+          </>
+        )}
+      </main>
+    );
+  }
+
   if (activeSessionId === null) {
     return (
       <main className="mx-auto flex min-h-dvh max-w-md flex-col gap-4 p-6">
@@ -616,6 +913,14 @@ function ScanPageInner() {
         >
           Scan with Manifest
         </Link>
+
+        <button
+          type="button"
+          onClick={() => setShelfSaleMode(true)}
+          className="rounded-lg border-2 border-green-600 px-4 py-3 text-center font-medium text-green-700"
+        >
+          Sell Shelf Item
+        </button>
 
         {sessions === null && <p className="text-sm text-gray-500">Loading…</p>}
 

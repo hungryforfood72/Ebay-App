@@ -1,6 +1,6 @@
-import { EbayApiError, getOfferDetails, reviseFixedPriceItemQuantity, updateOfferQuantity } from "@/lib/ebay";
 import { getRequestUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { ItemSaleError, recordItemSale } from "@/lib/walkupSale";
 import { NextRequest, NextResponse } from "next/server";
 
 // Records an in-person, cash, no-fee/no-shipping sale straight out of a
@@ -56,66 +56,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   if (!item || item.manifestId !== id || item.upc !== upc) {
     return NextResponse.json({ error: "That item doesn't match this manifest/UPC." }, { status: 400 });
   }
-  if (!item.ebayOfferId && !item.ebayListingId) {
-    return NextResponse.json({ error: "This item isn't currently listed on eBay." }, { status: 400 });
-  }
 
-  const storedAvailable = Math.max(0, item.quantity - item.soldQuantity);
-  const live = item.ebayOfferId ? await getOfferDetails(item.ebayOfferId) : null;
-  const currentAvailable = live?.availableQuantity ?? storedAvailable;
-
-  const newAvailable = currentAvailable - roundedQuantity;
-  if (newAvailable < 0) {
-    return NextResponse.json(
-      { error: `Only ${currentAvailable} currently available on eBay — can't sell ${roundedQuantity}.` },
-      { status: 400 }
-    );
-  }
-  const newSoldQuantity = item.soldQuantity + roundedQuantity;
   const note = `Walk-up sale — ${roundedQuantity} unit(s) @ $${pricePerUnit.toFixed(2)} each, in person`;
-
   try {
-    if (item.ebayOfferId) {
-      await updateOfferQuantity(item.ebayOfferId, { sku: item.sku, soldQuantity: newSoldQuantity }, newAvailable);
-    } else {
-      await reviseFixedPriceItemQuantity(item.ebayListingId!, newAvailable + newSoldQuantity);
-    }
-    const [updatedItem, adjustment] = await prisma.$transaction([
-      prisma.item.update({
-        where: { id: itemId },
-        data: {
-          soldQuantity: newSoldQuantity,
-          soldRevenueTotal: { increment: roundedQuantity * pricePerUnit },
-          status: newSoldQuantity >= item.quantity ? "sold" : undefined,
-        },
-      }),
-      prisma.stockAdjustment.create({
-        data: {
-          itemId,
-          delta: -roundedQuantity,
-          previousAvailable: currentAvailable,
-          newAvailable,
-          note,
-          recordedBy,
-        },
-      }),
-    ]);
+    const { item: updatedItem, adjustment } = await recordItemSale(item, {
+      quantity: roundedQuantity,
+      pricePerUnit,
+      note,
+      recordedBy,
+    });
     return NextResponse.json({ item: updatedItem, adjustment }, { status: 201 });
   } catch (e) {
-    // eBay push failed — don't touch the Item (DB and the live listing
-    // must never disagree, same reasoning as /api/items/[id]/quantity),
-    // but still record the attempted sale so the intent isn't lost.
-    const message = e instanceof EbayApiError || e instanceof Error ? e.message : "Failed to update eBay listing.";
-    await prisma.stockAdjustment.create({
-      data: {
-        itemId,
-        delta: -roundedQuantity,
-        previousAvailable: currentAvailable,
-        newAvailable: currentAvailable,
-        note: `${note} [FAILED: ${message}]`,
-        recordedBy,
-      },
-    });
-    return NextResponse.json({ error: message }, { status: 502 });
+    if (e instanceof ItemSaleError) return NextResponse.json({ error: e.message }, { status: e.status });
+    throw e;
   }
 }
