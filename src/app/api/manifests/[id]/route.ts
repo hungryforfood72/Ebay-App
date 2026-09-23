@@ -371,6 +371,8 @@ export async function GET(
         typicalPackSize: e.typicalPackSize,
         dataConfidence: e.dataConfidence,
         flaggedDud: e.flaggedDud,
+        slowMover: e.slowMover,
+        monthsToSellThrough: e.monthsToSellThrough,
       })),
     },
     summary: {

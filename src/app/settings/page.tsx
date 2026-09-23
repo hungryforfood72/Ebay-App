@@ -53,6 +53,8 @@ function SettingsPageInner() {
 
       <SourcingMarginSetting />
 
+      <MaxMonthsToSellThroughSetting />
+
       <WalkupSaleMarginSettings />
 
       <ExpirationBufferSetting />
@@ -243,6 +245,73 @@ function SourcingMarginSetting() {
           className="w-24 rounded border px-3 py-2 text-sm"
         />
         <span className="text-sm text-gray-500">%</span>
+        <button
+          type="button"
+          onClick={save}
+          disabled={saving || !value}
+          className="rounded bg-black px-3 py-2 text-sm text-white disabled:opacity-40"
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+        {saved && <span className="text-xs text-green-600">Saved</span>}
+      </div>
+    </section>
+  );
+}
+
+// How many months of expected inventory at a line's recent sell rate
+// counts as "too slow" and flags it — a good per-unit price doesn't mean
+// much if the expected quantity would sit on the shelf for years. Same
+// fetch/save pattern as SourcingMarginSetting above.
+function MaxMonthsToSellThroughSetting() {
+  const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  function load() {
+    fetch("/api/settings/sourcing-max-months-to-sell")
+      .then((r) => r.json())
+      .then((data: { maxMonthsToSellThrough: number }) => setValue(String(data.maxMonthsToSellThrough)));
+  }
+
+  useEffect(load, []);
+
+  async function save() {
+    setSaving(true);
+    setSaved(false);
+    try {
+      const res = await fetch("/api/settings/sourcing-max-months-to-sell", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxMonthsToSellThrough: Number(value) }),
+      });
+      if (res.ok) setSaved(true);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="mt-6 rounded-lg border p-4">
+      <label className="mb-1 block text-sm font-medium">Sourcing agent slow-mover threshold</label>
+      <p className="mb-2 text-xs text-gray-400">
+        A line gets flagged (and its profit contribution zeroed, same as any other dud) if its recent real sell
+        rate says the expected quantity would take longer than this to sell through — even if the per-unit price
+        looks good.
+      </p>
+      <div className="flex items-center gap-2">
+        <input
+          type="number"
+          step="1"
+          min={1}
+          value={value}
+          onChange={(e) => {
+            setValue(e.target.value);
+            setSaved(false);
+          }}
+          className="w-24 rounded border px-3 py-2 text-sm"
+        />
+        <span className="text-sm text-gray-500">months</span>
         <button
           type="button"
           onClick={save}

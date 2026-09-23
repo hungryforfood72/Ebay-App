@@ -30,6 +30,27 @@ export async function setTargetMarginPct(pct: number): Promise<void> {
   });
 }
 
+// How many months of expected inventory at a line's recent real sell rate
+// counts as "too slow, don't want to sit on that much stock" (see the
+// slowMover flag in estimateLine) — Cristian's own framing: a good per-unit
+// price doesn't mean much if 300 units only move 1/month.
+const MAX_MONTHS_TO_SELL_THROUGH_KEY = "sourcing_max_months_to_sell_through";
+const DEFAULT_MAX_MONTHS_TO_SELL_THROUGH = 6;
+
+export async function getMaxMonthsToSellThrough(): Promise<number> {
+  const row = await prisma.appSetting.findUnique({ where: { key: MAX_MONTHS_TO_SELL_THROUGH_KEY } });
+  const value = row ? Number(row.value) : NaN;
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_MAX_MONTHS_TO_SELL_THROUGH;
+}
+
+export async function setMaxMonthsToSellThrough(months: number): Promise<void> {
+  await prisma.appSetting.upsert({
+    where: { key: MAX_MONTHS_TO_SELL_THROUGH_KEY },
+    create: { key: MAX_MONTHS_TO_SELL_THROUGH_KEY, value: String(months) },
+    update: { value: String(months) },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Shared unit-conversion helper — same "physical units = listing quantity ×
 // pack size" accounting the manifest reconciliation route and cogs.ts both
@@ -128,6 +149,42 @@ const RECENCY_HALF_LIFE_DAYS = 120; // ~4 months — a judgment call, not derive
 function recencyWeight(soldAt: Date): number {
   const daysAgo = (Date.now() - soldAt.getTime()) / (1000 * 60 * 60 * 24);
   return Math.pow(0.5, Math.max(0, daysAgo) / RECENCY_HALF_LIFE_DAYS);
+}
+
+// ---------------------------------------------------------------------------
+// Sell-through velocity — a good per-unit price doesn't mean much if the
+// expected quantity would sit on the shelf for a year (Cristian's own
+// framing: a line could be a great seller at that price but only move
+// 1/month, and 300 units of that is 25 years of shelf space and cash tied
+// up). Deliberately a plain recent-window rate (not the exponential-decay
+// weighting used for price above) — easy to reason about and explain in the
+// UI/reasoning text ("sells ~1/month based on the last 90 days"), and per-
+// UPC/category sales are sparse enough that a hard window with a real
+// sample is more legible than a smoothly-decaying one.
+// ---------------------------------------------------------------------------
+const VELOCITY_LOOKBACK_DAYS = 90;
+// Infinity isn't a safe round-trip value through Prisma's Postgres Float
+// mapping (same reasoning as UNCAPPED_SATURATION_SENTINEL below) — used
+// when a UPC/category has real sales history but literally zero of it
+// happened within the recent window (selling has effectively stalled).
+const STALLED_MONTHS_SENTINEL = 9999;
+
+// Physical units of `sales` sold within the last VELOCITY_LOOKBACK_DAYS,
+// reusing whatever sales array the caller already fetched (own or
+// category) rather than a second DB query.
+function recentUnitsSold(sales: { quantity: number; soldAt: Date; item: { isMultipack: boolean; packSize: number | null } }[]): number {
+  const cutoff = Date.now() - VELOCITY_LOOKBACK_DAYS * 24 * 60 * 60 * 1000;
+  let units = 0;
+  for (const s of sales) {
+    if (s.soldAt.getTime() < cutoff) continue;
+    units += soldPhysicalUnits({ soldQuantity: s.quantity, isMultipack: s.item.isMultipack, packSize: s.item.packSize });
+  }
+  return units;
+}
+
+function computeMonthsToSellThrough(recentUnits: number, effectiveUnits: number): number {
+  const unitsPerMonth = recentUnits / (VELOCITY_LOOKBACK_DAYS / 30);
+  return unitsPerMonth > 0 ? effectiveUnits / unitsPerMonth : STALLED_MONTHS_SENTINEL;
 }
 
 // ---------------------------------------------------------------------------
@@ -572,6 +629,8 @@ type LineEstimateResult = {
   postHolidayFiller: boolean;
   trendNudge: string | null;
   seasonal: string | null;
+  slowMover: boolean;
+  monthsToSellThrough: number | null;
 };
 
 async function estimateLine(
@@ -579,7 +638,8 @@ async function estimateLine(
   receiveRate: number,
   runTrendCheck: boolean,
   eventCheckBudget: { remaining: number },
-  compSaturationThreshold: number
+  compSaturationThreshold: number,
+  maxMonthsToSellThrough: number
 ): Promise<LineEstimateResult> {
   // Own-history: exact UPC, across every manifest ever sold, not just this one.
   let ownSalesCount = 0;
@@ -587,6 +647,11 @@ async function estimateLine(
   let ownAvgShipping = 0;
   let ownFeeRate = FALLBACK_FEE_RATE;
   const ownPackSizes: number[] = [];
+  // Physical units of this exact UPC sold within the recent velocity
+  // window — see the "Sell-through velocity" section above. Stays 0 (not
+  // null) when group.upc is unset; the own-vs-category choice below only
+  // looks at ownSalesCount to decide which one actually has real history.
+  let ownRecentUnits = 0;
   if (group.upc) {
     // Per-sale rows (EbayItemSale), not the Item-level running totals — the
     // per-sale soldAt is what recencyWeight needs. Item-level totals have
@@ -626,6 +691,7 @@ async function estimateLine(
       ownAvgShipping = weightedShipping / weightedUnits;
       ownFeeRate = weightedRevenue > 0 ? weightedFees / weightedRevenue : FALLBACK_FEE_RATE;
     }
+    ownRecentUnits = recentUnitsSold(sales);
   }
 
   // Category rollup: other UPCs sharing this manifest line's category,
@@ -633,6 +699,9 @@ async function estimateLine(
   let categorySalesCount = 0;
   let categoryAvgSalePrice = 0;
   let categoryAvgShipping = 0;
+  // Same recent-window velocity signal as ownRecentUnits, used as a proxy
+  // when this exact UPC has no history of its own to judge a rate from.
+  let categoryRecentUnits = 0;
   if (group.category) {
     const linesInCategory = await prisma.manifestLine.findMany({
       where: { category: group.category, upc: { not: group.upc } },
@@ -668,6 +737,7 @@ async function estimateLine(
         categoryAvgSalePrice = weightedRevenue / weightedUnits;
         categoryAvgShipping = weightedShipping / weightedUnits;
       }
+      categoryRecentUnits = recentUnitsSold(sales);
     }
   }
 
@@ -827,6 +897,18 @@ async function estimateLine(
         ? modePackSize(historicalPackSizes)
         : modePackSize(marketPackSizes);
 
+  const effectiveUnits = Math.round(group.expectedQuantity * receiveRate);
+
+  // Sell-through velocity: own UPC's recent rate if it has any real sales
+  // of its own, else its category's as a proxy — same own-beats-category
+  // priority as the pricing blend below. null (genuinely unknown, not
+  // flagged) only when NEITHER has ever sold at all; a real history with
+  // zero recent sales is a legitimate "stalled" signal, not an unknown one.
+  const recentUnitsForVelocity = ownSalesCount > 0 ? ownRecentUnits : categorySalesCount > 0 ? categoryRecentUnits : null;
+  const monthsToSellThroughEstimate =
+    recentUnitsForVelocity != null ? computeMonthsToSellThrough(recentUnitsForVelocity, effectiveUnits) : null;
+  const slowMover = monthsToSellThroughEstimate != null && monthsToSellThroughEstimate > maxMonthsToSellThrough;
+
   // Confidence-weighted blend — more real samples (capped) = more trust,
   // market signal always contributes some weight since it's always at least
   // directionally available. Historical (fuzzy title-matched, real past
@@ -855,7 +937,7 @@ async function estimateLine(
       estimatedUnitFees: null,
       estimatedUnitShipping: null,
       estimatedNetPerUnit: null,
-      effectiveUnits: Math.round(group.expectedQuantity * receiveRate),
+      effectiveUnits,
       typicalPackSize,
       dataConfidence: "market_only",
       flaggedDud: !marketCheckFailed,
@@ -865,6 +947,10 @@ async function estimateLine(
       postHolidayFiller: isPostHolidayFiller(group.description),
       trendNudge: null,
       seasonal: await seasonalNote(group.category, group.description),
+      // ownSalesCount and categorySalesCount are both necessarily 0 here
+      // (totalScore === 0), so there's nothing to compute a rate from.
+      slowMover: false,
+      monthsToSellThrough: null,
     };
   }
 
@@ -970,6 +1056,13 @@ async function estimateLine(
       categorySalesCount === 0 &&
       activeCompCount >= compSaturationThreshold);
 
+  // A good per-unit price doesn't mean much if the expected quantity would
+  // sit on the shelf for a year or more — see the "Sell-through velocity"
+  // section above. Distinct from the saturation rule above: that one is
+  // about no track record in a crowded market, this one is about a real,
+  // known-slow track record regardless of how crowded the market is.
+  if (slowMover) flaggedDud = true;
+
   // Recurring-holiday filler (see POST_HOLIDAY_DUD_RULES above) — cheap,
   // no API call, calendar-based. Checked first so the live check below
   // never spends budget re-confirming something already resolved for free.
@@ -1001,10 +1094,12 @@ async function estimateLine(
     estimatedUnitFees,
     estimatedUnitShipping,
     estimatedNetPerUnit: flaggedDud ? 0 : rawNet,
-    effectiveUnits: Math.round(group.expectedQuantity * receiveRate),
+    effectiveUnits,
     typicalPackSize,
     dataConfidence,
     flaggedDud,
+    slowMover,
+    monthsToSellThrough: monthsToSellThroughEstimate,
     marketCheckFailed,
     marketTrend,
     eventEnded,
@@ -1091,11 +1186,13 @@ export async function evaluateManifestChunk(
   let targetMarginPct: number;
   let receiveRate: number;
   let compSaturationThreshold: number;
+  let maxMonthsToSellThrough: number;
   let inventoryLoad: { weeksOnHand: number; activeListedUnits: number; recentSoldUnitsPerWeek: number };
   if (evaluation.targetMarginPct != null) {
     targetMarginPct = evaluation.targetMarginPct;
     receiveRate = evaluation.receiveRate!;
     compSaturationThreshold = evaluation.compSaturationThreshold!;
+    maxMonthsToSellThrough = evaluation.maxMonthsToSellThrough!;
     inventoryLoad = {
       weeksOnHand: evaluation.inventoryWeeksOnHand!,
       activeListedUnits: evaluation.inventoryActiveListedUnits!,
@@ -1104,6 +1201,7 @@ export async function evaluateManifestChunk(
   } else {
     targetMarginPct = await getTargetMarginPct();
     receiveRate = await getSupplierReceiveRate(manifest.supplier);
+    maxMonthsToSellThrough = await getMaxMonthsToSellThrough();
     inventoryLoad = await getWeeksOfInventoryOnHand();
     const rawThreshold = saturationThreshold(inventoryLoad.weeksOnHand);
     compSaturationThreshold = Number.isFinite(rawThreshold) ? rawThreshold : UNCAPPED_SATURATION_SENTINEL;
@@ -1113,6 +1211,7 @@ export async function evaluateManifestChunk(
         targetMarginPct,
         receiveRate,
         compSaturationThreshold,
+        maxMonthsToSellThrough,
         inventoryWeeksOnHand: inventoryLoad.weeksOnHand,
         inventoryActiveListedUnits: inventoryLoad.activeListedUnits,
         inventoryRecentSoldPerWeek: inventoryLoad.recentSoldUnitsPerWeek,
@@ -1175,7 +1274,14 @@ export async function evaluateManifestChunk(
     const deepIndex = deepIndexByKey.get(group.groupKey);
     const runTrendCheck = deepIndex != null && deepIndex < MAX_TREND_CHECKS;
     const remainingBefore = eventCheckBudget.remaining;
-    const result = await estimateLine(group, receiveRate, runTrendCheck, eventCheckBudget, compSaturationThreshold);
+    const result = await estimateLine(
+      group,
+      receiveRate,
+      runTrendCheck,
+      eventCheckBudget,
+      compSaturationThreshold,
+      maxMonthsToSellThrough
+    );
     eventChecksUsedThisChunk += remainingBefore - eventCheckBudget.remaining;
     await prisma.sourcingLineEstimate.create({
       data: {
@@ -1192,6 +1298,8 @@ export async function evaluateManifestChunk(
         typicalPackSize: result.typicalPackSize,
         dataConfidence: result.dataConfidence,
         flaggedDud: result.flaggedDud,
+        slowMover: result.slowMover,
+        monthsToSellThrough: result.monthsToSellThrough,
         marketCheckFailed: result.marketCheckFailed,
         marketTrend: result.marketTrend,
         eventEnded: result.eventEnded,
@@ -1248,6 +1356,8 @@ export async function evaluateManifestChunk(
       typicalPackSize: row.typicalPackSize,
       dataConfidence: row.dataConfidence as LineEstimateResult["dataConfidence"],
       flaggedDud: row.flaggedDud,
+      slowMover: row.slowMover,
+      monthsToSellThrough: row.monthsToSellThrough,
       marketCheckFailed: row.marketCheckFailed,
       marketTrend: row.marketTrend,
       eventEnded: row.eventEnded,
@@ -1310,6 +1420,17 @@ export async function evaluateManifestChunk(
     postHolidayLines: lineEstimates
       .filter((e) => e.postHolidayFiller)
       .map((e) => `- ${e.description}`)
+      .slice(0, 10),
+    slowMoverLines: lineEstimates
+      .filter((e) => e.slowMover)
+      .map(
+        (e) =>
+          `- ${e.description}: ${e.effectiveUnits} units expected, recent sell rate implies ${
+            e.monthsToSellThrough != null && e.monthsToSellThrough < STALLED_MONTHS_SENTINEL
+              ? `~${e.monthsToSellThrough.toFixed(1)} months to sell through`
+              : "no recent sales at all despite real history — effectively stalled"
+          }`
+      )
       .slice(0, 10),
     knowledgeNotes: knowledgeNotes.map((n) => `[${n.scope}] ${n.notes}`),
     seasonalNotes: [...new Set(lineEstimates.map((e) => e.seasonal).filter((s): s is string => Boolean(s)))].slice(0, 3),
@@ -1376,6 +1497,7 @@ async function writeReasoning(input: {
   marketDataUnavailableCount: number;
   expiredEventLines: string[];
   postHolidayLines: string[];
+  slowMoverLines: string[];
   knowledgeNotes: string[];
   seasonalNotes: string[];
   trendNudges: string[];
@@ -1407,6 +1529,9 @@ ${input.expiredEventLines.join("\n") || "none"}
 Lines flagged as recurring-holiday filler found outside its real sell window (e.g. Christmas ornaments in spring, Halloween decor outside Aug-Oct) — treated as dead stock:
 ${input.postHolidayLines.join("\n") || "none"}
 
+Lines flagged as slow movers — a real, measured sell-through rate for this UPC (or its category, as a proxy) says the expected quantity would take too long to clear, regardless of the per-unit margin looking fine:
+${input.slowMoverLines.join("\n") || "none"}
+
 Accumulated notes from past manifests:
 ${input.knowledgeNotes.join("\n") || "none yet"}
 
@@ -1419,7 +1544,7 @@ ${input.trendNudges.join("\n") || "none notable"}
 Real measured market movement since we last checked these UPCs ourselves (our own repeated live comp checks over time — more reliable than the web-search signal above, since it's an actual price change we observed, not an LLM's read of outside chatter):
 ${input.marketTrends.join("\n") || "none notable — either no prior check to compare against yet, or nothing moved enough to be worth mentioning"}
 
-Write 3-6 sentences: which items drove the call, any supplier/category patterns applied, seasonal timing if relevant, any trend signal factored in (the measured market movement above and the web-search trend signal are different kinds of evidence — don't conflate them if both are mentioned), and if the inventory load meaningfully affected how a crowded-market line was judged, say so plainly. Plain language, no bullet points, no restating the raw numbers verbatim.`;
+Write 3-6 sentences: which items drove the call, any supplier/category patterns applied, seasonal timing if relevant, any trend signal factored in (the measured market movement above and the web-search trend signal are different kinds of evidence — don't conflate them if both are mentioned), and if the inventory load meaningfully affected how a crowded-market line was judged, say so plainly. If any slow movers were flagged, mention that plainly too — it's a different kind of caution from a plain margin/dud problem (a genuinely slow seller, not necessarily an unprofitable one) and worth calling out as its own reason, not lumped in with the other dud reasons. Plain language, no bullet points, no restating the raw numbers verbatim.`;
 
   try {
     const response = await anthropic.messages.create(

@@ -26,6 +26,8 @@ type SourcingLineEstimate = {
   typicalPackSize: number;
   dataConfidence: string;
   flaggedDud: boolean;
+  slowMover: boolean;
+  monthsToSellThrough: number | null;
 };
 
 type SourcingEvaluation = {
@@ -516,7 +518,16 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
                     {candidate.sourcingEvaluation.lineEstimates.map((e) => (
                       <tr key={e.id} className={`border-b ${e.flaggedDud ? "text-gray-400" : ""}`}>
                         <td className="py-1 pr-2">
-                          {e.description} {e.flaggedDud && <span className="text-orange-500">(dud)</span>}
+                          {e.description} {e.flaggedDud && <span className="text-orange-500">(dud)</span>}{" "}
+                          {e.slowMover && (
+                            <span className="text-purple-600">
+                              (slow mover
+                              {e.monthsToSellThrough != null && e.monthsToSellThrough < 60
+                                ? `, ~${e.monthsToSellThrough.toFixed(1)}mo to sell through`
+                                : ""}
+                              )
+                            </span>
+                          )}
                         </td>
                         <td className="px-2 text-right">
                           {e.estimatedUnitSalePrice != null ? `$${e.estimatedUnitSalePrice.toFixed(2)}` : "—"}

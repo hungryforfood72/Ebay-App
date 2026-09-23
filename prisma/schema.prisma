@@ -457,6 +457,12 @@ model SourcingEvaluation {
   inventoryWeeksOnHand       Float?
   inventoryActiveListedUnits Int?
   inventoryRecentSoldPerWeek Float?
+  // How many months of expected inventory at a line's recent sell rate
+  // counts as "too slow" (see MAX_MONTHS_TO_SELL_THROUGH_KEY / the
+  // slowMover flag on SourcingLineEstimate) — a Cristian-tunable setting
+  // (Settings page), snapshotted here for the same cross-chunk consistency
+  // reason as the settings above.
+  maxMonthsToSellThrough     Float?
   // Soft per-evaluation cap on live web-search event-status checks (see
   // MAX_EVENT_CHECKS) — tracked across chunks so a manifest heavy on
   // occasion-tied merch can't re-earn a fresh budget on every continuation.
@@ -515,6 +521,19 @@ model SourcingLineEstimate {
   postHolidayFiller      Boolean            @default(false)
   trendNudge             String?
   seasonal               String?
+  // Recent real sell-through rate (own UPC if it has any recent history,
+  // else its category as a proxy — see VELOCITY_LOOKBACK_DAYS in
+  // sourcingAgent.ts) says the expected quantity would take longer than
+  // SourcingEvaluation.maxMonthsToSellThrough to clear — a good per-unit
+  // price doesn't mean much if 300 units only move 1/month. Null when
+  // there's no real sales history (own or category) to judge a rate from
+  // at all, same "don't flag on missing data" reasoning as marketCheckFailed
+  // above. Also sets flaggedDud when true, same treatment as any other dud
+  // reason. Capped at a large sentinel (not Infinity — same Postgres Float
+  // round-trip reasoning as compSaturationThreshold on SourcingEvaluation)
+  // when the recent rate is exactly zero despite having real history.
+  slowMover              Boolean            @default(false)
+  monthsToSellThrough    Float?
 
   @@unique([evaluationId, groupKey])
 }
