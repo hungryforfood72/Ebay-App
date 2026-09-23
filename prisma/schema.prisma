@@ -434,6 +434,38 @@ model SourcingEvaluation {
   startedAt      DateTime  @default(now())
   completedAt    DateTime?
 
+  // Large manifests (1000+ unique UPCs) can't finish inside one serverless
+  // invocation's maxDuration — confirmed live on a 1036-group manifest that
+  // got silently killed mid-run with no error, leaving status stuck on
+  // "running" forever. The evaluation is now chunked: each invocation works
+  // until it's close to its own time limit, persists what it finished (see
+  // SourcingLineEstimate.groupKey), then triggers a fresh invocation to pick
+  // up where it left off (src/app/api/manifests/[id]/sourcing-evaluate/
+  // route.ts). These settings are snapshotted once at evaluation start and
+  // reused by every chunk so a line processed in chunk 1 is judged against
+  // the same inventory/margin/saturation numbers as one processed in chunk 5
+  // — without this, live account state drifting mid-evaluation (a sale
+  // landing between chunks, say) could make the same manifest's dud-flagging
+  // inconsistent across its own lines.
+  targetMarginPct            Float?
+  receiveRate                Float?
+  // Infinity isn't a safe round-trip value through Prisma's Postgres Float
+  // mapping, so the "essentially uncapped" case (see saturationThreshold in
+  // sourcingAgent.ts) is encoded as this large-but-finite sentinel instead —
+  // no real activeCompCount will ever approach it.
+  compSaturationThreshold    Float?
+  inventoryWeeksOnHand       Float?
+  inventoryActiveListedUnits Int?
+  inventoryRecentSoldPerWeek Float?
+  // Soft per-evaluation cap on live web-search event-status checks (see
+  // MAX_EVENT_CHECKS) — tracked across chunks so a manifest heavy on
+  // occasion-tied merch can't re-earn a fresh budget on every continuation.
+  eventChecksUsed   Int @default(0)
+  // Safety cap on how many times this evaluation has re-triggered itself —
+  // stops a pathological manifest (or a genuine bug) from continuing forever
+  // instead of eventually failing loudly.
+  continuationCount Int @default(0)
+
   lineEstimates SourcingLineEstimate[]
 
   @@index([manifestId])
@@ -448,6 +480,15 @@ model SourcingLineEstimate {
   id                     String             @id @default(uuid())
   evaluation             SourcingEvaluation @relation(fields: [evaluationId], references: [id], onDelete: Cascade)
   evaluationId           String
+  // Internal dedup/resume key — the same upc-or-synthetic key
+  // evaluateManifestChunk groups manifest lines by (upc, or
+  // `__no_upc_<lineId>` for lines with no UPC, which upc alone can't
+  // distinguish between each other). A chunk queries which groupKeys
+  // already have a row here to know what's left to do after a restart.
+  // Nullable only because 7,800+ rows already existed the day this was
+  // added, from evaluations that will never resume — every row a chunk
+  // creates from here on always sets a real value.
+  groupKey               String?
   upc                    String?
   description            String
   extendedRetail         Decimal            @db.Decimal(10, 2)
@@ -464,8 +505,18 @@ model SourcingLineEstimate {
   typicalPackSize        Int                @default(1)
   dataConfidence         String // "own_history" | "historical_match" | "category_fallback" | "market_only"
   flaggedDud             Boolean            @default(false)
+  // Carried alongside the line so a later chunk's finalization step (the
+  // writeReasoning call) can reconstruct the full picture from the DB alone
+  // — it may run in a different invocation than the one that computed any
+  // given line.
+  marketCheckFailed      Boolean            @default(false)
+  marketTrend            String?
+  eventEnded             Boolean            @default(false)
+  postHolidayFiller      Boolean            @default(false)
+  trendNudge             String?
+  seasonal               String?
 
-  @@index([evaluationId])
+  @@unique([evaluationId, groupKey])
 }
 
 // Persistent, evolving judgment the agent accumulates over time — read into

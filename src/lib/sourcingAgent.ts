@@ -486,6 +486,11 @@ async function isOccasionOutOfSeason(description: string): Promise<boolean> {
 // ---------------------------------------------------------------------------
 
 type LineGroup = {
+  // Same key manifest lines were collapsed by (a UPC, or a synthetic
+  // `__no_upc_<lineId>` for lines with none) — carried on the group itself
+  // so it survives the Map → array conversion below and can be persisted on
+  // each line's SourcingLineEstimate row for cross-invocation resume.
+  groupKey: string;
   upc: string | null;
   description: string;
   category: string | null;
@@ -935,35 +940,93 @@ async function getSupplierReceiveRate(supplier: ManifestSupplier): Promise<numbe
 }
 
 // ---------------------------------------------------------------------------
-// Main orchestrator — creates the SourcingEvaluation row's content. Caller
-// (the API route) is responsible for creating the "running" row first and
-// persisting this function's result.
+// Main orchestrator — chunked so a manifest with hundreds of unique UPCs
+// (each needing several DB/eBay/Claude round-trips) can't get silently
+// killed mid-run by the calling route's maxDuration. Confirmed live: a
+// 1036-group manifest got killed by Vercel at the 180s mark with no error,
+// leaving its SourcingEvaluation row stuck on "running" forever — nothing
+// ever caught that kill to mark it failed, since the whole invocation died,
+// not just one call inside it.
+//
+// Each call processes groups until `deadline`, persisting every finished
+// line as its own SourcingLineEstimate row (keyed by groupKey) as it goes —
+// not batched at the end — so a resumed call can tell exactly what's left
+// by querying which groupKeys already have a row, regardless of which
+// invocation did the work. Only once every group has a row does this
+// function run the final reasoning/aggregate step and return `done: true`;
+// otherwise it returns `done: false` and the caller (the API route) is
+// responsible for triggering another invocation.
 // ---------------------------------------------------------------------------
 
 const MAX_DEEP_RESEARCH_LINES = 150;
 const MAX_TREND_CHECKS = 10;
+// Infinity isn't a safe round-trip value through Prisma's Postgres Float
+// column — this large-but-finite stand-in is used instead when persisting
+// the "essentially uncapped" saturation threshold (see saturationThreshold).
+// No real activeCompCount will ever approach it, so it behaves identically.
+const UNCAPPED_SATURATION_SENTINEL = 1e9;
 
-export async function evaluateManifest(
+export type EvaluationChunkResult =
+  | {
+      done: true;
+      recommendation: "buy" | "dont_buy";
+      maxBid: number;
+      expectedNetContribution: number;
+      dudShare: number;
+      concentrationRisk: boolean;
+      reasoning: string;
+    }
+  | { done: false; processedSteps: number; totalSteps: number };
+
+export async function evaluateManifestChunk(
+  evaluationId: string,
   manifestId: string,
+  deadline: number,
   onProgress?: (processedSteps: number, totalSteps: number) => void
-): Promise<{
-  recommendation: "buy" | "dont_buy";
-  maxBid: number;
-  expectedNetContribution: number;
-  dudShare: number;
-  concentrationRisk: boolean;
-  reasoning: string;
-  lineEstimates: LineEstimateResult[];
-}> {
+): Promise<EvaluationChunkResult> {
+  const evaluation = await prisma.sourcingEvaluation.findUniqueOrThrow({ where: { id: evaluationId } });
   const manifest = await prisma.manifest.findUniqueOrThrow({
     where: { id: manifestId },
     include: { lines: true },
   });
 
-  const targetMarginPct = await getTargetMarginPct();
-  const receiveRate = await getSupplierReceiveRate(manifest.supplier);
-  const inventoryLoad = await getWeeksOfInventoryOnHand();
-  const compSaturationThreshold = saturationThreshold(inventoryLoad.weeksOnHand);
+  // Settings that must stay identical across every chunk of the same
+  // evaluation (see the SourcingEvaluation schema comment) — computed once,
+  // on whichever call happens to be first, then reused by every later one
+  // instead of re-reading live state that may have drifted since (a sale
+  // landing between chunks, say, would otherwise shift compSaturationThreshold
+  // partway through the same evaluation).
+  let targetMarginPct: number;
+  let receiveRate: number;
+  let compSaturationThreshold: number;
+  let inventoryLoad: { weeksOnHand: number; activeListedUnits: number; recentSoldUnitsPerWeek: number };
+  if (evaluation.targetMarginPct != null) {
+    targetMarginPct = evaluation.targetMarginPct;
+    receiveRate = evaluation.receiveRate!;
+    compSaturationThreshold = evaluation.compSaturationThreshold!;
+    inventoryLoad = {
+      weeksOnHand: evaluation.inventoryWeeksOnHand!,
+      activeListedUnits: evaluation.inventoryActiveListedUnits!,
+      recentSoldUnitsPerWeek: evaluation.inventoryRecentSoldPerWeek!,
+    };
+  } else {
+    targetMarginPct = await getTargetMarginPct();
+    receiveRate = await getSupplierReceiveRate(manifest.supplier);
+    inventoryLoad = await getWeeksOfInventoryOnHand();
+    const rawThreshold = saturationThreshold(inventoryLoad.weeksOnHand);
+    compSaturationThreshold = Number.isFinite(rawThreshold) ? rawThreshold : UNCAPPED_SATURATION_SENTINEL;
+    await prisma.sourcingEvaluation.update({
+      where: { id: evaluationId },
+      data: {
+        targetMarginPct,
+        receiveRate,
+        compSaturationThreshold,
+        inventoryWeeksOnHand: inventoryLoad.weeksOnHand,
+        inventoryActiveListedUnits: inventoryLoad.activeListedUnits,
+        inventoryRecentSoldPerWeek: inventoryLoad.recentSoldUnitsPerWeek,
+      },
+    });
+  }
 
   // Group lines by UPC (duplicates collapse into one group) — a liquidation
   // manifest's line count usually collapses to far fewer unique UPCs.
@@ -976,6 +1039,7 @@ export async function evaluateManifest(
       existing.extendedRetail += Number(line.extendedRetail);
     } else {
       groups.set(key, {
+        groupKey: key,
         upc: line.upc,
         description: line.description,
         category: line.category,
@@ -992,35 +1056,114 @@ export async function evaluateManifest(
   const sortedGroups = [...groups.values()].sort((a, b) => b.extendedRetail - a.extendedRetail);
   const deepGroups = sortedGroups.slice(0, MAX_DEEP_RESEARCH_LINES);
   const shallowGroups = sortedGroups.slice(MAX_DEEP_RESEARCH_LINES);
+  const deepIndexByKey = new Map(deepGroups.map((g, i) => [g.groupKey, i]));
 
   // +1 for the final reasoning call below, so the bar doesn't sit at 100%
   // while that (often multi-second) LLM call is still running.
   const totalSteps = sortedGroups.length + 1;
-  let processedSteps = 0;
+
+  const doneRows = await prisma.sourcingLineEstimate.findMany({
+    where: { evaluationId, groupKey: { not: null } },
+    select: { groupKey: true },
+  });
+  const doneKeys = new Set(doneRows.map((r) => r.groupKey!));
+  const locallyDone = new Set<string>();
+  let processedSteps = doneKeys.size;
   const reportProgress = () => onProgress?.(processedSteps, totalSteps);
   reportProgress();
 
-  const eventCheckBudget = { remaining: MAX_EVENT_CHECKS };
-  const deepEstimates = await mapWithConcurrency(
-    deepGroups,
-    5,
-    async (group, index) => estimateLine(group, receiveRate, index < MAX_TREND_CHECKS, eventCheckBudget, compSaturationThreshold),
-    () => {
-      processedSteps++;
-      reportProgress();
-    }
-  );
-  const shallowEstimates = await mapWithConcurrency(
-    shallowGroups,
-    5,
-    (group) => estimateLine(group, receiveRate, false, eventCheckBudget, compSaturationThreshold),
-    () => {
-      processedSteps++;
-      reportProgress();
-    }
-  );
+  const remainingDeep = deepGroups.filter((g) => !doneKeys.has(g.groupKey));
+  const remainingShallow = shallowGroups.filter((g) => !doneKeys.has(g.groupKey));
+  const pastDeadline = () => Date.now() > deadline;
 
-  const lineEstimates = [...deepEstimates, ...shallowEstimates];
+  const eventCheckBudget = { remaining: Math.max(0, MAX_EVENT_CHECKS - evaluation.eventChecksUsed) };
+  let eventChecksUsedThisChunk = 0;
+
+  async function runAndPersist(group: LineGroup): Promise<void> {
+    const deepIndex = deepIndexByKey.get(group.groupKey);
+    const runTrendCheck = deepIndex != null && deepIndex < MAX_TREND_CHECKS;
+    const remainingBefore = eventCheckBudget.remaining;
+    const result = await estimateLine(group, receiveRate, runTrendCheck, eventCheckBudget, compSaturationThreshold);
+    eventChecksUsedThisChunk += remainingBefore - eventCheckBudget.remaining;
+    await prisma.sourcingLineEstimate.create({
+      data: {
+        evaluationId,
+        groupKey: group.groupKey,
+        upc: result.upc,
+        description: result.description,
+        extendedRetail: result.extendedRetail,
+        estimatedUnitSalePrice: result.estimatedUnitSalePrice,
+        estimatedUnitFees: result.estimatedUnitFees,
+        estimatedUnitShipping: result.estimatedUnitShipping,
+        estimatedNetPerUnit: result.estimatedNetPerUnit,
+        effectiveUnits: result.effectiveUnits,
+        typicalPackSize: result.typicalPackSize,
+        dataConfidence: result.dataConfidence,
+        flaggedDud: result.flaggedDud,
+        marketCheckFailed: result.marketCheckFailed,
+        marketTrend: result.marketTrend,
+        eventEnded: result.eventEnded,
+        postHolidayFiller: result.postHolidayFiller,
+        trendNudge: result.trendNudge,
+        seasonal: result.seasonal,
+      },
+    });
+    locallyDone.add(group.groupKey);
+    processedSteps++;
+    reportProgress();
+  }
+
+  await mapWithConcurrency(remainingDeep, 5, runAndPersist, pastDeadline);
+
+  const deepDone = deepGroups.every((g) => doneKeys.has(g.groupKey) || locallyDone.has(g.groupKey));
+  // Only move on to the shallow (lower-value) pass once every deep group is
+  // actually done — if the deadline cut deep research short, the next chunk
+  // should pick up the rest of THAT first, not skip ahead to cheaper lines.
+  if (deepDone && !pastDeadline()) {
+    await mapWithConcurrency(remainingShallow, 5, runAndPersist, pastDeadline);
+  }
+
+  if (eventChecksUsedThisChunk > 0) {
+    await prisma.sourcingEvaluation
+      .update({ where: { id: evaluationId }, data: { eventChecksUsed: { increment: eventChecksUsedThisChunk } } })
+      .catch((e) => console.error(`[sourcingAgent] eventChecksUsed update failed for evaluation ${evaluationId}`, e));
+  }
+
+  const allDone = sortedGroups.every((g) => doneKeys.has(g.groupKey) || locallyDone.has(g.groupKey));
+  if (!allDone) {
+    return { done: false, processedSteps, totalSteps };
+  }
+
+  // ---------------------------------------------------------------------
+  // Finalization — only reached once every group has a persisted row.
+  // Re-read from the DB rather than trusting in-memory results, since some
+  // (or all) of those rows may have been written by an earlier chunk.
+  // ---------------------------------------------------------------------
+  const allRows = await prisma.sourcingLineEstimate.findMany({ where: { evaluationId } });
+  const rowsByKey = new Map(allRows.map((r) => [r.groupKey, r]));
+  const lineEstimates: LineEstimateResult[] = sortedGroups.map((g) => {
+    const row = rowsByKey.get(g.groupKey);
+    if (!row) throw new Error(`Missing SourcingLineEstimate row for groupKey ${g.groupKey} after all-done check.`);
+    return {
+      upc: row.upc,
+      description: row.description,
+      extendedRetail: Number(row.extendedRetail),
+      estimatedUnitSalePrice: row.estimatedUnitSalePrice != null ? Number(row.estimatedUnitSalePrice) : null,
+      estimatedUnitFees: row.estimatedUnitFees != null ? Number(row.estimatedUnitFees) : null,
+      estimatedUnitShipping: row.estimatedUnitShipping != null ? Number(row.estimatedUnitShipping) : null,
+      estimatedNetPerUnit: row.estimatedNetPerUnit != null ? Number(row.estimatedNetPerUnit) : null,
+      effectiveUnits: row.effectiveUnits,
+      typicalPackSize: row.typicalPackSize,
+      dataConfidence: row.dataConfidence as LineEstimateResult["dataConfidence"],
+      flaggedDud: row.flaggedDud,
+      marketCheckFailed: row.marketCheckFailed,
+      marketTrend: row.marketTrend,
+      eventEnded: row.eventEnded,
+      postHolidayFiller: row.postHolidayFiller,
+      trendNudge: row.trendNudge,
+      seasonal: row.seasonal,
+    };
+  });
 
   let totalExpectedNetContribution = 0;
   for (const est of lineEstimates) {
@@ -1092,33 +1235,37 @@ export async function evaluateManifest(
   reportProgress();
 
   return {
+    done: true,
     recommendation,
     maxBid,
     expectedNetContribution: totalExpectedNetContribution,
     dudShare,
     concentrationRisk,
     reasoning,
-    lineEstimates,
   };
 }
 
-async function mapWithConcurrency<T, R>(
+// Void-returning rather than collecting results — every result is persisted
+// to the DB by `fn` itself as it completes (see runAndPersist above), not
+// gathered into an array, since a chunk deliberately doesn't wait for every
+// item to finish. `shouldStop` is checked before each new item is started
+// (never mid-item, so an in-flight network call always finishes cleanly) —
+// once true, in-flight items still run to completion but no new ones start.
+async function mapWithConcurrency<T>(
   items: T[],
   concurrency: number,
-  fn: (item: T, index: number) => Promise<R>,
-  onItemDone?: () => void
-): Promise<R[]> {
-  const results: R[] = new Array(items.length);
+  fn: (item: T, index: number) => Promise<void>,
+  shouldStop: () => boolean
+): Promise<void> {
   let next = 0;
   async function worker() {
     while (next < items.length) {
+      if (shouldStop()) return;
       const i = next++;
-      results[i] = await fn(items[i], i);
-      onItemDone?.();
+      await fn(items[i], i);
     }
   }
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
-  return results;
 }
 
 async function writeReasoning(input: {
