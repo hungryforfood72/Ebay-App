@@ -432,6 +432,61 @@ async function getTrendNudge(description: string): Promise<string | null> {
 }
 
 // ---------------------------------------------------------------------------
+// Live price check — for a line that would otherwise be priced off nothing
+// more specific than its whole category's average (no real own or
+// historical sales for this exact product), a category average can be a bad
+// predictor for something whose price varies a lot within its category
+// (Cristian's own example: skincare/cosmetics — confirmed live, an RoC eye
+// cream priced by category average at $28.95 when his own manual check put
+// it at $16-19). eBay exposes no sold-comps API at all (only currently-
+// active listings — see the comment on searchActiveListings' caller above),
+// so this is the closest available substitute: ask the model to search for
+// what this specific product actually goes for, the same server-side
+// web-search mechanism already used for the trend/event checks above.
+// Best-effort — a failure or an unparseable answer just means the line
+// keeps its plain category-fallback price, not a failed evaluation.
+// ---------------------------------------------------------------------------
+async function getWebPriceCheck(description: string): Promise<number | null> {
+  try {
+    const response = await anthropic.messages.create(
+      {
+        model: "claude-haiku-4-5",
+        max_tokens: 400,
+        tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 2, allowed_callers: ["direct"] }],
+        messages: [
+          {
+            role: "user",
+            content: `You're pricing a liquidation/resale item. What would "${description}" realistically sell for right now on eBay?
+
+Search for it. If you find actual current listing or sold prices, use those. If you only find retail/list price, give your best realistic estimate of what a liquidation reseller would actually get for it on eBay (typically well below retail — liquidation/secondhand goods commonly sell in the 40-70% of retail range, more or less depending on the category and condition) rather than the retail price itself.
+
+Only answer UNKNOWN if you cannot even identify what kind of product this is or find any retail price to reason from — a rough estimate reasoned from retail price is far more useful here than no answer, so commit to your best number whenever you have ANY basis for one.
+
+End your response with a line in EXACTLY this format and nothing after it: "PRICE: 17.50" (a plain number, no currency symbol) or "PRICE: UNKNOWN".`,
+          },
+        ],
+      },
+      { timeout: 30_000, maxRetries: 0 }
+    );
+    // Confirmed live: the model sometimes echoes a retail price it found
+    // earlier using the same "PRICE:" phrasing while reasoning toward its
+    // real answer, and a plain (non-global) match grabs that FIRST
+    // occurrence instead of the actual final verdict the prompt asks for.
+    // Anchored to the literal last line instead of searching the whole text
+    // for any "PRICE:"-shaped string.
+    const text = extractText(response.content).trim();
+    const lastLine = text.split("\n").pop() ?? "";
+    const match = lastLine.match(/PRICE:\s*\$?(\d+(?:\.\d{1,2})?)/i);
+    if (!match) return null;
+    const price = Number(match[1]);
+    return Number.isFinite(price) && price > 0 ? price : null;
+  } catch (e) {
+    console.error(`[sourcingAgent] web price check failed for "${description}"`, e);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Occasion-tied merchandise not covered by the cheap deterministic checks
 // above — either a one-time event (World Cup, Super Bowl, Olympics — never
 // recurs the same way) or a named holiday/observance not in
@@ -509,7 +564,7 @@ type LineEstimateResult = {
   estimatedNetPerUnit: number | null;
   effectiveUnits: number;
   typicalPackSize: number;
-  dataConfidence: "own_history" | "historical_match" | "category_fallback" | "market_only";
+  dataConfidence: "own_history" | "historical_match" | "web_price_check" | "category_fallback" | "market_only";
   flaggedDud: boolean;
   marketCheckFailed: boolean;
   marketTrend: string | null;
@@ -813,7 +868,7 @@ async function estimateLine(
     };
   }
 
-  const dataConfidence: LineEstimateResult["dataConfidence"] =
+  const preliminaryConfidence: LineEstimateResult["dataConfidence"] =
     ownScore >= historicalScore && ownScore >= categoryScore && ownScore >= marketScore && ownSalesCount >= 3
       ? "own_history"
       : historicalScore >= categoryScore && historicalScore >= marketScore && historicalSalesCount >= 3
@@ -822,19 +877,56 @@ async function estimateLine(
           ? "category_fallback"
           : "market_only";
 
+  // Only worth spending a web-search call where it can actually change the
+  // outcome: a line that would otherwise be priced off nothing more
+  // specific than its whole category's average (no real own/historical
+  // sales for this exact product) — own_history/historical_match already
+  // have real sales backing them, which beats a web-search guess every
+  // time, and market_only means the market check itself already came up
+  // empty (a web search is unlikely to do better where a direct comp
+  // search didn't). Uncapped by design — Cristian's call: check every line
+  // that actually needs it, not an arbitrary count.
+  const rawWebCheckPrice =
+    preliminaryConfidence === "category_fallback" ? await getWebPriceCheck(group.description) : null;
+  // Same last-resort sanity cap as the market_only path below — a
+  // web-search-derived number is still a guess, not a real sale, so it
+  // shouldn't be trusted past a implausible multiple of the manifest's own
+  // declared retail.
+  const webCheckPrice =
+    rawWebCheckPrice != null && group.retailPrice > 0
+      ? Math.min(rawWebCheckPrice, group.retailPrice * MARKET_ONLY_RETAIL_MULTIPLE_CAP)
+      : rawWebCheckPrice;
+  // A flat weight (not sample-count-scaled like the others — this is one
+  // checked answer, not N samples) chosen higher than category's own max
+  // (22.5) so a successful check meaningfully outranks the generic category
+  // average it's specifically meant to correct, while still leaving room
+  // for the market signal to pull the blend a bit either way.
+  const WEB_CHECK_WEIGHT = 25;
+  const webCheckScore = webCheckPrice != null ? WEB_CHECK_WEIGHT : 0;
+
+  const dataConfidence: LineEstimateResult["dataConfidence"] =
+    webCheckScore > 0 ? "web_price_check" : preliminaryConfidence;
+
+  // Shipping/fee blending below intentionally keeps using the original
+  // totalScore (no shipping/fee data comes out of a price-only web check) —
+  // only the sale-price blend gets the extra webCheckScore term.
+  const priceTotalScore = totalScore + webCheckScore;
   const blendedSalePrice =
     (ownScore * ownAvgSalePrice +
       historicalScore * historicalAvgSalePrice +
       categoryScore * categoryAvgSalePrice +
-      marketScore * marketMedian) /
-    totalScore;
-  // market_only means there's no real sales history backing this number at
-  // all — a comp with a pack size detectPackSize missed can still slip
-  // through, so cap against the manifest's own declared retail as a
-  // last-resort sanity check rather than trusting an implausible number
-  // outright.
+      marketScore * marketMedian +
+      webCheckScore * (webCheckPrice ?? 0)) /
+    priceTotalScore;
+  // market_only/web_price_check both mean there's no real sales history
+  // backing this number — a comp with a pack size detectPackSize missed can
+  // still slip through, so cap against the manifest's own declared retail
+  // as a last-resort sanity check rather than trusting an implausible
+  // number outright. (web_price_check's own input was already capped above
+  // before blending; this catches the case where the market/category
+  // components alone still pull the blend too high.)
   const estimatedUnitSalePrice =
-    dataConfidence === "market_only" && group.retailPrice > 0
+    (dataConfidence === "market_only" || dataConfidence === "web_price_check") && group.retailPrice > 0
       ? Math.min(blendedSalePrice, group.retailPrice * MARKET_ONLY_RETAIL_MULTIPLE_CAP)
       : blendedSalePrice;
   // FALLBACK_SHIPPING_COST/FALLBACK_FEE_FIXED are per-LISTING costs (one
