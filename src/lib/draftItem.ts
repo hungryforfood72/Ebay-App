@@ -141,6 +141,18 @@ export async function draftItem(itemId: string) {
     ? `This is a multi-pack of ${item.packSize} units — reflect that in the title and description.`
     : "This is a single unit, not a multi-pack.";
 
+  // Confirmed live: given the raw stock count, the model wrote a
+  // "Quantity available: 2. You will receive one figure per purchase."
+  // line straight into the description — technically accurate, but a
+  // buyer skimming past "Quantity available: 2" right next to a "you get
+  // 1" clarifier can easily misread it as getting 2. eBay already shows
+  // the real stock count separately via its own listing quantity field,
+  // so the description never needs to restate a raw number at all.
+  const quantityNote =
+    !item.isMultipack && item.quantity > 1
+      ? `Quantity available: ${item.quantity} (this many separate units are in stock; each purchase is for exactly 1). This number is for your context only — do NOT write a raw "Quantity available: N" line in the description, since eBay already shows the stock count separately and restating it reads ambiguously next to a "you get 1" clarifier. If the description needs to say anything about this at all, phrase it so a skimming buyer can't possibly read it as getting more than 1 (e.g. "each purchase is for one figure") — otherwise just leave stock count out of the description entirely.`
+      : `Quantity available: ${item.quantity}`;
+
   const expirationNote = item.expirationDate
     ? `Expiration date: ${item.expirationDate.toISOString().slice(0, 10)} — state this plainly in the description so the buyer knows exactly what they're getting (e.g. "Best by MM/DD/YYYY"). Work it into the title too if there's room within the character limit — use the same full MM/DD/YYYY date there too, not just the month and year (eBay pulled a real listing over the title/specifics only showing month/year while the description had the full date).`
     : "";
@@ -152,7 +164,7 @@ export async function draftItem(itemId: string) {
   const promptText = `Draft an eBay listing title and description for this product.
 
 ${upcNote}
-Quantity available: ${item.quantity}
+${quantityNote}
 ${packNote}
 Condition: ${item.condition ?? "not specified — infer from the photo if possible, otherwise write neutrally"}
 ${expirationNote}
