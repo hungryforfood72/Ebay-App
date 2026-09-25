@@ -1,3 +1,4 @@
+import { getRequestUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { ItemStatus } from "@/generated/prisma/client";
 import { NextRequest, NextResponse } from "next/server";
@@ -87,7 +88,9 @@ export async function POST(request: NextRequest) {
       weightLbs: body.weightLbs != null ? Number(body.weightLbs) : null,
       weightOz: body.weightOz != null ? Number(body.weightOz) : null,
       photoUrls: Array.isArray(body.photoUrls) ? body.photoUrls : [],
-      scannedBy: body.scannedBy ?? null,
+      // Who's signed in, not anything the client sends — this is what the
+      // scan-speed report (/reports/scan-speed) attributes the scan to.
+      scannedBy: getRequestUser(request)?.username ?? null,
       scanSessionId: body.scanSessionId ?? null,
       manifestId: body.manifestId ?? null,
       isBundle,

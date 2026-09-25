@@ -1,3 +1,4 @@
+import { getRequestUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -29,7 +30,8 @@ export async function POST(
       upc,
       quantity: Math.round(quantity),
       note: body.note ?? null,
-      recordedBy: body.recordedBy ?? null,
+      // From the signed-in session (see /reports/scan-speed), not the body.
+      recordedBy: getRequestUser(request)?.username ?? null,
     },
   });
 

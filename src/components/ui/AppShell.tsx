@@ -11,6 +11,7 @@ import {
   Package,
   ScanBarcode,
   Settings,
+  Timer,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -34,6 +35,7 @@ const NAV: NavItem[] = [
   // Owner-only, same as proxy.ts's ownerOnlyPrefixes — employees get
   // redirected away from /analyzer anyway, so don't dangle a dead link.
   { href: "/analyzer", label: "Analyzer", icon: ChartColumn, ownerOnly: true },
+  { href: "/reports/scan-speed", label: "Scan speed", icon: Timer, ownerOnly: true },
 ];
 const SETTINGS: NavItem = { href: "/settings", label: "Settings", icon: Settings, ownerOnly: true };
 

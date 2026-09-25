@@ -58,7 +58,7 @@ export async function proxy(request: NextRequest) {
   // page component assumes those numbers are always present, so a
   // stripped response there would crash the page rather than just show
   // fewer numbers.
-  const ownerOnlyPrefixes = ["/settings", "/api/users", "/analyzer"];
+  const ownerOnlyPrefixes = ["/settings", "/api/users", "/analyzer", "/reports", "/api/reports"];
   if (user.role !== "owner" && ownerOnlyPrefixes.some((p) => pathname.startsWith(p))) {
     if (pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "Owner access required." }, { status: 403 });

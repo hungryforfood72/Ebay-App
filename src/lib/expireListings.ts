@@ -2,6 +2,10 @@ import { EbayApiError, endFixedPriceItem, withdrawOffer } from "./ebay";
 import { parseBundleComponentUnits } from "./itemUnits";
 import { prisma } from "./prisma";
 
+// Note on the damaged entries this sweep writes itself — the scan-speed
+// report filters on it so an automatic write never counts as someone's scan.
+export const AUTO_EXPIRED_NOTE = "Auto-expired — removed from eBay by the daily expiration sweep";
+
 export type ExpireListingsResult = {
   scanned: number;
   expired: number;
@@ -108,7 +112,7 @@ export async function expireDueListings(now: Date = new Date()): Promise<ExpireL
                     manifestId: item.manifestId!,
                     upc,
                     quantity: units,
-                    note: "Auto-expired — removed from eBay by the daily expiration sweep",
+                    note: AUTO_EXPIRED_NOTE,
                     recordedBy: null,
                   },
                 })
