@@ -1,8 +1,13 @@
 "use client";
 
+import { AppShell } from "@/components/ui/AppShell";
+import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
+import { Card, SectionHeader } from "@/components/ui/Card";
+import { Field, Input } from "@/components/ui/Input";
+import { ChartColumn, ChevronRight, Upload } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { UserNavLinks } from "@/components/UserNav";
 
 type Candidate = {
   id: string;
@@ -70,81 +75,79 @@ export default function AnalyzerPage() {
   }
 
   return (
-    <main className="mx-auto max-w-2xl p-6">
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Analyzer</h1>
-        <div className="flex items-center gap-3">
-          <Link href="/" className="text-sm underline">
-            Dashboard
-          </Link>
-          <Link href="/manifests" className="text-sm underline">
-            Manifests
-          </Link>
-          <Link href="/scan" className="text-sm underline">
-            Scan
-          </Link>
-          <Link href="/review" className="text-sm underline">
-            Review
-          </Link>
-          <UserNavLinks />
-        </div>
+    <AppShell
+      title="Analyzer"
+      subtitle="Get a Buy / Don't-Buy call and a max bid on a manifest before you commit. Loads you've already bought live under Manifests."
+    >
+      <div className="flex flex-col gap-6">
+        <Card>
+          <SectionHeader
+            title="Upload a manifest to evaluate"
+            description="BStock and Liquidation.com CSV exports — the format is detected automatically."
+          />
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+            <Field label="Title" hint="Optional — auto-filled from the file if left blank." className="flex-1">
+              <Input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. BStock lot 4471" />
+            </Field>
+            <Button size="lg" onClick={() => fileInputRef.current?.click()} disabled={uploading} className="sm:mb-6">
+              <Upload className="size-5" aria-hidden />
+              {uploading ? "Parsing…" : "Choose CSV file"}
+            </Button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".csv,text/csv"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) handleFile(file);
+              }}
+              disabled={uploading}
+              className="hidden"
+            />
+          </div>
+          {error && <p className="mt-3 text-sm font-medium text-danger">{error}</p>}
+        </Card>
+
+        <section>
+          <SectionHeader
+            title="Under consideration"
+            action={candidates && candidates.length > 0 ? <Badge>{candidates.length}</Badge> : undefined}
+          />
+          {candidates === null && <p className="text-sm text-muted-foreground">Loading…</p>}
+
+          {candidates && candidates.length === 0 && (
+            <Card>
+              <p className="text-sm text-muted-foreground">Nothing uploaded to evaluate yet.</p>
+            </Card>
+          )}
+
+          {candidates && candidates.length > 0 && (
+            <ul className="flex flex-col gap-2">
+              {candidates.map((c) => (
+                <li key={c.id}>
+                  <Link
+                    href={`/analyzer/${c.id}`}
+                    className="flex items-center gap-3 rounded-xl border border-border bg-surface p-4 shadow-sm transition-colors hover:bg-muted active:bg-muted"
+                  >
+                    <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-blue-50 text-primary">
+                      <ChartColumn className="size-5" aria-hidden />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-medium text-foreground">{c.title}</p>
+                      <p className="mt-0.5 flex flex-wrap gap-x-2 text-xs text-muted-foreground">
+                        <span>{SUPPLIER_LABELS[c.supplier] ?? c.supplier}</span>
+                        <span>{c._count.lines} lines</span>
+                        <span>{new Date(c.createdAt).toLocaleDateString()}</span>
+                      </p>
+                    </div>
+                    <ChevronRight className="size-5 shrink-0 text-muted-foreground" aria-hidden />
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
       </div>
-      <p className="mb-6 text-sm text-gray-500">
-        Upload a manifest you&apos;re considering buying to get a Buy/Don&apos;t-Buy call and a max bid
-        before you commit — separate from Manifests, which is for loads you&apos;ve already bought.
-      </p>
-
-      <section className="mb-8 flex flex-col gap-2 rounded-lg border p-4">
-        <label className="text-sm font-medium">Upload a manifest to evaluate</label>
-        <input
-          type="text"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          placeholder="Title (optional — auto-filled from the file if left blank)"
-          className="rounded border px-3 py-2 text-sm"
-        />
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".csv,text/csv"
-          onChange={(e) => {
-            const file = e.target.files?.[0];
-            if (file) handleFile(file);
-          }}
-          disabled={uploading}
-          className="cursor-pointer text-sm file:mr-3 file:cursor-pointer file:rounded-lg file:border-0 file:bg-black file:px-3 file:py-2 file:text-sm file:font-medium file:text-white hover:file:bg-gray-800 disabled:cursor-not-allowed"
-        />
-        {uploading && <p className="text-sm text-gray-500">Parsing…</p>}
-        {error && <p className="text-sm text-red-600">{error}</p>}
-        <p className="text-xs text-gray-400">Supports BStock and Liquidation.com CSV exports — the format is detected automatically.</p>
-      </section>
-
-      {candidates === null && <p className="text-sm text-gray-500">Loading…</p>}
-
-      {candidates && candidates.length === 0 && (
-        <p className="text-sm text-gray-500">Nothing uploaded to evaluate yet.</p>
-      )}
-
-      {candidates && candidates.length > 0 && (
-        <ul className="flex flex-col gap-2">
-          {candidates.map((c) => (
-            <li key={c.id}>
-              <Link
-                href={`/analyzer/${c.id}`}
-                className="flex items-center justify-between rounded-lg border p-4 hover:bg-gray-50"
-              >
-                <div>
-                  <p className="font-medium">{c.title}</p>
-                  <p className="text-xs text-gray-500">
-                    {SUPPLIER_LABELS[c.supplier] ?? c.supplier} · {c._count.lines} line items ·{" "}
-                    {new Date(c.createdAt).toLocaleDateString()}
-                  </p>
-                </div>
-              </Link>
-            </li>
-          ))}
-        </ul>
-      )}
-    </main>
+    </AppShell>
   );
 }

@@ -1,5 +1,8 @@
 "use client";
 
+import { Button, buttonClasses } from "@/components/ui/Button";
+import { ArrowLeft, Printer } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import JsBarcode from "jsbarcode";
 import { parseLocationRange } from "@/lib/locationRange";
@@ -34,21 +37,23 @@ export default function LabelsPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between p-4 print:hidden">
-        <h1 className="text-lg font-semibold">
-          {labels ? `${labels.length} label${labels.length === 1 ? "" : "s"}` : "Loading…"}
-        </h1>
-        <button
-          type="button"
-          onClick={() => window.print()}
-          disabled={!labels || labels.length === 0}
-          className="rounded bg-black px-4 py-2 text-sm text-white disabled:opacity-40"
-        >
+      <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-border bg-surface/90 px-4 py-3 backdrop-blur print:hidden">
+        <div className="flex items-center gap-3">
+          <Link href="/settings" className={buttonClasses({ variant: "ghost", size: "sm" })}>
+            <ArrowLeft className="size-4" aria-hidden />
+            Settings
+          </Link>
+          <h1 className="font-semibold text-foreground">
+            {labels ? `${labels.length} shelf label${labels.length === 1 ? "" : "s"}` : "Loading…"}
+          </h1>
+        </div>
+        <Button onClick={() => window.print()} disabled={!labels || labels.length === 0}>
+          <Printer className="size-4" aria-hidden />
           Print
-        </button>
+        </Button>
       </div>
 
-      {error && <p className="p-4 text-sm text-red-600 print:hidden">{error}</p>}
+      {error && <p className="p-4 text-sm font-medium text-danger print:hidden">{error}</p>}
 
       <div className="flex flex-wrap gap-3 p-4 print:gap-0 print:p-0">
         {labels?.map((label) => (
@@ -80,6 +85,8 @@ export default function LabelsPage() {
           justify-content: center;
           overflow: hidden;
           border: 1px solid #ddd;
+          border-radius: 6px;
+          background: #fff;
         }
         .label-text {
           font-family: monospace;
@@ -90,6 +97,7 @@ export default function LabelsPage() {
         @media print {
           .label {
             border: none;
+            border-radius: 0;
             page-break-after: always;
             break-after: page;
           }

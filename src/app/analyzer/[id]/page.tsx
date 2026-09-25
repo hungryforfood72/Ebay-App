@@ -1,9 +1,16 @@
 "use client";
 
+import { Alert } from "@/components/ui/Alert";
+import { AppShell } from "@/components/ui/AppShell";
+import { Badge, type BadgeTone } from "@/components/ui/Badge";
+import { Button, buttonClasses } from "@/components/ui/Button";
+import { Card, SectionHeader } from "@/components/ui/Card";
+import { cn } from "@/components/ui/cn";
+import { Input } from "@/components/ui/Input";
+import { ChevronDown, CircleCheck, Pencil, RefreshCw, Upload } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState, use as usePromise } from "react";
 import { useRouter } from "next/navigation";
-import { UserNavLinks } from "@/components/UserNav";
 
 type Line = {
   id: string;
@@ -170,414 +177,515 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
     }
   }
 
-  if (!candidate) return <main className="p-6">Loading…</main>;
+  if (!candidate) {
+    return (
+      <AppShell title="Analyzer">
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      </AppShell>
+    );
+  }
+
+  const evaluation = candidate.sourcingEvaluation;
 
   return (
-    <main className="mx-auto max-w-4xl p-6">
-      <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Analyzer</p>
-      <div className="mb-2 flex items-center justify-between">
-        {editingTitle ? (
-          <div className="flex items-center gap-2">
-            <input
-              type="text"
-              value={titleInput}
-              onChange={(e) => setTitleInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") saveTitle();
-                if (e.key === "Escape") {
-                  setEditingTitle(false);
-                  setTitleInput(candidate.title);
-                }
-              }}
-              className="rounded border px-2 py-1 text-xl font-semibold"
-              autoFocus
-            />
-            <button
-              type="button"
-              onClick={saveTitle}
-              disabled={savingTitle || !titleInput.trim()}
-              className="rounded bg-black px-3 py-1 text-sm text-white disabled:opacity-40"
-            >
+    <AppShell
+      title={
+        editingTitle ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="w-full max-w-md">
+              <Input
+                type="text"
+                value={titleInput}
+                onChange={(e) => setTitleInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") saveTitle();
+                  if (e.key === "Escape") {
+                    setEditingTitle(false);
+                    setTitleInput(candidate.title);
+                  }
+                }}
+                aria-label="Manifest title"
+                autoFocus
+              />
+            </div>
+            <Button size="sm" onClick={saveTitle} disabled={savingTitle || !titleInput.trim()}>
               {savingTitle ? "Saving…" : "Save"}
-            </button>
-            <button
-              type="button"
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
               onClick={() => {
                 setEditingTitle(false);
                 setTitleInput(candidate.title);
               }}
-              className="text-sm text-gray-500 underline"
             >
               Cancel
-            </button>
+            </Button>
           </div>
         ) : (
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl font-semibold">{candidate.title}</h1>
-            <button type="button" onClick={() => setEditingTitle(true)} className="text-xs text-gray-400 underline">
-              Rename
+          <span className="inline-flex flex-wrap items-center gap-x-2">
+            {candidate.title}
+            <button
+              type="button"
+              onClick={() => setEditingTitle(true)}
+              aria-label="Rename"
+              title="Rename"
+              className="grid size-8 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              <Pencil className="size-4" aria-hidden />
             </button>
-          </div>
-        )}
-        <div className="flex items-center gap-3">
-          <Link href="/" className="text-sm underline">
-            Dashboard
-          </Link>
-          <Link href="/analyzer" className="text-sm underline">
+          </span>
+        )
+      }
+      subtitle={
+        <span className="inline-flex flex-wrap items-center gap-x-2">
+          <Link href="/analyzer" className="font-medium text-primary hover:underline">
             All candidates
           </Link>
-          <Link href="/manifests" className="text-sm underline">
-            Manifests
+          <span aria-hidden>·</span>
+          {new Date(candidate.createdAt).toLocaleDateString()}
+          <span aria-hidden>·</span>
+          {candidate.lines.length} line items
+          <span aria-hidden>·</span>${candidate.summary.totalManifestExtendedRetail.toFixed(2)} retail
+        </span>
+      }
+      actions={
+        <>
+          <Button onClick={markPurchased} disabled={markingPurchased}>
+            <CircleCheck className="size-4" aria-hidden />
+            {markingPurchased ? "Marking…" : "Mark as purchased"}
+          </Button>
+          <Link href="/analyzer" className={buttonClasses({ variant: "outline" })}>
+            <Upload className="size-4" aria-hidden />
+            Upload another
           </Link>
-          <UserNavLinks />
-        </div>
-      </div>
-      <p className="mb-6 text-sm text-gray-500">
-        {new Date(candidate.createdAt).toLocaleDateString()} · {candidate.lines.length} line items · $
-        {candidate.summary.totalManifestExtendedRetail.toFixed(2)} total retail value
-      </p>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-6">
+        <Card>
+          <SectionHeader
+            title="Sourcing recommendation"
+            action={
+              evaluation?.status !== "running" ? (
+                <Button variant="outline" size="sm" onClick={runSourcingEvaluation} disabled={startingEvaluation}>
+                  <RefreshCw className={cn("size-4", startingEvaluation && "animate-spin")} aria-hidden />
+                  {startingEvaluation ? "Starting…" : evaluation ? "Re-run" : "Run evaluation"}
+                </Button>
+              ) : undefined
+            }
+          />
+          {evaluationError && <p className="mb-3 text-sm font-medium text-danger">{evaluationError}</p>}
 
-      <div className="mb-6 flex flex-wrap gap-3">
-        <button
-          type="button"
-          onClick={markPurchased}
-          disabled={markingPurchased}
-          className="rounded-lg bg-black px-4 py-3 text-center text-white disabled:opacity-40"
-        >
-          {markingPurchased ? "Marking…" : "Mark as purchased → move to Manifests"}
-        </button>
-        <Link
-          href="/analyzer"
-          className="rounded-lg border px-4 py-3 text-center text-sm font-medium hover:bg-gray-50"
-        >
-          + Upload another manifest
-        </Link>
-      </div>
-
-      <section className="mb-6 flex flex-col gap-3 rounded-lg border p-4">
-        <div className="flex items-center justify-between">
-          <label className="text-sm font-medium">Sourcing recommendation</label>
-          {candidate.sourcingEvaluation?.status !== "running" && (
-            <button
-              type="button"
-              onClick={runSourcingEvaluation}
-              disabled={startingEvaluation}
-              className="rounded border px-3 py-1.5 text-xs disabled:opacity-40"
-            >
-              {startingEvaluation
-                ? "Starting…"
-                : candidate.sourcingEvaluation
-                  ? "Re-run evaluation"
-                  : "Run sourcing evaluation"}
-            </button>
-          )}
-        </div>
-        {evaluationError && <p className="text-sm text-red-600">{evaluationError}</p>}
-
-        {!candidate.sourcingEvaluation && !evaluationError && (
-          <p className="text-xs text-gray-400">
-            Checks real historical sold data, live eBay comps, and supplier patterns to suggest a max bid
-            before you commit to buying this manifest.
-          </p>
-        )}
-
-        {candidate.sourcingEvaluation?.status === "running" && (
-          <div className="flex flex-col gap-1.5">
-            <p className="text-sm text-gray-500">
-              Evaluating — checking historical sales, live comps, and market signal for each item. This can
-              take a couple minutes for a large manifest…
+          {!evaluation && !evaluationError && (
+            <p className="text-sm text-muted-foreground">
+              Checks real historical sold data, live eBay comps, and supplier patterns to suggest a max bid before
+              you commit to buying this manifest.
             </p>
-            {(() => {
-              const { processedSteps, totalSteps } = candidate.sourcingEvaluation;
-              const pct = totalSteps > 0 ? Math.min(100, Math.round((processedSteps / totalSteps) * 100)) : 0;
-              return (
-                <>
-                  <div className="h-2 w-full overflow-hidden rounded-full bg-gray-100">
-                    <div
-                      className="h-full rounded-full bg-black transition-[width] duration-500 ease-out"
-                      style={{ width: `${pct}%` }}
+          )}
+
+          {evaluation?.status === "running" && (
+            <div className="flex flex-col gap-2">
+              <p className="text-sm text-muted-foreground">
+                Evaluating — checking historical sales, live comps, and market signal for each item. This can take a
+                couple minutes for a large manifest…
+              </p>
+              {(() => {
+                const { processedSteps, totalSteps } = evaluation;
+                const pct = totalSteps > 0 ? Math.min(100, Math.round((processedSteps / totalSteps) * 100)) : 0;
+                return (
+                  <>
+                    <div className="h-2.5 w-full overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full rounded-full bg-primary transition-[width] duration-500 ease-out"
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                    <p className="text-xs font-medium text-muted-foreground tabular-nums">
+                      {totalSteps > 0 ? `${pct}% · ${processedSteps} of ${totalSteps} items checked` : "Starting…"}
+                    </p>
+                  </>
+                );
+              })()}
+            </div>
+          )}
+
+          {evaluation?.status === "failed" && (
+            <Alert tone="danger" title="Evaluation failed">
+              {evaluation.error ?? "unknown error"}
+            </Alert>
+          )}
+
+          {evaluation?.status === "complete" && (
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-wrap items-center gap-3">
+                <Badge tone={evaluation.recommendation === "buy" ? "success" : "danger"} size="lg">
+                  {evaluation.recommendation === "buy" ? "Buy" : "Don't buy"}
+                </Badge>
+                <span className="text-xs text-muted-foreground">{new Date(evaluation.startedAt).toLocaleString()}</span>
+              </div>
+
+              <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                <Metric
+                  label="Max recommended bid"
+                  value={evaluation.maxBid != null ? `$${evaluation.maxBid.toFixed(2)}` : "—"}
+                  emphasis
+                />
+                {evaluation.maxBid != null && evaluation.expectedNetContribution != null && (
+                  <>
+                    <Metric
+                      label="Est. profit at that bid"
+                      value={`$${(evaluation.expectedNetContribution - evaluation.maxBid).toFixed(2)}`}
                     />
+                    <Metric
+                      label="Est. ROI"
+                      value={
+                        evaluation.maxBid > 0
+                          ? `${(
+                              ((evaluation.expectedNetContribution - evaluation.maxBid) / evaluation.maxBid) *
+                              100
+                            ).toFixed(0)}%`
+                          : "—"
+                      }
+                    />
+                  </>
+                )}
+              </dl>
+              {evaluation.maxBid != null && (
+                <p className="text-xs text-muted-foreground">
+                  Profit/ROI shown are what to expect if you win at exactly the max bid — bid lower and both improve,
+                  since the max bid is calibrated to hit your target margin (Settings) at that exact price.
+                </p>
+              )}
+
+              {evaluation.expectedNetContribution != null && (
+                <div className="rounded-xl border border-border bg-background p-4">
+                  <div className="flex flex-wrap items-end gap-x-5 gap-y-3">
+                    <div className="w-40">
+                      <label htmlFor="try-bid" className="mb-1.5 block text-sm font-medium text-foreground">
+                        What if I bid…
+                      </label>
+                      <div className="relative">
+                        <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-muted-foreground">
+                          $
+                        </span>
+                        <Input
+                          id="try-bid"
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={customBid}
+                          onChange={(e) => setCustomBid(e.target.value)}
+                          placeholder="0.00"
+                          className="pl-7"
+                        />
+                      </div>
+                    </div>
+                    {(() => {
+                      const bid = parseFloat(customBid);
+                      const contribution = evaluation.expectedNetContribution!;
+                      if (!Number.isFinite(bid) || bid <= 0) return null;
+                      const profit = contribution - bid;
+                      const roi = (profit / bid) * 100;
+                      const targetMarginPct = evaluation.targetMarginPct;
+                      // Compare against the ROUNDED figure, same as what's shown
+                      // (roi.toFixed(0) below) — maxBid/expectedNetContribution
+                      // are themselves rounded-to-cents Decimals, so recomputing
+                      // ROI from them lands a hair off the exact target (e.g.
+                      // 34.97% instead of 35.00%). Comparing the raw float
+                      // against the integer target made bidding exactly at the
+                      // recommended max bid show "35%" right next to "Below
+                      // your 35% target" — a real contradiction, not just a
+                      // display quirk, since the max bid is defined as the
+                      // price that exactly clears the target.
+                      const clearsTarget = targetMarginPct != null ? Math.round(roi) >= targetMarginPct : null;
+                      return (
+                        <>
+                          <div>
+                            <p className="text-xs font-medium text-muted-foreground">Profit</p>
+                            <p
+                              className={cn(
+                                "text-lg font-semibold tabular-nums",
+                                profit >= 0 ? "text-success" : "text-danger"
+                              )}
+                            >
+                              ${profit.toFixed(2)}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-xs font-medium text-muted-foreground">ROI</p>
+                            <p
+                              className={cn(
+                                "text-lg font-semibold tabular-nums",
+                                profit >= 0 ? "text-success" : "text-danger"
+                              )}
+                            >
+                              {roi.toFixed(0)}%
+                            </p>
+                          </div>
+                          {clearsTarget != null && (
+                            <Badge tone={clearsTarget ? "success" : "warning"} className="mb-1">
+                              {clearsTarget ? `Clears your ${targetMarginPct}% target` : `Below your ${targetMarginPct}% target`}
+                            </Badge>
+                          )}
+                          {evaluation.maxBid != null && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setCustomBid(evaluation.maxBid!.toFixed(2))}
+                              className="mb-0.5"
+                            >
+                              Reset to max bid
+                            </Button>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
-                  <p className="text-xs text-gray-400">
-                    {totalSteps > 0
-                      ? `${pct}% · ${processedSteps} of ${totalSteps} items checked`
-                      : "Starting…"}
-                  </p>
-                </>
-              );
-            })()}
-          </div>
-        )}
+                  {(() => {
+                    const bid = parseFloat(customBid);
+                    if (!Number.isFinite(bid) || bid <= 0) return null;
+                    const { dudShare, concentrationRisk, targetMarginPct, minBidFloor, expectedNetContribution } =
+                      evaluation;
+                    if (expectedNetContribution == null) return null;
 
-        {candidate.sourcingEvaluation?.status === "failed" && (
-          <p className="text-sm text-red-600">
-            Evaluation failed: {candidate.sourcingEvaluation.error ?? "unknown error"}
-          </p>
-        )}
+                    // The original recommendation can land on "dont_buy" for
+                    // reasons that have nothing to do with the price paid —
+                    // too many duds, or one weak item dominating the manifest
+                    // (see evaluateManifest's recommendation logic). No bid,
+                    // however low, fixes those, so a hypothetical price never
+                    // gets to override them — Cristian's own instruction:
+                    // only let the price change the verdict when the original
+                    // "no" actually was about price.
+                    const structuralReasons: string[] = [];
+                    if (dudShare != null && dudShare >= 0.6) {
+                      structuralReasons.push(`${(dudShare * 100).toFixed(0)}% of lines are likely duds`);
+                    }
+                    if (concentrationRisk) {
+                      structuralReasons.push("one item dominates the manifest's value and looks weak");
+                    }
 
-        {candidate.sourcingEvaluation?.status === "complete" && (
-          <div className="flex flex-col gap-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <span
-                className={`rounded-full px-3 py-1 text-sm font-semibold ${
-                  candidate.sourcingEvaluation.recommendation === "buy"
-                    ? "bg-green-100 text-green-700"
-                    : "bg-red-100 text-red-700"
-                }`}
-              >
-                {candidate.sourcingEvaluation.recommendation === "buy" ? "Buy" : "Don't buy"}
-              </span>
-              <span className="text-sm text-gray-600">
-                Max recommended bid: <strong>${candidate.sourcingEvaluation.maxBid?.toFixed(2) ?? "—"}</strong>
-              </span>
-              {candidate.sourcingEvaluation.maxBid != null && candidate.sourcingEvaluation.expectedNetContribution != null && (
+                    let good: boolean;
+                    let label: string;
+                    if (structuralReasons.length > 0) {
+                      good = false;
+                      label = "Still don't buy";
+                    } else {
+                      const roi = ((expectedNetContribution - bid) / bid) * 100;
+                      const clearsFloor = minBidFloor == null || bid >= minBidFloor;
+                      // Same rounding-consistency fix as the ROI badge above —
+                      // compare the displayed whole-percent figure, not the
+                      // raw float, so this can't disagree with the number
+                      // shown right next to it.
+                      const clearsMargin = targetMarginPct == null || Math.round(roi) >= targetMarginPct;
+                      good = clearsFloor && clearsMargin;
+                      label = good ? "Buy at this price" : "Don't buy at this price";
+                    }
+
+                    return (
+                      <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-3">
+                        <Badge tone={good ? "success" : "danger"} size="lg">
+                          {label}
+                        </Badge>
+                        {structuralReasons.length > 0 && (
+                          <span className="text-sm text-muted-foreground">
+                            Not a price issue — {structuralReasons.join(" and ")}. No bid price fixes this.
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+
+              {evaluation.reasoning && (
+                <p className="text-sm leading-relaxed text-foreground">{evaluation.reasoning}</p>
+              )}
+
+              <div>
+                <Button variant="ghost" size="sm" onClick={() => setShowLineBreakdown((v) => !v)} className="-ml-2">
+                  <ChevronDown className={cn("size-4 transition-transform", showLineBreakdown && "rotate-180")} aria-hidden />
+                  {showLineBreakdown ? "Hide" : "Show"} per-item breakdown ({evaluation.lineEstimates.length} item
+                  {evaluation.lineEstimates.length === 1 ? "" : "s"})
+                </Button>
+              </div>
+
+              {showLineBreakdown && (
                 <>
-                  <span className="text-sm text-gray-600">
-                    Est. profit at that bid:{" "}
-                    <strong>
-                      ${(candidate.sourcingEvaluation.expectedNetContribution - candidate.sourcingEvaluation.maxBid).toFixed(2)}
-                    </strong>
-                  </span>
-                  <span className="text-sm text-gray-600">
-                    Est. ROI:{" "}
-                    <strong>
-                      {candidate.sourcingEvaluation.maxBid > 0
-                        ? (
-                            ((candidate.sourcingEvaluation.expectedNetContribution - candidate.sourcingEvaluation.maxBid) /
-                              candidate.sourcingEvaluation.maxBid) *
-                            100
-                          ).toFixed(0)
-                        : "—"}
-                      %
-                    </strong>
-                  </span>
+                  <ul className="flex flex-col gap-2 md:hidden">
+                    {evaluation.lineEstimates.map((e) => (
+                      <li
+                        key={e.id}
+                        className={cn("rounded-xl border border-border bg-background p-3", e.flaggedDud && "opacity-60")}
+                      >
+                        <p className="text-sm font-medium leading-snug text-foreground">{e.description}</p>
+                        <EstimateTags estimate={e} />
+                        <dl className="mt-2 grid grid-cols-4 gap-2 text-xs tabular-nums">
+                          <MiniStat
+                            label="Sale/unit"
+                            value={e.estimatedUnitSalePrice != null ? `$${e.estimatedUnitSalePrice.toFixed(2)}` : "—"}
+                          />
+                          <MiniStat
+                            label="Net/unit"
+                            value={e.estimatedNetPerUnit != null ? `$${e.estimatedNetPerUnit.toFixed(2)}` : "—"}
+                          />
+                          <MiniStat label="Units" value={String(e.effectiveUnits)} />
+                          <MiniStat label="Sells as" value={e.typicalPackSize > 1 ? `${e.typicalPackSize}-pack` : "single"} />
+                        </dl>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="hidden overflow-x-auto rounded-xl border border-border md:block">
+                    <table className="w-full text-sm">
+                      <thead className="bg-background">
+                        <tr className="border-b border-border text-left text-xs font-medium text-muted-foreground">
+                          <th className="px-4 py-3">Item</th>
+                          <th className="px-3 py-3 text-right">Est. sale/unit</th>
+                          <th className="px-3 py-3 text-right">Sells as</th>
+                          <th className="px-3 py-3 text-right">Est. net/unit</th>
+                          <th className="px-3 py-3 text-right">Units</th>
+                          <th className="px-4 py-3">Confidence</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border tabular-nums">
+                        {evaluation.lineEstimates.map((e) => (
+                          <tr key={e.id} className={cn("hover:bg-background", e.flaggedDud && "text-muted-foreground")}>
+                            <td className="px-4 py-2.5">
+                              <p className={cn("font-medium", !e.flaggedDud && "text-foreground")}>{e.description}</p>
+                              <EstimateTags estimate={e} showConfidence={false} />
+                            </td>
+                            <td className="px-3 text-right">
+                              {e.estimatedUnitSalePrice != null ? `$${e.estimatedUnitSalePrice.toFixed(2)}` : "—"}
+                            </td>
+                            <td className="px-3 text-right">{e.typicalPackSize > 1 ? `${e.typicalPackSize}-pack` : "single"}</td>
+                            <td className="px-3 text-right">
+                              {e.estimatedNetPerUnit != null ? `$${e.estimatedNetPerUnit.toFixed(2)}` : "—"}
+                            </td>
+                            <td className="px-3 text-right">{e.effectiveUnits}</td>
+                            <td className="px-4">
+                              <ConfidenceBadge confidence={e.dataConfidence} />
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </>
               )}
-              <span className="text-xs text-gray-400">
-                {new Date(candidate.sourcingEvaluation.startedAt).toLocaleString()}
-              </span>
             </div>
-            {candidate.sourcingEvaluation.maxBid != null && (
-              <p className="text-xs text-gray-400">
-                Profit/ROI shown are what to expect if you win at exactly the max bid — bid lower and both
-                improve, since the max bid is calibrated to hit your target margin (Settings) at that exact
-                price.
-              </p>
-            )}
-            {candidate.sourcingEvaluation.expectedNetContribution != null && (
-              <div className="mt-1 flex flex-wrap items-end gap-3 rounded-lg border bg-gray-50 p-3">
-                <div>
-                  <label htmlFor="try-bid" className="block text-xs font-medium text-gray-500">
-                    What if I bid...
-                  </label>
-                  <input
-                    id="try-bid"
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    value={customBid}
-                    onChange={(e) => setCustomBid(e.target.value)}
-                    className="mt-1 w-32 rounded border px-2 py-1 text-sm"
-                    placeholder="0.00"
-                  />
-                </div>
-                {(() => {
-                  const bid = parseFloat(customBid);
-                  const contribution = candidate.sourcingEvaluation.expectedNetContribution!;
-                  if (!Number.isFinite(bid) || bid <= 0) return null;
-                  const profit = contribution - bid;
-                  const roi = (profit / bid) * 100;
-                  const targetMarginPct = candidate.sourcingEvaluation.targetMarginPct;
-                  // Compare against the ROUNDED figure, same as what's shown
-                  // (roi.toFixed(0) below) — maxBid/expectedNetContribution
-                  // are themselves rounded-to-cents Decimals, so recomputing
-                  // ROI from them lands a hair off the exact target (e.g.
-                  // 34.97% instead of 35.00%). Comparing the raw float
-                  // against the integer target made bidding exactly at the
-                  // recommended max bid show "35%" right next to "Below
-                  // your 35% target" — a real contradiction, not just a
-                  // display quirk, since the max bid is defined as the
-                  // price that exactly clears the target.
-                  const clearsTarget = targetMarginPct != null ? Math.round(roi) >= targetMarginPct : null;
-                  return (
-                    <>
-                      <span className="text-sm text-gray-600">
-                        Profit: <strong className={profit >= 0 ? "text-green-700" : "text-red-600"}>${profit.toFixed(2)}</strong>
-                      </span>
-                      <span className="text-sm text-gray-600">
-                        ROI: <strong className={profit >= 0 ? "text-green-700" : "text-red-600"}>{roi.toFixed(0)}%</strong>
-                      </span>
-                      {clearsTarget != null && (
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                            clearsTarget ? "bg-green-100 text-green-700" : "bg-orange-100 text-orange-700"
-                          }`}
-                        >
-                          {clearsTarget
-                            ? `Clears your ${targetMarginPct}% target`
-                            : `Below your ${targetMarginPct}% target`}
-                        </span>
-                      )}
-                      {candidate.sourcingEvaluation.maxBid != null && (
-                        <button
-                          type="button"
-                          onClick={() => setCustomBid(candidate.sourcingEvaluation!.maxBid!.toFixed(2))}
-                          className="text-xs text-gray-400 underline"
-                        >
-                          Reset to max bid
-                        </button>
-                      )}
-                    </>
-                  );
-                })()}
-                {(() => {
-                  const bid = parseFloat(customBid);
-                  if (!Number.isFinite(bid) || bid <= 0) return null;
-                  const { dudShare, concentrationRisk, targetMarginPct, minBidFloor, expectedNetContribution } =
-                    candidate.sourcingEvaluation;
-                  if (expectedNetContribution == null) return null;
+          )}
+        </Card>
 
-                  // The original recommendation can land on "dont_buy" for
-                  // reasons that have nothing to do with the price paid —
-                  // too many duds, or one weak item dominating the manifest
-                  // (see evaluateManifest's recommendation logic). No bid,
-                  // however low, fixes those, so a hypothetical price never
-                  // gets to override them — Cristian's own instruction:
-                  // only let the price change the verdict when the original
-                  // "no" actually was about price.
-                  const structuralReasons: string[] = [];
-                  if (dudShare != null && dudShare >= 0.6) {
-                    structuralReasons.push(`${(dudShare * 100).toFixed(0)}% of lines are likely duds`);
-                  }
-                  if (concentrationRisk) {
-                    structuralReasons.push("one item dominates the manifest's value and looks weak");
-                  }
-
-                  let good: boolean;
-                  let label: string;
-                  if (structuralReasons.length > 0) {
-                    good = false;
-                    label = "Still don't buy";
-                  } else {
-                    const roi = ((expectedNetContribution - bid) / bid) * 100;
-                    const clearsFloor = minBidFloor == null || bid >= minBidFloor;
-                    // Same rounding-consistency fix as the ROI badge above —
-                    // compare the displayed whole-percent figure, not the
-                    // raw float, so this can't disagree with the number
-                    // shown right next to it.
-                    const clearsMargin = targetMarginPct == null || Math.round(roi) >= targetMarginPct;
-                    good = clearsFloor && clearsMargin;
-                    label = good ? "Buy at this price" : "Don't buy at this price";
-                  }
-
-                  return (
-                    <div className="mt-1 flex w-full items-center gap-2 border-t pt-2">
-                      <span
-                        className={`rounded-full px-3 py-1 text-sm font-semibold ${
-                          good ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"
-                        }`}
-                      >
-                        {label}
-                      </span>
-                      {structuralReasons.length > 0 && (
-                        <span className="text-xs text-gray-500">
-                          Not a price issue — {structuralReasons.join(" and ")}. No bid price fixes this.
-                        </span>
-                      )}
-                    </div>
-                  );
-                })()}
-              </div>
-            )}
-            {candidate.sourcingEvaluation.reasoning && (
-              <p className="text-sm text-gray-700">{candidate.sourcingEvaluation.reasoning}</p>
-            )}
-            <button
-              type="button"
-              onClick={() => setShowLineBreakdown((v) => !v)}
-              className="w-fit text-left text-xs text-gray-500 underline"
-            >
-              {showLineBreakdown ? "Hide" : "Show"} per-item breakdown (
-              {candidate.sourcingEvaluation.lineEstimates.length} item
-              {candidate.sourcingEvaluation.lineEstimates.length === 1 ? "" : "s"})
-            </button>
-            {showLineBreakdown && (
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="border-b text-left text-gray-500">
-                      <th className="py-1 pr-2">Item</th>
-                      <th className="px-2 text-right">Est. sale price (per unit)</th>
-                      <th className="px-2 text-right">Sells as</th>
-                      <th className="px-2 text-right">Est. net/unit</th>
-                      <th className="px-2 text-right">Units</th>
-                      <th className="px-2 text-left">Confidence</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {candidate.sourcingEvaluation.lineEstimates.map((e) => (
-                      <tr key={e.id} className={`border-b ${e.flaggedDud ? "text-gray-400" : ""}`}>
-                        <td className="py-1 pr-2">
-                          {e.description} {e.flaggedDud && <span className="text-orange-500">(dud)</span>}{" "}
-                          {e.slowMover && (
-                            <span className="text-purple-600">
-                              (slow mover
-                              {e.monthsToSellThrough != null && e.monthsToSellThrough < 60
-                                ? `, ~${e.monthsToSellThrough.toFixed(1)}mo to sell through`
-                                : ""}
-                              )
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-2 text-right">
-                          {e.estimatedUnitSalePrice != null ? `$${e.estimatedUnitSalePrice.toFixed(2)}` : "—"}
-                        </td>
-                        <td className="px-2 text-right">
-                          {e.typicalPackSize > 1 ? `${e.typicalPackSize}-pack` : "single"}
-                        </td>
-                        <td className="px-2 text-right">
-                          {e.estimatedNetPerUnit != null ? `$${e.estimatedNetPerUnit.toFixed(2)}` : "—"}
-                        </td>
-                        <td className="px-2 text-right">{e.effectiveUnits}</td>
-                        <td className="px-2 text-left">{e.dataConfidence.replace("_", " ")}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        )}
-      </section>
-
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b text-left text-xs text-gray-500">
-              <th className="py-2 pr-2">Item</th>
-              <th className="px-2 text-right">Expected qty</th>
-              <th className="px-2 text-right">Retail price</th>
-              <th className="px-2 text-right">Extended retail</th>
-            </tr>
-          </thead>
-          <tbody>
+        <section>
+          <SectionHeader title="Manifest lines" action={<Badge>{candidate.lines.length}</Badge>} />
+          <ul className="flex flex-col gap-2 md:hidden">
             {candidate.lines.map((line) => (
-              <tr key={line.id} className="border-b">
-                <td className="py-2 pr-2">
-                  <p className="font-medium">{line.description}</p>
-                  <p className="text-xs text-gray-400">
-                    {line.upc ?? "no UPC"}
-                    {line.category ? ` · ${line.category}` : ""}
-                  </p>
-                </td>
-                <td className="px-2 text-right">{line.expectedQuantity}</td>
-                <td className="px-2 text-right">${line.retailPrice.toFixed(2)}</td>
-                <td className="px-2 text-right">${line.extendedRetail.toFixed(2)}</td>
-              </tr>
+              <li key={line.id} className="rounded-xl border border-border bg-surface p-3 shadow-sm">
+                <p className="font-medium leading-snug text-foreground">{line.description}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {line.upc ?? "no UPC"}
+                  {line.category ? ` · ${line.category}` : ""}
+                </p>
+                <p className="mt-2 flex flex-wrap gap-x-3 text-sm tabular-nums text-muted-foreground">
+                  <span>
+                    Qty <span className="font-medium text-foreground">{line.expectedQuantity}</span>
+                  </span>
+                  <span>
+                    Retail <span className="font-medium text-foreground">${line.retailPrice.toFixed(2)}</span>
+                  </span>
+                  <span>
+                    Ext. <span className="font-medium text-foreground">${line.extendedRetail.toFixed(2)}</span>
+                  </span>
+                </p>
+              </li>
             ))}
-          </tbody>
-        </table>
+          </ul>
+          <Card padded={false} className="hidden overflow-hidden md:block">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-background">
+                  <tr className="border-b border-border text-left text-xs font-medium text-muted-foreground">
+                    <th className="px-4 py-3">Item</th>
+                    <th className="px-3 py-3 text-right">Expected qty</th>
+                    <th className="px-3 py-3 text-right">Retail price</th>
+                    <th className="px-4 py-3 text-right">Extended retail</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border tabular-nums">
+                  {candidate.lines.map((line) => (
+                    <tr key={line.id} className="hover:bg-background">
+                      <td className="px-4 py-2.5">
+                        <p className="font-medium text-foreground">{line.description}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {line.upc ?? "no UPC"}
+                          {line.category ? ` · ${line.category}` : ""}
+                        </p>
+                      </td>
+                      <td className="px-3 text-right">{line.expectedQuantity}</td>
+                      <td className="px-3 text-right">${line.retailPrice.toFixed(2)}</td>
+                      <td className="px-4 text-right">${line.extendedRetail.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </section>
       </div>
-    </main>
+    </AppShell>
+  );
+}
+
+function Metric({ label, value, emphasis = false }: { label: string; value: string; emphasis?: boolean }) {
+  return (
+    <div className={cn("rounded-lg p-3", emphasis ? "bg-blue-50" : "bg-background")}>
+      <dt className="text-xs font-medium text-muted-foreground">{label}</dt>
+      <dd className={cn("mt-0.5 text-lg font-semibold tabular-nums", emphasis ? "text-primary" : "text-foreground")}>
+        {value}
+      </dd>
+    </div>
+  );
+}
+
+function MiniStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <dt className="truncate text-muted-foreground">{label}</dt>
+      <dd className="truncate font-medium text-foreground">{value}</dd>
+    </div>
+  );
+}
+
+const CONFIDENCE_TONES: Record<string, BadgeTone> = {
+  own_history: "success",
+  historical_match: "success",
+  web_price_check: "primary",
+  category_fallback: "warning",
+  market_only: "neutral",
+};
+
+function ConfidenceBadge({ confidence }: { confidence: string }) {
+  // replaceAll, not replace — "web_price_check" has two underscores, and the
+  // old single replace() rendered it as "web price_check".
+  return <Badge tone={CONFIDENCE_TONES[confidence] ?? "neutral"}>{confidence.replaceAll("_", " ")}</Badge>;
+}
+
+// Dud / slow-mover flags (and, on phones where there's no confidence
+// column, the confidence badge) under an estimate's description.
+function EstimateTags({ estimate: e, showConfidence = true }: { estimate: SourcingLineEstimate; showConfidence?: boolean }) {
+  if (!e.flaggedDud && !e.slowMover && !showConfidence) return null;
+  return (
+    <div className="mt-1.5 flex flex-wrap gap-1.5">
+      {showConfidence && <ConfidenceBadge confidence={e.dataConfidence} />}
+      {e.flaggedDud && <Badge tone="warning">dud</Badge>}
+      {e.slowMover && (
+        <Badge tone="purple">
+          slow mover
+          {e.monthsToSellThrough != null && e.monthsToSellThrough < 60
+            ? ` · ~${e.monthsToSellThrough.toFixed(1)}mo to sell through`
+            : ""}
+        </Badge>
+      )}
+    </div>
   );
 }

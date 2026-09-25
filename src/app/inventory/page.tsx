@@ -1,8 +1,13 @@
 "use client";
 
-import Link from "next/link";
+import { AppShell } from "@/components/ui/AppShell";
+import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
+import { Card } from "@/components/ui/Card";
+import { cn } from "@/components/ui/cn";
+import { Input } from "@/components/ui/Input";
+import { ExternalLink, LoaderCircle, Minus, Package, Plus, Search } from "lucide-react";
 import { useEffect, useState } from "react";
-import { UserNavLinks } from "@/components/UserNav";
 
 type InventoryItem = {
   id: string;
@@ -142,213 +147,235 @@ export default function InventoryPage() {
   }
 
   return (
-    <main className="mx-auto max-w-5xl p-6">
-      <div className="mb-2 flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Inventory</h1>
-        <div className="flex items-center gap-3">
-          <Link href="/" className="text-sm underline">
-            Dashboard
-          </Link>
-          <Link href="/manifests" className="text-sm underline">
-            Manifests
-          </Link>
-          <Link href="/analyzer" className="text-sm underline">
-            Analyzer
-          </Link>
-          <UserNavLinks />
-        </div>
-      </div>
-      <p className="mb-6 text-sm text-gray-500">Every active eBay listing this app has published or linked.</p>
+    <AppShell title="Inventory" subtitle="Every active eBay listing this app has published or linked.">
+      <div className="flex flex-col gap-5">
+        <form onSubmit={search} className="flex gap-2">
+          <div className="relative min-w-0 flex-1">
+            <Search
+              className="pointer-events-none absolute left-3 top-1/2 size-5 -translate-y-1/2 text-muted-foreground"
+              aria-hidden
+            />
+            <Input
+              size="sm"
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="eBay Item ID, title, UPC, or SKU"
+              aria-label="Search inventory"
+              className="pl-10"
+            />
+          </div>
+          <Button type="submit">
+            Search
+          </Button>
+          {query && (
+            <Button
+              variant="outline"
+              onClick={() => {
+                setQuery("");
+                load("");
+              }}
+            >
+              Clear
+            </Button>
+          )}
+        </form>
 
-      <form onSubmit={search} className="mb-6 flex gap-2">
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search by eBay Item ID, title, UPC, or SKU"
-          className="flex-1 rounded border px-3 py-2 text-sm"
-        />
-        <button type="submit" className="rounded bg-black px-4 py-2 text-sm text-white">
-          Search
-        </button>
-        {query && (
-          <button
-            type="button"
-            onClick={() => {
-              setQuery("");
-              load("");
-            }}
-            className="rounded border px-4 py-2 text-sm"
-          >
-            Clear
-          </button>
-        )}
-      </form>
-
-      {!items ? (
-        <p className="text-sm text-gray-500">Loading…</p>
-      ) : items.length === 0 ? (
-        <p className="text-sm text-gray-500">No active listings match that search.</p>
-      ) : (
-        <div className="flex flex-col gap-3">
-          {items.map((item) => {
-            const listingUrl = item.ebayListingId
-              ? item.ebayEnvironment === "production"
-                ? `https://www.ebay.com/itm/${item.ebayListingId}`
-                : `https://sandbox.ebay.com/itm/${item.ebayListingId}`
-              : null;
-            const isEditing = editingId === item.id;
-            const currentKnown = liveCheck?.liveAvailableQuantity ?? liveCheck?.storedAvailableQuantity ?? item.availableQuantity;
-            const amount = Number(amountInput);
-            const preview =
-              Number.isInteger(amount) && amount > 0
-                ? direction === "add"
-                  ? currentKnown + amount
-                  : currentKnown - amount
+        {!items ? (
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        ) : items.length === 0 ? (
+          <Card>
+            <p className="text-sm text-muted-foreground">No active listings match that search.</p>
+          </Card>
+        ) : (
+          <div className="flex flex-col gap-3">
+            {items.map((item) => {
+              const listingUrl = item.ebayListingId
+                ? item.ebayEnvironment === "production"
+                  ? `https://www.ebay.com/itm/${item.ebayListingId}`
+                  : `https://sandbox.ebay.com/itm/${item.ebayListingId}`
                 : null;
+              const isEditing = editingId === item.id;
+              const currentKnown =
+                liveCheck?.liveAvailableQuantity ?? liveCheck?.storedAvailableQuantity ?? item.availableQuantity;
+              const amount = Number(amountInput);
+              const preview =
+                Number.isInteger(amount) && amount > 0
+                  ? direction === "add"
+                    ? currentKnown + amount
+                    : currentKnown - amount
+                  : null;
 
-            return (
-              <div key={item.id} className="rounded-lg border p-3">
-                <div className="flex items-start gap-3">
-                  {item.photoUrl && (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={item.photoUrl} alt="" className="h-16 w-16 flex-shrink-0 rounded object-cover" />
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate font-medium">{item.title ?? item.sku}</p>
-                    <p className="text-xs text-gray-400">
-                      {item.upc ?? "no UPC"} · {item.shelfLocation}
-                      {item.isMultipack && item.packSize ? ` · ${item.packSize}-pack` : ""}
-                      {listingUrl && (
-                        <>
-                          {" · "}
-                          <a href={listingUrl} target="_blank" rel="noreferrer" className="underline">
-                            Item {item.ebayListingId}
-                          </a>
-                        </>
-                      )}
-                    </p>
-                    <p className="mt-1 text-sm text-gray-600">
-                      ${item.price?.toFixed(2) ?? "—"} · Available: <strong>{item.availableQuantity}</strong>
-                      {item.soldQuantity > 0 && (
-                        <span className="text-gray-400"> ({item.quantity} listed, {item.soldQuantity} sold)</span>
-                      )}
-                    </p>
-                  </div>
-                  {!isEditing && (
-                    <button
-                      type="button"
-                      onClick={() => startEdit(item)}
-                      className="flex-shrink-0 rounded border px-3 py-1.5 text-xs"
-                    >
-                      Adjust stock
-                    </button>
-                  )}
-                </div>
-
-                {isEditing && (
-                  <div className="mt-3 rounded-lg border bg-gray-50 p-3">
-                    {checkingLive ? (
-                      <p className="text-xs text-gray-500">Checking live quantity on eBay…</p>
-                    ) : liveCheck ? (
-                      liveCheck.liveAvailableQuantity != null ? (
-                        <p className="text-xs text-gray-500">
-                          Live on eBay right now: <strong>{liveCheck.liveAvailableQuantity}</strong> available
-                          {liveCheck.liveAvailableQuantity !== liveCheck.storedAvailableQuantity && (
-                            <span className="text-orange-600">
-                              {" "}
-                              (our records said {liveCheck.storedAvailableQuantity})
-                            </span>
-                          )}
-                          {" — the server re-checks this again right before saving, so it stays accurate even if a sale lands while you type."}
-                        </p>
-                      ) : (
-                        <p className="text-xs text-gray-500">
-                          Couldn&apos;t reach eBay for a live check — showing our records ({liveCheck.storedAvailableQuantity}).
-                        </p>
-                      )
-                    ) : null}
-
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                      <div className="flex rounded border overflow-hidden">
-                        <button
-                          type="button"
-                          onClick={() => setDirection("add")}
-                          className={`px-3 py-1.5 text-sm ${direction === "add" ? "bg-black text-white" : "bg-white text-gray-700"}`}
-                        >
-                          Add
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setDirection("remove")}
-                          className={`px-3 py-1.5 text-sm ${direction === "remove" ? "bg-black text-white" : "bg-white text-gray-700"}`}
-                        >
-                          Remove
-                        </button>
-                      </div>
-                      <input
-                        type="number"
-                        min="1"
-                        step="1"
-                        value={amountInput}
-                        onChange={(e) => setAmountInput(e.target.value)}
-                        placeholder="Amount"
-                        className="w-24 rounded border px-2 py-1 text-sm"
-                        autoFocus
+              return (
+                <Card key={item.id} className={cn(isEditing && "ring-2 ring-primary/30")}>
+                  <div className="flex items-start gap-3">
+                    {item.photoUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={item.photoUrl}
+                        alt=""
+                        className="size-16 shrink-0 rounded-lg border border-border object-cover"
                       />
-                      {preview != null && (
-                        <span className="text-xs text-gray-500">
-                          → new available: <strong>{Math.max(0, preview)}</strong>
-                        </span>
-                      )}
-                    </div>
-
-                    <input
-                      type="text"
-                      value={noteInput}
-                      onChange={(e) => setNoteInput(e.target.value)}
-                      placeholder="Note — why is this stock changing? (required)"
-                      className="mt-2 w-full rounded border px-2 py-1.5 text-sm"
-                    />
-
-                    <div className="mt-2 flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => saveAdjustment(item)}
-                        disabled={saving}
-                        className="rounded bg-black px-3 py-1.5 text-sm text-white disabled:opacity-40"
-                      >
-                        {saving ? "Saving…" : "Save to eBay"}
-                      </button>
-                      <button type="button" onClick={cancelEdit} className="text-sm text-gray-500 underline">
-                        Cancel
-                      </button>
-                    </div>
-                    {rowError && <p className="mt-2 text-sm text-red-600">{rowError}</p>}
-
-                    {liveCheck && liveCheck.recentAdjustments.length > 0 && (
-                      <div className="mt-3 border-t pt-2">
-                        <p className="mb-1 text-xs font-medium text-gray-500">Recent adjustments</p>
-                        <ul className="flex flex-col gap-1">
-                          {liveCheck.recentAdjustments.map((adj) => (
-                            <li key={adj.id} className="text-xs text-gray-500">
-                              {new Date(adj.createdAt).toLocaleString()} —{" "}
-                              <span className={adj.delta >= 0 ? "text-green-700" : "text-red-600"}>
-                                {adj.delta >= 0 ? `+${adj.delta}` : adj.delta}
-                              </span>{" "}
-                              ({adj.previousAvailable} → {adj.newAvailable}): {adj.note}
-                            </li>
-                          ))}
-                        </ul>
+                    ) : (
+                      <span className="grid size-16 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground">
+                        <Package className="size-6" aria-hidden />
+                      </span>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <p className="line-clamp-2 font-medium leading-snug text-foreground">{item.title ?? item.sku}</p>
+                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                        <Badge>Shelf {item.shelfLocation}</Badge>
+                        {item.isMultipack && item.packSize ? <Badge tone="primary">{item.packSize}-pack</Badge> : null}
+                        <span className="tabular-nums">{item.upc ?? "no UPC"}</span>
+                        {listingUrl && (
+                          <a
+                            href={listingUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="-my-2 inline-flex items-center gap-1 py-2 font-medium text-primary hover:underline"
+                          >
+                            eBay
+                            <ExternalLink className="size-3" aria-hidden />
+                          </a>
+                        )}
                       </div>
+                      <p className="mt-2 text-sm text-muted-foreground">
+                        <span className="font-medium text-foreground">${item.price?.toFixed(2) ?? "—"}</span>
+                        {" · "}
+                        <span className="font-semibold text-foreground">{item.availableQuantity}</span> available
+                        {item.soldQuantity > 0 && (
+                          <span>
+                            {" "}
+                            ({item.quantity} listed, {item.soldQuantity} sold)
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                    {!isEditing && (
+                      <Button variant="outline" size="sm" onClick={() => startEdit(item)} className="shrink-0">
+                        Adjust
+                      </Button>
                     )}
                   </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </main>
+
+                  {isEditing && (
+                    <div className="mt-4 flex flex-col gap-3 border-t border-border pt-4">
+                      {checkingLive ? (
+                        <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                          <LoaderCircle className="size-4 animate-spin" aria-hidden />
+                          Checking live quantity on eBay…
+                        </p>
+                      ) : liveCheck ? (
+                        liveCheck.liveAvailableQuantity != null ? (
+                          <p className="text-sm text-muted-foreground">
+                            Live on eBay right now:{" "}
+                            <strong className="text-foreground">{liveCheck.liveAvailableQuantity}</strong> available
+                            {liveCheck.liveAvailableQuantity !== liveCheck.storedAvailableQuantity && (
+                              <span className="font-medium text-warning">
+                                {" "}
+                                (our records said {liveCheck.storedAvailableQuantity})
+                              </span>
+                            )}
+                            . The server re-checks this right before saving, so it stays accurate even if a sale
+                            lands while you type.
+                          </p>
+                        ) : (
+                          <p className="text-sm text-muted-foreground">
+                            Couldn&apos;t reach eBay for a live check — showing our records (
+                            {liveCheck.storedAvailableQuantity}).
+                          </p>
+                        )
+                      ) : null}
+
+                      <div className="flex flex-wrap items-center gap-3">
+                        <div className="inline-flex rounded-lg bg-muted p-1" role="group" aria-label="Direction">
+                          {(["add", "remove"] as const).map((d) => (
+                            <button
+                              key={d}
+                              type="button"
+                              onClick={() => setDirection(d)}
+                              aria-pressed={direction === d}
+                              className={cn(
+                                "inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium transition-colors",
+                                direction === d
+                                  ? "bg-surface text-foreground shadow-sm"
+                                  : "text-muted-foreground hover:text-foreground"
+                              )}
+                            >
+                              {d === "add" ? <Plus className="size-4" aria-hidden /> : <Minus className="size-4" aria-hidden />}
+                              {d === "add" ? "Add" : "Remove"}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="w-28">
+                          <Input
+                            type="number"
+                            min="1"
+                            step="1"
+                            value={amountInput}
+                            onChange={(e) => setAmountInput(e.target.value)}
+                            placeholder="Amount"
+                            aria-label="Amount"
+                            autoFocus
+                          />
+                        </div>
+                        {preview != null && (
+                          <span className="text-sm text-muted-foreground">
+                            → new available:{" "}
+                            <strong className="text-foreground">{Math.max(0, preview)}</strong>
+                          </span>
+                        )}
+                      </div>
+
+                      <Input
+                        type="text"
+                        value={noteInput}
+                        onChange={(e) => setNoteInput(e.target.value)}
+                        placeholder="Why is this stock changing? (required)"
+                        aria-label="Note"
+                      />
+
+                      <div className="flex items-center gap-2">
+                        <Button onClick={() => saveAdjustment(item)} disabled={saving}>
+                          {saving ? "Saving…" : "Save to eBay"}
+                        </Button>
+                        <Button variant="ghost" onClick={cancelEdit}>
+                          Cancel
+                        </Button>
+                      </div>
+                      {rowError && <p className="text-sm font-medium text-danger">{rowError}</p>}
+
+                      {liveCheck && liveCheck.recentAdjustments.length > 0 && (
+                        <div className="rounded-lg bg-background p-3">
+                          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                            Recent adjustments
+                          </p>
+                          <ul className="flex flex-col gap-1.5">
+                            {liveCheck.recentAdjustments.map((adj) => (
+                              <li key={adj.id} className="text-xs text-muted-foreground">
+                                <span
+                                  className={cn(
+                                    "mr-1.5 font-semibold tabular-nums",
+                                    adj.delta >= 0 ? "text-success" : "text-danger"
+                                  )}
+                                >
+                                  {adj.delta >= 0 ? `+${adj.delta}` : adj.delta}
+                                </span>
+                                ({adj.previousAvailable} → {adj.newAvailable}) {adj.note}
+                                <span className="block opacity-80">{new Date(adj.createdAt).toLocaleString()}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </Card>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </AppShell>
   );
 }

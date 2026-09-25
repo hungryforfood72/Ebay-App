@@ -12,11 +12,20 @@ const tones: Record<BadgeTone, string> = {
   purple: "bg-purple-50 text-purple-700 ring-purple-600/20",
 };
 
-export function Badge({ tone = "neutral", className, ...props }: ComponentProps<"span"> & { tone?: BadgeTone }) {
+// lg is for a headline verdict (Buy / Don't buy), not a status tag.
+const sizes = { sm: "px-2 py-0.5 text-xs", lg: "px-3 py-1 text-sm font-semibold" } as const;
+
+export function Badge({
+  tone = "neutral",
+  size = "sm",
+  className,
+  ...props
+}: ComponentProps<"span"> & { tone?: BadgeTone; size?: keyof typeof sizes }) {
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium whitespace-nowrap ring-1 ring-inset",
+        "inline-flex items-center gap-1 rounded-full font-medium whitespace-nowrap ring-1 ring-inset",
+        sizes[size],
         tones[tone],
         className
       )}

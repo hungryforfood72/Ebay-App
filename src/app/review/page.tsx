@@ -1,8 +1,28 @@
 "use client";
 
+import { Alert } from "@/components/ui/Alert";
+import { AppShell } from "@/components/ui/AppShell";
+import { Badge } from "@/components/ui/Badge";
+import { Button } from "@/components/ui/Button";
+import { Card, SectionHeader } from "@/components/ui/Card";
+import { cn } from "@/components/ui/cn";
+import { Field, Input, Select, Textarea } from "@/components/ui/Input";
+import {
+  Check,
+  Download,
+  ExternalLink,
+  Package,
+  Plus,
+  RefreshCw,
+  Search,
+  Send,
+  Sparkles,
+  Trash2,
+  TriangleAlert,
+  X,
+} from "lucide-react";
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
-import { UserNavLinks } from "@/components/UserNav";
+import { useEffect, useRef, useState, type ComponentProps } from "react";
 
 type CategoryRule = {
   id: string;
@@ -256,7 +276,13 @@ export default function ReviewPage() {
     }
   }
 
-  if (!items) return <main className="p-6">Loading…</main>;
+  if (!items) {
+    return (
+      <AppShell title="Review queue">
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      </AppShell>
+    );
+  }
 
   const pending = items.filter((i) => i.status === "pending_review");
   const ready = items.filter((i) => i.status === "ready");
@@ -264,153 +290,149 @@ export default function ReviewPage() {
   const listed = items.filter((i) => i.status === "listed");
 
   return (
-    <main className="mx-auto max-w-5xl p-6">
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Review Queue</h1>
-        <div className="flex items-center gap-3">
-          <span className="text-sm text-gray-500">
-            {ready.length} ready to export
-          </span>
-          <button
-            type="button"
-            onClick={exportReady}
-            disabled={exporting || ready.length === 0}
-            className="rounded bg-black px-4 py-2 text-sm text-white disabled:opacity-40"
-          >
-            {exporting ? "Exporting…" : "Download CSV for eBay"}
-          </button>
-          <Link href="/" className="text-sm underline">
-            Dashboard
-          </Link>
-          <Link href="/scan" className="text-sm underline">
-            Scan
-          </Link>
-          <Link href="/analyzer" className="text-sm underline">
-            Analyzer
-          </Link>
-          <UserNavLinks />
-        </div>
-      </div>
+    <AppShell
+      title="Review queue"
+      subtitle={`${pending.length} waiting on review · ${ready.length} ready to list`}
+      actions={
+        <Button variant="outline" onClick={exportReady} disabled={exporting || ready.length === 0}>
+          <Download className="size-4" aria-hidden />
+          {exporting ? "Exporting…" : "Download CSV for eBay"}
+        </Button>
+      }
+    >
+      <div className="flex flex-col gap-8">
+        {error && <Alert tone="danger">{error}</Alert>}
 
-      {error && <p className="mb-4 text-sm text-red-600">{error}</p>}
-
-      <h2 className="mb-2 text-sm font-medium text-gray-500">
-        Pending review ({pending.length})
-      </h2>
-      <div className="mb-8 flex flex-col gap-3">
-        {pending.map((item) => (
-          <ItemCard
-            key={item.id}
-            item={item}
-            rules={rules}
-            boxSizes={boxSizes}
-            onChange={(data) => updateItem(item.id, data)}
-            onMarkReady={() => markReady(item)}
-            onGenerateDraft={() => generateDraft(item)}
-            onSaveRule={saveRule}
-            onDelete={() => deleteItem(item)}
-            drafting={draftingId === item.id}
+        <section>
+          <SectionHeader
+            title="Pending review"
+            action={<Badge tone={pending.length > 0 ? "warning" : "neutral"}>{pending.length}</Badge>}
           />
-        ))}
-        {pending.length === 0 && (
-          <p className="text-sm text-gray-400">Nothing waiting on review.</p>
-        )}
-      </div>
-
-      <div className="mb-2 flex items-center justify-between">
-        <h2 className="text-sm font-medium text-gray-500">
-          Ready to list ({ready.length})
-        </h2>
-        {ready.length > 0 && (
-          <button
-            type="button"
-            onClick={publishAllToEbay}
-            disabled={bulkPublishing || publishingId !== null}
-            className="rounded bg-black px-3 py-1.5 text-xs text-white disabled:opacity-40"
-          >
-            {bulkPublishing ? "Publishing all…" : `Publish all ${ready.length} to eBay`}
-          </button>
-        )}
-      </div>
-      <div className="mb-8 flex flex-col gap-2">
-        {ready.map((item) => (
-          <div
-            key={item.id}
-            className="flex flex-col gap-2 rounded border p-3 text-sm"
-          >
-            <div className="flex items-center gap-3">
-              {item.photoUrls[0] && (
-                <img
-                  src={item.photoUrls[0]}
-                  alt=""
-                  className="h-10 w-10 rounded object-cover"
-                />
-              )}
-              <span className="flex-1">{item.finalTitle}</span>
-              <span className="text-gray-500">${item.price}</span>
-              <button
-                type="button"
-                onClick={() => publishToEbay(item)}
-                disabled={bulkPublishing || publishingId === item.id}
-                className="rounded bg-black px-3 py-1.5 text-xs text-white disabled:opacity-40"
-              >
-                {publishingId === item.id ? "Publishing…" : "Publish to eBay"}
-              </button>
-            </div>
-            {item.ebayPublishError && (
-              <p className="text-xs text-red-600">eBay rejected this: {item.ebayPublishError}</p>
+          <div className="flex flex-col gap-4">
+            {pending.map((item) => (
+              <ItemCard
+                key={item.id}
+                item={item}
+                rules={rules}
+                boxSizes={boxSizes}
+                onChange={(data) => updateItem(item.id, data)}
+                onMarkReady={() => markReady(item)}
+                onGenerateDraft={() => generateDraft(item)}
+                onSaveRule={saveRule}
+                onDelete={() => deleteItem(item)}
+                drafting={draftingId === item.id}
+              />
+            ))}
+            {pending.length === 0 && (
+              <Card>
+                <p className="text-sm text-muted-foreground">Nothing waiting on review.</p>
+              </Card>
             )}
           </div>
-        ))}
-        {ready.length === 0 && (
-          <p className="text-sm text-gray-400">Nothing marked ready yet.</p>
+        </section>
+
+        <section>
+          <SectionHeader
+            title="Ready to list"
+            action={
+              ready.length > 0 ? (
+                <Button size="sm" onClick={publishAllToEbay} disabled={bulkPublishing || publishingId !== null}>
+                  <Send className="size-4" aria-hidden />
+                  {bulkPublishing ? "Publishing all…" : `Publish all ${ready.length}`}
+                </Button>
+              ) : (
+                <Badge>0</Badge>
+              )
+            }
+          />
+          {ready.length === 0 ? (
+            <Card>
+              <p className="text-sm text-muted-foreground">Nothing marked ready yet.</p>
+            </Card>
+          ) : (
+            <Card padded={false} className="divide-y divide-border">
+              {ready.map((item) => (
+                <div key={item.id} className="flex flex-col gap-2 p-3 sm:p-4">
+                  <div className="flex items-center gap-3">
+                    <Thumb src={item.photoUrls[0]} />
+                    <div className="min-w-0 flex-1">
+                      <p className="line-clamp-2 text-sm font-medium text-foreground">{item.finalTitle}</p>
+                      <p className="text-sm font-semibold tabular-nums text-foreground">${item.price}</p>
+                    </div>
+                    <Button
+                      size="sm"
+                      onClick={() => publishToEbay(item)}
+                      disabled={bulkPublishing || publishingId === item.id}
+                      className="shrink-0"
+                    >
+                      {publishingId === item.id ? "Publishing…" : "Publish"}
+                    </Button>
+                  </div>
+                  {item.ebayPublishError && (
+                    <p className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-800">
+                      eBay rejected this: {item.ebayPublishError}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </Card>
+          )}
+        </section>
+
+        {listed.length > 0 && (
+          <section>
+            <SectionHeader title="Listed on eBay" action={<Badge tone="success">{listed.length}</Badge>} />
+            <Card padded={false} className="divide-y divide-border">
+              {listed.map((item) => (
+                <div key={item.id} className="flex items-center gap-3 px-4 py-2.5 text-sm">
+                  <span className="min-w-0 flex-1 truncate text-foreground">{item.finalTitle}</span>
+                  {item.ebayListingId && (
+                    <a
+                      href={
+                        item.ebayEnvironment === "production"
+                          ? `https://www.ebay.com/itm/${item.ebayListingId}`
+                          : `https://sandbox.ebay.com/itm/${item.ebayListingId}`
+                      }
+                      target="_blank"
+                      rel="noreferrer"
+                      className="-my-2 inline-flex shrink-0 items-center gap-1 py-2 font-medium text-primary hover:underline"
+                    >
+                      View
+                      <ExternalLink className="size-3.5" aria-hidden />
+                    </a>
+                  )}
+                </div>
+              ))}
+            </Card>
+          </section>
+        )}
+
+        {exported.length > 0 && (
+          <section>
+            <SectionHeader title="Exported" action={<Badge>{exported.length}</Badge>} />
+            <Card padded={false} className="divide-y divide-border">
+              {exported.map((item) => (
+                <div key={item.id} className="px-4 py-2.5 text-sm">
+                  <p className="truncate text-foreground">{item.finalTitle}</p>
+                  <p className="text-xs text-muted-foreground">SKU {item.sku}</p>
+                </div>
+              ))}
+            </Card>
+          </section>
         )}
       </div>
+    </AppShell>
+  );
+}
 
-      {listed.length > 0 && (
-        <>
-          <h2 className="mb-2 text-sm font-medium text-gray-500">
-            Listed on eBay ({listed.length})
-          </h2>
-          <div className="mb-8 flex flex-col gap-2">
-            {listed.map((item) => (
-              <div key={item.id} className="flex items-center gap-3 text-sm text-gray-500">
-                <span className="flex-1">{item.finalTitle}</span>
-                {item.ebayListingId && (
-                  <a
-                    href={
-                      item.ebayEnvironment === "production"
-                        ? `https://www.ebay.com/itm/${item.ebayListingId}`
-                        : `https://sandbox.ebay.com/itm/${item.ebayListingId}`
-                    }
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-blue-600 underline"
-                  >
-                    view listing
-                  </a>
-                )}
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-
-      {exported.length > 0 && (
-        <>
-          <h2 className="mb-2 text-sm font-medium text-gray-500">
-            Exported ({exported.length})
-          </h2>
-          <div className="flex flex-col gap-2">
-            {exported.map((item) => (
-              <div key={item.id} className="text-sm text-gray-400">
-                {item.finalTitle} — SKU {item.sku}
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-    </main>
+function Thumb({ src, size = "md" }: { src: string | undefined; size?: "sm" | "md" }) {
+  const box = size === "sm" ? "size-8" : "size-12";
+  return src ? (
+    <img src={src} alt="" className={cn(box, "shrink-0 rounded-lg border border-border object-cover")} />
+  ) : (
+    <span className={cn(box, "grid shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground")}>
+      <Package className="size-5" aria-hidden />
+    </span>
   );
 }
 
@@ -615,47 +637,55 @@ function ItemCard({
     }
   }
   return (
-    <div className="flex flex-col gap-3 rounded border p-4 md:flex-row">
-      <div className="flex gap-2 md:w-40 md:flex-col">
-        {item.photoUrls.map((url) => (
-          <img
-            key={url}
-            src={url}
-            alt=""
-            className="h-20 w-20 rounded object-cover"
-          />
-        ))}
-      </div>
+    <Card padded={false} className="overflow-hidden">
+      <div className="p-4 sm:p-5">
+        {/* Photos: a swipeable strip on the scanner, a row on desktop. */}
+        {item.photoUrls.length > 0 && (
+          <div className="-mx-4 mb-4 flex gap-2 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0">
+            {item.photoUrls.map((url) => (
+              <img
+                key={url}
+                src={url}
+                alt=""
+                className="size-24 shrink-0 rounded-lg border border-border object-cover sm:size-28"
+              />
+            ))}
+          </div>
+        )}
 
-      <div className="flex-1">
-        <div className="mb-2 flex flex-wrap gap-3 text-xs text-gray-500">
+        <div className="mb-4 flex flex-wrap gap-1.5">
           {item.isBundle ? (
-            <span>Bundle · {item.bundleComponents?.length ?? 0} different items</span>
+            <Badge tone="purple">Bundle · {item.bundleComponents?.length ?? 0} different items</Badge>
           ) : (
-            <span>UPC {item.upc}</span>
+            <Badge className="tabular-nums">UPC {item.upc}</Badge>
           )}
-          <span>{item.isBundle ? "Bundles available" : "Qty"} {item.quantity}</span>
-          {item.isMultipack && <span>Pack of {item.packSize}</span>}
-          <span>Shelf {item.shelfLocation}</span>
+          <Badge>
+            {item.isBundle ? "Bundles available" : "Qty"} {item.quantity}
+          </Badge>
+          {item.isMultipack && <Badge tone="primary">Pack of {item.packSize}</Badge>}
+          <Badge>Shelf {item.shelfLocation}</Badge>
           {item.expirationDate && (
-            <span>
-              Exp {new Date(item.expirationDate).toLocaleDateString()}
-            </span>
+            <Badge tone="warning">Exp {new Date(item.expirationDate).toLocaleDateString()}</Badge>
           )}
         </div>
 
         {item.isBundle && item.bundleComponents && item.bundleComponents.length > 0 && (
-          <div className="mb-2 rounded border bg-gray-50 p-2">
-            <p className="mb-1 text-xs font-medium text-gray-500">Bundle contents</p>
-            <ul className="flex flex-col gap-1">
+          <div className="mb-4 rounded-lg bg-background p-3">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Bundle contents</p>
+            <ul className="flex flex-col gap-1.5">
               {item.bundleComponents.map((c, i) => (
-                <li key={i} className="flex items-center gap-2 text-xs text-gray-600">
+                <li key={i} className="flex items-center gap-2 text-sm text-foreground">
                   {c.photoUrls?.map((url) => (
-                    <img key={url} src={url} alt="" className="h-6 w-6 rounded object-cover" />
+                    <img key={url} src={url} alt="" className="size-7 rounded-md object-cover" />
                   ))}
                   <span>
                     {c.quantity}x {c.name ?? `UPC ${c.upc}`}
-                    {c.expirationDate && ` — exp ${new Date(c.expirationDate).toLocaleDateString()}`}
+                    {c.expirationDate && (
+                      <span className="text-muted-foreground">
+                        {" "}
+                        · exp {new Date(c.expirationDate).toLocaleDateString()}
+                      </span>
+                    )}
                   </span>
                 </li>
               ))}
@@ -663,362 +693,409 @@ function ItemCard({
           </div>
         )}
 
-        <div className="mb-2 flex items-center gap-2">
-          <button
-            type="button"
-            onClick={onGenerateDraft}
-            disabled={drafting}
-            className="rounded border px-3 py-1 text-xs disabled:opacity-40"
-          >
+        <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2">
+          <Button variant="outline" size="sm" onClick={onGenerateDraft} disabled={drafting}>
+            <Sparkles className={cn("size-4", drafting && "animate-pulse")} aria-hidden />
             {drafting ? "Drafting…" : item.aiTitle ? "Regenerate AI draft" : "Generate AI draft"}
-          </button>
+          </Button>
           {drafting && (
-            <span className="text-xs text-gray-500">
+            <span className="text-xs text-muted-foreground">
               Looking up the UPC and asking Claude for a title/description…
             </span>
           )}
           {!drafting && !item.aiTitle && (
-            <span className="text-xs text-gray-400">
-              Drafts and categories now start automatically when an item is scanned —
-              give it a minute, or click to generate now.
+            <span className="text-xs text-muted-foreground">
+              Drafts and categories start automatically when an item is scanned — give it a minute, or generate now.
             </span>
           )}
         </div>
 
-        <input
-          key={`title-${item.id}-${item.aiTitle ?? ""}`}
-          type="text"
-          placeholder="Title"
-          defaultValue={item.finalTitle ?? ""}
-          maxLength={80}
-          onChange={(e) => setTitleLength(e.target.value.length)}
-          onBlur={(e) => onChange({ finalTitle: e.target.value })}
-          className="w-full rounded border px-3 py-2 text-sm"
-        />
-        <p className={`mb-2 text-right text-xs ${titleLength >= 80 ? "text-red-600" : "text-gray-400"}`}>
-          {titleLength}/80
-        </p>
-        <textarea
-          key={`desc-${item.id}-${item.aiDescription ?? ""}`}
-          placeholder="Description"
-          defaultValue={item.finalDescription ?? ""}
-          onBlur={(e) => onChange({ finalDescription: e.target.value })}
-          rows={2}
-          className="mb-2 w-full rounded border px-3 py-2 text-sm"
-        />
-
-        <div className="flex flex-wrap gap-2">
-          <div className="flex flex-col gap-1">
-            <input
-              type="number"
-              step="0.01"
-              placeholder="Price"
-              defaultValue={item.price ?? ""}
-              onBlur={(e) => onChange({ price: e.target.value })}
-              onWheel={(e) => e.currentTarget.blur()}
-              className="w-24 rounded border px-3 py-2 text-sm"
-            />
-            <button
-              type="button"
-              onClick={researchPrice}
-              disabled={priceResearching}
-              title="Searches active (not sold) listings for this UPC, total price includes the seller's shipping charge when it's a fixed cost — advisory only, doesn't change the price"
-              className="text-left text-xs text-gray-500 underline disabled:opacity-40"
-            >
-              {priceResearching ? "Checking eBay…" : "Refresh price estimate"}
-            </button>
-            {priceResearchError && <span className="text-xs text-red-600">{priceResearchError}</span>}
-            {!priceResearchError && priceResearchResult && priceResearchResult.count === 0 && (
-              <span className="text-xs text-gray-400">No active comps found.</span>
-            )}
-            {priceResearchResult && priceResearchResult.count > 0 && (
-              <span className="text-xs text-gray-600">
-                Active (shipped): ${priceResearchResult.low?.toFixed(2)}–${priceResearchResult.high?.toFixed(2)}{" "}
-                (median ${priceResearchResult.median?.toFixed(2)}, {priceResearchResult.count} comp
-                {priceResearchResult.count === 1 ? "" : "s"})
+        <div className="flex flex-col gap-4">
+          <div>
+            <div className="mb-1.5 flex items-baseline justify-between">
+              <label htmlFor={`title-${item.id}`} className="text-sm font-medium text-foreground">
+                Title
+              </label>
+              <span className={cn("text-xs tabular-nums", titleLength >= 80 ? "font-medium text-danger" : "text-muted-foreground")}>
+                {titleLength}/80
               </span>
-            )}
-            {priceResearchResult?.retailPrice != null && (
-              <span className="text-xs text-gray-600">
-                Manifest retail: ${priceResearchResult.retailPrice.toFixed(2)}
-                {priceResearchResult.median != null &&
-                  ` (comps ${priceResearchResult.median >= priceResearchResult.retailPrice ? "above" : "below"} retail)`}
-              </span>
-            )}
-          </div>
-          <div className="flex flex-col gap-1">
-            <input
-              key={`cat-${item.id}-${item.categoryId ?? ""}`}
+            </div>
+            <Input
+              id={`title-${item.id}`}
+              key={`title-${item.id}-${item.aiTitle ?? ""}`}
               type="text"
-              placeholder="Category ID"
-              title="eBay category ID"
-              defaultValue={item.categoryId ?? ""}
-              onBlur={(e) => {
-                const value = e.target.value.trim();
-                onChange({ categoryId: value });
-                checkTypedCategoryId(value);
-              }}
-              className="w-32 rounded border px-3 py-2 text-sm"
+              placeholder="Title"
+              defaultValue={item.finalTitle ?? ""}
+              maxLength={80}
+              onChange={(e) => setTitleLength(e.target.value.length)}
+              onBlur={(e) => onChange({ finalTitle: e.target.value })}
             />
-            {typedCategoryCheck && typedCategoryCheck.id === (item.categoryId ?? "") && (
-              <span className={`text-xs ${typedCategoryCheck.name ? "text-green-600" : "text-red-600"}`}>
-                {typedCategoryCheck.name
-                  ? `✓ ${typedCategoryCheck.name}`
-                  : "⚠ Not a real eBay category ID — the upload will fail"}
-              </span>
-            )}
-            <div className="relative">
-              <input
-                type="text"
-                placeholder="Search category by name…"
-                value={catQuery}
-                onChange={(e) => setCatQuery(e.target.value)}
-                className="w-56 rounded border px-2 py-1 text-xs"
-              />
-              {catResults.length > 0 && (
-                <div className="absolute z-10 mt-1 max-h-56 w-80 overflow-y-auto rounded border bg-white text-xs shadow-lg">
-                  {catResults.map((c) => (
-                    <button
-                      key={c.id}
-                      type="button"
-                      onClick={() => {
-                        onChange({ categoryId: c.id });
-                        setCatQuery("");
-                        setCatResults([]);
-                      }}
-                      className="block w-full border-b px-2 py-1 text-left last:border-b-0 hover:bg-gray-100"
-                    >
-                      <span className="font-medium">{c.name}</span> ({c.id})
-                      <br />
-                      <span className="text-gray-400">{c.path}</span>
-                    </button>
-                  ))}
+          </div>
+
+          <Field label="Description">
+            <Textarea
+              key={`desc-${item.id}-${item.aiDescription ?? ""}`}
+              placeholder="Description"
+              defaultValue={item.finalDescription ?? ""}
+              onBlur={(e) => onChange({ finalDescription: e.target.value })}
+              rows={4}
+            />
+          </Field>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <Field label="Price">
+                <div className="relative">
+                  <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-muted-foreground">
+                    $
+                  </span>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    placeholder="0.00"
+                    defaultValue={item.price ?? ""}
+                    onBlur={(e) => onChange({ price: e.target.value })}
+                    onWheel={(e) => e.currentTarget.blur()}
+                    className="pl-7"
+                  />
                 </div>
+              </Field>
+              <div className="mt-2 flex flex-col gap-1 rounded-lg bg-background p-2.5 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium text-muted-foreground">Active comps (shipped)</span>
+                  <button
+                    type="button"
+                    onClick={researchPrice}
+                    disabled={priceResearching}
+                    title="Searches active (not sold) listings for this UPC, total price includes the seller's shipping charge when it's a fixed cost — advisory only, doesn't change the price"
+                    className="inline-flex items-center gap-1 font-medium text-primary hover:underline disabled:opacity-50"
+                  >
+                    <RefreshCw className={cn("size-3.5", priceResearching && "animate-spin")} aria-hidden />
+                    {priceResearching ? "Checking…" : "Refresh"}
+                  </button>
+                </div>
+                {priceResearchError && <span className="text-danger">{priceResearchError}</span>}
+                {!priceResearchError && priceResearchResult && priceResearchResult.count === 0 && (
+                  <span className="text-muted-foreground">No active comps found.</span>
+                )}
+                {priceResearchResult && priceResearchResult.count > 0 && (
+                  <span className="text-foreground">
+                    ${priceResearchResult.low?.toFixed(2)}–${priceResearchResult.high?.toFixed(2)} · median{" "}
+                    <strong>${priceResearchResult.median?.toFixed(2)}</strong> · {priceResearchResult.count} comp
+                    {priceResearchResult.count === 1 ? "" : "s"}
+                  </span>
+                )}
+                {priceResearchResult?.retailPrice != null && (
+                  <span className="text-foreground">
+                    Manifest retail ${priceResearchResult.retailPrice.toFixed(2)}
+                    {priceResearchResult.median != null && (
+                      <span className="text-muted-foreground">
+                        {` (comps ${priceResearchResult.median >= priceResearchResult.retailPrice ? "above" : "below"} retail)`}
+                      </span>
+                    )}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <Field label="Condition">
+              <Select
+                defaultValue={item.condition ?? ""}
+                onChange={(e) => onChange({ condition: e.target.value || null })}
+              >
+                <option value="">Select condition…</option>
+                <option value="new">New</option>
+                <option value="new_other">New (other)</option>
+                <option value="used">Used</option>
+                <option value="for_parts">For parts</option>
+              </Select>
+            </Field>
+          </div>
+
+          <div className="rounded-lg border border-border p-3 sm:p-4">
+            <p className="mb-3 text-sm font-medium text-foreground">eBay category</p>
+            <div className="grid gap-3 sm:grid-cols-[10rem_1fr]">
+              <div>
+                <Input
+                  key={`cat-${item.id}-${item.categoryId ?? ""}`}
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="Category ID"
+                  title="eBay category ID"
+                  aria-label="eBay category ID"
+                  defaultValue={item.categoryId ?? ""}
+                  onBlur={(e) => {
+                    const value = e.target.value.trim();
+                    onChange({ categoryId: value });
+                    checkTypedCategoryId(value);
+                  }}
+                />
+                {typedCategoryCheck && typedCategoryCheck.id === (item.categoryId ?? "") && (
+                  <p
+                    className={cn(
+                      "mt-1.5 flex items-start gap-1 text-xs font-medium",
+                      typedCategoryCheck.name ? "text-success" : "text-danger"
+                    )}
+                  >
+                    {typedCategoryCheck.name ? (
+                      <Check className="mt-px size-3.5 shrink-0" aria-hidden />
+                    ) : (
+                      <TriangleAlert className="mt-px size-3.5 shrink-0" aria-hidden />
+                    )}
+                    {typedCategoryCheck.name ?? "Not a real eBay category ID — the upload will fail"}
+                  </p>
+                )}
+              </div>
+              <div className="relative">
+                <Search
+                  className="pointer-events-none absolute left-3 top-3 size-5 text-muted-foreground"
+                  aria-hidden
+                />
+                <Input
+                  type="text"
+                  placeholder="Search category by name…"
+                  aria-label="Search eBay categories"
+                  value={catQuery}
+                  onChange={(e) => setCatQuery(e.target.value)}
+                  className="pl-10"
+                />
+                {catResults.length > 0 && (
+                  <div className="absolute inset-x-0 z-20 mt-1 max-h-64 overflow-y-auto rounded-lg border border-border bg-surface text-sm shadow-lg">
+                    {catResults.map((c) => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => {
+                          onChange({ categoryId: c.id });
+                          setCatQuery("");
+                          setCatResults([]);
+                        }}
+                        className="block w-full border-b border-border px-3 py-2 text-left last:border-b-0 hover:bg-muted"
+                      >
+                        <span className="font-medium text-foreground">{c.name}</span>{" "}
+                        <span className="text-muted-foreground tabular-nums">({c.id})</span>
+                        <span className="block text-xs text-muted-foreground">{c.path}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <Button variant="secondary" size="sm" onClick={searchCategory} disabled={searchingCategory}>
+                <Sparkles className={cn("size-4", searchingCategory && "animate-pulse")} aria-hidden />
+                {searchingCategory ? "Finding category…" : "Auto-find category"}
+              </Button>
+              {suggestion && !item.categoryId && (
+                <Button variant="ghost" size="sm" onClick={() => onChange({ categoryId: suggestion.categoryId })}>
+                  Use suggested: {suggestion.categoryName} ({suggestion.categoryId})
+                </Button>
               )}
             </div>
-            {suggestion && !item.categoryId && (
-              <button
-                type="button"
-                onClick={() => onChange({ categoryId: suggestion.categoryId })}
-                className="text-left text-xs text-blue-600 underline"
-              >
-                Suggested: {suggestion.categoryName} ({suggestion.categoryId})
-              </button>
-            )}
-            <button
-              type="button"
-              onClick={searchCategory}
-              disabled={searchingCategory}
-              title="Searches eBay's real category tree and has Claude pick the best match — usually a few seconds"
-              className="text-left text-xs text-gray-500 underline disabled:opacity-40"
-            >
-              {searchingCategory ? "Finding category…" : "Auto-find category (AI)"}
-            </button>
-            {categorySearchError && (
-              <span className="text-xs text-red-600">{categorySearchError}</span>
-            )}
+            {categorySearchError && <p className="mt-2 text-xs font-medium text-danger">{categorySearchError}</p>}
             {categorySearchResult && (
-              <div className="rounded border border-green-200 bg-green-50 p-2 text-xs">
+              <div className="mt-3 rounded-lg border border-green-200 bg-green-50 p-2.5 text-xs text-green-900">
                 <p>
-                  Applied: {categorySearchResult.categoryName} ({categorySearchResult.categoryId})
-                  {categorySearchResult.fromExistingRule
-                    ? " — from a saved rule"
-                    : " — saved as a rule for next time"}
+                  Applied: <strong>{categorySearchResult.categoryName}</strong> ({categorySearchResult.categoryId})
+                  {categorySearchResult.fromExistingRule ? " — from a saved rule" : " — saved as a rule for next time"}
                 </p>
                 {categorySearchResult.sourceUrl && (
                   <a
                     href={categorySearchResult.sourceUrl}
                     target="_blank"
                     rel="noreferrer"
-                    className="text-blue-600 underline"
+                    className="mt-1 inline-flex items-center gap-1 font-medium text-primary hover:underline"
                   >
-                    verify source
+                    Verify source
+                    <ExternalLink className="size-3" aria-hidden />
                   </a>
                 )}
               </div>
             )}
-          </div>
-          <select
-            defaultValue={item.condition ?? ""}
-            onChange={(e) => onChange({ condition: e.target.value || null })}
-            className="rounded border px-3 py-2 text-sm"
-          >
-            <option value="">Condition…</option>
-            <option value="new">New</option>
-            <option value="new_other">New (other)</option>
-            <option value="used">Used</option>
-            <option value="for_parts">For parts</option>
-          </select>
-          <input
-            type="text"
-            placeholder="Sold comps (paste from Terapeak)"
-            defaultValue={item.compNotes ?? ""}
-            onBlur={(e) => onChange({ compNotes: e.target.value })}
-            className="min-w-48 flex-1 rounded border px-3 py-2 text-sm"
-          />
-        </div>
 
-        <div className="mt-2 rounded border p-2">
-          <p className="mb-1 text-xs font-medium text-gray-500">
-            Shipping — free, USPS Ground Advantage
-          </p>
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              value={item.boxSize ?? ""}
-              onChange={(e) => onChange({ boxSize: e.target.value || null })}
-              className="rounded border px-2 py-1 text-xs"
-            >
-              <option value="">Box size…</option>
-              {boxSizes.map((b) => (
-                <option key={b.id} value={b.label}>
-                  {b.label}
-                </option>
-              ))}
-            </select>
-            {boxSizes.length === 0 && (
-              <Link href="/settings" className="text-xs text-blue-600 underline">
-                Add box sizes in Settings
-              </Link>
-            )}
-            <input
-              type="number"
-              min={0}
-              placeholder="lb"
-              defaultValue={item.weightLbs ?? ""}
-              onBlur={(e) =>
-                onChange({ weightLbs: e.target.value ? Number(e.target.value) : null })
-              }
-              onWheel={(e) => e.currentTarget.blur()}
-              className="w-16 rounded border px-2 py-1 text-xs"
-            />
-            <span className="text-xs text-gray-400">lb</span>
-            <input
-              type="number"
-              min={0}
-              max={15}
-              placeholder="oz"
-              defaultValue={item.weightOz ?? ""}
-              onBlur={(e) =>
-                onChange({ weightOz: e.target.value ? Number(e.target.value) : null })
-              }
-              onWheel={(e) => e.currentTarget.blur()}
-              className="w-16 rounded border px-2 py-1 text-xs"
-            />
-            <span className="text-xs text-gray-400">oz</span>
-            <span className="text-xs text-gray-400">
-              Weight/box matter either way — accurate numbers keep eBay&apos;s calculated cost
-              (or your absorbed cost on free shipping) from defaulting high.
-            </span>
-          </div>
-        </div>
-
-        <div className="mt-2 rounded border p-2">
-          <p className="mb-1 text-xs font-medium text-gray-500">
-            Item specifics {item.itemSpecifics ? "(AI-suggested, edit as needed)" : ""}
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {Object.entries(item.itemSpecifics ?? {}).map(([key, value]) => (
-              <div key={key} className="flex items-center gap-1">
-                <span className="text-xs capitalize text-gray-500">{key}:</span>
-                <input
-                  type="text"
-                  defaultValue={value}
-                  onBlur={(e) => updateSpecific(key, e.target.value)}
-                  className="w-28 rounded border px-2 py-1 text-xs"
-                />
-                <button
-                  type="button"
-                  onClick={() => removeSpecific(key)}
-                  className="text-xs text-gray-400"
-                >
-                  ×
-                </button>
+            {item.categoryId && (
+              <div className="mt-4 border-t border-border pt-3">
+                <p className="mb-2 text-xs text-muted-foreground">
+                  Typed a category ID in by hand? Save it as a rule so matching titles get it automatically:
+                </p>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Input
+                    size="sm"
+                    type="text"
+                    placeholder="Keyword (e.g. hair dye)"
+                    aria-label="Rule keyword"
+                    value={ruleKeyword}
+                    onChange={(e) => setRuleKeyword(e.target.value)}
+                  />
+                  <Input
+                    size="sm"
+                    type="text"
+                    placeholder="Category name (optional)"
+                    aria-label="Rule category name"
+                    value={ruleName}
+                    onChange={(e) => setRuleName(e.target.value)}
+                  />
+                  <Button
+                    variant="outline"
+                    disabled={!ruleKeyword.trim()}
+                    onClick={() => {
+                      onSaveRule(ruleKeyword.trim(), item.categoryId as string, ruleName.trim() || ruleKeyword.trim());
+                      setRuleKeyword("");
+                      setRuleName("");
+                    }}
+                    className="shrink-0"
+                  >
+                    Remember
+                  </Button>
+                </div>
               </div>
-            ))}
-            <input
+            )}
+          </div>
+
+          <Field label="Sold comps notes" hint="Paste from Terapeak — for your reference only.">
+            <Input
               type="text"
-              placeholder="Field (e.g. Style)"
-              value={newSpecKey}
-              onChange={(e) => setNewSpecKey(e.target.value)}
-              className="w-28 rounded border px-2 py-1 text-xs"
+              placeholder="e.g. 12 sold, $14–$19"
+              defaultValue={item.compNotes ?? ""}
+              onBlur={(e) => onChange({ compNotes: e.target.value })}
             />
-            <input
-              type="text"
-              placeholder="Value"
-              value={newSpecValue}
-              onChange={(e) => setNewSpecValue(e.target.value)}
-              className="w-28 rounded border px-2 py-1 text-xs"
-            />
-            <button
-              type="button"
-              disabled={!newSpecKey.trim() || !newSpecValue.trim()}
-              onClick={() => {
-                updateSpecific(newSpecKey.trim().toLowerCase(), newSpecValue.trim());
-                setNewSpecKey("");
-                setNewSpecValue("");
-              }}
-              className="rounded border px-2 py-1 text-xs disabled:opacity-40"
-            >
-              Add
-            </button>
+          </Field>
+
+          <div className="rounded-lg border border-border p-3 sm:p-4">
+            <p className="text-sm font-medium text-foreground">Shipping</p>
+            <p className="mb-3 text-xs text-muted-foreground">
+              Free, USPS Ground Advantage. Weight/box matter either way — accurate numbers keep eBay&apos;s calculated
+              cost (or your absorbed cost on free shipping) from defaulting high.
+            </p>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-[1fr_7rem_7rem]">
+              <div className="col-span-2 sm:col-span-1">
+                <Select
+                  value={item.boxSize ?? ""}
+                  onChange={(e) => onChange({ boxSize: e.target.value || null })}
+                  aria-label="Box size"
+                >
+                  <option value="">Box size…</option>
+                  {boxSizes.map((b) => (
+                    <option key={b.id} value={b.label}>
+                      {b.label}
+                    </option>
+                  ))}
+                </Select>
+                {boxSizes.length === 0 && (
+                  <Link href="/settings" className="mt-1 inline-block text-xs font-medium text-primary hover:underline">
+                    Add box sizes in Settings
+                  </Link>
+                )}
+              </div>
+              <SuffixNumber
+                suffix="lb"
+                min={0}
+                defaultValue={item.weightLbs ?? ""}
+                onBlur={(e) => onChange({ weightLbs: e.target.value ? Number(e.target.value) : null })}
+              />
+              <SuffixNumber
+                suffix="oz"
+                min={0}
+                max={15}
+                defaultValue={item.weightOz ?? ""}
+                onBlur={(e) => onChange({ weightOz: e.target.value ? Number(e.target.value) : null })}
+              />
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-border p-3 sm:p-4">
+            <p className="mb-3 text-sm font-medium text-foreground">
+              Item specifics
+              {item.itemSpecifics && (
+                <span className="ml-1 font-normal text-muted-foreground">(AI-suggested, edit as needed)</span>
+              )}
+            </p>
+            {Object.keys(item.itemSpecifics ?? {}).length > 0 && (
+              <div className="mb-3 grid gap-2 sm:grid-cols-2">
+                {Object.entries(item.itemSpecifics ?? {}).map(([key, value]) => (
+                  <div key={key} className="flex items-center gap-2">
+                    <span className="w-24 shrink-0 truncate text-xs font-medium capitalize text-muted-foreground" title={key}>
+                      {key}
+                    </span>
+                    <Input
+                      size="sm"
+                      type="text"
+                      defaultValue={value}
+                      onBlur={(e) => updateSpecific(key, e.target.value)}
+                      aria-label={key}
+                      className="min-w-0"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeSpecific(key)}
+                      aria-label={`Remove ${key}`}
+                      className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-red-50 hover:text-danger"
+                    >
+                      <X className="size-4" aria-hidden />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Input
+                size="sm"
+                type="text"
+                placeholder="Field (e.g. Style)"
+                aria-label="New specific name"
+                value={newSpecKey}
+                onChange={(e) => setNewSpecKey(e.target.value)}
+              />
+              <Input
+                size="sm"
+                type="text"
+                placeholder="Value"
+                aria-label="New specific value"
+                value={newSpecValue}
+                onChange={(e) => setNewSpecValue(e.target.value)}
+              />
+              <Button
+                variant="outline"
+                disabled={!newSpecKey.trim() || !newSpecValue.trim()}
+                onClick={() => {
+                  updateSpecific(newSpecKey.trim().toLowerCase(), newSpecValue.trim());
+                  setNewSpecKey("");
+                  setNewSpecValue("");
+                }}
+                className="shrink-0"
+              >
+                <Plus className="size-4" aria-hidden />
+                Add
+              </Button>
+            </div>
           </div>
         </div>
-
-        {item.categoryId && (
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <span className="text-xs text-gray-400">
-              Typed a category ID in by hand? Save it as a rule too:
-            </span>
-            <input
-              type="text"
-              placeholder="Keyword to remember this category by (e.g. hair dye)"
-              value={ruleKeyword}
-              onChange={(e) => setRuleKeyword(e.target.value)}
-              className="w-56 rounded border px-2 py-1 text-xs"
-            />
-            <input
-              type="text"
-              placeholder="Category name (optional)"
-              value={ruleName}
-              onChange={(e) => setRuleName(e.target.value)}
-              className="w-40 rounded border px-2 py-1 text-xs"
-            />
-            <button
-              type="button"
-              disabled={!ruleKeyword.trim()}
-              onClick={() => {
-                onSaveRule(
-                  ruleKeyword.trim(),
-                  item.categoryId as string,
-                  ruleName.trim() || ruleKeyword.trim()
-                );
-                setRuleKeyword("");
-                setRuleName("");
-              }}
-              className="rounded border px-2 py-1 text-xs disabled:opacity-40"
-            >
-              Remember this category
-            </button>
-          </div>
-        )}
       </div>
 
-      <div className="flex gap-2 md:flex-col md:justify-start">
-        <button
-          type="button"
-          onClick={onMarkReady}
-          className="h-fit rounded bg-black px-4 py-2 text-sm text-white"
-        >
-          Mark ready
-        </button>
-        <button
-          type="button"
-          onClick={onDelete}
-          className="h-fit rounded border border-red-300 px-4 py-2 text-sm text-red-600"
-        >
+      <div className="flex items-center justify-between gap-3 border-t border-border bg-background px-4 py-3 sm:px-5">
+        <Button variant="danger-ghost" onClick={onDelete}>
+          <Trash2 className="size-4" aria-hidden />
           Delete
-        </button>
+        </Button>
+        <Button onClick={onMarkReady}>
+          <Check className="size-4" aria-hidden />
+          Mark ready
+        </Button>
       </div>
+    </Card>
+  );
+}
+
+// Number input with a unit suffix (lb / oz) — uncontrolled, like the rest of
+// ItemCard's fields, saving on blur.
+function SuffixNumber({ suffix, ...props }: Omit<ComponentProps<typeof Input>, "type"> & { suffix: string }) {
+  return (
+    <div className="relative">
+      <Input type="number" placeholder="0" onWheel={(e) => e.currentTarget.blur()} {...props} className="pr-10" />
+      <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-muted-foreground">
+        {suffix}
+      </span>
     </div>
   );
 }

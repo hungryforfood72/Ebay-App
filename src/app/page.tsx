@@ -651,7 +651,7 @@ function ExpiringItemCard({
                 href={ebayListingUrl(item)!}
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex items-center gap-1 font-medium text-primary hover:underline"
+                className="-my-2 inline-flex items-center gap-1 py-2 font-medium text-primary hover:underline"
               >
                 View on eBay
                 <ExternalLink className="size-3.5" aria-hidden />

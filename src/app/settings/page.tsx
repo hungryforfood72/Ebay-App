@@ -1,9 +1,13 @@
 "use client";
 
-import Link from "next/link";
+import { AppShell } from "@/components/ui/AppShell";
+import { Badge } from "@/components/ui/Badge";
+import { Button, buttonClasses } from "@/components/ui/Button";
+import { Card, SectionHeader } from "@/components/ui/Card";
+import { Field, Input, Select } from "@/components/ui/Input";
+import { Check, Printer, Trash2, X } from "lucide-react";
 import { useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState } from "react";
-import { UserNavLinks } from "@/components/UserNav";
+import { Suspense, useEffect, useState, type ReactNode } from "react";
 
 type LabeledEntry = {
   id: string;
@@ -20,47 +24,102 @@ export default function SettingsPage() {
 
 function SettingsPageInner() {
   return (
-    <main className="mx-auto max-w-lg p-6">
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Settings</h1>
-        <div className="flex items-center gap-3">
-          <Link href="/" className="text-sm underline">
-            Dashboard
-          </Link>
-          <Link href="/scan" className="text-sm underline">
-            Scan
-          </Link>
-          <Link href="/review" className="text-sm underline">
-            Review
-          </Link>
-          <Link href="/analyzer" className="text-sm underline">
-            Analyzer
-          </Link>
-          <UserNavLinks showSettings={false} />
-        </div>
+    <AppShell width="medium" title="Settings">
+      <div className="flex flex-col gap-8">
+        <SettingsGroup title="Connections">
+          <EbayConnectionStatus />
+        </SettingsGroup>
+
+        <SettingsGroup title="Scanning">
+          <LabelListEditor
+            apiPath="/api/box-sizes"
+            title="Box sizes"
+            description="These show up as a dropdown on the scan and review pages' Box Size field."
+            placeholder="e.g. Small 6x4x2"
+          />
+          <ShelfLocationsEditor />
+        </SettingsGroup>
+
+        <SettingsGroup title="Sourcing agent">
+          <SourcingMarginSetting />
+          <MaxMonthsToSellThroughSetting />
+        </SettingsGroup>
+
+        <SettingsGroup title="Pricing & listings">
+          <WalkupSaleMarginSettings />
+          <ExpirationBufferSetting />
+        </SettingsGroup>
+
+        <SettingsGroup title="Team">
+          <UsersManager />
+        </SettingsGroup>
       </div>
+    </AppShell>
+  );
+}
 
-      <EbayConnectionStatus />
+function SettingsGroup({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section>
+      <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</h2>
+      <div className="flex flex-col gap-4">{children}</div>
+    </section>
+  );
+}
 
-      <LabelListEditor
-        apiPath="/api/box-sizes"
-        title="Box sizes"
-        description="These show up as a dropdown on the scan and review pages' Box Size field."
-        placeholder="e.g. Small 6x4x2"
-      />
+// Number input with its unit shown inside the field ("%", "months", "days").
+function SuffixInput({
+  suffix,
+  ...props
+}: Omit<React.ComponentProps<typeof Input>, "type" | "size"> & { suffix: string }) {
+  return (
+    <div className="relative w-36">
+      <Input type="number" {...props} className="pr-16" />
+      <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-muted-foreground">
+        {suffix}
+      </span>
+    </div>
+  );
+}
 
-      <ShelfLocationsEditor />
+function SaveButton({ onClick, disabled, saving, saved }: { onClick: () => void; disabled: boolean; saving: boolean; saved: boolean }) {
+  return (
+    <div className="flex items-center gap-3">
+      <Button onClick={onClick} disabled={disabled}>
+        {saving ? "Saving…" : "Save"}
+      </Button>
+      {saved && (
+        <span className="inline-flex items-center gap-1 text-sm font-medium text-success">
+          <Check className="size-4" aria-hidden />
+          Saved
+        </span>
+      )}
+    </div>
+  );
+}
 
-      <SourcingMarginSetting />
-
-      <MaxMonthsToSellThroughSetting />
-
-      <WalkupSaleMarginSettings />
-
-      <ExpirationBufferSetting />
-
-      <UsersManager />
-    </main>
+// Chip list for short labels (box sizes, shelf locations) — a range like
+// A1-A50 would otherwise be 50 full-width rows.
+function LabelChips({ entries, onRemove }: { entries: LabeledEntry[]; onRemove: (id: string) => void }) {
+  return (
+    <ul className="flex flex-wrap gap-2">
+      {entries.map((entry) => (
+        <li
+          key={entry.id}
+          className="inline-flex items-center gap-1 rounded-lg border border-border bg-background py-1 pl-3 pr-1 text-sm text-foreground"
+        >
+          {entry.label}
+          <button
+            type="button"
+            onClick={() => onRemove(entry.id)}
+            aria-label={`Remove ${entry.label}`}
+            className="grid size-8 place-items-center rounded-md text-muted-foreground hover:bg-red-50 hover:text-danger"
+          >
+            <X className="size-4" aria-hidden />
+          </button>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -128,68 +187,54 @@ function UsersManager() {
   }
 
   return (
-    <section className="mb-8">
-      <h2 className="mb-2 text-sm font-medium text-gray-500">Users</h2>
-      <p className="mb-3 text-xs text-gray-400">
-        Employee accounts see no financial numbers anywhere in the app (profit, COGS, revenue, sourcing
-        agent bid decisions), and can&apos;t delete records or reach this Settings page.
-      </p>
-
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        <input
-          type="text"
-          placeholder="Username"
-          value={newUsername}
-          onChange={(e) => setNewUsername(e.target.value)}
-          className="rounded border px-3 py-2 text-sm"
-        />
-        <input
-          type="password"
-          placeholder="Password (min. 8 characters)"
-          value={newPassword}
-          onChange={(e) => setNewPassword(e.target.value)}
-          className="rounded border px-3 py-2 text-sm"
-        />
-        <select
-          value={newRole}
-          onChange={(e) => setNewRole(e.target.value as "employee" | "owner")}
-          className="rounded border px-3 py-2 text-sm"
-        >
-          <option value="employee">Employee</option>
-          <option value="owner">Owner</option>
-        </select>
-        <button
-          type="button"
-          onClick={addUser}
-          disabled={saving || !newUsername.trim() || !newPassword}
-          className="rounded bg-black px-4 py-2 text-sm text-white disabled:opacity-40"
-        >
-          Add user
-        </button>
-      </div>
-
-      {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
+    <Card>
+      <SectionHeader
+        title="Users"
+        description="Employee accounts see no financial numbers anywhere in the app (profit, COGS, revenue, sourcing agent bid decisions), and can't delete records or reach this Settings page."
+      />
 
       {!users ? (
-        <p className="text-sm text-gray-400">Loading…</p>
+        <p className="text-sm text-muted-foreground">Loading…</p>
       ) : (
-        <ul className="flex flex-col gap-2">
+        <ul className="mb-5 divide-y divide-border rounded-lg border border-border">
           {users.map((user) => (
-            <li key={user.id} className="flex items-center justify-between rounded border px-3 py-2 text-sm">
-              <span>
-                {user.username}{" "}
-                <span className="text-xs text-gray-400">
-                  ({user.role}, since {new Date(user.createdAt).toLocaleDateString()})
-                </span>
-              </span>
-              <button type="button" onClick={() => removeUser(user)} className="text-xs text-red-600">
+            <li key={user.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
+              <div className="min-w-0">
+                <p className="flex items-center gap-2 font-medium text-foreground">
+                  {user.username}
+                  <Badge tone={user.role === "owner" ? "primary" : "neutral"}>{user.role}</Badge>
+                </p>
+                <p className="text-xs text-muted-foreground">Since {new Date(user.createdAt).toLocaleDateString()}</p>
+              </div>
+              <Button variant="danger-ghost" size="sm" onClick={() => removeUser(user)}>
+                <Trash2 className="size-4" aria-hidden />
                 Remove
-              </button>
+              </Button>
             </li>
           ))}
         </ul>
       )}
-    </section>
+
+      <p className="mb-3 text-sm font-medium text-foreground">Add a user</p>
+      <div className="grid gap-3 sm:grid-cols-[1fr_1fr_9rem]">
+        <Field label="Username">
+          <Input type="text" autoCapitalize="off" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} />
+        </Field>
+        <Field label="Password" hint="At least 8 characters.">
+          <Input type="password" autoComplete="new-password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
+        </Field>
+        <Field label="Role">
+          <Select value={newRole} onChange={(e) => setNewRole(e.target.value as "employee" | "owner")}>
+            <option value="employee">Employee</option>
+            <option value="owner">Owner</option>
+          </Select>
+        </Field>
+      </div>
+      <Button className="mt-1" onClick={addUser} disabled={saving || !newUsername.trim() || !newPassword}>
+        {saving ? "Adding…" : "Add user"}
+      </Button>
+      {error && <p className="mt-3 text-sm font-medium text-danger">{error}</p>}
+    </Card>
   );
 }
 
@@ -226,36 +271,26 @@ function SourcingMarginSetting() {
   }
 
   return (
-    <section className="mt-6 rounded-lg border p-4">
-      <label className="mb-1 block text-sm font-medium">Sourcing agent target margin</label>
-      <p className="mb-2 text-xs text-gray-400">
-        Used to solve for the max recommended bid on a manifest — higher means a more conservative
-        (lower) suggested bid for the same expected profit.
-      </p>
-      <div className="flex items-center gap-2">
-        <input
-          type="number"
+    <Card>
+      <SectionHeader
+        title="Target margin"
+        description="Used to solve for the max recommended bid on a manifest — higher means a more conservative (lower) suggested bid for the same expected profit."
+      />
+      <div className="flex flex-wrap items-center gap-3">
+        <SuffixInput
+          suffix="%"
           step="1"
           min={1}
           value={value}
+          aria-label="Target margin percent"
           onChange={(e) => {
             setValue(e.target.value);
             setSaved(false);
           }}
-          className="w-24 rounded border px-3 py-2 text-sm"
         />
-        <span className="text-sm text-gray-500">%</span>
-        <button
-          type="button"
-          onClick={save}
-          disabled={saving || !value}
-          className="rounded bg-black px-3 py-2 text-sm text-white disabled:opacity-40"
-        >
-          {saving ? "Saving…" : "Save"}
-        </button>
-        {saved && <span className="text-xs text-green-600">Saved</span>}
+        <SaveButton onClick={save} disabled={saving || !value} saving={saving} saved={saved} />
       </div>
-    </section>
+    </Card>
   );
 }
 
@@ -292,37 +327,26 @@ function MaxMonthsToSellThroughSetting() {
   }
 
   return (
-    <section className="mt-6 rounded-lg border p-4">
-      <label className="mb-1 block text-sm font-medium">Sourcing agent slow-mover threshold</label>
-      <p className="mb-2 text-xs text-gray-400">
-        A line gets flagged (and its profit contribution zeroed, same as any other dud) if its recent real sell
-        rate says the expected quantity would take longer than this to sell through — even if the per-unit price
-        looks good.
-      </p>
-      <div className="flex items-center gap-2">
-        <input
-          type="number"
+    <Card>
+      <SectionHeader
+        title="Slow-mover threshold"
+        description="A line gets flagged (and its profit contribution zeroed, same as any other dud) if its recent real sell rate says the expected quantity would take longer than this to sell through — even if the per-unit price looks good."
+      />
+      <div className="flex flex-wrap items-center gap-3">
+        <SuffixInput
+          suffix="months"
           step="1"
           min={1}
           value={value}
+          aria-label="Slow-mover threshold in months"
           onChange={(e) => {
             setValue(e.target.value);
             setSaved(false);
           }}
-          className="w-24 rounded border px-3 py-2 text-sm"
         />
-        <span className="text-sm text-gray-500">months</span>
-        <button
-          type="button"
-          onClick={save}
-          disabled={saving || !value}
-          className="rounded bg-black px-3 py-2 text-sm text-white disabled:opacity-40"
-        >
-          {saving ? "Saving…" : "Save"}
-        </button>
-        {saved && <span className="text-xs text-green-600">Saved</span>}
+        <SaveButton onClick={save} disabled={saving || !value} saving={saving} saved={saved} />
       </div>
-    </section>
+    </Card>
   );
 }
 
@@ -369,73 +393,46 @@ function WalkupSaleMarginSettings() {
     }
   }
 
+  const rows: { label: string; hint: string; value: string; set: (v: string) => void }[] = [
+    { label: "Floor", hint: "Minimum profit over what the item cost", value: floorMarginPct, set: setFloorMarginPct },
+    { label: "Ideal", hint: "Percent of retail price", value: idealRetailPct, set: setIdealRetailPct },
+    { label: "Near-expiry", hint: "Percent of retail price", value: nearExpiryRetailPct, set: setNearExpiryRetailPct },
+  ];
+
   return (
-    <section className="mt-6 rounded-lg border p-4">
-      <label className="mb-1 block text-sm font-medium">Walk-up sale pricing</label>
-      <p className="mb-3 text-xs text-gray-400">
-        Used by the Scan page&apos;s &quot;Walk-up sale&quot; mode for instant in-person pricing. Floor is a
-        minimum-profit markup over what that item actually cost; the other two are a percentage of the
-        item&apos;s retail price.
-      </p>
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center gap-2">
-          <span className="w-40 text-sm text-gray-600">Floor (min profit over cost)</span>
-          <input
-            type="number"
-            step="1"
-            min={1}
-            value={floorMarginPct}
-            onChange={(e) => {
-              setFloorMarginPct(e.target.value);
-              setSaved(false);
-            }}
-            className="w-24 rounded border px-3 py-2 text-sm"
-          />
-          <span className="text-sm text-gray-500">%</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="w-40 text-sm text-gray-600">Ideal (% of retail)</span>
-          <input
-            type="number"
-            step="1"
-            min={1}
-            value={idealRetailPct}
-            onChange={(e) => {
-              setIdealRetailPct(e.target.value);
-              setSaved(false);
-            }}
-            className="w-24 rounded border px-3 py-2 text-sm"
-          />
-          <span className="text-sm text-gray-500">%</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="w-40 text-sm text-gray-600">Near-expiry (% of retail)</span>
-          <input
-            type="number"
-            step="1"
-            min={1}
-            value={nearExpiryRetailPct}
-            onChange={(e) => {
-              setNearExpiryRetailPct(e.target.value);
-              setSaved(false);
-            }}
-            className="w-24 rounded border px-3 py-2 text-sm"
-          />
-          <span className="text-sm text-gray-500">%</span>
-        </div>
-        <div>
-          <button
-            type="button"
-            onClick={save}
-            disabled={saving || !floorMarginPct || !idealRetailPct || !nearExpiryRetailPct}
-            className="rounded bg-black px-3 py-2 text-sm text-white disabled:opacity-40"
-          >
-            {saving ? "Saving…" : "Save"}
-          </button>
-          {saved && <span className="ml-2 text-xs text-green-600">Saved</span>}
-        </div>
+    <Card>
+      <SectionHeader
+        title="Walk-up sale pricing"
+        description={`Instant in-person pricing for the Scan page's "Walk-up sale" and "Sell shelf item" modes.`}
+      />
+      <div className="mb-4 flex flex-col divide-y divide-border rounded-lg border border-border">
+        {rows.map((row) => (
+          <div key={row.label} className="flex items-center justify-between gap-3 px-3 py-2.5">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-foreground">{row.label}</p>
+              <p className="text-xs text-muted-foreground">{row.hint}</p>
+            </div>
+            <SuffixInput
+              suffix="%"
+              step="1"
+              min={1}
+              value={row.value}
+              aria-label={`${row.label} percent`}
+              onChange={(e) => {
+                row.set(e.target.value);
+                setSaved(false);
+              }}
+            />
+          </div>
+        ))}
       </div>
-    </section>
+      <SaveButton
+        onClick={save}
+        disabled={saving || !floorMarginPct || !idealRetailPct || !nearExpiryRetailPct}
+        saving={saving}
+        saved={saved}
+      />
+    </Card>
   );
 }
 
@@ -483,62 +480,63 @@ function EbayConnectionStatus() {
     setDisconnecting(false);
   }
 
-  return (
-    <section className="mb-8">
-      <h2 className="mb-2 text-sm font-medium text-gray-500">eBay account</h2>
-      <p className="mb-3 text-xs text-gray-400">
-        Connects the account used by the &quot;Publish to eBay&quot; button on the review page.
-      </p>
+  const needsReconnect = Boolean(status?.connected && status.missingScopes.length > 0);
 
-      {callbackResult === "connected" && (
-        <p className="mb-3 text-sm text-green-600">Connected.</p>
-      )}
-      {callbackResult === "declined" && (
-        <p className="mb-3 text-sm text-gray-500">Connection declined.</p>
-      )}
+  return (
+    <Card>
+      <SectionHeader
+        title="eBay account"
+        description='Connects the account used by the "Publish to eBay" button on the review page.'
+      />
+
+      {callbackResult === "connected" && <p className="mb-3 text-sm font-medium text-success">Connected.</p>}
+      {callbackResult === "declined" && <p className="mb-3 text-sm text-muted-foreground">Connection declined.</p>}
       {callbackResult === "error" && (
-        <p className="mb-3 text-sm text-red-600">
+        <p className="mb-3 text-sm font-medium text-danger">
           {searchParams.get("ebayMessage") ?? "Something went wrong connecting — try again."}
         </p>
       )}
 
       {!status ? (
-        <p className="text-sm text-gray-400">Loading…</p>
+        <p className="text-sm text-muted-foreground">Loading…</p>
       ) : (
-        <div className="flex items-center justify-between rounded border px-3 py-2 text-sm">
-          <div>
-            <p>
-              {status.connected ? "Connected" : "Not connected"}{" "}
-              <span className="text-xs text-gray-400">({status.environment})</span>
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-background p-3">
+          <div className="min-w-0">
+            <p className="flex items-center gap-2 font-medium text-foreground">
+              <span
+                className={
+                  status.connected && !needsReconnect
+                    ? "size-2.5 rounded-full bg-green-500"
+                    : needsReconnect
+                      ? "size-2.5 rounded-full bg-amber-500"
+                      : "size-2.5 rounded-full bg-zinc-300"
+                }
+                aria-hidden
+              />
+              {status.connected ? "Connected" : "Not connected"}
+              <Badge>{status.environment}</Badge>
             </p>
             {status.connected && status.connectedAt && (
-              <p className="text-xs text-gray-400">
-                Since {new Date(status.connectedAt).toLocaleString()}
-              </p>
+              <p className="mt-0.5 text-xs text-muted-foreground">Since {new Date(status.connectedAt).toLocaleString()}</p>
             )}
-            {status.connected && status.missingScopes.length > 0 && (
-              <p className="mt-1 text-xs text-amber-600">
+            {needsReconnect && (
+              <p className="mt-1 text-xs font-medium text-warning">
                 Reconnect required — missing: {status.missingScopes.map(shortScopeName).join(", ")}
               </p>
             )}
           </div>
           {status.connected && status.missingScopes.length === 0 ? (
-            <button
-              type="button"
-              onClick={disconnect}
-              disabled={disconnecting}
-              className="rounded border border-red-300 px-3 py-1 text-xs text-red-600 disabled:opacity-40"
-            >
+            <Button variant="danger-ghost" size="sm" onClick={disconnect} disabled={disconnecting}>
               Disconnect
-            </button>
+            </Button>
           ) : (
-            <a href="/api/ebay/connect" className="rounded bg-black px-3 py-1 text-xs text-white">
+            <a href="/api/ebay/connect" className={buttonClasses({ size: "sm" })}>
               {status.connected ? "Reconnect eBay account" : "Connect eBay account"}
             </a>
           )}
         </div>
       )}
-    </section>
+    </Card>
   );
 }
 
@@ -600,55 +598,36 @@ function LabelListEditor({
   }
 
   return (
-    <section className="mb-8">
-      <h2 className="mb-2 text-sm font-medium text-gray-500">{title}</h2>
-      <p className="mb-3 text-xs text-gray-400">{description}</p>
-
+    <Card>
+      <SectionHeader
+        title={title}
+        description={description}
+        action={entries && entries.length > 0 ? <Badge>{entries.length}</Badge> : undefined}
+      />
       <div className="mb-4 flex gap-2">
-        <input
+        <Input
+          size="sm"
           type="text"
           placeholder={placeholder}
           value={newLabel}
           onChange={(e) => setNewLabel(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && addEntry()}
-          className="flex-1 rounded border px-3 py-2 text-sm"
+          aria-label={`New ${title.toLowerCase()}`}
+          className="min-w-0"
         />
-        <button
-          type="button"
-          onClick={addEntry}
-          disabled={saving || !newLabel.trim()}
-          className="rounded bg-black px-4 py-2 text-sm text-white disabled:opacity-40"
-        >
+        <Button onClick={addEntry} disabled={saving || !newLabel.trim()} className="shrink-0">
           Add
-        </button>
+        </Button>
       </div>
-
-      {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
-
+      {error && <p className="mb-3 text-sm font-medium text-danger">{error}</p>}
       {!entries ? (
-        <p className="text-sm text-gray-400">Loading…</p>
+        <p className="text-sm text-muted-foreground">Loading…</p>
       ) : entries.length === 0 ? (
-        <p className="text-sm text-gray-400">Nothing yet — add one above.</p>
+        <p className="text-sm text-muted-foreground">Nothing yet — add one above.</p>
       ) : (
-        <ul className="flex flex-col gap-2">
-          {entries.map((entry) => (
-            <li
-              key={entry.id}
-              className="flex items-center justify-between rounded border px-3 py-2 text-sm"
-            >
-              {entry.label}
-              <button
-                type="button"
-                onClick={() => removeEntry(entry.id)}
-                className="text-xs text-red-600"
-              >
-                Remove
-              </button>
-            </li>
-          ))}
-        </ul>
+        <LabelChips entries={entries} onRemove={removeEntry} />
       )}
-    </section>
+    </Card>
   );
 }
 
@@ -729,102 +708,82 @@ function ShelfLocationsEditor() {
   }
 
   return (
-    <section className="mb-8">
-      <h2 className="mb-2 text-sm font-medium text-gray-500">Shelf locations</h2>
-      <p className="mb-3 text-xs text-gray-400">
-        These show up as a dropdown on the scan page&apos;s Location field — and can be
-        picked by scanning a printed barcode label instead of scrolling the list.
-      </p>
+    <Card>
+      <SectionHeader
+        title="Shelf locations"
+        description="Suggested on the scan page's shelf location field — and can be entered by scanning a printed barcode label instead of typing."
+        action={entries && entries.length > 0 ? <Badge>{entries.length}</Badge> : undefined}
+      />
 
-      <div className="mb-2 flex gap-2">
-        <input
-          type="text"
-          placeholder="e.g. A6"
-          value={newLabel}
-          onChange={(e) => setNewLabel(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && addEntry()}
-          className="flex-1 rounded border px-3 py-2 text-sm"
-        />
-        <button
-          type="button"
-          onClick={addEntry}
-          disabled={saving || !newLabel.trim()}
-          className="rounded bg-black px-4 py-2 text-sm text-white disabled:opacity-40"
-        >
-          Add
-        </button>
+      <div className="mb-4 grid gap-3 sm:grid-cols-2">
+        <Field label="Add one">
+          <div className="flex gap-2">
+            <Input
+              size="sm"
+              type="text"
+              placeholder="e.g. A6"
+              value={newLabel}
+              onChange={(e) => setNewLabel(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && addEntry()}
+              className="min-w-0"
+            />
+            <Button onClick={addEntry} disabled={saving || !newLabel.trim()} className="shrink-0">
+              Add
+            </Button>
+          </div>
+        </Field>
+        <Field label="Add a range">
+          <div className="flex gap-2">
+            <Input
+              size="sm"
+              type="text"
+              placeholder="e.g. A1-A50"
+              value={bulkRange}
+              onChange={(e) => setBulkRange(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && addRange()}
+              className="min-w-0"
+            />
+            <Button variant="outline" onClick={addRange} disabled={saving || !bulkRange.trim()} className="shrink-0">
+              Add range
+            </Button>
+          </div>
+        </Field>
       </div>
 
-      <div className="mb-4 flex gap-2">
-        <input
-          type="text"
-          placeholder="Add a range, e.g. A1-A50"
-          value={bulkRange}
-          onChange={(e) => setBulkRange(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && addRange()}
-          className="flex-1 rounded border px-3 py-2 text-sm"
-        />
-        <button
-          type="button"
-          onClick={addRange}
-          disabled={saving || !bulkRange.trim()}
-          className="rounded border px-4 py-2 text-sm disabled:opacity-40"
-        >
-          Add range
-        </button>
-      </div>
+      {error && <p className="mb-3 text-sm font-medium text-danger">{error}</p>}
 
-      {error && <p className="mb-3 text-sm text-red-600">{error}</p>}
-
-      <div className="mb-1 flex items-end gap-2 rounded border p-3">
-        <div className="flex-1">
-          <label className="mb-1 block text-xs font-medium text-gray-500">
-            Print barcode labels
-          </label>
-          <input
-            type="text"
-            placeholder="Blank = all locations, or a range like A25-A40"
-            value={printRange}
-            onChange={(e) => setPrintRange(e.target.value)}
-            className="w-full rounded border px-3 py-2 text-sm"
-          />
-        </div>
-        <a
-          href={`/settings/labels${printRange.trim() ? `?range=${encodeURIComponent(printRange.trim())}` : ""}`}
-          target="_blank"
-          rel="noreferrer"
-          className="rounded bg-black px-4 py-2 text-sm text-white"
-        >
-          Print
-        </a>
-      </div>
-      <p className="mb-4 text-xs text-gray-400">
-        1&quot; x 2&quot; labels — one per location, each with a scannable barcode.
-      </p>
-      {!entries ? (
-        <p className="text-sm text-gray-400">Loading…</p>
-      ) : entries.length === 0 ? (
-        <p className="text-sm text-gray-400">Nothing yet — add one above.</p>
-      ) : (
-        <ul className="flex flex-col gap-2">
-          {entries.map((entry) => (
-            <li
-              key={entry.id}
-              className="flex items-center justify-between rounded border px-3 py-2 text-sm"
+      <div className="mb-5 rounded-lg border border-border bg-background p-3">
+        <Field label="Print barcode labels" hint={'1" x 2" labels — one per location, each with a scannable barcode.'}>
+          <div className="flex gap-2">
+            <Input
+              size="sm"
+              type="text"
+              placeholder="Blank = all, or a range like A25-A40"
+              value={printRange}
+              onChange={(e) => setPrintRange(e.target.value)}
+              className="min-w-0"
+            />
+            <a
+              href={`/settings/labels${printRange.trim() ? `?range=${encodeURIComponent(printRange.trim())}` : ""}`}
+              target="_blank"
+              rel="noreferrer"
+              className={buttonClasses({ className: "shrink-0" })}
             >
-              {entry.label}
-              <button
-                type="button"
-                onClick={() => removeEntry(entry.id)}
-                className="text-xs text-red-600"
-              >
-                Remove
-              </button>
-            </li>
-          ))}
-        </ul>
+              <Printer className="size-4" aria-hidden />
+              Print
+            </a>
+          </div>
+        </Field>
+      </div>
+
+      {!entries ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : entries.length === 0 ? (
+        <p className="text-sm text-muted-foreground">Nothing yet — add one above.</p>
+      ) : (
+        <LabelChips entries={entries} onRemove={removeEntry} />
       )}
-    </section>
+    </Card>
   );
 }
 
@@ -862,37 +821,32 @@ function ExpirationBufferSetting() {
   }
 
   return (
-    <section className="mt-6 rounded-lg border p-4">
-      <label className="mb-1 block text-sm font-medium">Expiration removal buffer</label>
-      <p className="mb-2 text-xs text-gray-400">
-        The daily sweep ends a listing this many days <strong>before</strong> its printed expiration
-        date — not on the date itself — so a sale made right before removal still has time to process
-        and ship before the item actually expires. Applies to both the eBay removal and the
-        &quot;needs shelf pull&quot; notification on the dashboard.
-      </p>
-      <div className="flex items-center gap-2">
-        <input
-          type="number"
+    <Card>
+      <SectionHeader
+        title="Expiration removal buffer"
+        description={
+          <>
+            The daily sweep ends a listing this many days <strong>before</strong> its printed expiration date — not
+            on the date itself — so a sale made right before removal still has time to process and ship before the
+            item actually expires. Applies to both the eBay removal and the &quot;needs shelf pull&quot; notification on
+            the dashboard.
+          </>
+        }
+      />
+      <div className="flex flex-wrap items-center gap-3">
+        <SuffixInput
+          suffix="days"
           step="1"
           min={0}
           value={value}
+          aria-label="Days before expiration"
           onChange={(e) => {
             setValue(e.target.value);
             setSaved(false);
           }}
-          className="w-24 rounded border px-3 py-2 text-sm"
         />
-        <span className="text-sm text-gray-500">days before expiration</span>
-        <button
-          type="button"
-          onClick={save}
-          disabled={saving || !value}
-          className="rounded bg-black px-3 py-2 text-sm text-white disabled:opacity-40"
-        >
-          {saving ? "Saving…" : "Save"}
-        </button>
-        {saved && <span className="text-xs text-green-600">Saved</span>}
+        <SaveButton onClick={save} disabled={saving || !value} saving={saving} saved={saved} />
       </div>
-    </section>
+    </Card>
   );
 }

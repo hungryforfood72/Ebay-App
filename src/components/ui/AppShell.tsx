@@ -45,10 +45,11 @@ function isActive(pathname: string, href: string) {
   return href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
 }
 
-export type AppShellWidth = "narrow" | "default" | "wide";
+export type AppShellWidth = "narrow" | "medium" | "default" | "wide";
 
 const widths: Record<AppShellWidth, string> = {
   narrow: "max-w-lg",
+  medium: "max-w-3xl",
   default: "max-w-5xl",
   wide: "max-w-6xl",
 };

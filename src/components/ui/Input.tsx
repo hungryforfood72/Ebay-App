@@ -5,12 +5,14 @@ import { cn } from "./cn";
 // both zoom the page in when focusing an input with a smaller font size,
 // which on the scanner handheld would shift the whole wizard sideways on
 // every scan-and-Enter step.
+// Font size lives in inputHeights / the textarea class rather than here, so
+// a size never has two conflicting text-* classes (cn() doesn't merge).
 const inputBase =
-  "block w-full rounded-lg border border-border bg-surface px-3 text-base text-foreground shadow-sm " +
+  "block w-full rounded-lg border border-border bg-surface px-3 text-foreground shadow-sm " +
   "placeholder:text-zinc-400 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/25 " +
   "disabled:cursor-not-allowed disabled:opacity-60";
 
-const inputHeights = { sm: "h-10", md: "h-11", lg: "h-14 text-lg" } as const;
+const inputHeights = { sm: "h-10 text-base", md: "h-11 text-base", lg: "h-14 text-lg" } as const;
 
 export function Input({
   size = "md",
@@ -29,7 +31,7 @@ export function Select({
 }
 
 export function Textarea({ className, ...props }: ComponentProps<"textarea">) {
-  return <textarea className={cn(inputBase, "py-2", className)} {...props} />;
+  return <textarea className={cn(inputBase, "py-2 text-base", className)} {...props} />;
 }
 
 // Label + optional hint above a field. Wraps children in a <label> so a
