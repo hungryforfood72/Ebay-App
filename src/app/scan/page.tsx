@@ -1,6 +1,7 @@
 "use client";
 
 import BarcodeScanner from "@/components/BarcodeScanner";
+import { ScanField } from "@/components/ScanField";
 import { Alert } from "@/components/ui/Alert";
 import { AppShell } from "@/components/ui/AppShell";
 import { Badge } from "@/components/ui/Badge";
@@ -93,15 +94,6 @@ function startSinglePhotoUpload(file: File, setPhoto: (p: Photo | null) => void)
   uploadPhoto(file)
     .then((url) => setPhoto({ id, previewUrl, status: "done", cloudinaryUrl: url }))
     .catch(() => setPhoto({ id, previewUrl, status: "error" }));
-}
-
-// Enter fires when a keyboard-wedge scanner finishes typing a scan — advance
-// the wizard instead of leaving it as a no-op.
-function onScanEnter(e: React.KeyboardEvent<HTMLInputElement>, action: () => void) {
-  if (e.key === "Enter") {
-    e.preventDefault();
-    action();
-  }
 }
 
 // The walk-up sale's floor/ideal/near-expiry prices come from the manifest
@@ -766,30 +758,27 @@ function ScanPageInner() {
         <div className="flex flex-col gap-4">
           {!shelfSaleLookup && (
             <Card className="flex flex-col gap-4">
-              <Field label="Shelf location">
-                <Input
-                  size="lg"
-                  autoFocus
-                  type="text"
-                  value={shelfSaleLocation}
-                  onChange={(e) => setShelfSaleLocation(e.target.value)}
-                  onKeyDown={(e) => onScanEnter(e, () => document.getElementById("shelf-sale-upc")?.focus())}
-                  placeholder="Scan or type shelf location"
-                />
-              </Field>
-              <Field label="UPC">
-                <Input
-                  size="lg"
-                  id="shelf-sale-upc"
-                  type="text"
-                  inputMode="numeric"
-                  value={shelfSaleUpc}
-                  onChange={(e) => setShelfSaleUpc(e.target.value)}
-                  onKeyDown={(e) => onScanEnter(e, lookupShelfSaleItem)}
-                  placeholder="Scan or type UPC"
-                />
-              </Field>
-              <Button size="xl" block onClick={lookupShelfSaleItem} disabled={shelfSaleLooking}>
+              <ScanField
+                id="shelf-sale-location"
+                label="1. Shelf location"
+                prompt="Scan the shelf location"
+                autoFocus
+                value={shelfSaleLocation}
+                onChange={setShelfSaleLocation}
+                onScan={() => document.getElementById("shelf-sale-upc")?.focus()}
+                hint="Scanning moves straight on to the UPC."
+              />
+              <ScanField
+                id="shelf-sale-upc"
+                label="2. UPC"
+                prompt="Now scan the item's UPC"
+                numeric
+                value={shelfSaleUpc}
+                onChange={setShelfSaleUpc}
+                onScan={lookupShelfSaleItem}
+                hint="Scanning looks up the price right away."
+              />
+              <Button variant="outline" size="lg" block onClick={lookupShelfSaleItem} disabled={shelfSaleLooking}>
                 <Search className="size-5" aria-hidden />
                 {shelfSaleLooking ? "Looking up…" : "Look up price"}
               </Button>
@@ -958,18 +947,17 @@ function ScanPageInner() {
         actions={<BackButton onClick={() => setDamagedMode(false)}>Back to scanning</BackButton>}
       >
         <Card className="flex flex-col gap-4">
-          <Field label="UPC">
-            <Input
-              size="lg"
-              autoFocus
-              type="text"
-              inputMode="numeric"
-              value={damagedUpc}
-              onChange={(e) => setDamagedUpc(e.target.value)}
-              onKeyDown={(e) => onScanEnter(e, saveDamagedEntry)}
-              placeholder="Scan or type UPC"
-            />
-          </Field>
+          <ScanField
+            id="damaged-upc"
+            label="UPC"
+            prompt="Scan the damaged/expired item"
+            numeric
+            autoFocus
+            value={damagedUpc}
+            onChange={setDamagedUpc}
+            onScan={saveDamagedEntry}
+            hint="Logs the moment it scans, using the quantity below — change that first if it's more than 1."
+          />
           <Field label="Quantity bad">
             <Input
               size="lg"
@@ -1005,18 +993,17 @@ function ScanPageInner() {
       >
         {manifestTitle && <p className="-mt-2 mb-4 text-sm text-muted-foreground">Manifest: {manifestTitle}</p>}
         <Card className="flex flex-col gap-4">
-          <Field label="UPC">
-            <Input
-              size="lg"
-              autoFocus
-              type="text"
-              inputMode="numeric"
-              value={dudUpc}
-              onChange={(e) => setDudUpc(e.target.value)}
-              onKeyDown={(e) => onScanEnter(e, saveDudEntry)}
-              placeholder="Scan or type UPC"
-            />
-          </Field>
+          <ScanField
+            id="dud-upc"
+            label="UPC"
+            prompt="Scan the unsellable item"
+            numeric
+            autoFocus
+            value={dudUpc}
+            onChange={setDudUpc}
+            onScan={saveDudEntry}
+            hint="Logs the moment it scans, using the quantity below — change that first if it's more than 1."
+          />
           <Field label="Quantity not sellable">
             <Input
               size="lg"
@@ -1071,19 +1058,18 @@ function ScanPageInner() {
         <div className="flex flex-col gap-4">
           {!walkupLookup && (
             <Card className="flex flex-col gap-4">
-              <Field label="UPC">
-                <Input
-                  size="lg"
-                  autoFocus
-                  type="text"
-                  inputMode="numeric"
-                  value={walkupUpc}
-                  onChange={(e) => setWalkupUpc(e.target.value)}
-                  onKeyDown={(e) => onScanEnter(e, lookupWalkupUpc)}
-                  placeholder="Scan or type UPC"
-                />
-              </Field>
-              <Button size="xl" block onClick={lookupWalkupUpc} disabled={walkupLooking}>
+              <ScanField
+                id="walkup-upc"
+                label="UPC"
+                prompt="Scan the item's UPC"
+                numeric
+                autoFocus
+                value={walkupUpc}
+                onChange={setWalkupUpc}
+                onScan={lookupWalkupUpc}
+                hint="Scanning looks up the price right away."
+              />
+              <Button variant="outline" size="lg" block onClick={lookupWalkupUpc} disabled={walkupLooking}>
                 <Search className="size-5" aria-hidden />
                 {walkupLooking ? "Looking up…" : "Look up price"}
               </Button>
@@ -1258,32 +1244,25 @@ function ScanPageInner() {
 
         {step === "upc" && (
           <Card>
-            <Field
+            <ScanField
+              id="scan-upc"
               label="UPC"
-              htmlFor="scan-upc"
-              hint="Optional — leave blank for custom/handmade items. Scanning with the handheld scanner auto-advances."
-            >
-              <div className="flex gap-2">
-                <Input
-                  id="scan-upc"
-                  size="lg"
-                  autoFocus
-                  type="text"
-                  inputMode="numeric"
-                  value={upc}
-                  onChange={(e) => setUpc(e.target.value)}
-                  onKeyDown={(e) => onScanEnter(e, goNext)}
-                  placeholder="Scan or type UPC"
-                  className="min-w-0"
-                />
+              prompt="Scan the item's UPC"
+              numeric
+              autoFocus
+              value={upc}
+              onChange={setUpc}
+              onScan={goNext}
+              hint="Scanning moves on by itself. Optional — tap Next to skip for custom/handmade items."
+              trailing={
                 <CameraButton
                   onClick={() => {
                     setScanTarget("item");
                     setShowScanner(true);
                   }}
                 />
-              </div>
-            </Field>
+              }
+            />
           </Card>
         )}
 
@@ -1376,30 +1355,27 @@ function ScanPageInner() {
                 className="hidden"
                 onChange={(e) => handleComponentFiles(e.target.files)}
               />
-              <Field label="UPC" htmlFor="scan-component-upc">
-                <div className="flex gap-2">
-                  <Input
-                    id="scan-component-upc"
-                    size="lg"
-                    type="text"
-                    inputMode="numeric"
-                    value={componentUpc}
-                    onChange={(e) => setComponentUpc(e.target.value)}
-                    // Scanning a component's UPC adds it to the bundle right
-                    // away, so the loop of "photo(s) already taken, scan UPC" is
-                    // one trigger-pull per item instead of also tapping Add.
-                    onKeyDown={(e) => onScanEnter(e, addBundleComponent)}
-                    placeholder="Scan or type UPC"
-                    className="min-w-0"
-                  />
-                  <CameraButton
-                    onClick={() => {
-                      setScanTarget("component");
-                      setShowScanner(true);
-                    }}
-                  />
-                </div>
-              </Field>
+              {/* Scanning a component's UPC adds it to the bundle right
+                  away, so the loop of "photo(s) already taken, scan UPC" is
+                  one trigger-pull per item instead of also tapping Add. */}
+              <ScanField
+                id="scan-component-upc"
+                label="UPC"
+                prompt="Scan this item's UPC"
+                numeric
+                value={componentUpc}
+                onChange={setComponentUpc}
+                onScan={addBundleComponent}
+                hint="Scanning adds it to the bundle — set qty/expiration below first if needed."
+                trailing={
+                <CameraButton
+                  onClick={() => {
+                    setScanTarget("component");
+                    setShowScanner(true);
+                  }}
+                />
+                }
+              />
               <div className="grid grid-cols-[6rem_1fr] gap-3">
                 <Field label="Qty">
                   <Input
@@ -1491,33 +1467,30 @@ function ScanPageInner() {
 
         {step === "shelfLocation" && (
           <Card>
-            <Field label="Shelf location" htmlFor="scan-shelf-location" hint="Scanning with the handheld scanner auto-advances.">
-              <div className="flex gap-2">
-                <Input
-                  id="scan-shelf-location"
-                  size="lg"
-                  autoFocus
-                  type="text"
-                  list="shelf-location-suggestions"
-                  value={shelfLocation}
-                  onChange={(e) => setShelfLocation(e.target.value)}
-                  onKeyDown={(e) => onScanEnter(e, goNext)}
-                  placeholder="Scan or type shelf location"
-                  className="min-w-0"
-                />
+            <ScanField
+              id="scan-shelf-location"
+              label="Shelf location"
+              prompt="Scan the shelf location"
+              autoFocus
+              list="shelf-location-suggestions"
+              value={shelfLocation}
+              onChange={setShelfLocation}
+              onScan={goNext}
+              hint="Scanning moves on by itself."
+              trailing={
                 <CameraButton
                   onClick={() => {
                     setScanTarget("location");
                     setShowScanner(true);
                   }}
                 />
-              </div>
-              <datalist id="shelf-location-suggestions">
-                {shelfLocations.map((loc) => (
-                  <option key={loc.id} value={loc.label} />
-                ))}
-              </datalist>
-            </Field>
+              }
+            />
+            <datalist id="shelf-location-suggestions">
+              {shelfLocations.map((loc) => (
+                <option key={loc.id} value={loc.label} />
+              ))}
+            </datalist>
           </Card>
         )}
 
