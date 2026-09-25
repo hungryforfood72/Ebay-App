@@ -431,6 +431,7 @@ type SalesSummary = {
   revenue?: number;
   fees?: number;
   shipping?: number;
+  cogs?: number;
   refunded?: number;
   profit?: number;
 };
@@ -593,6 +594,7 @@ function SalesSection({ isOwner, refreshKey }: { isOwner: boolean; refreshKey: n
           {summary.revenue != null && <Stat label="Revenue" value={summary.revenue} format="currency" />}
           {summary.fees != null && <Stat label="Fees" value={summary.fees} format="currency" />}
           {summary.shipping != null && <Stat label="Shipping" value={summary.shipping} format="currency" />}
+          {summary.cogs != null && <Stat label="COGS" value={summary.cogs} format="currency" />}
           {summary.refunded != null && (
             <Stat label="Refunds" value={summary.refunded} format="currency" highlight={summary.refunded > 0} />
           )}
@@ -602,6 +604,7 @@ function SalesSection({ isOwner, refreshKey }: { isOwner: boolean; refreshKey: n
               value={summary.profit}
               format="currency"
               highlight={summary.units > 0 && summary.profit < 0}
+              className="col-span-2 sm:col-span-3"
             />
           )}
         </div>

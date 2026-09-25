@@ -6,6 +6,7 @@ export function Stat({
   highlight,
   format,
   hint,
+  className,
 }: {
   label: string;
   // A string is shown as-is (already formatted, e.g. "2m 14s").
@@ -13,9 +14,10 @@ export function Stat({
   highlight?: boolean;
   format?: "currency";
   hint?: string;
+  className?: string;
 }) {
   return (
-    <div className="min-w-0 rounded-xl border border-border bg-surface p-3 shadow-sm sm:p-4">
+    <div className={cn("min-w-0 rounded-xl border border-border bg-surface p-3 shadow-sm sm:p-4", className)}>
       <p className="text-xs font-medium leading-tight text-muted-foreground">{label}</p>
       <p
         className={cn(

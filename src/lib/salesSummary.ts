@@ -1,4 +1,4 @@
-import { cogsPerUnitByManifest } from "./cogs";
+import { cogsMapsFor, costPerListingUnit } from "./cogs";
 import { prisma } from "./prisma";
 
 export type SalesSummary = {
@@ -6,6 +6,7 @@ export type SalesSummary = {
   revenue: number;
   fees: number;
   shipping: number;
+  cogs: number;
   refunded: number;
   profit: number;
 };
@@ -30,7 +31,16 @@ export async function salesSummary(from: Date | null, to: Date | null): Promise<
         revenue: true,
         fees: true,
         shipping: true,
-        item: { select: { manifestId: true, upc: true, isMultipack: true, packSize: true } },
+        item: {
+          select: {
+            manifestId: true,
+            upc: true,
+            isMultipack: true,
+            packSize: true,
+            isBundle: true,
+            bundleComponents: true,
+          },
+        },
       },
     }),
     prisma.ebayItemRefund.findMany({
@@ -39,11 +49,9 @@ export async function salesSummary(from: Date | null, to: Date | null): Promise<
     }),
   ]);
 
-  // COGS is manifest-derived — fetch each distinct manifest's per-UPC cost
-  // map once (not once per sale), $0 for anything with no manifest at all
+  // COGS is manifest-derived, $0 for anything with no manifest at all
   // (items scanned outside manifest mode, per Cristian's instruction).
-  const manifestIds = [...new Set(sales.map((s) => s.item.manifestId).filter((id): id is string => Boolean(id)))];
-  const cogsMaps = new Map(await Promise.all(manifestIds.map(async (id) => [id, await cogsPerUnitByManifest(id)] as const)));
+  const cogsMaps = await cogsMapsFor(sales.map((s) => s.item.manifestId));
 
   let units = 0;
   let revenue = 0;
@@ -55,10 +63,8 @@ export async function salesSummary(from: Date | null, to: Date | null): Promise<
     revenue += Number(sale.revenue);
     fees += Number(sale.fees);
     shipping += Number(sale.shipping);
-    const physicalUnits = sale.quantity * (sale.item.isMultipack && sale.item.packSize ? sale.item.packSize : 1);
-    const cogsPerUnit =
-      sale.item.manifestId && sale.item.upc ? (cogsMaps.get(sale.item.manifestId)?.get(sale.item.upc) ?? 0) : 0;
-    cogs += cogsPerUnit * physicalUnits;
+    // Per listing unit (a pack, a bundle) — sale.quantity is on that scale.
+    cogs += costPerListingUnit(sale.item, cogsMaps).cost * sale.quantity;
   }
 
   // Net refund cost = amount paid back to the buyer minus whatever fees
@@ -76,6 +82,7 @@ export async function salesSummary(from: Date | null, to: Date | null): Promise<
     revenue,
     fees,
     shipping,
+    cogs,
     refunded,
     profit: revenue - fees - shipping - cogs - (refunded - refundFeeCredit),
   };

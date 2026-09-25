@@ -1,5 +1,6 @@
 "use client";
 
+import { ShelfValueCard } from "@/components/ShelfValueCard";
 import { AppShell } from "@/components/ui/AppShell";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
@@ -8,6 +9,7 @@ import { cn } from "@/components/ui/cn";
 import { Input } from "@/components/ui/Input";
 import { ExternalLink, LoaderCircle, Minus, Package, Plus, Search } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useCurrentUser } from "@/components/UserNav";
 
 type InventoryItem = {
   id: string;
@@ -58,6 +60,7 @@ type LiveCheck = {
 // applying the delta, so what actually gets used is whatever was true at
 // submit time, not open time.
 export default function InventoryPage() {
+  const user = useCurrentUser();
   const [items, setItems] = useState<InventoryItem[] | null>(null);
   const [query, setQuery] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -149,6 +152,7 @@ export default function InventoryPage() {
   return (
     <AppShell title="Inventory" subtitle="Every active eBay listing this app has published or linked.">
       <div className="flex flex-col gap-5">
+        {user?.role === "owner" && <ShelfValueCard />}
         <form onSubmit={search} className="flex gap-2">
           <div className="relative min-w-0 flex-1">
             <Search
