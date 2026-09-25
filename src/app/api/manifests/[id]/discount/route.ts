@@ -1,4 +1,5 @@
 import { computeDiscountedPrice } from "@/lib/discount";
+import { ownerOnly } from "@/lib/auth";
 import { EbayApiError, reviseFixedPriceItemPrice, toItemForEbayPublish, updateOfferPrice } from "@/lib/ebay";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
@@ -15,6 +16,8 @@ export const maxDuration = 90;
 // linked up by /api/items/link-legacy (ebayListingId only — not an
 // Inventory API "offer", so price changes go through the Trading API).
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = ownerOnly(request);
+  if (denied) return denied;
   const { id } = await params;
   const body = await request.json().catch(() => ({}));
   const mode = body.mode === "amount" ? "amount" : body.mode === "percent" ? "percent" : null;

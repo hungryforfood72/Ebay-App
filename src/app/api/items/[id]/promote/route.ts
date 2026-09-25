@@ -1,4 +1,5 @@
 import { createAdByListingId, deleteAd, EbayApiError, findAdByListingId, updateAdBid } from "@/lib/ebay";
+import { ownerOnly } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -15,6 +16,8 @@ function parseBidPercentage(body: unknown): number | null {
 // the dashboard, same "human decides, app just executes" philosophy as
 // publish-to-ebay.
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = ownerOnly(request);
+  if (denied) return denied;
   const { id } = await params;
   const bidPercentage = parseBidPercentage(await request.json().catch(() => ({})));
   if (bidPercentage == null) {
@@ -66,6 +69,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
 // Changes the bid % on an item already being promoted.
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = ownerOnly(request);
+  if (denied) return denied;
   const { id } = await params;
   const bidPercentage = parseBidPercentage(await request.json().catch(() => ({})));
   if (bidPercentage == null) {
@@ -97,6 +102,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 // Stops promoting an item — the listing itself stays live, only the ad is
 // removed.
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = ownerOnly(request);
+  if (denied) return denied;
   const { id } = await params;
   const item = await prisma.item.findUnique({ where: { id } });
   if (!item) {

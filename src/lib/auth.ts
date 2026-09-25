@@ -89,6 +89,20 @@ export function requireOwner(request: Request): AuthedUser {
   return user;
 }
 
+// Route-handler shorthand for requireOwner: null when the caller is the
+// owner, otherwise the ready-to-return error response.
+//   const denied = ownerOnly(request);
+//   if (denied) return denied;
+export function ownerOnly(request: Request): Response | null {
+  try {
+    requireOwner(request);
+    return null;
+  } catch (e) {
+    if (e instanceof AuthError) return Response.json({ error: e.message }, { status: e.status });
+    throw e;
+  }
+}
+
 // Looks up a session token against the DB — expired rows are treated as
 // absent rather than actively cleaned up here (a lazy-expiry approach;
 // stale rows are harmless clutter, not a correctness problem, and don't

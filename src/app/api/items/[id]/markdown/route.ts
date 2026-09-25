@@ -1,4 +1,5 @@
 import { createMarkdownPromotion, deleteMarkdownPromotion, EbayApiError } from "@/lib/ebay";
+import { ownerOnly } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -17,6 +18,8 @@ function parsePercentOff(body: unknown): number | null {
 // Deliberately its own explicit action, same "human decides, app just
 // executes" philosophy as publish-to-ebay/promote.
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = ownerOnly(request);
+  if (denied) return denied;
   const { id } = await params;
   const percentOff = parsePercentOff(await request.json().catch(() => ({})));
   if (percentOff == null) {
@@ -70,6 +73,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 // Ends a sale event early — the listing itself stays live, only the
 // strikethrough markdown is removed.
 export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = ownerOnly(request);
+  if (denied) return denied;
   const { id } = await params;
   const item = await prisma.item.findUnique({ where: { id } });
   if (!item) {

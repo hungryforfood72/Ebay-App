@@ -178,6 +178,10 @@ export async function GET(request: Request) {
     soldThisMonthRevenue - soldThisMonthFees - soldThisMonthShipping - soldThisMonthCogs - refundedThisMonthNet;
 
   return NextResponse.json({
+    // Lets the page hide owner-only controls (discount/promote/sale on the
+    // expiring cards) without a second request — the routes behind those
+    // controls enforce owner-only themselves regardless.
+    isOwner,
     stats: {
       pendingReview,
       readyToPublish,

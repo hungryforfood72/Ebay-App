@@ -1,5 +1,6 @@
 import { findListingsBySku, getEbayEnvironment } from "@/lib/ebay";
 import { prisma } from "@/lib/prisma";
+import { ownerOnly } from "@/lib/auth";
 import { NextResponse } from "next/server";
 
 export const maxDuration = 90;
@@ -13,7 +14,9 @@ export const maxDuration = 90;
 // — see below) via the Trading API, and backfills it so discount/promote
 // can act on listings that were already live before this app's real API
 // integration existed.
-export async function POST() {
+export async function POST(request: Request) {
+  const denied = ownerOnly(request);
+  if (denied) return denied;
   const items = await prisma.item.findMany({
     where: { status: "exported", ebayListingId: null },
     select: { id: true, sku: true },
