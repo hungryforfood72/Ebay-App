@@ -24,8 +24,10 @@ import {
   Package,
   PackageX,
   Plus,
+  RotateCcw,
   ScanBarcode,
   Search,
+  SearchX,
   ShoppingBag,
   Trash2,
   TriangleAlert,
@@ -182,6 +184,9 @@ function ScanPageInner() {
   const [walkupQuantity, setWalkupQuantity] = useState("1");
   const [walkupPricePerUnit, setWalkupPricePerUnit] = useState("");
   const [walkupSaving, setWalkupSaving] = useState(false);
+  // The UPC a lookup just came back empty for — kept for display after the
+  // field itself is cleared for the next scan (see lookupWalkupUpc).
+  const [walkupMissedUpc, setWalkupMissedUpc] = useState<string | null>(null);
 
   // "Sell Shelf Item" — same in-person/cash sale as Walk-up Sale above, but
   // for something that's already on the shelf (already scanned in and
@@ -219,6 +224,8 @@ function ScanPageInner() {
   const [shelfSaleQuantity, setShelfSaleQuantity] = useState("1");
   const [shelfSalePricePerUnit, setShelfSalePricePerUnit] = useState("");
   const [shelfSaleSaving, setShelfSaleSaving] = useState(false);
+  // Same as walkupMissedUpc: what the last empty-handed lookup tried.
+  const [shelfSaleMissed, setShelfSaleMissed] = useState<{ location: string; upc: string } | null>(null);
 
   const [step, setStep] = useState<Step>("mode");
   const [isBundle, setIsBundle] = useState(false);
@@ -398,6 +405,7 @@ function ScanPageInner() {
     setWalkupQuantity("1");
     setWalkupPricePerUnit("");
     setWalkupMessage(null);
+    setWalkupMissedUpc(null);
   }
 
   async function lookupWalkupUpc() {
@@ -406,6 +414,7 @@ function ScanPageInner() {
     if (!walkupUpc.trim()) return setWalkupMessage("Scan or enter a UPC first.");
 
     setWalkupLooking(true);
+    setWalkupMissedUpc(null);
     try {
       const res = await fetch(
         `/api/manifests/${activeManifestId}/walkup-sale/lookup?upc=${encodeURIComponent(walkupUpc.trim())}`
@@ -422,6 +431,11 @@ function ScanPageInner() {
     } catch (e) {
       setWalkupLookup(null);
       setWalkupMessage(e instanceof Error ? e.message : "Something went wrong.");
+      // Nothing came up — clear the field and put the cursor back in it, so
+      // the very next trigger pull is a fresh scan with nothing to tap.
+      setWalkupMissedUpc(walkupUpc.trim());
+      setWalkupUpc("");
+      focusScanField("walkup-upc");
     } finally {
       setWalkupLooking(false);
     }
@@ -471,6 +485,14 @@ function ScanPageInner() {
     setShelfSaleQuantity("1");
     setShelfSalePricePerUnit("");
     setShelfSaleMessage(null);
+    setShelfSaleMissed(null);
+  }
+
+  // Start over from the shelf location after a lookup came back empty — in
+  // case it was the shelf scan that was wrong, not the UPC.
+  function restartShelfSaleScan() {
+    resetShelfSale();
+    focusScanField("shelf-sale-location");
   }
 
   async function lookupShelfSaleItem() {
@@ -479,6 +501,7 @@ function ScanPageInner() {
     if (!shelfSaleUpc.trim()) return setShelfSaleMessage("Scan or enter a UPC first.");
 
     setShelfSaleLooking(true);
+    setShelfSaleMissed(null);
     try {
       const res = await fetch(
         `/api/items/shelf-lookup?shelfLocation=${encodeURIComponent(shelfSaleLocation.trim())}&upc=${encodeURIComponent(shelfSaleUpc.trim())}`
@@ -495,6 +518,11 @@ function ScanPageInner() {
     } catch (e) {
       setShelfSaleLookup(null);
       setShelfSaleMessage(e instanceof Error ? e.message : "Something went wrong.");
+      // Nothing came up — ready the UPC field for another scan right away
+      // (the shelf location is usually right; "Start over" covers when not).
+      setShelfSaleMissed({ location: shelfSaleLocation.trim(), upc: shelfSaleUpc.trim() });
+      setShelfSaleUpc("");
+      focusScanField("shelf-sale-upc");
     } finally {
       setShelfSaleLooking(false);
     }
@@ -785,7 +813,16 @@ function ScanPageInner() {
             </Card>
           )}
 
-          <Feedback message={shelfSaleMessage} />
+          {shelfSaleMissed && shelfSaleMessage ? (
+            <ScanAgainPanel
+              message={shelfSaleMessage}
+              tried={`Shelf ${shelfSaleMissed.location} · UPC ${shelfSaleMissed.upc}`}
+              readyText="Ready — just scan the UPC again."
+              onStartOver={restartShelfSaleScan}
+            />
+          ) : (
+            <Feedback message={shelfSaleMessage} />
+          )}
 
           {shelfSaleLookup && (
             <>
@@ -1076,7 +1113,15 @@ function ScanPageInner() {
             </Card>
           )}
 
-          <Feedback message={walkupMessage} />
+          {walkupMissedUpc && walkupMessage ? (
+            <ScanAgainPanel
+              message={walkupMessage}
+              tried={`UPC ${walkupMissedUpc}`}
+              readyText="Ready — just scan the UPC again."
+            />
+          ) : (
+            <Feedback message={walkupMessage} />
+          )}
 
           {walkupLookup && (
             <>
@@ -1629,6 +1674,48 @@ function Feedback({ message }: { message: string | null }) {
         <TriangleAlert className="mt-0.5 size-5 shrink-0 text-amber-600" aria-hidden />
       )}
       {message}
+    </div>
+  );
+}
+
+// Moves the cursor into a ScanField once React has rendered the state change
+// that cleared it — the field may have lost focus to a tapped button.
+function focusScanField(id: string) {
+  requestAnimationFrame(() => document.getElementById(id)?.focus());
+}
+
+// Shown when a lookup comes back empty: what was tried, and that the field
+// is already cleared and waiting — the next trigger pull just works.
+function ScanAgainPanel({
+  message,
+  tried,
+  readyText,
+  onStartOver,
+}: {
+  message: string;
+  tried: string;
+  readyText: string;
+  onStartOver?: () => void;
+}) {
+  return (
+    <div role="alert" className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+      <div className="flex gap-2">
+        <SearchX className="mt-0.5 size-5 shrink-0 text-amber-600" aria-hidden />
+        <div className="min-w-0">
+          <p className="font-semibold">{message}</p>
+          <p className="mt-0.5 break-all tabular-nums text-amber-900/80">Scanned: {tried}</p>
+        </div>
+      </div>
+      <p className="mt-3 flex items-center gap-2 rounded-lg bg-surface/80 px-3 py-2.5 font-medium text-primary">
+        <ScanBarcode className="size-5 shrink-0 animate-pulse" aria-hidden />
+        {readyText}
+      </p>
+      {onStartOver && (
+        <Button variant="outline" size="lg" block onClick={onStartOver} className="mt-3">
+          <RotateCcw className="size-5" aria-hidden />
+          Start over from the shelf location
+        </Button>
+      )}
     </div>
   );
 }
