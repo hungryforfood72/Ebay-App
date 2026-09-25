@@ -73,6 +73,13 @@ export async function proxy(request: NextRequest) {
   return NextResponse.next({ request: { headers: requestHeaders } });
 }
 
+// manifest.webmanifest and public/icons/ are excluded so the app is
+// actually installable as a PWA: browsers fetch the web manifest WITHOUT
+// cookies by default (credentials: "omit" per the manifest spec), so with
+// these gated behind the session check above, the install check would get
+// redirected to /login's HTML instead of the manifest JSON and silently
+// fail. Neither contains anything sensitive — just the app name and a
+// generic icon.
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|manifest.webmanifest|icons/).*)"],
 };

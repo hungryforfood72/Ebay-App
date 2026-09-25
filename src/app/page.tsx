@@ -1,9 +1,16 @@
 "use client";
 
 import { Stat } from "@/components/Stat";
-import { UserNavLinks } from "@/components/UserNav";
+import { Alert } from "@/components/ui/Alert";
+import { AppShell } from "@/components/ui/AppShell";
+import { Badge } from "@/components/ui/Badge";
+import { Button, buttonClasses } from "@/components/ui/Button";
+import { Card, SectionHeader } from "@/components/ui/Card";
+import { cn } from "@/components/ui/cn";
+import { Input, Select } from "@/components/ui/Input";
+import { ClipboardCheck, ExternalLink, RefreshCw, ScanBarcode } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 type ExpiringListedItem = {
   id: string;
@@ -176,246 +183,234 @@ export default function DashboardPage() {
     );
   }
 
-  if (!data) return <main className="p-6">Loading…</main>;
+  if (!data) {
+    return (
+      <AppShell title="Dashboard" subtitle="Sticker Peak eBay tool — overview">
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      </AppShell>
+    );
+  }
 
   const { stats, ebay, expiringListed, expiringUnlisted, expiredNeedingPull, expiredEndFailed } = data;
 
+  // Money figures are only present in the response at all for the owner —
+  // see the DashboardData type comment — so this whole group simply
+  // doesn't render for an employee.
+  const showMoney = stats.soldThisMonthRevenue != null;
+
   return (
-    <main className="mx-auto max-w-4xl p-6">
-      <div className="mb-2 flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Dashboard</h1>
-        <div className="flex items-center gap-3">
-          <Link href="/scan" className="text-sm underline">
-            Scan
-          </Link>
-          <Link href="/review" className="text-sm underline">
-            Review
-          </Link>
-          <Link href="/manifests" className="text-sm underline">
-            Manifests
-          </Link>
-          <Link href="/analyzer" className="text-sm underline">
-            Analyzer
-          </Link>
-          <Link href="/inventory" className="text-sm underline">
-            Inventory
-          </Link>
-          <UserNavLinks />
-        </div>
-      </div>
-      <p className="mb-6 text-sm text-gray-500">Sticker Peak eBay tool — overview</p>
-
-      {(!ebay.connected || ebay.missingScopes.length > 0) && (
-        <section className="mb-6 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm">
-          {!ebay.connected ? (
-            <p>
-              eBay isn&apos;t connected —{" "}
-              <Link href="/settings" className="underline">
-                connect it in Settings
-              </Link>{" "}
-              to publish, sync sales, or promote listings.
-            </p>
-          ) : (
-            <p>
-              eBay reconnect required — missing: {ebay.missingScopes.map(shortScopeName).join(", ")}.{" "}
-              <Link href="/settings" className="underline">
-                Reconnect in Settings
+    <AppShell title="Dashboard" subtitle="Sticker Peak eBay tool — overview">
+      <div className="flex flex-col gap-6 sm:gap-8">
+        {(!ebay.connected || ebay.missingScopes.length > 0) && (
+          <Alert
+            tone="warning"
+            title={!ebay.connected ? "eBay isn't connected" : "eBay reconnect required"}
+            action={
+              <Link href="/settings" className={buttonClasses({ variant: "outline", size: "sm" })}>
+                {!ebay.connected ? "Connect in Settings" : "Reconnect in Settings"}
               </Link>
-              .
-            </p>
-          )}
-        </section>
-      )}
-
-      <div className="mb-6 grid grid-cols-2 gap-3">
-        <Link href="/scan" className="rounded-lg bg-black px-4 py-3 text-center text-white">
-          Scan items
-        </Link>
-        <Link href="/review" className="rounded-lg border-2 border-black px-4 py-3 text-center font-medium">
-          Review queue
-        </Link>
-      </div>
-
-      <section className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3">
-        <Stat label="Pending review" value={stats.pendingReview} />
-        <Stat label="Ready to publish" value={stats.readyToPublish} />
-        <Stat label="Listed" value={stats.listed} />
-        <Stat label="Expiring ≤21 days" value={stats.expiringCount} highlight={stats.expiringCount > 0} />
-        <Stat label="Units sold this month" value={stats.soldThisMonthUnits} />
-        {/* Money figures are only present in the response at all for the
-            owner — see the DashboardData type comment — so this whole
-            block simply doesn't render for an employee. */}
-        {stats.soldThisMonthRevenue != null && (
-          <Stat label="Sold this month" value={stats.soldThisMonthRevenue} format="currency" />
-        )}
-        {stats.soldThisMonthFees != null && (
-          <Stat label="Fees this month" value={stats.soldThisMonthFees} format="currency" />
-        )}
-        {stats.soldThisMonthShipping != null && (
-          <Stat label="Shipping this month" value={stats.soldThisMonthShipping} format="currency" />
-        )}
-        {stats.soldThisMonthRefunded != null && (
-          <Stat
-            label="Refunds this month"
-            value={stats.soldThisMonthRefunded}
-            format="currency"
-            highlight={stats.soldThisMonthRefunded > 0}
-          />
-        )}
-        {stats.soldThisMonthProfit != null && (
-          <Stat
-            label="Profit this month"
-            value={stats.soldThisMonthProfit}
-            format="currency"
-            highlight={stats.soldThisMonthUnits > 0 && stats.soldThisMonthProfit < 0}
-          />
-        )}
-      </section>
-      {stats.soldThisMonthProfit != null && (
-        <p className="mb-6 -mt-4 text-xs text-gray-400">
-          Only counts items scanned and listed through this app — Profit uses manifest COGS where available,
-          $0 for anything with no manifest.
-        </p>
-      )}
-
-      <section className="mb-6 flex flex-col gap-2 rounded-lg border p-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm font-medium">Sold-order sync</p>
-            <p className="text-xs text-gray-400">Runs automatically every 4 hours — or trigger it now.</p>
-          </div>
-          <button
-            type="button"
-            onClick={syncNow}
-            disabled={syncing}
-            className="rounded bg-black px-3 py-2 text-sm text-white disabled:opacity-40"
+            }
           >
-            {syncing ? "Syncing…" : "Sync now"}
-          </button>
+            {!ebay.connected
+              ? "Connect it to publish, sync sales, or promote listings."
+              : `Missing permissions: ${ebay.missingScopes.map(shortScopeName).join(", ")}.`}
+          </Alert>
+        )}
+
+        {/* Stacked on phones: half of a ~360px screen can't fit an icon +
+            "Review queue" at a comfortable tap size. */}
+        <div className="grid gap-3 sm:grid-cols-2">
+          <Link href="/scan" className={buttonClasses({ variant: "primary", size: "xl", block: true })}>
+            <ScanBarcode className="size-5" aria-hidden />
+            Scan items
+          </Link>
+          <Link href="/review" className={buttonClasses({ variant: "outline", size: "xl", block: true })}>
+            <ClipboardCheck className="size-5" aria-hidden />
+            Review queue
+          </Link>
         </div>
-        {syncResult && (
-          <div className="text-sm text-gray-600">
-            {syncResult.skipped ? (
-              <p className="text-amber-600">{syncResult.skipped}</p>
-            ) : (
-              <p>
-                Scanned {syncResult.ordersScanned} order(s) — {syncResult.itemsUpdated} item(s) updated,{" "}
-                {syncResult.itemsAlreadySynced} already synced, {syncResult.itemsUnmatched} unmatched,{" "}
-                {syncResult.refundsRecorded} refund(s) recorded
-                {syncResult.salesReversed > 0 ? `, ${syncResult.salesReversed} sale(s) reversed (cancelled after being recorded)` : ""}.
+
+        <section>
+          <SectionHeader title="Inventory" />
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <Stat label="Pending review" value={stats.pendingReview} />
+            <Stat label="Ready to publish" value={stats.readyToPublish} />
+            <Stat label="Listed" value={stats.listed} />
+            <Stat label="Expiring ≤21 days" value={stats.expiringCount} highlight={stats.expiringCount > 0} />
+          </div>
+        </section>
+
+        <section>
+          <SectionHeader
+            title="This month"
+            description={
+              showMoney
+                ? "Only counts items scanned and listed through this app — profit uses manifest COGS where available, $0 for anything with no manifest."
+                : undefined
+            }
+          />
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+            <Stat label="Units sold" value={stats.soldThisMonthUnits} />
+            {stats.soldThisMonthRevenue != null && (
+              <Stat label="Revenue" value={stats.soldThisMonthRevenue} format="currency" />
+            )}
+            {stats.soldThisMonthFees != null && <Stat label="Fees" value={stats.soldThisMonthFees} format="currency" />}
+            {stats.soldThisMonthShipping != null && (
+              <Stat label="Shipping" value={stats.soldThisMonthShipping} format="currency" />
+            )}
+            {stats.soldThisMonthRefunded != null && (
+              <Stat
+                label="Refunds"
+                value={stats.soldThisMonthRefunded}
+                format="currency"
+                highlight={stats.soldThisMonthRefunded > 0}
+              />
+            )}
+            {stats.soldThisMonthProfit != null && (
+              <Stat
+                label="Profit"
+                value={stats.soldThisMonthProfit}
+                format="currency"
+                highlight={stats.soldThisMonthUnits > 0 && stats.soldThisMonthProfit < 0}
+              />
+            )}
+          </div>
+        </section>
+
+        <Card>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="font-medium text-foreground">Sold-order sync</p>
+              <p className="text-sm text-muted-foreground">Runs automatically every 4 hours — or trigger it now.</p>
+            </div>
+            <Button variant="outline" onClick={syncNow} disabled={syncing}>
+              <RefreshCw className={cn("size-4", syncing && "animate-spin")} aria-hidden />
+              {syncing ? "Syncing…" : "Sync now"}
+            </Button>
+          </div>
+          {syncResult && (
+            <div className="mt-3 border-t border-border pt-3 text-sm text-muted-foreground">
+              {syncResult.skipped ? (
+                <p className="text-warning">{syncResult.skipped}</p>
+              ) : (
+                <p>
+                  Scanned {syncResult.ordersScanned} order(s) — {syncResult.itemsUpdated} item(s) updated,{" "}
+                  {syncResult.itemsAlreadySynced} already synced, {syncResult.itemsUnmatched} unmatched,{" "}
+                  {syncResult.refundsRecorded} refund(s) recorded
+                  {syncResult.salesReversed > 0
+                    ? `, ${syncResult.salesReversed} sale(s) reversed (cancelled after being recorded)`
+                    : ""}
+                  .
+                </p>
+              )}
+              {syncResult.errors.length > 0 && <p className="mt-1 text-danger">{syncResult.errors.join(" · ")}</p>}
+            </div>
+          )}
+        </Card>
+
+        {expiredNeedingPull.length > 0 && (
+          <Alert tone="danger" title={`Expired — needs shelf pull (${expiredNeedingPull.length})`}>
+            <p>
+              These listings were automatically removed from eBay ahead of their expiration date (per the removal
+              buffer in Settings, to stay compliant with eBay&apos;s food policy — items must be delivered before
+              they expire). Pull the physical stock off the shelf, then mark it done below.
+            </p>
+            <div className="mt-3 flex flex-col gap-2">
+              {expiredNeedingPull.map((item) => (
+                <ShelfPullRow key={item.id} item={item} onAcknowledged={() => removeExpiredNeedingPull(item.id)} />
+              ))}
+            </div>
+          </Alert>
+        )}
+
+        {expiredEndFailed && expiredEndFailed.length > 0 && (
+          <Alert tone="danger" title={`Expired listings eBay wouldn't remove (${expiredEndFailed.length})`}>
+            <p>
+              Inside their removal window (expiring soon, per the buffer in Settings), but the automatic eBay
+              removal failed — still genuinely live and buyable, so nothing&apos;s been pulled off the shelf for
+              these. Retried automatically every hour; check the eBay connection in Settings if this persists.
+            </p>
+            <div className="mt-3 flex flex-col gap-2">
+              {expiredEndFailed.map((item) => (
+                <div key={item.id} className="rounded-lg border border-red-200 bg-surface p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <span className="min-w-0 font-medium text-foreground">{item.finalTitle ?? item.sku}</span>
+                    <span className="shrink-0 text-muted-foreground">
+                      {item.expirationDate ? new Date(item.expirationDate).toLocaleDateString() : "—"}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-danger">{item.ebayEndError}</p>
+                </div>
+              ))}
+            </div>
+          </Alert>
+        )}
+
+        {expiringUnlisted.length > 0 && (
+          <Alert
+            tone="warning"
+            title={`Expiring soon — not yet published (${expiringUnlisted.length})`}
+            action={
+              <Link href="/review" className={buttonClasses({ variant: "outline", size: "sm" })}>
+                Go to review queue
+              </Link>
+            }
+          >
+            <p>
+              These have no live eBay listing on file, so they can&apos;t be discounted or promoted yet. If one was
+              already bulk-uploaded via the old CSV flow before this app tracked listing IDs, check for it below
+              instead of re-publishing.
+            </p>
+            <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+              <Button variant="outline" size="sm" onClick={linkLegacyListings} disabled={linking}>
+                {linking ? "Checking eBay…" : "Check eBay for existing listings"}
+              </Button>
+              <span className="text-xs opacity-80">Checks every exported item app-wide, not just these.</span>
+            </div>
+            {linkResult && (
+              <p className="mt-2 text-xs">
+                {typeof linkResult === "string"
+                  ? linkResult
+                  : `Checked ${linkResult.checked} — linked ${linkResult.linked}, ${linkResult.notFound} not found on eBay.`}
               </p>
             )}
-            {syncResult.errors.length > 0 && (
-              <p className="text-red-600">{syncResult.errors.join(" · ")}</p>
-            )}
-          </div>
-        )}
-      </section>
-
-      <section className="mb-6">
-        <h2 className="mb-2 text-sm font-medium text-gray-500">
-          Expiring soon — listed ({expiringListed.length})
-        </h2>
-        {expiringListed.length === 0 ? (
-          <p className="text-sm text-gray-400">Nothing listed is expiring in the next 21 days.</p>
-        ) : (
-          <div className="flex flex-col gap-3">
-            {expiringListed.map((item) => (
-              <ExpiringItemCard key={item.id} item={item} onChange={(patch) => updateItem(item.id, patch)} />
-            ))}
-          </div>
-        )}
-      </section>
-
-      {expiringUnlisted.length > 0 && (
-        <section className="mb-6 rounded-lg border border-orange-300 bg-orange-50 p-4">
-          <h2 className="mb-2 text-sm font-medium">
-            Expiring soon — not yet published ({expiringUnlisted.length})
-          </h2>
-          <p className="mb-2 text-xs text-gray-500">
-            These have no live eBay listing on file, so they can&apos;t be discounted or promoted yet. If
-            one was already bulk-uploaded via the old CSV flow before this app tracked listing IDs, check
-            for it below instead of re-publishing.
-          </p>
-          <div className="mb-2 flex items-center gap-2">
-            <button
-              type="button"
-              onClick={linkLegacyListings}
-              disabled={linking}
-              className="rounded border border-orange-400 bg-white px-3 py-1.5 text-xs disabled:opacity-40"
-            >
-              {linking ? "Checking eBay…" : "Check eBay for existing listings"}
-            </button>
-            <span className="text-xs text-gray-500">Checks every exported item app-wide, not just these.</span>
-          </div>
-          {linkResult && (
-            <p className="mb-2 text-xs text-gray-600">
-              {typeof linkResult === "string"
-                ? linkResult
-                : `Checked ${linkResult.checked} — linked ${linkResult.linked}, ${linkResult.notFound} not found on eBay.`}
-            </p>
-          )}
-          <div className="flex flex-col gap-1">
-            {expiringUnlisted.map((item) => (
-              <div key={item.id} className="flex items-center justify-between text-sm">
-                <span>{item.finalTitle ?? item.sku}</span>
-                <span className={daysUntil(item.expirationDate) <= 7 ? "font-semibold text-red-600" : "text-gray-500"}>
-                  {new Date(item.expirationDate).toLocaleDateString()}
-                </span>
-              </div>
-            ))}
-          </div>
-          <Link href="/review" className="mt-2 inline-block text-sm underline">
-            Go to review queue
-          </Link>
-        </section>
-      )}
-
-      {expiredNeedingPull.length > 0 && (
-        <section className="mb-6 rounded-lg border border-red-300 bg-red-50 p-4">
-          <h2 className="mb-2 text-sm font-medium">
-            Expired — needs shelf pull ({expiredNeedingPull.length})
-          </h2>
-          <p className="mb-2 text-xs text-gray-500">
-            These listings were automatically removed from eBay ahead of their expiration date (per the
-            removal buffer in Settings, to stay compliant with eBay&apos;s food policy — items must be
-            delivered before they expire). Pull the physical stock off the shelf, then mark it done below.
-          </p>
-          <div className="flex flex-col gap-2">
-            {expiredNeedingPull.map((item) => (
-              <ShelfPullRow key={item.id} item={item} onAcknowledged={() => removeExpiredNeedingPull(item.id)} />
-            ))}
-          </div>
-        </section>
-      )}
-
-      {expiredEndFailed && expiredEndFailed.length > 0 && (
-        <section className="mb-6 rounded-lg border border-red-500 bg-red-100 p-4">
-          <h2 className="mb-2 text-sm font-medium text-red-800">
-            Expired listings eBay wouldn&apos;t remove ({expiredEndFailed.length})
-          </h2>
-          <p className="mb-2 text-xs text-gray-600">
-            Inside their removal window (expiring soon, per the buffer in Settings), but the automatic
-            eBay removal failed — still genuinely live and buyable, so nothing&apos;s been pulled off the
-            shelf for these. Retried automatically every hour; check the eBay connection in Settings if
-            this persists.
-          </p>
-          <div className="flex flex-col gap-1">
-            {expiredEndFailed.map((item) => (
-              <div key={item.id} className="text-sm">
-                <div className="flex items-center justify-between">
-                  <span>{item.finalTitle ?? item.sku}</span>
-                  <span className="text-gray-500">
-                    {item.expirationDate ? new Date(item.expirationDate).toLocaleDateString() : "—"}
+            <ul className="mt-3 divide-y divide-amber-200 rounded-lg border border-amber-200 bg-surface">
+              {expiringUnlisted.map((item) => (
+                <li key={item.id} className="flex items-start justify-between gap-3 px-3 py-2 text-foreground">
+                  <span className="min-w-0">{item.finalTitle ?? item.sku}</span>
+                  <span
+                    className={cn(
+                      "shrink-0",
+                      daysUntil(item.expirationDate) <= 7 ? "font-semibold text-danger" : "text-muted-foreground"
+                    )}
+                  >
+                    {new Date(item.expirationDate).toLocaleDateString()}
                   </span>
-                </div>
-                <p className="text-xs text-red-700">{item.ebayEndError}</p>
-              </div>
-            ))}
-          </div>
+                </li>
+              ))}
+            </ul>
+          </Alert>
+        )}
+
+        <section>
+          <SectionHeader
+            title="Expiring soon — listed"
+            action={<Badge tone={expiringListed.length > 0 ? "warning" : "neutral"}>{expiringListed.length}</Badge>}
+          />
+          {expiringListed.length === 0 ? (
+            <Card>
+              <p className="text-sm text-muted-foreground">Nothing listed is expiring in the next 21 days.</p>
+            </Card>
+          ) : (
+            <div className="flex flex-col gap-3">
+              {expiringListed.map((item) => (
+                <ExpiringItemCard key={item.id} item={item} onChange={(patch) => updateItem(item.id, patch)} />
+              ))}
+            </div>
+          )}
         </section>
-      )}
-    </main>
+      </div>
+    </AppShell>
   );
 }
 
@@ -446,23 +441,21 @@ function ShelfPullRow({
   }
 
   return (
-    <div className="flex items-center justify-between gap-3 rounded border border-red-200 bg-white px-3 py-2 text-sm">
-      <div>
-        <p className="font-medium">{item.finalTitle ?? item.sku}</p>
-        <p className="text-xs text-gray-500">
-          Shelf: {item.shelfLocation || "—"} · Expired{" "}
-          {item.expirationDate ? new Date(item.expirationDate).toLocaleDateString() : new Date(item.expiredAt).toLocaleDateString()}
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-200 bg-surface p-3">
+      <div className="min-w-0">
+        <p className="font-medium text-foreground">{item.finalTitle ?? item.sku}</p>
+        <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+          <Badge>Shelf {item.shelfLocation || "—"}</Badge>
+          Expired{" "}
+          {item.expirationDate
+            ? new Date(item.expirationDate).toLocaleDateString()
+            : new Date(item.expiredAt).toLocaleDateString()}
         </p>
-        {error && <p className="text-xs text-red-600">{error}</p>}
+        {error && <p className="mt-1 text-xs text-danger">{error}</p>}
       </div>
-      <button
-        type="button"
-        onClick={acknowledge}
-        disabled={saving}
-        className="shrink-0 rounded bg-black px-3 py-1.5 text-xs text-white disabled:opacity-40"
-      >
+      <Button size="sm" onClick={acknowledge} disabled={saving} className="shrink-0">
         {saving ? "Saving…" : "Mark as pulled"}
-      </button>
+      </Button>
     </div>
   );
 }
@@ -633,167 +626,181 @@ function ExpiringItemCard({
   }
 
   return (
-    <div className="rounded-lg border p-4">
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <p className="font-medium">{item.finalTitle ?? item.sku}</p>
-          <p className="text-xs text-gray-400">
-            {item.shelfLocation} ·{" "}
+    <Card>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="font-medium leading-snug text-foreground">{item.finalTitle ?? item.sku}</p>
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
+            <Badge>Shelf {item.shelfLocation}</Badge>
             {item.livePrice != null ? (
-              <>
+              <span>
                 {item.liveOriginalPrice != null && (
-                  <span className="text-gray-400 line-through">${item.liveOriginalPrice.toFixed(2)}</span>
-                )}{" "}
-                <span className={item.liveOriginalPrice != null ? "font-medium text-green-700" : undefined}>
+                  <span className="mr-1 line-through">${item.liveOriginalPrice.toFixed(2)}</span>
+                )}
+                <span className={cn("font-medium", item.liveOriginalPrice != null ? "text-success" : "text-foreground")}>
                   ${item.livePrice.toFixed(2)}
                 </span>
-              </>
+              </span>
             ) : item.price != null ? (
-              `$${item.price.toFixed(2)}`
+              <span className="font-medium text-foreground">${item.price.toFixed(2)}</span>
             ) : (
-              "no price"
+              <span>no price</span>
             )}
             {ebayListingUrl(item) && (
-              <>
-                {" · "}
-                <a
-                  href={ebayListingUrl(item)!}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-blue-600 underline"
-                >
-                  View on eBay ↗
-                </a>
-              </>
+              <a
+                href={ebayListingUrl(item)!}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 font-medium text-primary hover:underline"
+              >
+                View on eBay
+                <ExternalLink className="size-3.5" aria-hidden />
+              </a>
             )}
-          </p>
+          </div>
         </div>
-        <span className={`text-sm ${urgent ? "font-semibold text-red-600" : "text-gray-500"}`}>
-          {days < 0 ? "Expired" : `${days}d left`} · {new Date(item.expirationDate).toLocaleDateString()}
-        </span>
+        <div className="shrink-0 text-right">
+          <Badge tone={urgent ? "danger" : "neutral"}>{days < 0 ? "Expired" : `${days}d left`}</Badge>
+          <p className="mt-1 text-xs text-muted-foreground">{new Date(item.expirationDate).toLocaleDateString()}</p>
+        </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <select
-          value={discountMode}
-          onChange={(e) => setDiscountMode(e.target.value as "percent" | "amount")}
-          className="rounded border px-2 py-1.5 text-xs"
-        >
-          <option value="percent">% off</option>
-          <option value="amount">$ off</option>
-        </select>
-        <input
-          type="number"
-          step="0.01"
-          min={0}
-          value={discountValue}
-          onChange={(e) => setDiscountValue(e.target.value)}
-          placeholder={discountMode === "percent" ? "15" : "5.00"}
-          className="w-20 rounded border px-2 py-1.5 text-xs"
-        />
-        <button
-          type="button"
-          onClick={applyDiscount}
-          disabled={acting !== null || !discountValue}
-          className="rounded bg-black px-3 py-1.5 text-xs text-white disabled:opacity-40"
-        >
-          {acting === "discount" ? "Applying…" : "Discount"}
-        </button>
-
-        {item.ebayAdId ? (
-          <>
-            <span className="rounded-full bg-green-100 px-2 py-1 text-xs text-green-700">
-              Promoted at {item.promotedBidPercentage}%
-            </span>
-            <input
+      <div className="mt-4 grid gap-4 border-t border-border pt-4 md:grid-cols-3">
+        <ActionGroup label="Discount">
+          <div className="flex gap-2">
+            {/* Width lives on the wrapper: form controls are w-full by
+                default (they fill whatever they're placed in), so a width
+                class on the control itself would just fight that. */}
+            <div className="w-28 shrink-0">
+              <Select
+                size="sm"
+                value={discountMode}
+                onChange={(e) => setDiscountMode(e.target.value as "percent" | "amount")}
+                aria-label="Discount type"
+              >
+                <option value="percent">% off</option>
+                <option value="amount">$ off</option>
+              </Select>
+            </div>
+            <Input
+              size="sm"
               type="number"
-              min={1}
-              max={100}
-              value={bidPercentage}
-              onChange={(e) => setBidPercentage(e.target.value)}
-              placeholder="new %"
-              className="w-16 rounded border px-2 py-1.5 text-xs"
+              step="0.01"
+              min={0}
+              value={discountValue}
+              onChange={(e) => setDiscountValue(e.target.value)}
+              placeholder={discountMode === "percent" ? "15" : "5.00"}
+              aria-label="Discount amount"
+              className="min-w-0"
             />
-            <button
-              type="button"
-              onClick={updateBid}
-              disabled={acting !== null || !bidPercentage}
-              className="rounded border px-3 py-1.5 text-xs disabled:opacity-40"
-            >
-              {acting === "bid" ? "Updating…" : "Update bid"}
-            </button>
-            <button
-              type="button"
-              onClick={stopPromoting}
-              disabled={acting !== null}
-              className="rounded border border-red-300 px-3 py-1.5 text-xs text-red-600 disabled:opacity-40"
-            >
-              {acting === "stop" ? "Stopping…" : "Stop promoting"}
-            </button>
-          </>
-        ) : (
-          <>
-            <input
-              type="number"
-              min={1}
-              max={100}
-              value={bidPercentage}
-              onChange={(e) => setBidPercentage(e.target.value)}
-              placeholder="bid %"
-              className="w-16 rounded border px-2 py-1.5 text-xs"
-            />
-            <button
-              type="button"
-              onClick={promote}
-              disabled={acting !== null || !bidPercentage}
-              className="rounded border px-3 py-1.5 text-xs disabled:opacity-40"
-            >
-              {acting === "promote" ? "Promoting…" : "Promote"}
-            </button>
-          </>
-        )}
+            <Button size="md" onClick={applyDiscount} disabled={acting !== null || !discountValue} className="shrink-0">
+              {acting === "discount" ? "Applying…" : "Apply"}
+            </Button>
+          </div>
+        </ActionGroup>
 
-        {item.ebayMarkdownId ? (
-          <>
-            <span className="rounded-full bg-purple-100 px-2 py-1 text-xs text-purple-700">
-              Sale event: {item.markdownPercentOff}% off
-              {item.markdownEndsAt ? ` until ${new Date(item.markdownEndsAt).toLocaleDateString()}` : ""}
-            </span>
-            <button
-              type="button"
-              onClick={stopMarkdown}
-              disabled={acting !== null}
-              className="rounded border border-red-300 px-3 py-1.5 text-xs text-red-600 disabled:opacity-40"
-            >
+        <ActionGroup
+          label="Promote"
+          status={item.ebayAdId ? <Badge tone="success">Promoted at {item.promotedBidPercentage}%</Badge> : undefined}
+        >
+          {item.ebayAdId ? (
+            <div className="flex flex-wrap gap-2">
+              <Input
+                size="sm"
+                type="number"
+                min={1}
+                max={100}
+                value={bidPercentage}
+                onChange={(e) => setBidPercentage(e.target.value)}
+                placeholder="new %"
+                aria-label="New bid percentage"
+                className="min-w-0 flex-1 basis-20"
+              />
+              <Button variant="outline" onClick={updateBid} disabled={acting !== null || !bidPercentage}>
+                {acting === "bid" ? "Updating…" : "Update bid"}
+              </Button>
+              <Button variant="danger-ghost" onClick={stopPromoting} disabled={acting !== null}>
+                {acting === "stop" ? "Stopping…" : "Stop"}
+              </Button>
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              <Input
+                size="sm"
+                type="number"
+                min={1}
+                max={100}
+                value={bidPercentage}
+                onChange={(e) => setBidPercentage(e.target.value)}
+                placeholder="bid %"
+                aria-label="Bid percentage"
+                className="min-w-0"
+              />
+              <Button variant="outline" onClick={promote} disabled={acting !== null || !bidPercentage} className="shrink-0">
+                {acting === "promote" ? "Promoting…" : "Promote"}
+              </Button>
+            </div>
+          )}
+        </ActionGroup>
+
+        <ActionGroup
+          label="Sale event"
+          status={
+            item.ebayMarkdownId ? (
+              <Badge tone="purple">
+                {item.markdownPercentOff}% off
+                {item.markdownEndsAt ? ` until ${new Date(item.markdownEndsAt).toLocaleDateString()}` : ""}
+              </Badge>
+            ) : undefined
+          }
+        >
+          {item.ebayMarkdownId ? (
+            <Button variant="danger-ghost" onClick={stopMarkdown} disabled={acting !== null}>
               {acting === "stop-markdown" ? "Ending…" : "End sale event"}
-            </button>
-          </>
-        ) : (
-          <>
-            <input
-              type="number"
-              min={1}
-              max={80}
-              value={markdownPercent}
-              onChange={(e) => setMarkdownPercent(e.target.value)}
-              placeholder="sale %"
-              className="w-16 rounded border px-2 py-1.5 text-xs"
-            />
-            <button
-              type="button"
-              onClick={startMarkdown}
-              disabled={acting !== null || !markdownPercent}
-              className="rounded border border-purple-300 px-3 py-1.5 text-xs text-purple-700 disabled:opacity-40"
-            >
-              {acting === "markdown" ? "Starting…" : "Start sale event"}
-            </button>
-          </>
-        )}
+            </Button>
+          ) : (
+            <div className="flex gap-2">
+              <Input
+                size="sm"
+                type="number"
+                min={1}
+                max={80}
+                value={markdownPercent}
+                onChange={(e) => setMarkdownPercent(e.target.value)}
+                placeholder="sale %"
+                aria-label="Sale percentage off"
+                className="min-w-0"
+              />
+              <Button
+                variant="outline"
+                onClick={startMarkdown}
+                disabled={acting !== null || !markdownPercent}
+                className="shrink-0"
+              >
+                {acting === "markdown" ? "Starting…" : "Start sale"}
+              </Button>
+            </div>
+          )}
+        </ActionGroup>
       </div>
 
       {(error || item.ebayPromoteError || item.ebayMarkdownError) && (
-        <p className="mt-2 text-xs text-red-600">{error ?? item.ebayPromoteError ?? item.ebayMarkdownError}</p>
+        <p className="mt-3 text-sm text-danger">{error ?? item.ebayPromoteError ?? item.ebayMarkdownError}</p>
       )}
+    </Card>
+  );
+}
+
+// One labelled column of the expiring-item action row — stacks on the
+// scanner's narrow screen, sits three-across from md up.
+function ActionGroup({ label, status, children }: { label: string; status?: ReactNode; children: ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <div className="mb-2 flex min-h-5 flex-wrap items-center justify-between gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
+        {status}
+      </div>
+      {children}
     </div>
   );
 }

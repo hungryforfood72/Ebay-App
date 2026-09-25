@@ -1,26 +1,60 @@
 @import "tailwindcss";
 
+/* Design tokens — a small, consistent palette (zinc neutrals + one blue
+   accent) replacing the ad-hoc bare-border/black-button styling that used
+   to be copy-pasted across every page. Shared components in
+   src/components/ui/ are built on these; semantic status colors
+   (danger/warning/success) stay close to Tailwind's stock red/amber/green
+   since banners across the app already lean on those directly.
+
+   Light-only for now, on purpose: the old CSS flipped the page to a
+   near-black background under prefers-color-scheme: dark while every page
+   still hardcoded bg-black buttons and border-black borders — so dark-mode
+   users were already getting invisible buttons. Until every page is on
+   these tokens (redesign phase 2), a dark palette would only fix the
+   migrated pages and leave the rest half-broken; one consistent light
+   theme is better than that. */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: light;
+  --background: #fafafa; /* zinc-50 — page background */
+  --surface: #ffffff; /* card/panel background, a step lighter than the page */
+  --muted: #f4f4f5; /* zinc-100 — secondary buttons, hover fills, subtle tracks */
+  --foreground: #18181b; /* zinc-900 — primary text */
+  --muted-foreground: #71717a; /* zinc-500 — secondary text */
+  --border: #e4e4e7; /* zinc-200 */
+  --primary: #2563eb; /* blue-600 */
+  --primary-hover: #1d4ed8; /* blue-700 */
+  --primary-foreground: #ffffff;
+  --danger: #dc2626; /* red-600 */
+  --success: #16a34a; /* green-600 */
+  --warning: #d97706; /* amber-600 */
 }
 
 @theme inline {
   --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-muted: var(--muted);
   --color-foreground: var(--foreground);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  /* Was previously hardcoded to Arial/Helvetica alone, which silently
+     overrode the Geist font already loaded via next/font/google on
+     <html> in layout.tsx. References --font-geist-sans directly (a real
+     CSS variable next/font sets on <html>) rather than --font-sans, which
+     @theme inline above inlines into utility classes instead of emitting
+     as a variable plain CSS like this rule could read. */
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
 }

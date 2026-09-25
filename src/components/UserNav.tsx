@@ -24,13 +24,13 @@ export function useCurrentUser() {
   return user;
 }
 
+export async function logout() {
+  await fetch("/api/auth", { method: "DELETE" });
+  window.location.href = "/login";
+}
+
 export function UserNavLinks({ showSettings = true }: { showSettings?: boolean }) {
   const user = useCurrentUser();
-
-  async function logout() {
-    await fetch("/api/auth", { method: "DELETE" });
-    window.location.href = "/login";
-  }
 
   return (
     <>
