@@ -1,4 +1,3 @@
-import { cogsPerUnitByManifest } from "@/lib/cogs";
 import { getEbayEnvironment, getLiveListingPrice, getMissingScopes } from "@/lib/ebay";
 import { getRequestUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
@@ -11,18 +10,11 @@ const EXPIRING_WINDOW_DAYS = 21;
 export async function GET(request: Request) {
   // Cristian's explicit instruction: employees see workflow counts
   // (pending review, ready to publish, listed, expiring) and nothing
-  // about money — no revenue, fees, shipping cost, refunds, or profit.
-  // The dollar figures are computed the same either way (the query cost
-  // is the same regardless, and conditionally reshaping the Promise.all
-  // below isn't worth the complexity) but stripped from the response
-  // before it's ever sent to an employee's browser — never just hidden
-  // client-side.
+  // about money. Sales/profit figures live in /api/dashboard/sales (for a
+  // chosen date range), which applies the same rule.
   const isOwner = getRequestUser(request)?.role === "owner";
 
   const expiringCutoff = new Date(Date.now() + EXPIRING_WINDOW_DAYS * 24 * 60 * 60 * 1000);
-  const startOfMonth = new Date();
-  startOfMonth.setDate(1);
-  startOfMonth.setHours(0, 0, 0, 0);
 
   const [
     pendingReview,
@@ -30,9 +22,7 @@ export async function GET(request: Request) {
     listed,
     expiringListed,
     expiringUnlisted,
-    salesThisMonth,
     token,
-    refundsThisMonth,
     expiredNeedingPull,
     expiredEndFailed,
   ] = await Promise.all([
@@ -82,29 +72,7 @@ export async function GET(request: Request) {
       orderBy: { expirationDate: "asc" },
       select: { id: true, finalTitle: true, sku: true, expirationDate: true, status: true },
     }),
-    // Full rows, not an aggregate — computing profit needs each sale's item
-    // (for manifestId/upc/multipack) to look up COGS, which a plain _sum
-    // can't give us.
-    prisma.ebayItemSale.findMany({
-      where: { soldAt: { gte: startOfMonth } },
-      select: {
-        quantity: true,
-        revenue: true,
-        fees: true,
-        shipping: true,
-        item: { select: { manifestId: true, upc: true, isMultipack: true, packSize: true } },
-      },
-    }),
     prisma.ebayAuthToken.findUnique({ where: { environment: getEbayEnvironment() } }),
-    // Refunds this month, scoped by when the refund itself posted (not the
-    // original sale date) — a September refund on an August sale belongs in
-    // September's numbers. EbayItemRefund can only ever exist attached to
-    // an EbayItemSale, so this is automatically already scoped to
-    // app-tracked listings only, same as sales.
-    prisma.ebayItemRefund.findMany({
-      where: { refundedAt: { gte: startOfMonth } },
-      select: { amount: true, feeCredit: true },
-    }),
     // Daily expiration sweep already ended these on eBay — now someone
     // needs to physically pull the shelf stock and acknowledge it. Visible
     // to both roles (no dollar fields here), unlike everything else this
@@ -141,42 +109,6 @@ export async function GET(request: Request) {
     )
   );
 
-  // COGS is manifest-derived — fetch each distinct manifest's per-UPC cost
-  // map once (not once per sale), $0 for anything with no manifest at all
-  // (items scanned outside manifest mode, per Cristian's instruction).
-  const manifestIds = [...new Set(salesThisMonth.map((s) => s.item.manifestId).filter((id): id is string => Boolean(id)))];
-  const cogsMaps = new Map(await Promise.all(manifestIds.map(async (id) => [id, await cogsPerUnitByManifest(id)] as const)));
-
-  let soldThisMonthRevenue = 0;
-  let soldThisMonthFees = 0;
-  let soldThisMonthShipping = 0;
-  let soldThisMonthCogs = 0;
-  let soldThisMonthUnits = 0;
-  for (const sale of salesThisMonth) {
-    soldThisMonthRevenue += Number(sale.revenue);
-    soldThisMonthFees += Number(sale.fees);
-    soldThisMonthShipping += Number(sale.shipping);
-    soldThisMonthUnits += sale.quantity;
-
-    const physicalUnits = sale.quantity * (sale.item.isMultipack && sale.item.packSize ? sale.item.packSize : 1);
-    const cogsPerUnit =
-      sale.item.manifestId && sale.item.upc ? (cogsMaps.get(sale.item.manifestId)?.get(sale.item.upc) ?? 0) : 0;
-    soldThisMonthCogs += cogsPerUnit * physicalUnits;
-  }
-  // Net refund cost = amount paid back to the buyer minus whatever fees
-  // eBay credited back to us on that refund — the fee credit isn't pure
-  // profit, it's an offset against the fees already subtracted above.
-  let refundedThisMonthAmount = 0;
-  let refundedThisMonthFeeCredit = 0;
-  for (const refund of refundsThisMonth) {
-    refundedThisMonthAmount += Number(refund.amount);
-    refundedThisMonthFeeCredit += Number(refund.feeCredit);
-  }
-  const refundedThisMonthNet = refundedThisMonthAmount - refundedThisMonthFeeCredit;
-
-  const soldThisMonthProfit =
-    soldThisMonthRevenue - soldThisMonthFees - soldThisMonthShipping - soldThisMonthCogs - refundedThisMonthNet;
-
   return NextResponse.json({
     // Lets the page hide owner-only controls (discount/promote/sale on the
     // expiring cards) without a second request — the routes behind those
@@ -187,17 +119,6 @@ export async function GET(request: Request) {
       readyToPublish,
       listed,
       expiringCount: expiringListed.length,
-      soldThisMonthUnits,
-      // Dollar figures only for the owner — see the isOwner comment above.
-      ...(isOwner
-        ? {
-            soldThisMonthRevenue,
-            soldThisMonthFees,
-            soldThisMonthShipping,
-            soldThisMonthRefunded: refundedThisMonthAmount,
-            soldThisMonthProfit,
-          }
-        : {}),
     },
     ebay: {
       connected: Boolean(token),

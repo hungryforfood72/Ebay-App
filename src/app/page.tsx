@@ -75,15 +75,6 @@ type DashboardData = {
     readyToPublish: number;
     listed: number;
     expiringCount: number;
-    soldThisMonthUnits: number;
-    // Present only for the owner — an employee's dashboard response omits
-    // these entirely (not just hides them client-side), see
-    // /api/dashboard's isOwner check.
-    soldThisMonthRevenue?: number;
-    soldThisMonthFees?: number;
-    soldThisMonthShipping?: number;
-    soldThisMonthRefunded?: number;
-    soldThisMonthProfit?: number;
   };
   ebay: { connected: boolean; missingScopes: string[] };
   expiringListed: ExpiringListedItem[];
@@ -120,6 +111,8 @@ export default function DashboardPage() {
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [linking, setLinking] = useState(false);
   const [linkResult, setLinkResult] = useState<LinkLegacyResult | string | null>(null);
+  // Bumped after a sync so the sales section refetches its own range.
+  const [salesRefresh, setSalesRefresh] = useState(0);
 
   function load() {
     fetch("/api/dashboard")
@@ -139,6 +132,7 @@ export default function DashboardPage() {
       const result = await res.json();
       setSyncResult(result);
       load();
+      setSalesRefresh((n) => n + 1);
     } catch {
       setSyncResult({
         ordersScanned: 0,
@@ -197,11 +191,6 @@ export default function DashboardPage() {
 
   const { isOwner, stats, ebay, expiringListed, expiringUnlisted, expiredNeedingPull, expiredEndFailed } = data;
 
-  // Money figures are only present in the response at all for the owner —
-  // see the DashboardData type comment — so this whole group simply
-  // doesn't render for an employee.
-  const showMoney = stats.soldThisMonthRevenue != null;
-
   return (
     <AppShell title="Dashboard" subtitle="Sticker Peak eBay tool — overview">
       <div className="flex flex-col gap-6 sm:gap-8">
@@ -244,42 +233,7 @@ export default function DashboardPage() {
           </div>
         </section>
 
-        <section>
-          <SectionHeader
-            title="This month"
-            description={
-              showMoney
-                ? "Only counts items scanned and listed through this app — profit uses manifest COGS where available, $0 for anything with no manifest."
-                : undefined
-            }
-          />
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            <Stat label="Units sold" value={stats.soldThisMonthUnits} />
-            {stats.soldThisMonthRevenue != null && (
-              <Stat label="Revenue" value={stats.soldThisMonthRevenue} format="currency" />
-            )}
-            {stats.soldThisMonthFees != null && <Stat label="Fees" value={stats.soldThisMonthFees} format="currency" />}
-            {stats.soldThisMonthShipping != null && (
-              <Stat label="Shipping" value={stats.soldThisMonthShipping} format="currency" />
-            )}
-            {stats.soldThisMonthRefunded != null && (
-              <Stat
-                label="Refunds"
-                value={stats.soldThisMonthRefunded}
-                format="currency"
-                highlight={stats.soldThisMonthRefunded > 0}
-              />
-            )}
-            {stats.soldThisMonthProfit != null && (
-              <Stat
-                label="Profit"
-                value={stats.soldThisMonthProfit}
-                format="currency"
-                highlight={stats.soldThisMonthUnits > 0 && stats.soldThisMonthProfit < 0}
-              />
-            )}
-          </div>
-        </section>
+        <SalesSection isOwner={isOwner} refreshKey={salesRefresh} />
 
         <Card>
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -468,6 +422,199 @@ function ShelfPullRow({
         {saving ? "Saving…" : "Mark as pulled"}
       </Button>
     </div>
+  );
+}
+
+type SalesSummary = {
+  units: number;
+  // Owner only — /api/dashboard/sales leaves these out for an employee.
+  revenue?: number;
+  fees?: number;
+  shipping?: number;
+  refunded?: number;
+  profit?: number;
+};
+
+type SalesPreset = "mtd" | "last-month" | "last-30" | "qtd" | "ytd" | "last-year" | "all" | "custom";
+
+const SALES_PRESETS: { value: SalesPreset; label: string }[] = [
+  { value: "mtd", label: "Month to date" },
+  { value: "last-month", label: "Last month" },
+  { value: "last-30", label: "Last 30 days" },
+  { value: "qtd", label: "Quarter to date" },
+  { value: "ytd", label: "Year to date" },
+  { value: "last-year", label: "Last year" },
+  { value: "all", label: "All time" },
+  { value: "custom", label: "Custom range" },
+];
+
+// [from, to) in the browser's own local time (Chicago), null = open-ended.
+// Worked out here rather than on the server, whose "midnight" is UTC.
+function presetRange(preset: Exclude<SalesPreset, "custom">, now = new Date()): { from: Date | null; to: Date | null } {
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  switch (preset) {
+    case "mtd":
+      return { from: new Date(y, m, 1), to: null };
+    case "last-month":
+      return { from: new Date(y, m - 1, 1), to: new Date(y, m, 1) };
+    case "last-30":
+      return { from: new Date(y, m, now.getDate() - 29), to: null };
+    case "qtd":
+      return { from: new Date(y, Math.floor(m / 3) * 3, 1), to: null };
+    case "ytd":
+      return { from: new Date(y, 0, 1), to: null };
+    case "last-year":
+      return { from: new Date(y - 1, 0, 1), to: new Date(y, 0, 1) };
+    case "all":
+      return { from: null, to: null };
+  }
+}
+
+// "YYYY-MM-DD" from a date input, as local midnight (new Date("2026-09-01")
+// would parse it as UTC midnight, the evening before in Chicago).
+function parseDateInput(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  return match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : null;
+}
+
+function toDateInput(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function formatRange(from: Date | null, to: Date | null): string {
+  if (!from && !to) return "All sales tracked by this app";
+  const lastDay = to ? new Date(to.getFullYear(), to.getMonth(), to.getDate() - 1) : new Date();
+  const full: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", year: "numeric" };
+  if (!from) return `Through ${lastDay.toLocaleDateString(undefined, full)}`;
+  if (toDateInput(from) === toDateInput(lastDay)) return from.toLocaleDateString(undefined, full);
+  const sameYear = from.getFullYear() === lastDay.getFullYear();
+  const start = from.toLocaleDateString(undefined, sameYear ? { month: "short", day: "numeric" } : full);
+  return `${start} – ${lastDay.toLocaleDateString(undefined, full)}`;
+}
+
+function SalesSection({ isOwner, refreshKey }: { isOwner: boolean; refreshKey: number }) {
+  const [preset, setPreset] = useState<SalesPreset>("mtd");
+  const today = toDateInput(new Date());
+  const [customFrom, setCustomFrom] = useState(() => toDateInput(presetRange("mtd").from!));
+  const [customTo, setCustomTo] = useState(today);
+  const [summary, setSummary] = useState<SalesSummary | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Custom: both ends inclusive on screen, so `to` is the day after the
+  // picked end date. An incomplete or backwards pick just doesn't fetch.
+  let range: { from: Date | null; to: Date | null } | null = null;
+  let rangeError: string | null = null;
+  if (preset === "custom") {
+    const from = parseDateInput(customFrom);
+    const end = parseDateInput(customTo);
+    if (!from || !end) rangeError = "Pick both a start and an end date.";
+    else if (from > end) rangeError = "The start date has to be on or before the end date.";
+    else range = { from, to: new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1) };
+  } else {
+    range = presetRange(preset);
+  }
+  const fromIso = range?.from?.toISOString() ?? "";
+  const toIso = range?.to?.toISOString() ?? "";
+  const key = range ? `${fromIso}|${toIso}|${refreshKey}` : null;
+  // Which request the numbers on screen came from; loading while that
+  // doesn't match the current pick.
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  const loading = key != null && loadedKey !== key;
+
+  useEffect(() => {
+    if (key == null) return;
+    const params = new URLSearchParams();
+    if (fromIso) params.set("from", fromIso);
+    if (toIso) params.set("to", toIso);
+    let cancelled = false;
+    fetch(`/api/dashboard/sales?${params}`)
+      .then(async (res) => {
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error ?? "Couldn't load sales.");
+        return data as SalesSummary;
+      })
+      .then((data) => {
+        if (cancelled) return;
+        setSummary(data);
+        setError(null);
+      })
+      .catch((e) => !cancelled && setError(e instanceof Error ? e.message : "Couldn't load sales."))
+      .finally(() => !cancelled && setLoadedKey(key));
+    return () => {
+      cancelled = true;
+    };
+  }, [key, fromIso, toIso]);
+
+  return (
+    <section>
+      <SectionHeader
+        title="Sales"
+        description={range ? formatRange(range.from, range.to) : "Custom range"}
+        action={
+          <div className="w-44">
+            <Select
+              size="sm"
+              value={preset}
+              onChange={(e) => setPreset(e.target.value as SalesPreset)}
+              aria-label="Sales date range"
+            >
+              {SALES_PRESETS.map((p) => (
+                <option key={p.value} value={p.value}>
+                  {p.label}
+                </option>
+              ))}
+            </Select>
+          </div>
+        }
+      />
+      {preset === "custom" && (
+        <div className="mb-3 grid grid-cols-2 gap-3 sm:max-w-md">
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">From</span>
+            <Input
+              size="sm"
+              type="date"
+              value={customFrom}
+              max={today}
+              onChange={(e) => setCustomFrom(e.target.value)}
+            />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-xs font-medium text-muted-foreground">To</span>
+            <Input size="sm" type="date" value={customTo} max={today} onChange={(e) => setCustomTo(e.target.value)} />
+          </label>
+        </div>
+      )}
+      {(rangeError || error) && <p className="mb-3 text-sm font-medium text-danger">{rangeError ?? error}</p>}
+      {summary ? (
+        <div className={cn("grid grid-cols-2 gap-3 transition-opacity sm:grid-cols-3", loading && "opacity-50")}>
+          <Stat label="Units sold" value={summary.units} />
+          {summary.revenue != null && <Stat label="Revenue" value={summary.revenue} format="currency" />}
+          {summary.fees != null && <Stat label="Fees" value={summary.fees} format="currency" />}
+          {summary.shipping != null && <Stat label="Shipping" value={summary.shipping} format="currency" />}
+          {summary.refunded != null && (
+            <Stat label="Refunds" value={summary.refunded} format="currency" highlight={summary.refunded > 0} />
+          )}
+          {summary.profit != null && (
+            <Stat
+              label="Profit"
+              value={summary.profit}
+              format="currency"
+              highlight={summary.units > 0 && summary.profit < 0}
+            />
+          )}
+        </div>
+      ) : (
+        !error && <p className="text-sm text-muted-foreground">Loading…</p>
+      )}
+      {isOwner && (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Only counts items scanned and listed through this app. Profit uses manifest COGS where available, $0 for
+          anything with no manifest.
+        </p>
+      )}
+    </section>
   );
 }
 
