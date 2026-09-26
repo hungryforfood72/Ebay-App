@@ -1241,6 +1241,24 @@ export async function endFixedPriceItem(itemId: string): Promise<void> {
   );
 }
 
+// Live state of a classic listing straight from eBay: how many are left
+// (Quantity − QuantitySold) and whether it's still up. ListingStatus is
+// "Active" for a live listing (including one sold out but kept alive by
+// Out-of-stock control) and "Completed"/"Ended" once it's over.
+export async function getListingStatus(itemId: string): Promise<{ available: number; active: boolean }> {
+  const xml = await tradingApiFetch(
+    "GetItem",
+    `<GetItemRequest xmlns="urn:ebay:apis:eBLBaseComponents"><ItemID>${xmlEscape(itemId)}</ItemID></GetItemRequest>`
+  );
+  const quantity = Number(xml.match(/<Quantity>(\d+)<\/Quantity>/)?.[1]);
+  const quantitySold = Number(xml.match(/<QuantitySold>(\d+)<\/QuantitySold>/)?.[1] ?? 0);
+  const listingStatus = xml.match(/<ListingStatus>(.*?)<\/ListingStatus>/)?.[1];
+  if (!Number.isFinite(quantity) || !listingStatus) {
+    throw new EbayApiError(`GetItem for ${itemId} came back without a quantity or status.`, 200, xml.slice(0, 500));
+  }
+  return { available: Math.max(0, quantity - quantitySold), active: listingStatus === "Active" };
+}
+
 export function listingUrl(environment: string, listingId: string): string {
   return environment === "production"
     ? `https://www.ebay.com/itm/${listingId}`
