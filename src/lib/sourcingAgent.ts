@@ -10,6 +10,7 @@ import {
   type PackStat,
 } from "./packSize";
 import { anthropic } from "./anthropic";
+import { logAiUsage } from "./aiUsage";
 import { EbayApiError, searchActiveListings } from "./ebay";
 import type { ManifestSupplier } from "@/generated/prisma/client";
 
@@ -436,12 +437,90 @@ function extractText(content: Array<{ type: string; text?: string }>): string {
 }
 
 // ---------------------------------------------------------------------------
+// Research memory — every web-search finding is kept in ResearchObservation
+// so the agent learns items over time instead of paying to re-research the
+// same product on every manifest (see that model's schema comment). A
+// finding whose underlying web data is recent enough is reused outright;
+// an older price finding is handed back to the model as dated background
+// and the model decides whether it still holds or needs a fresh search.
+// Cristian's explicit ask: old data informs the answer, it isn't blindly
+// copied, since a price from 6 months ago may no longer be right.
+// ---------------------------------------------------------------------------
+
+type ResearchKind = "price" | "event" | "trend";
+type ResearchSubject = { upc: string | null; description: string };
+
+// Web data younger than this is reused with no API call at all. Also what
+// makes re-running the same manifest nearly free.
+const PRICE_REUSE_DAYS = 14;
+// Earlier price findings older than this are still shown to the model, but
+// it's told to search again rather than lean on them.
+const PRICE_STALE_DAYS = 120;
+// Event status and trend signals move faster than prices (a holiday
+// passes, a spike fades), so they're only ever reused while fresh.
+const EVENT_REUSE_DAYS = 7;
+const TREND_REUSE_DAYS = 7;
+const PRIOR_FINDINGS_SHOWN = 5;
+
+function descriptionKey(description: string): string {
+  return description.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function daysSince(date: Date): number {
+  return (Date.now() - date.getTime()) / (1000 * 60 * 60 * 24);
+}
+
+async function priorResearch(kind: ResearchKind, subject: ResearchSubject) {
+  return prisma.researchObservation.findMany({
+    where: subject.upc
+      ? { kind, upc: subject.upc }
+      : { kind, descriptionKey: descriptionKey(subject.description) },
+    orderBy: { createdAt: "desc" },
+    take: PRIOR_FINDINGS_SHOWN,
+  });
+}
+
+async function recordResearch(
+  kind: ResearchKind,
+  subject: ResearchSubject,
+  finding: { price?: number | null; verdict?: string; note?: string | null; searched: boolean; basisAt: Date },
+  evaluationId: string
+): Promise<void> {
+  try {
+    await prisma.researchObservation.create({
+      data: {
+        kind,
+        upc: subject.upc,
+        descriptionKey: descriptionKey(subject.description),
+        description: subject.description,
+        price: finding.price ?? null,
+        verdict: finding.verdict ?? null,
+        note: finding.note ?? null,
+        searched: finding.searched,
+        basisAt: finding.basisAt,
+        evaluationId,
+      },
+    });
+  } catch (e) {
+    console.error(`[sourcingAgent] failed to record ${kind} research for "${subject.description}"`, e);
+  }
+}
+
+function didSearch(response: { usage: { server_tool_use?: { web_search_requests: number } | null } }): boolean {
+  return (response.usage.server_tool_use?.web_search_requests ?? 0) > 0;
+}
+
+// ---------------------------------------------------------------------------
 // Trend signal — directional only, never overrides real sales history.
 // Uses Anthropic's server-side web search tool (executed entirely within
 // one API call, no client-side tool loop needed). Best-effort: a failure
 // here just means no trend nudge for that line, not a failed evaluation.
 // ---------------------------------------------------------------------------
-async function getTrendNudge(description: string): Promise<string | null> {
+async function getTrendNudge(subject: ResearchSubject, evaluationId: string): Promise<string | null> {
+  const [latest] = await priorResearch("trend", subject);
+  if (latest?.verdict && daysSince(latest.basisAt) <= TREND_REUSE_DAYS) {
+    return latest.verdict === "NONE" ? null : latest.verdict;
+  }
   try {
     const response = await anthropic.messages.create(
       {
@@ -451,17 +530,25 @@ async function getTrendNudge(description: string): Promise<string | null> {
         messages: [
           {
             role: "user",
-            content: `Is "${description}" currently seeing any notable spike or dropoff in search/social interest or demand? Answer in one short sentence, plainly stating up, down, or no notable signal. If you can't find anything meaningful, just say "No notable signal."`,
+            content: `Is "${subject.description}" currently seeing any notable spike or dropoff in search/social interest or demand? Answer in one short sentence, plainly stating up, down, or no notable signal. If you can't find anything meaningful, just say "No notable signal."`,
           },
         ],
       },
       { timeout: 30_000, maxRetries: 0 }
     );
+    await logAiUsage("sourcing.trend_check", response, { evaluationId });
     const text = extractText(response.content).trim();
-    if (!text || /no notable signal/i.test(text)) return null;
-    return text;
+    if (!text) return null;
+    const signal = /no notable signal/i.test(text) ? null : text;
+    await recordResearch(
+      "trend",
+      subject,
+      { verdict: signal ?? "NONE", searched: didSearch(response), basisAt: new Date() },
+      evaluationId
+    );
+    return signal;
   } catch (e) {
-    console.error(`[sourcingAgent] trend nudge failed for "${description}"`, e);
+    console.error(`[sourcingAgent] trend nudge failed for "${subject.description}"`, e);
     return null;
   }
 }
@@ -480,8 +567,42 @@ async function getTrendNudge(description: string): Promise<string | null> {
 // web-search mechanism already used for the trend/event checks above.
 // Best-effort — a failure or an unparseable answer just means the line
 // keeps its plain category-fallback price, not a failed evaluation.
+//
+// Checks research memory first (see "Research memory" above): recent web
+// data is reused with no call, older findings go into the prompt as dated
+// background the model can answer from or choose to re-check.
 // ---------------------------------------------------------------------------
-async function getWebPriceCheck(description: string): Promise<number | null> {
+async function getWebPriceCheck(subject: ResearchSubject, evaluationId: string): Promise<number | null> {
+  const prior = await priorResearch("price", subject);
+  const latest = prior[0];
+  if (latest && daysSince(latest.basisAt) <= PRICE_REUSE_DAYS) {
+    return latest.price != null ? Number(latest.price) : null;
+  }
+
+  // The newest web data any earlier finding rests on — what a no-search
+  // answer this time would itself be resting on.
+  const newestBasis = prior.reduce<Date | null>((max, p) => (!max || p.basisAt > max ? p.basisAt : max), null);
+  let priorBlock = "";
+  if (prior.length > 0) {
+    const lines = prior.map((p) => {
+      const age = Math.round(daysSince(p.basisAt));
+      const how = p.searched ? "web search" : "judged from earlier findings, no new search";
+      const price = p.price != null ? `$${Number(p.price).toFixed(2)}` : "couldn't price it";
+      return `- ${p.basisAt.toISOString().slice(0, 10)} (${age} days ago, ${how}): ${price}${p.note ? `. ${p.note}` : ""}`;
+    });
+    const stale = newestBasis != null && daysSince(newestBasis) > PRICE_STALE_DAYS;
+    priorBlock = `
+
+We've researched this item before (newest first):
+${lines.join("\n")}
+
+${
+  stale
+    ? "All of that is over 4 months old, so search again and treat it only as a rough reference."
+    : "Use this as your starting point. If it gives you a solid basis and nothing suggests this kind of product's price moves quickly, you can answer from it without searching. Search again if it's thin, contradictory, or the item is the kind whose price shifts fast."
+}`;
+  }
+
   try {
     const response = await anthropic.messages.create(
       {
@@ -491,32 +612,52 @@ async function getWebPriceCheck(description: string): Promise<number | null> {
         messages: [
           {
             role: "user",
-            content: `You're pricing a liquidation/resale item. What would "${description}" realistically sell for right now on eBay?
+            content: `You're pricing a liquidation/resale item. What would "${subject.description}" realistically sell for right now on eBay?
 
-Search for it. If you find actual current listing or sold prices, use those. If you only find retail/list price, give your best realistic estimate of what a liquidation reseller would actually get for it on eBay (typically well below retail — liquidation/secondhand goods commonly sell in the 40-70% of retail range, more or less depending on the category and condition) rather than the retail price itself.
+${prior.length > 0 ? "" : "Search for it. "}If you find actual current listing or sold prices, use those. If you only find retail/list price, give your best realistic estimate of what a liquidation reseller would actually get for it on eBay (typically well below retail — liquidation/secondhand goods commonly sell in the 40-70% of retail range, more or less depending on the category and condition) rather than the retail price itself.
 
-Only answer UNKNOWN if you cannot even identify what kind of product this is or find any retail price to reason from — a rough estimate reasoned from retail price is far more useful here than no answer, so commit to your best number whenever you have ANY basis for one.
+Only answer UNKNOWN if you cannot even identify what kind of product this is or find any retail price to reason from — a rough estimate reasoned from retail price is far more useful here than no answer, so commit to your best number whenever you have ANY basis for one.${priorBlock}
 
-End your response with a line in EXACTLY this format and nothing after it: "PRICE: 17.50" (a plain number, no currency symbol) or "PRICE: UNKNOWN".`,
+End your response with EXACTLY these two lines and nothing after them:
+NOTE: one short line on what your answer is based on (e.g. "4 active listings $12-16, retail $24")
+PRICE: 17.50 (a plain number, no currency symbol) or PRICE: UNKNOWN`,
           },
         ],
       },
       { timeout: 30_000, maxRetries: 0 }
     );
+    await logAiUsage("sourcing.price_check", response, { evaluationId });
     // Confirmed live: the model sometimes echoes a retail price it found
     // earlier using the same "PRICE:" phrasing while reasoning toward its
     // real answer, and a plain (non-global) match grabs that FIRST
     // occurrence instead of the actual final verdict the prompt asks for.
     // Anchored to the literal last line instead of searching the whole text
     // for any "PRICE:"-shaped string.
-    const text = extractText(response.content).trim();
-    const lastLine = text.split("\n").pop() ?? "";
+    const lines = extractText(response.content)
+      .trim()
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const lastLine = lines.pop() ?? "";
+    // Only a committed final answer (a number or UNKNOWN) is worth
+    // remembering — a response that never got to its PRICE line isn't a
+    // finding.
+    if (!/PRICE:\s*(\$?\d|UNKNOWN)/i.test(lastLine)) return null;
     const match = lastLine.match(/PRICE:\s*\$?(\d+(?:\.\d{1,2})?)/i);
-    if (!match) return null;
-    const price = Number(match[1]);
-    return Number.isFinite(price) && price > 0 ? price : null;
+    const parsed = match ? Number(match[1]) : NaN;
+    const price = Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    const noteLine = lines.pop() ?? "";
+    const note = /^NOTE:/i.test(noteLine) ? noteLine.replace(/^NOTE:\s*/i, "").slice(0, 300) : null;
+    const searched = didSearch(response);
+    await recordResearch(
+      "price",
+      subject,
+      { price, note, searched, basisAt: searched || !newestBasis ? new Date() : newestBasis },
+      evaluationId
+    );
+    return price;
   } catch (e) {
-    console.error(`[sourcingAgent] web price check failed for "${description}"`, e);
+    console.error(`[sourcingAgent] web price check failed for "${subject.description}"`, e);
     return null;
   }
 }
@@ -543,7 +684,26 @@ const OCCASION_MERCH_PATTERN =
   /\b(world cup|super bowl|olympics?|world series|championship|playoffs?|final four|all-?star game|grammys?|oscars?|hanukkah|kwanzaa|diwali|cinco de mayo|mardi gras|lunar new year|chinese new year|bastille day|passover|eid|nba finals|stanley cup)\b/i;
 const MAX_EVENT_CHECKS = 20;
 
-async function isOccasionOutOfSeason(description: string): Promise<boolean> {
+// `used` counts real calls at the moment one is spent. An earlier version
+// worked it out per line as remaining-before minus remaining-after, which
+// with 5 lines in flight at once also counted the other lines' calls, so
+// eventChecksUsed read 40 on a run that made at most 20.
+type EventCheckBudget = { remaining: number; used: number };
+
+async function isOccasionOutOfSeason(
+  subject: ResearchSubject,
+  evaluationId: string,
+  budget: EventCheckBudget
+): Promise<boolean> {
+  // A fresh answer from memory costs nothing, so it doesn't touch the budget.
+  const [latest] = await priorResearch("event", subject);
+  if (latest?.verdict && daysSince(latest.basisAt) <= EVENT_REUSE_DAYS) {
+    return latest.verdict === "YES";
+  }
+  if (budget.remaining <= 0) return false;
+  budget.remaining--;
+  budget.used++;
+  const description = subject.description;
   try {
     const response = await anthropic.messages.create(
       {
@@ -559,12 +719,15 @@ async function isOccasionOutOfSeason(description: string): Promise<boolean> {
       },
       { timeout: 30_000, maxRetries: 0 }
     );
+    await logAiUsage("sourcing.event_check", response, { evaluationId });
     // The model reasons through search results before its final verdict
     // (see extractText above) rather than leading with it, so check for a
     // standalone YES anywhere in the full answer rather than requiring it
     // as the very first word.
     const text = extractText(response.content).toUpperCase();
-    return /\bYES\b/.test(text);
+    const verdict = /\bYES\b/.test(text) ? "YES" : /\bNO\b/.test(text) ? "NO" : "UNSURE";
+    await recordResearch("event", subject, { verdict, searched: didSearch(response), basisAt: new Date() }, evaluationId);
+    return verdict === "YES";
   } catch (e) {
     console.error(`[sourcingAgent] occasion-season check failed for "${description}"`, e);
     return false; // fail open — an unconfirmed guess is worse than no check at all
@@ -616,9 +779,10 @@ type LineEstimateResult = {
 
 async function estimateLine(
   group: LineGroup,
+  evaluationId: string,
   receiveRate: number,
   runTrendCheck: boolean,
-  eventCheckBudget: { remaining: number },
+  eventCheckBudget: EventCheckBudget,
   compSaturationThreshold: number,
   maxMonthsToSellThrough: number
 ): Promise<LineEstimateResult> {
@@ -975,7 +1139,7 @@ async function estimateLine(
   // search didn't). Uncapped by design — Cristian's call: check every line
   // that actually needs it, not an arbitrary count.
   const rawWebCheckPrice =
-    preliminaryConfidence === "category_fallback" ? await getWebPriceCheck(group.description) : null;
+    preliminaryConfidence === "category_fallback" ? await getWebPriceCheck(group, evaluationId) : null;
   // Same last-resort sanity cap as the market_only path below — a
   // web-search-derived number is still a guess, not a real sale, so it
   // shouldn't be trusted past a implausible multiple of the manifest's own
@@ -1077,13 +1241,12 @@ async function estimateLine(
   // sales), but a positive live-comp signal alone isn't trustworthy once
   // the occasion itself has passed.
   let eventEnded = false;
-  if (!postHolidayFiller && OCCASION_MERCH_PATTERN.test(group.description) && eventCheckBudget.remaining > 0) {
-    eventCheckBudget.remaining--;
-    eventEnded = await isOccasionOutOfSeason(group.description);
+  if (!postHolidayFiller && OCCASION_MERCH_PATTERN.test(group.description)) {
+    eventEnded = await isOccasionOutOfSeason(group, evaluationId, eventCheckBudget);
     if (eventEnded) flaggedDud = true;
   }
 
-  const trendNudge = runTrendCheck ? await getTrendNudge(group.description) : null;
+  const trendNudge = runTrendCheck ? await getTrendNudge(group, evaluationId) : null;
 
   return {
     upc: group.upc,
@@ -1268,22 +1431,23 @@ export async function evaluateManifestChunk(
   const remainingShallow = shallowGroups.filter((g) => !doneKeys.has(g.groupKey));
   const pastDeadline = () => Date.now() > deadline;
 
-  const eventCheckBudget = { remaining: Math.max(0, MAX_EVENT_CHECKS - evaluation.eventChecksUsed) };
-  let eventChecksUsedThisChunk = 0;
+  const eventCheckBudget: EventCheckBudget = {
+    remaining: Math.max(0, MAX_EVENT_CHECKS - evaluation.eventChecksUsed),
+    used: 0,
+  };
 
   async function runAndPersist(group: LineGroup): Promise<void> {
     const deepIndex = deepIndexByKey.get(group.groupKey);
     const runTrendCheck = deepIndex != null && deepIndex < MAX_TREND_CHECKS;
-    const remainingBefore = eventCheckBudget.remaining;
     const result = await estimateLine(
       group,
+      evaluationId,
       receiveRate,
       runTrendCheck,
       eventCheckBudget,
       compSaturationThreshold,
       maxMonthsToSellThrough
     );
-    eventChecksUsedThisChunk += remainingBefore - eventCheckBudget.remaining;
     await prisma.sourcingLineEstimate.create({
       data: {
         evaluationId,
@@ -1326,9 +1490,9 @@ export async function evaluateManifestChunk(
     await mapWithConcurrency(remainingShallow, 5, runAndPersist, pastDeadline);
   }
 
-  if (eventChecksUsedThisChunk > 0) {
+  if (eventCheckBudget.used > 0) {
     await prisma.sourcingEvaluation
-      .update({ where: { id: evaluationId }, data: { eventChecksUsed: { increment: eventChecksUsedThisChunk } } })
+      .update({ where: { id: evaluationId }, data: { eventChecksUsed: { increment: eventCheckBudget.used } } })
       .catch((e) => console.error(`[sourcingAgent] eventChecksUsed update failed for evaluation ${evaluationId}`, e));
   }
 
@@ -1402,6 +1566,7 @@ export async function evaluateManifestChunk(
   const knowledgeNotes = await prisma.sourcingKnowledge.findMany({ where: { scope: { in: knowledgeScopes } } });
 
   const reasoning = await writeReasoning({
+    evaluationId,
     manifestTitle: manifest.title,
     supplier: manifest.supplier,
     targetMarginPct,
@@ -1487,6 +1652,7 @@ async function mapWithConcurrency<T>(
 }
 
 async function writeReasoning(input: {
+  evaluationId: string;
   manifestTitle: string;
   supplier: string;
   targetMarginPct: number;
@@ -1556,6 +1722,7 @@ Write 3-6 sentences: which items drove the call, any supplier/category patterns 
       { model: "claude-opus-5-5", max_tokens: 600, messages: [{ role: "user", content: prompt }] },
       { timeout: 45_000, maxRetries: 0 }
     );
+    await logAiUsage("sourcing.reasoning", response, { evaluationId: input.evaluationId });
     const text = extractText(response.content).trim();
     return text || "Reasoning unavailable.";
   } catch (e) {
@@ -1636,6 +1803,7 @@ async function updateScopeKnowledge(scope: string, computeUpdate: (since: Date) 
       },
       { timeout: 30_000, maxRetries: 0 }
     );
+    await logAiUsage("sourcing.knowledge_update", response);
     const updated = extractText(response.content).trim();
     await prisma.sourcingKnowledge.update({ where: { scope }, data: { notes: updated || newFacts } });
   } catch (e) {

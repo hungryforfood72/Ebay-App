@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { lookupUpc } from "@/lib/upcLookup";
 import { anthropic, fetchImageAsBase64 } from "@/lib/anthropic";
+import { logAiUsage } from "@/lib/aiUsage";
 import { truncateTitle } from "@/lib/ebayTitle";
 import { formatExpiration } from "@/lib/formatExpiration";
 import type { Item, Prisma } from "@/generated/prisma/client";
@@ -196,6 +197,7 @@ Write a clear, keyword-appropriate eBay title (80 characters max) and a short, h
     // mean 45s, not up to 135s.
     { timeout: 45_000, maxRetries: 0 }
   );
+  await logAiUsage("draft.item", response, { itemId });
 
   const textBlock = response.content.find((b) => b.type === "text");
   const draft = JSON.parse(
@@ -277,6 +279,7 @@ Give a short, clear, buyer-facing product name.`,
       },
       { timeout: 30_000, maxRetries: 0 }
     );
+    await logAiUsage("draft.bundle_component", response);
     const textBlock = response.content.find((b) => b.type === "text");
     const parsed = JSON.parse(
       textBlock && "text" in textBlock ? textBlock.text : "{}"
@@ -353,6 +356,7 @@ Write a title (80 characters max) and a short intro paragraph (2-4 sentences) de
     },
     { timeout: 45_000, maxRetries: 0 }
   );
+  await logAiUsage("draft.bundle", response, { itemId: item.id });
 
   const textBlock = response.content.find((b) => b.type === "text");
   const parsed = JSON.parse(

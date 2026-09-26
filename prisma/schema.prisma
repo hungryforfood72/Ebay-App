@@ -580,6 +580,70 @@ model SourcingKnowledge {
   updatedAt DateTime @updatedAt
 }
 
+// Everything the sourcing agent has ever found out about a product through
+// a web-search call (price checks, event/holiday checks, trend checks),
+// kept permanently so the agent builds up its own memory instead of
+// re-researching the same item from scratch on every manifest. A recent
+// finding is reused as-is; an older one is handed back to the model as
+// dated background ("found $14.50 in March") and the model decides whether
+// that's still good enough or worth a fresh search (see
+// src/lib/sourcingAgent.ts). Added 2026-09-26 after 7 evaluations in one
+// afternoon (three of them re-runs of the same manifests) made ~1,400
+// web-search calls.
+model ResearchObservation {
+  id             String   @id @default(uuid())
+  kind           String // "price" | "event" | "trend"
+  // Matched by UPC when the item has one, else by descriptionKey (the
+  // description lowercased with punctuation/whitespace collapsed).
+  upc            String?
+  descriptionKey String
+  description    String
+  // kind "price": realistic eBay per-unit price as the model answered it,
+  // before the retail sanity cap estimateLine applies. null = the model
+  // couldn't price it.
+  price          Decimal? @db.Decimal(10, 2)
+  // kind "event": "YES" | "NO" | "UNSURE". kind "trend": the one-line
+  // signal, or "NONE".
+  verdict        String?
+  // One short line on what the model found, shown back to it next time.
+  note           String?
+  // Whether this answer came from a real web search on this call, vs. the
+  // model judging from earlier findings alone.
+  searched       Boolean
+  // When the web data behind this answer was actually gathered: createdAt
+  // if searched, else the basisAt of the earlier finding it relied on. Stops
+  // an old search from being passed forward as "fresh" by a chain of
+  // no-search answers.
+  basisAt        DateTime
+  evaluationId   String?
+  createdAt      DateTime @default(now())
+
+  @@index([kind, upc, createdAt])
+  @@index([kind, descriptionKey, createdAt])
+}
+
+// One row per Claude API call the app makes, for looking into the bill
+// later. Internal only: nothing in the UI reads this.
+model AiUsageLog {
+  id               String   @id @default(uuid())
+  feature          String // e.g. "sourcing.price_check", "draft.item"
+  model            String
+  inputTokens      Int
+  outputTokens     Int
+  cacheReadTokens  Int      @default(0)
+  cacheWriteTokens Int      @default(0)
+  webSearches      Int      @default(0)
+  // Estimated from the rate table in src/lib/aiUsage.ts, null for a model
+  // missing from it. Anthropic's Console usage page is the real number.
+  estimatedCostUsd Decimal? @db.Decimal(10, 5)
+  evaluationId     String?
+  itemId           String?
+  createdAt        DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([evaluationId])
+}
+
 // A broader, standalone snapshot of real past eBay sales, pulled directly
 // from eBay's own order history (not this app's own EbayItemSale table) —
 // most of a year's real sales predate this app's tracking entirely, or

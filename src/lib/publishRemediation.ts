@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { anthropic } from "@/lib/anthropic";
+import { logAiUsage } from "@/lib/aiUsage";
 import { ebayAspectNameToSpecificsKey } from "@/lib/ebay";
 import type { Prisma } from "@/generated/prisma/client";
 
@@ -87,6 +88,7 @@ ${VALUE_SCHEMA_HINT}`,
       },
       { timeout: 30_000, maxRetries: 0 }
     );
+    await logAiUsage("publish.fix_missing_aspect", response, { itemId });
   } catch (e) {
     console.error(`[publishRemediation] ${itemId}: lookup for "${aspectName}" failed`, e);
     return false;

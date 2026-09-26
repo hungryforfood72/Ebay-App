@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { anthropic } from "@/lib/anthropic";
+import { logAiUsage } from "@/lib/aiUsage";
 
 export type CategoryLookupResult = {
   categoryId: string | null;
@@ -251,6 +252,7 @@ This product's title is dominated by brand/scent/flavor words that won't literal
       },
       { timeout: 15_000, maxRetries: 0 }
     );
+    await logAiUsage("category.generic_terms", response);
   } catch (e) {
     console.error(`[categoryLookup] generic-terms call failed`, e);
     return [];
@@ -312,6 +314,7 @@ ${candidateList}`,
       },
       { timeout: 20_000, maxRetries: 0 }
     );
+    await logAiUsage("category.pick_local", response);
   } catch (e) {
     console.error(`[categoryLookup] local-pick call failed`, e);
     return null;
@@ -384,6 +387,7 @@ If you can't find a confident match, respond with:
       },
       { timeout: 35_000, maxRetries: 0 }
     );
+    await logAiUsage("category.web_search", response, { itemId });
   } catch (e) {
     console.error(`[categoryLookup] ${itemId}: web search call failed/timed out`, e);
     return { categoryId: null, categoryName: null, sourceUrl: null, fromExistingRule: false };
