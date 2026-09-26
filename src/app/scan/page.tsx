@@ -84,7 +84,11 @@ type Step =
   | "shelfLocation"
   | "boxWeight";
 
-const SINGLE_STEPS: Step[] = ["mode", "photos", "upc", "quantity", "expiration", "shelfLocation", "boxWeight"];
+// UPC and pack/quantity come before photos on purpose (Cristian): the
+// quantity step suggests a pack size, and if it says "sell as 4-packs"
+// when only 3 are in hand, the item can be set aside until the rest turn
+// up — before any photos have been taken of it.
+const SINGLE_STEPS: Step[] = ["mode", "upc", "quantity", "expiration", "photos", "shelfLocation", "boxWeight"];
 const BUNDLE_STEPS: Step[] = ["mode", "bundleHeroPhoto", "bundleComponents", "bundleQuantity", "shelfLocation", "boxWeight"];
 
 const ACTIVE_SESSION_KEY = "ebay-tool.activeScanSessionId";
@@ -653,7 +657,7 @@ function ScanPageInner() {
     // type (and often the same mode), so keeping the selection saves
     // re-entering it for every item. Jump back to the first step that
     // actually needs fresh input for the next item.
-    setStep(isBundle ? "bundleHeroPhoto" : "photos");
+    setStep(isBundle ? "bundleHeroPhoto" : "upc");
   }
 
   const steps = isBundle ? BUNDLE_STEPS : SINGLE_STEPS;
@@ -1252,7 +1256,7 @@ function ScanPageInner() {
               description="One product, or a multi-pack of the same product."
               onClick={() => {
                 setIsBundle(false);
-                setStep("photos");
+                setStep("upc");
               }}
             />
             <OptionCard
