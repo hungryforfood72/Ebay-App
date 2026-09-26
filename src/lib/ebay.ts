@@ -695,6 +695,29 @@ export async function getOfferDetails(
   }
 }
 
+// How many are left on a listing right now, per eBay, for either kind of
+// listing — null when there's nothing to look up or the lookup fails, so
+// callers fall back to our own stored count. eBay's number is the one to
+// trust: the older CSV listings' counts were set by hand on eBay before
+// this app tracked them (Cristian: accurate, leave them as they are), and
+// starting from our own stored count instead would overwrite them on the
+// next adjustment or shelf sale.
+export async function getLiveAvailableQuantity(item: {
+  ebayOfferId: string | null;
+  ebayListingId: string | null;
+}): Promise<number | null> {
+  if (item.ebayOfferId) return (await getOfferDetails(item.ebayOfferId))?.availableQuantity ?? null;
+  if (item.ebayListingId) {
+    try {
+      return (await getListingStatus(item.ebayListingId)).available;
+    } catch (e) {
+      console.error(`[ebay] getLiveAvailableQuantity failed for listing ${item.ebayListingId}`, e);
+      return null;
+    }
+  }
+  return null;
+}
+
 export async function publishOffer(offerId: string): Promise<string> {
   const result = (await ebayFetch(`/sell/inventory/v1/offer/${encodeURIComponent(offerId)}/publish`, {
     method: "POST",

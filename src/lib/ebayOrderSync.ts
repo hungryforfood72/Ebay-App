@@ -2,6 +2,7 @@ import {
   getEbayEnvironment,
   getMissingScopes,
   getOrder,
+  getListingStatus,
   getOrderEarnings,
   getRecentOrders,
   reviseFixedPriceItemQuantity,
@@ -144,7 +145,12 @@ async function reverseSale(
     if (item.ebayOfferId) {
       await updateOfferQuantity(item.ebayOfferId, { sku: item.sku, soldQuantity: newSoldQuantity }, newAvailableQuantity);
     } else if (item.ebayListingId) {
-      await reviseFixedPriceItemQuantity(item.ebayListingId, newAvailableQuantity);
+      // An older CSV listing's count on eBay was set by hand and is the
+      // accurate one, not ours — put the cancelled units back on top of
+      // it. eBay doesn't restore them itself (a cancelled order stays in
+      // its sold count).
+      const live = await getListingStatus(item.ebayListingId);
+      await reviseFixedPriceItemQuantity(item.ebayListingId, live.available + sale.quantity);
     }
   } catch (e) {
     console.error(`[ebayOrderSync] reverseSale: failed to push restored quantity to eBay for item ${item.id}`, e);

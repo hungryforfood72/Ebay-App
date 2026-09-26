@@ -1,5 +1,6 @@
 import {
   EbayApiError,
+  getLiveAvailableQuantity,
   getOfferDetails,
   reviseFixedPriceItemQuantity,
   updateOfferQuantity,
@@ -15,11 +16,9 @@ export const maxDuration = 30;
 // from the item's own GET is that the DB's own availableQuantity can be
 // stale (see the ItemForEbayPublish comment in ebay.ts for the confirmed
 // real bug this shipped alongside: a partially-sold listing's live
-// quantity could silently get reset by an unrelated price update). Only
-// meaningful for an Inventory-API-published item (has ebayOfferId) — a
-// classic/Trading-API listing has no cheap live-read wired up here yet
-// (none of today's active listings are that kind), so it just echoes the
-// stored value back.
+// quantity could silently get reset by an unrelated price update). Works
+// for both kinds of listing (see getLiveAvailableQuantity); live price is
+// only read for Inventory-API listings.
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const item = await prisma.item.findUnique({ where: { id } });
@@ -37,7 +36,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 
   if (!item.ebayOfferId) {
     return NextResponse.json({
-      liveAvailableQuantity: null,
+      liveAvailableQuantity: await getLiveAvailableQuantity(item),
       livePrice: null,
       storedAvailableQuantity,
       recentAdjustments,
@@ -97,13 +96,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: "This item isn't currently listed on eBay." }, { status: 400 });
   }
 
-  // The freshest truth available right now — a live eBay check when
-  // there's an offer to check, falling back to our own stored figure only
-  // if that check fails or isn't applicable. This is what the delta gets
-  // applied against, not whatever the client last saw.
+  // The freshest truth available right now — a live eBay check, falling
+  // back to our own stored figure only if that check fails. This is what
+  // the delta gets applied against, not whatever the client last saw.
   const storedAvailableQuantity = Math.max(0, item.quantity - item.soldQuantity);
-  const live = item.ebayOfferId ? await getOfferDetails(item.ebayOfferId) : null;
-  const currentAvailableQuantity = live?.availableQuantity ?? storedAvailableQuantity;
+  const currentAvailableQuantity = (await getLiveAvailableQuantity(item)) ?? storedAvailableQuantity;
 
   const signedDelta = direction === "add" ? amount : -amount;
   const newAvailableQuantity = currentAvailableQuantity + signedDelta;

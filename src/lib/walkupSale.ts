@@ -1,4 +1,4 @@
-import { EbayApiError, getOfferDetails, reviseFixedPriceItemQuantity, updateOfferQuantity } from "./ebay";
+import { EbayApiError, getLiveAvailableQuantity, reviseFixedPriceItemQuantity, updateOfferQuantity } from "./ebay";
 import { prisma } from "./prisma";
 import type { Item, StockAdjustment } from "@/generated/prisma/client";
 
@@ -114,8 +114,7 @@ export async function recordItemSale(
   }
 
   const storedAvailable = Math.max(0, item.quantity - item.soldQuantity);
-  const live = item.ebayOfferId ? await getOfferDetails(item.ebayOfferId) : null;
-  const currentAvailable = live?.availableQuantity ?? storedAvailable;
+  const currentAvailable = (await getLiveAvailableQuantity(item)) ?? storedAvailable;
 
   const newAvailable = currentAvailable - input.quantity;
   if (newAvailable < 0) {

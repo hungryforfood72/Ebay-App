@@ -1,5 +1,5 @@
 import { computeWalkupPrices, getWalkupSaleSettings } from "@/lib/walkupSale";
-import { getOfferDetails } from "@/lib/ebay";
+import { getLiveAvailableQuantity } from "@/lib/ebay";
 import { parseBundleComponentUnits } from "@/lib/itemUnits";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
@@ -43,6 +43,7 @@ export async function GET(request: NextRequest) {
       quantity: true,
       soldQuantity: true,
       ebayOfferId: true,
+      ebayListingId: true,
       isMultipack: true,
       packSize: true,
       isBundle: true,
@@ -70,13 +71,13 @@ export async function GET(request: NextRequest) {
   const item = matches[0];
 
   const storedAvailable = Math.max(0, item.quantity - item.soldQuantity);
-  const live = item.ebayOfferId ? await getOfferDetails(item.ebayOfferId) : null;
+  const liveAvailable = await getLiveAvailableQuantity(item);
   const alreadyListed = {
     itemId: item.id,
     // See the equivalent comment in walkup-sale/lookup — eBay's "available
     // quantity" for a multipack listing is in LISTING units (packs), not
     // physical units.
-    availableQuantity: live?.availableQuantity ?? storedAvailable,
+    availableQuantity: liveAvailable ?? storedAvailable,
     isMultipack: item.isMultipack,
     packSize: item.packSize,
   };
