@@ -263,12 +263,35 @@ function isResellerLot(title: string, packSize: number): boolean {
 // directional signal, not a precise match.
 const BRAND_MATCH_STOPWORDS = new Set(["new", "set", "mini", "the", "and", "for", "with", "pack", "kit"]);
 
-function extractBrandMatchWords(description: string): string[] {
-  return description
-    .replace(/[^a-zA-Z0-9\s]/g, " ")
-    .split(/\s+/)
+// Ordinary words that often lead a manifest description without being a
+// brand — fine as half of a two-word match, but matching on one of these
+// alone pulls in every past sale that happens to use it ("Party Beverage
+// Serviettes" -> any "party" sale; "Water Blaster" -> any "water" sale).
+const GENERIC_LEAD_WORDS = new Set([
+  "party", "water", "air", "baby", "kids", "kid", "women", "womens", "men", "mens", "girls", "boys",
+  "original", "classic", "premium", "travel", "large", "small", "medium", "value", "bundle", "lot",
+  "assorted", "ast", "holiday", "gift", "home", "light", "black", "white", "pink", "blue", "red",
+]);
+
+// Up to two leading match words, plus whether the first one can stand on
+// its own as a brand: it has to be the description's very first word (where
+// catalog-style names put the brand) and not a generic one. A cryptic
+// abbreviation like "SH SE PM OV OUT OF THIS PRL" otherwise surfaced "OUT"
+// and "THIS" as its "brand".
+function extractBrandMatchWords(description: string): { words: string[]; firstIsBrand: boolean } {
+  const tokens = description.replace(/[^a-zA-Z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
+  const words = tokens
     .filter((w) => w.length >= 3 && !/^\d+$/.test(w) && !BRAND_MATCH_STOPWORDS.has(w.toLowerCase()))
     .slice(0, 2);
+  const firstIsBrand =
+    words.length > 0 && tokens[0] === words[0] && !GENERIC_LEAD_WORDS.has(words[0].toLowerCase());
+  return { words, firstIsBrand };
+}
+
+// Whole-word, case-insensitive — the DB query's `contains` is a substring
+// match, so "air" also finds "hair"/"repair"/"chair". Applied on top of it.
+function titleHasWords(title: string, words: string[]): boolean {
+  return words.every((w) => new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(title));
 }
 
 // How long a market snapshot stays "fresh enough" to reuse instead of
@@ -316,14 +339,22 @@ function modePackSize(sizes: number[]): number {
   return best;
 }
 
-// When there's no real sales history to trust a market estimate against
-// (market_only confidence), a per-unit price more than this many times the
-// manifest's own declared retail is more likely a comp-matching error
-// (e.g. a pack size detectPackSize missed) than a genuine "sells for way
-// above retail" item — liquidation merchandise essentially never does.
-// Capped, not discarded, so the line still contributes something rather
-// than being silently zeroed.
-const MARKET_ONLY_RETAIL_MULTIPLE_CAP = 3;
+// When an estimate isn't backed by our own sales of this exact UPC, a
+// per-unit price more than this many times the manifest's own declared
+// retail is far more likely a matching error than a genuine "sells above
+// retail" item — liquidation merchandise rarely does. Capped, not
+// discarded, so the line still contributes something rather than being
+// silently zeroed.
+//
+// Was 3x, and applied only to market_only/web_price_check. Cristian caught
+// both gaps on a real manifest (2026-09-26): 13 cryptically-named sock
+// packs ("GMI ALEXA ROS LDIES NO SHW SC", $5.99 retail) priced at exactly
+// 3x retail off multipack comps, making it the manifest's single biggest
+// line; and historical_match lines with no cap at all pricing a $2.99
+// napkin pack at $34 and a $3.16 mystery capsule at $38 off unrelated
+// same-word sales. Our own real sales, compared against manifest retail,
+// topped out at 1.44x.
+const UNVERIFIED_RETAIL_MULTIPLE_CAP = 1.5;
 
 // Commonsense seasonal fallback, used only until a category has enough real
 // sold-data spread across months to compute its own pattern (see
@@ -755,13 +786,15 @@ async function estimateLine(
   let historicalAvgShipping = 0;
   let historicalFeeRate = FALLBACK_FEE_RATE;
   const historicalPackSizes: number[] = [];
-  const brandMatchWords = extractBrandMatchWords(group.description);
+  const { words: brandMatchWords, firstIsBrand } = extractBrandMatchWords(group.description);
   if (brandMatchWords.length > 0) {
-    let historicalMatches = await prisma.historicalSaleRecord.findMany({
-      where: { AND: brandMatchWords.map((w) => ({ title: { contains: w, mode: "insensitive" as const } })) },
-      select: { title: true, quantity: true, soldPrice: true, shippingCost: true, fees: true, soldAt: true },
-      take: 200,
-    });
+    let historicalMatches = (
+      await prisma.historicalSaleRecord.findMany({
+        where: { AND: brandMatchWords.map((w) => ({ title: { contains: w, mode: "insensitive" as const } })) },
+        select: { title: true, quantity: true, soldPrice: true, shippingCost: true, fees: true, soldAt: true },
+        take: 200,
+      })
+    ).filter((m) => titleHasWords(m.title, brandMatchWords));
     // The strict AND (both leading words) is high-precision but often
     // misses real matches — confirmed live: "Vicks Advanced Soothing
     // Vapors Vaporizer" found nothing against a real "Vicks PURE Zzzs Kidz
@@ -769,12 +802,16 @@ async function estimateLine(
     // even though "Vicks" alone is a perfectly good brand signal. Fall
     // back to just the single leading word when the strict match comes up
     // empty, rather than losing the signal entirely.
-    if (historicalMatches.length === 0) {
-      historicalMatches = await prisma.historicalSaleRecord.findMany({
-        where: { title: { contains: brandMatchWords[0], mode: "insensitive" as const } },
-        select: { title: true, quantity: true, soldPrice: true, shippingCost: true, fees: true, soldAt: true },
-        take: 200,
-      });
+    // Only when that first word really is the brand (see
+    // extractBrandMatchWords).
+    if (historicalMatches.length === 0 && firstIsBrand) {
+      historicalMatches = (
+        await prisma.historicalSaleRecord.findMany({
+          where: { title: { contains: brandMatchWords[0], mode: "insensitive" as const } },
+          select: { title: true, quantity: true, soldPrice: true, shippingCost: true, fees: true, soldAt: true },
+          take: 200,
+        })
+      ).filter((m) => titleHasWords(m.title, [brandMatchWords[0]]));
     }
     let rawUnits = 0;
     let weightedUnits = 0;
@@ -980,7 +1017,7 @@ async function estimateLine(
   // declared retail.
   const webCheckPrice =
     rawWebCheckPrice != null && group.retailPrice > 0
-      ? Math.min(rawWebCheckPrice, group.retailPrice * MARKET_ONLY_RETAIL_MULTIPLE_CAP)
+      ? Math.min(rawWebCheckPrice, group.retailPrice * UNVERIFIED_RETAIL_MULTIPLE_CAP)
       : rawWebCheckPrice;
   // A flat weight (not sample-count-scaled like the others — this is one
   // checked answer, not N samples) chosen higher than category's own max
@@ -1004,16 +1041,13 @@ async function estimateLine(
       marketScore * marketMedian +
       webCheckScore * (webCheckPrice ?? 0)) /
     priceTotalScore;
-  // market_only/web_price_check both mean there's no real sales history
-  // backing this number — a comp with a pack size detectPackSize missed can
-  // still slip through, so cap against the manifest's own declared retail
-  // as a last-resort sanity check rather than trusting an implausible
-  // number outright. (web_price_check's own input was already capped above
-  // before blending; this catches the case where the market/category
-  // components alone still pull the blend too high.)
+  // Only our own sales of this exact UPC are trusted past the retail cap —
+  // everything else (fuzzy historical title matches, a category average,
+  // live comps, a web check) can be matching the wrong product or pack
+  // size. See UNVERIFIED_RETAIL_MULTIPLE_CAP.
   const estimatedUnitSalePrice =
-    (dataConfidence === "market_only" || dataConfidence === "web_price_check") && group.retailPrice > 0
-      ? Math.min(blendedSalePrice, group.retailPrice * MARKET_ONLY_RETAIL_MULTIPLE_CAP)
+    dataConfidence !== "own_history" && group.retailPrice > 0
+      ? Math.min(blendedSalePrice, group.retailPrice * UNVERIFIED_RETAIL_MULTIPLE_CAP)
       : blendedSalePrice;
   // FALLBACK_SHIPPING_COST/FALLBACK_FEE_FIXED are per-LISTING costs (one
   // shipment, one order) — dividing by typicalPackSize amortizes them
