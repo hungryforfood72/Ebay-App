@@ -666,16 +666,27 @@ export async function updateOfferQuantity(
 // Browse API's buyer-facing, sometimes-capped "estimated" availability).
 // Used by the Inventory section to show real numbers before editing, not
 // whatever this app's own DB last recorded.
-export async function getOfferDetails(offerId: string): Promise<{ availableQuantity: number; price: number } | null> {
+export async function getOfferDetails(
+  offerId: string
+): Promise<{ availableQuantity: number; price: number; offerStatus: string | null; listingStatus: string | null } | null> {
   try {
     const result = (await ebayFetch(`/sell/inventory/v1/offer/${encodeURIComponent(offerId)}`)) as {
       availableQuantity?: number;
       pricingSummary?: { price?: { value: string } };
+      status?: string;
+      listing?: { listingStatus?: string };
     };
     if (result.availableQuantity == null) return null;
     return {
       availableQuantity: result.availableQuantity,
       price: result.pricingSummary?.price ? Number(result.pricingSummary.price.value) : 0,
+      // PUBLISHED, or UNPUBLISHED once the listing is ended/withdrawn.
+      offerStatus: result.status ?? null,
+      // e.g. ACTIVE, OUT_OF_STOCK (sold out but kept alive by eBay's
+      // Out-of-stock control), ENDED. Confirmed live: NOT refreshed after a
+      // withdraw — it keeps the last value (OUT_OF_STOCK) while the listing
+      // is really Completed, so check offerStatus for "is it still up".
+      listingStatus: result.listing?.listingStatus ?? null,
     };
   } catch (e) {
     if (!(e instanceof EbayApiError)) throw e;

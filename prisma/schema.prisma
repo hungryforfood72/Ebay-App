@@ -225,6 +225,14 @@ model Item {
   shelfPullAcknowledgedAt DateTime?
   shelfPullAcknowledgedBy String?
 
+  // Set when the order sync ended this item's listing because it sold out
+  // (src/lib/endSoldOutListings.ts). Cristian never restocks a listing —
+  // new stock always gets a new listing, since condition and expiration
+  // differ load to load — and with eBay's Out-of-stock control on, a
+  // sold-out listing otherwise stays alive, hidden, still collecting Best
+  // Offers and auto-renewing every 30 days.
+  listingEndedAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

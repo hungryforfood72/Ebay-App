@@ -100,6 +100,8 @@ type SyncResult = {
   itemsUnmatched: number;
   refundsRecorded: number;
   salesReversed: number;
+  listingsEnded?: number;
+  soldOutLeftUp?: string[];
   errors: string[];
 };
 
@@ -258,8 +260,11 @@ export default function DashboardPage() {
                   {syncResult.salesReversed > 0
                     ? `, ${syncResult.salesReversed} sale(s) reversed (cancelled after being recorded)`
                     : ""}
-                  .
+                  {syncResult.listingsEnded ? `, ${syncResult.listingsEnded} sold-out listing(s) ended` : ""}.
                 </p>
+              )}
+              {syncResult.soldOutLeftUp && syncResult.soldOutLeftUp.length > 0 && (
+                <p className="mt-1 text-warning">Sold out here but not on eBay: {syncResult.soldOutLeftUp.join(" · ")}</p>
               )}
               {syncResult.errors.length > 0 && <p className="mt-1 text-danger">{syncResult.errors.join(" · ")}</p>}
             </div>

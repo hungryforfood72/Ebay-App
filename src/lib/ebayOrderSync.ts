@@ -7,6 +7,7 @@ import {
   reviseFixedPriceItemQuantity,
   updateOfferQuantity,
 } from "./ebay";
+import { endSoldOutListings } from "./endSoldOutListings";
 import { prisma } from "./prisma";
 import type { Prisma } from "@/generated/prisma/client";
 
@@ -18,6 +19,10 @@ export type EbayOrderSyncResult = {
   itemsUnmatched: number;
   refundsRecorded: number;
   salesReversed: number;
+  // Sold-out listings ended this run, and ones left up because eBay still
+  // showed stock (see endSoldOutListings).
+  listingsEnded: number;
+  soldOutLeftUp: string[];
   errors: string[];
 };
 
@@ -84,6 +89,7 @@ async function reverseSale(
     soldQuantity: number;
     ebayOfferId: string | null;
     ebayListingId: string | null;
+    listingEndedAt: Date | null;
   }
 ): Promise<void> {
   const refunds = await prisma.ebayItemRefund.findMany({ where: { saleId: sale.id }, select: { amount: true } });
@@ -117,6 +123,10 @@ async function reverseSale(
   // already correct even if this push fails, so a failure here is logged,
   // not thrown — it shouldn't take down the rest of the sync run over a
   // single listing's eBay-side push.
+  // A listing the app already ended for selling out stays ended — Cristian
+  // never restocks a listing, so the returned unit goes on a new one.
+  if (item.listingEndedAt) return;
+
   const newAvailableQuantity = Math.max(0, item.quantity - newSoldQuantity);
   try {
     if (item.ebayOfferId) {
@@ -152,6 +162,8 @@ export async function syncEbayOrders(
     itemsUnmatched: 0,
     refundsRecorded: 0,
     salesReversed: 0,
+    listingsEnded: 0,
+    soldOutLeftUp: [],
     errors: [],
   };
 
@@ -508,6 +520,17 @@ export async function syncEbayOrders(
     // next run. Per-line-item checkpoints (ebayOrderLineItemId) make that
     // safe, not wasteful.
     return result;
+  }
+
+  // After the orders above, since they're what flip an item to "sold" — a
+  // listing gets ended in the same run that records its last sale.
+  try {
+    const ended = await endSoldOutListings();
+    result.listingsEnded = ended.ended;
+    result.soldOutLeftUp = ended.skipped;
+    result.errors.push(...ended.errors.map((e) => `Ending sold-out listing ${e}`));
+  } catch (e) {
+    result.errors.push(`Ending sold-out listings failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   await prisma.ebaySyncState.upsert({
