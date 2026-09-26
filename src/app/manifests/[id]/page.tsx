@@ -37,6 +37,11 @@ type Line = {
   soldUnits: number;
   soldRevenue?: number;
   soldFees?: number;
+  soldShipping?: number;
+  // Net of any fees eBay credited back.
+  soldRefunds?: number;
+  soldCogs?: number | null;
+  // Revenue − fees − shipping − refunds − COGS.
   profit?: number | null;
 };
 
@@ -89,6 +94,9 @@ type ManifestDetail = {
     totalSoldUnits: number;
     totalSoldRevenue?: number;
     totalSoldFees?: number;
+    totalSoldShipping?: number;
+    totalSoldRefunds?: number;
+    totalSoldCogs?: number;
     totalProfit?: number;
     totalListedUnsoldItems: number;
   };
@@ -308,6 +316,16 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
               {s.totalSoldRevenue != null && <Stat label="Sold revenue" value={s.totalSoldRevenue} format="currency" />}
               {s.totalSoldFees != null && <Stat label="Sold fees" value={s.totalSoldFees} format="currency" />}
+              {s.totalSoldShipping != null && <Stat label="Shipping" value={s.totalSoldShipping} format="currency" />}
+              {s.totalSoldRefunds != null && (
+                <Stat
+                  label="Refunds (net)"
+                  value={s.totalSoldRefunds}
+                  format="currency"
+                  highlight={s.totalSoldRefunds > 0}
+                />
+              )}
+              {s.totalSoldCogs != null && <Stat label="COGS of sold" value={s.totalSoldCogs} format="currency" />}
               {s.totalProfit != null && (
                 <Stat
                   label="Profit"
@@ -507,6 +525,8 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
                     <p className="mt-2 flex flex-wrap gap-x-3 text-xs text-muted-foreground tabular-nums">
                       <span>COGS {line.weightedCogsPerUnit != null ? `$${line.weightedCogsPerUnit.toFixed(4)}` : "—"}</span>
                       <span>Revenue {line.soldRevenue != null ? `$${line.soldRevenue.toFixed(2)}` : "—"}</span>
+                      {line.soldUnits > 0 && <span>Fees + ship {money(feesAndShipping(line))}</span>}
+                      {(line.soldRefunds ?? 0) > 0 && <span>Refunds {money(line.soldRefunds!)}</span>}
                       <span className={cn(line.profit != null && line.profit < 0 && "font-semibold text-danger")}>
                         Profit {line.profit != null ? `$${line.profit.toFixed(2)}` : "—"}
                       </span>
@@ -531,6 +551,7 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
                     {isOwner && <th className="px-3 py-3 text-right">COGS/unit</th>}
                     <th className="px-3 py-3 text-right">Sold</th>
                     {isOwner && <th className="px-3 py-3 text-right">Revenue</th>}
+                    {isOwner && <th className="whitespace-nowrap px-3 py-3 text-right">Fees + ship</th>}
                     {isOwner && <th className="px-4 py-3 text-right">Profit</th>}
                   </tr>
                 </thead>
@@ -573,6 +594,14 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
                         </td>
                       )}
                       {isOwner && (
+                        <td className="px-3 text-right">
+                          {line.soldUnits > 0 ? money(feesAndShipping(line)) : "—"}
+                          {(line.soldRefunds ?? 0) > 0 && (
+                            <span className="block text-xs text-danger">+{money(line.soldRefunds!)} refunded</span>
+                          )}
+                        </td>
+                      )}
+                      {isOwner && (
                         <td
                           className={cn(
                             "px-4 text-right",
@@ -601,4 +630,14 @@ function Metric({ label, value }: { label: string; value: string }) {
       <dd className="mt-0.5 text-lg font-semibold tabular-nums text-foreground">{value}</dd>
     </div>
   );
+}
+
+// eBay fees (promoted listing fees included) + shipping labels for a line.
+// Profit = revenue − this − net refunds − COGS.
+function feesAndShipping(line: Line): number {
+  return (line.soldFees ?? 0) + (line.soldShipping ?? 0);
+}
+
+function money(n: number): string {
+  return `$${n.toFixed(2)}`;
 }

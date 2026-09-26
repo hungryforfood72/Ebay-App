@@ -62,6 +62,10 @@ export async function GET(
           soldQuantity: true,
           soldRevenueTotal: true,
           soldFeesTotal: true,
+          soldShippingTotal: true,
+          // Net refund cost per sale = amount back to the buyer minus the
+          // fees eBay credited back — same as the dashboard's profit.
+          sales: { select: { refunds: { select: { amount: true, feeCredit: true } } } },
         },
       },
     },
@@ -116,14 +120,23 @@ export async function GET(
     dudByUpc.set(d.upc, (dudByUpc.get(d.upc) ?? 0) + d.quantity);
   }
 
-  // Sold units/revenue/fees, by UPC — summed regardless of Item.status,
-  // since a partially-sold multi-unit listing stays "listed" (not "sold")
-  // while still having real sold units and revenue to account for.
+  // Sold units/revenue/fees/shipping/refunds, by UPC — summed regardless of
+  // Item.status, since a partially-sold multi-unit listing stays "listed"
+  // (not "sold") while still having real sold units and revenue to account
+  // for. Shipping and refunds come off profit just like fees do; without
+  // them a line's "profit" was really just revenue minus fees and COGS.
   const soldByUpc = new Map<string, number>();
   const soldRevenueByUpc = new Map<string, number>();
   const soldFeesByUpc = new Map<string, number>();
+  const soldShippingByUpc = new Map<string, number>();
+  const soldRefundsByUpc = new Map<string, number>();
+  const addTo = (map: Map<string, number>, upc: string, amount: number) => map.set(upc, (map.get(upc) ?? 0) + amount);
   for (const item of manifest.items) {
     if (item.soldQuantity === 0) continue;
+    const shippingTotal = Number(item.soldShippingTotal);
+    const refundsNet = item.sales
+      .flatMap((s) => s.refunds)
+      .reduce((sum, r) => sum + Number(r.amount) - Number(r.feeCredit), 0);
     if (item.isBundle) {
       // A bundle sale's revenue/fees are for the whole bundle, with no
       // per-UPC price breakdown to draw on — split evenly per physical
@@ -137,6 +150,8 @@ export async function GET(
         soldByUpc.set(c.upc, (soldByUpc.get(c.upc) ?? 0) + c.unitsPerBundle * item.soldQuantity);
         soldRevenueByUpc.set(c.upc, (soldRevenueByUpc.get(c.upc) ?? 0) + Number(item.soldRevenueTotal) * share);
         soldFeesByUpc.set(c.upc, (soldFeesByUpc.get(c.upc) ?? 0) + Number(item.soldFeesTotal) * share);
+        addTo(soldShippingByUpc, c.upc, shippingTotal * share);
+        addTo(soldRefundsByUpc, c.upc, refundsNet * share);
       }
       continue;
     }
@@ -144,6 +159,8 @@ export async function GET(
     soldByUpc.set(item.upc, (soldByUpc.get(item.upc) ?? 0) + soldUnitsFor(item));
     soldRevenueByUpc.set(item.upc, (soldRevenueByUpc.get(item.upc) ?? 0) + Number(item.soldRevenueTotal));
     soldFeesByUpc.set(item.upc, (soldFeesByUpc.get(item.upc) ?? 0) + Number(item.soldFeesTotal));
+    addTo(soldShippingByUpc, item.upc, shippingTotal);
+    addTo(soldRefundsByUpc, item.upc, refundsNet);
   }
   // Walk-up sales are just as real as an eBay sale for profit purposes —
   // no fees (cash, in person), no shipping, so only revenue is added.
@@ -225,7 +242,11 @@ export async function GET(
     const soldShare = upcSoldUnits > 0 ? soldUnits / upcSoldUnits : 0;
     const soldRevenue = soldShare * (line.upc ? (soldRevenueByUpc.get(line.upc) ?? 0) : 0);
     const soldFees = soldShare * (line.upc ? (soldFeesByUpc.get(line.upc) ?? 0) : 0);
-    const profit = soldUnits > 0 && weightedCogsPerUnit != null ? soldRevenue - soldFees - soldUnits * weightedCogsPerUnit : null;
+    const soldShipping = soldShare * (line.upc ? (soldShippingByUpc.get(line.upc) ?? 0) : 0);
+    const soldRefunds = soldShare * (line.upc ? (soldRefundsByUpc.get(line.upc) ?? 0) : 0);
+    const soldCogs = weightedCogsPerUnit != null ? soldUnits * weightedCogsPerUnit : null;
+    const profit =
+      soldUnits > 0 && soldCogs != null ? soldRevenue - soldFees - soldShipping - soldRefunds - soldCogs : null;
 
     return {
       id: line.id,
@@ -247,6 +268,9 @@ export async function GET(
       soldUnits,
       soldRevenue,
       soldFees,
+      soldShipping,
+      soldRefunds,
+      soldCogs,
       profit,
     };
   });
@@ -266,7 +290,14 @@ export async function GET(
   for (const [upc, units] of dudByUpc) {
     if (!matchedUpcs.has(upc)) unmatchedDud.push({ upc, units });
   }
-  const unmatchedSold: { upc: string | null; units: number; revenue: number; fees: number }[] = [];
+  const unmatchedSold: {
+    upc: string | null;
+    units: number;
+    revenue: number;
+    fees: number;
+    shipping: number;
+    refunds: number;
+  }[] = [];
   for (const [upc, units] of soldByUpc) {
     if (!matchedUpcs.has(upc)) {
       unmatchedSold.push({
@@ -274,6 +305,8 @@ export async function GET(
         units,
         revenue: soldRevenueByUpc.get(upc) ?? 0,
         fees: soldFeesByUpc.get(upc) ?? 0,
+        shipping: soldShippingByUpc.get(upc) ?? 0,
+        refunds: soldRefundsByUpc.get(upc) ?? 0,
       });
     }
   }
@@ -291,6 +324,11 @@ export async function GET(
     unmatchedSold.reduce((sum, u) => sum + u.revenue, 0);
   const totalSoldFees = lines.reduce((sum, l) => sum + l.soldFees, 0) +
     unmatchedSold.reduce((sum, u) => sum + u.fees, 0);
+  const totalSoldShipping = lines.reduce((sum, l) => sum + l.soldShipping, 0) +
+    unmatchedSold.reduce((sum, u) => sum + u.shipping, 0);
+  const totalSoldRefunds = lines.reduce((sum, l) => sum + l.soldRefunds, 0) +
+    unmatchedSold.reduce((sum, u) => sum + u.refunds, 0);
+  const totalSoldCogs = lines.reduce((sum, l) => sum + (l.soldCogs ?? 0), 0);
   const totalProfit = lines.reduce((sum, l) => sum + (l.profit ?? 0), 0);
 
   const blendedCogsPerUnit =
@@ -385,7 +423,16 @@ export async function GET(
       totalSoldUnits,
       totalListedUnsoldItems,
       ...(isOwner
-        ? { totalManifestExtendedRetail, blendedCogsPerUnit, totalSoldRevenue, totalSoldFees, totalProfit }
+        ? {
+            totalManifestExtendedRetail,
+            blendedCogsPerUnit,
+            totalSoldRevenue,
+            totalSoldFees,
+            totalSoldShipping,
+            totalSoldRefunds,
+            totalSoldCogs,
+            totalProfit,
+          }
         : {}),
     },
   });
