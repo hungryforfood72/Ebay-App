@@ -1,4 +1,14 @@
 import { prisma } from "./prisma";
+import {
+  detectPackSize,
+  FALLBACK_FEE_FIXED,
+  FALLBACK_FEE_RATE,
+  FALLBACK_SHIPPING_COST,
+  parsePackStats,
+  recommendPackSize,
+  summarizeComps,
+  type PackStat,
+} from "./packSize";
 import { anthropic } from "./anthropic";
 import { EbayApiError, searchActiveListings } from "./ebay";
 import type { ManifestSupplier } from "@/generated/prisma/client";
@@ -187,71 +197,8 @@ function computeMonthsToSellThrough(recentUnits: number, effectiveUnits: number)
   return unitsPerMonth > 0 ? effectiveUnits / unitsPerMonth : STALLED_MONTHS_SENTINEL;
 }
 
-// ---------------------------------------------------------------------------
-// Estimated eBay fee — real fee schedules run ~13% + a small fixed
-// component; refined over time via SourcingKnowledge's global scope rather
-// than hardcoded forever, but this is the honest starting point.
-// ---------------------------------------------------------------------------
-const FALLBACK_FEE_RATE = 0.1325;
-const FALLBACK_FEE_FIXED = 0.3;
-const FALLBACK_SHIPPING_COST = 5;
-
-// A "3-Pack" is a totally normal single listing a real buyer buys directly
-// — its price is for 3 units, not 1. Confirmed live: sunscreen priced at
-// $29.77 for what turned out to be a 3-pack was treated as a
-// $29.77-per-bottle price, tripling the manifest's 35 single-bottle
-// physical units into ~$1,042 of phantom revenue instead of the real
-// ~$347. Every comp's price is normalized to a per-physical-unit basis by
-// dividing out its own detected pack size before it ever reaches the
-// blended estimate.
-//
-// "Lot of N" / "Case of N" are genuinely ambiguous phrasing — confirmed
-// live against a real 1,234-comp sample that the overwhelming majority of
-// "Lot of 2/3/4" listings for a household product (sunscreen) are just a
-// casual seller's wording for a small multi-buy bundle, not a reseller
-// wholesale lot, and they were consistently among the CHEAPEST per-unit
-// comps — exactly the real-world price a human would spot, and exactly
-// what got thrown out by blanket-excluding every "lot of"-titled comp.
-// Small lot/case quantities are now treated exactly like any other pack
-// size instead; only a large quantity (or an unambiguous wholesale/bulk/
-// pallet word, which signals reseller-to-reseller pricing that doesn't
-// reflect retail-buyer economics) is still excluded outright.
-const RESELLER_BULK_PATTERN = /\b(wholesale|bulk|pallet)\b/i;
-const LARGE_LOT_THRESHOLD = 10;
-
-function detectPackSize(title: string): number {
-  const patterns = [
-    /\bpack\s*of\s*(\d{1,3})\b/i,
-    /\b(\d{1,3})\s*-?\s*pack\b/i,
-    /\b(\d{1,3})\s*pk\b/i,
-    /\b(\d{1,3})\s*ct\b/i,
-    /\b(\d{1,3})\s*count\b/i,
-    /\bset\s*of\s*(\d{1,3})\b/i,
-    /\bbundle\s*of\s*(\d{1,3})\b/i,
-    /\blot\s*of\s*(\d{1,3})\b/i,
-    /\bcase\s*of\s*(\d{1,3})\b/i,
-    /\bbox\s*of\s*(\d{1,3})\b/i,
-  ];
-  for (const pattern of patterns) {
-    const match = title.match(pattern);
-    if (match) {
-      const n = parseInt(match[1], 10);
-      if (n >= 2 && n <= 48) return n; // sanity bounds — outside this range is more likely a false match (a model number, a size, etc.)
-    }
-  }
-  return 1;
-}
-
-// Excluded outright rather than normalized — a genuine reseller/wholesale
-// lot's pricing reflects business-to-business economics, not what an
-// individual retail listing of the same physical units would fetch, so
-// dividing its total by its quantity would understate a realistic retail
-// per-unit price.
-function isResellerLot(title: string, packSize: number): boolean {
-  if (RESELLER_BULK_PATTERN.test(title)) return true;
-  if (packSize > LARGE_LOT_THRESHOLD) return true;
-  return false;
-}
+// Selling-cost fallbacks and pack-size reading live in ./packSize, shared
+// with the scan page's pack suggestion.
 
 // Manifest descriptions in this app's CSVs are catalog-style and
 // consistently lead with the brand ("Sun Bum SPF 50...", "First Response
@@ -652,6 +599,9 @@ type LineEstimateResult = {
   estimatedNetPerUnit: number | null;
   effectiveUnits: number;
   typicalPackSize: number;
+  // See recommendPackSize (./packSize) — null when there's too little to go on.
+  recommendedPackSize: number | null;
+  recommendedPackBasis: "listings" | "estimate" | null;
   dataConfidence: "own_history" | "historical_match" | "web_price_check" | "category_fallback" | "market_only";
   flaggedDud: boolean;
   marketCheckFailed: boolean;
@@ -863,6 +813,9 @@ async function estimateLine(
   // below would otherwise have no way to tell an API outage apart from a
   // confirmed zero — and confidently called every line a dud on it.
   let marketCheckFailed = false;
+  // Per pack size, what live listings go for — feeds the pack-size
+  // recommendation, and is kept on the snapshot so the scan page can reuse it.
+  let packStats: PackStat[] = [];
   // A real, measured price/listing-volume trend since the last time we
   // actually checked this UPC's live market (see MarketCompSnapshot) — null
   // when there's no prior snapshot to compare against, or when reusing a
@@ -883,22 +836,15 @@ async function estimateLine(
     // falls back to own/historical pack data when there is any.
     activeCompCount = latestSnapshot.activeCompCount;
     marketMedian = latestSnapshot.medianPrice != null ? Number(latestSnapshot.medianPrice) : 0;
+    packStats = parsePackStats(latestSnapshot.packStats);
   } else {
     try {
       const comps = await searchActiveListings({ upc: group.upc, keywords: group.description, excludeListingId: null });
-      const perUnitPrices: number[] = [];
-      for (const c of comps) {
-        const packSize = detectPackSize(c.title);
-        if (isResellerLot(c.title, packSize)) continue;
-        marketPackSizes.push(packSize);
-        perUnitPrices.push(c.totalPrice / packSize);
-      }
-      activeCompCount = perUnitPrices.length;
-      if (perUnitPrices.length > 0) {
-        perUnitPrices.sort((a, b) => a - b);
-        const mid = Math.floor(perUnitPrices.length / 2);
-        marketMedian = perUnitPrices.length % 2 === 0 ? (perUnitPrices[mid - 1] + perUnitPrices[mid]) / 2 : perUnitPrices[mid];
-      }
+      const summary = summarizeComps(comps);
+      activeCompCount = summary.activeCompCount;
+      marketMedian = summary.medianPerUnit;
+      marketPackSizes.push(...summary.packSizes);
+      packStats = summary.packStats;
 
       if (group.upc) {
         if (latestSnapshot) {
@@ -912,7 +858,12 @@ async function estimateLine(
         // overwritten — that's what turns this into a real time series
         // instead of just a cache (see MarketCompSnapshot).
         await prisma.marketCompSnapshot.create({
-          data: { upc: group.upc, activeCompCount, medianPrice: marketMedian > 0 ? marketMedian : null },
+          data: {
+            upc: group.upc,
+            activeCompCount,
+            medianPrice: marketMedian > 0 ? marketMedian : null,
+            packStats,
+          },
         });
       }
     } catch (e) {
@@ -921,6 +872,18 @@ async function estimateLine(
       marketCheckFailed = true;
     }
   }
+
+  // Comp and historical prices above are per single unit, but a manifest
+  // line can itself be a multi-pack ("Aquaphor ... 0.35 oz x 2 pack") —
+  // one of ITS units is that many singles. Own and category history are
+  // already per manifest unit (they come from our own scanned items).
+  const manifestUnitPackSize = detectPackSize(group.description);
+  marketMedian *= manifestUnitPackSize;
+  historicalAvgSalePrice *= manifestUnitPackSize;
+
+  // Best pack size to sell in — only for a manifest unit that's a single
+  // (a line that's already a multi-pack is listed as-is).
+  const packRecommendation = manifestUnitPackSize === 1 ? recommendPackSize(packStats, group.retailPrice) : null;
 
   // What this UPC is realistically LISTED as — own past sales are the most
   // reliable signal when we have them, otherwise the most common pack size
@@ -976,6 +939,8 @@ async function estimateLine(
       estimatedNetPerUnit: null,
       effectiveUnits,
       typicalPackSize,
+      recommendedPackSize: packRecommendation?.packSize ?? null,
+      recommendedPackBasis: packRecommendation?.basis ?? null,
       dataConfidence: "market_only",
       flaggedDud: !marketCheckFailed,
       marketCheckFailed,
@@ -1130,6 +1095,8 @@ async function estimateLine(
     estimatedNetPerUnit: flaggedDud ? 0 : rawNet,
     effectiveUnits,
     typicalPackSize,
+    recommendedPackSize: packRecommendation?.packSize ?? null,
+    recommendedPackBasis: packRecommendation?.basis ?? null,
     dataConfidence,
     flaggedDud,
     slowMover,
@@ -1330,6 +1297,8 @@ export async function evaluateManifestChunk(
         estimatedNetPerUnit: result.estimatedNetPerUnit,
         effectiveUnits: result.effectiveUnits,
         typicalPackSize: result.typicalPackSize,
+        recommendedPackSize: result.recommendedPackSize,
+        recommendedPackBasis: result.recommendedPackBasis,
         dataConfidence: result.dataConfidence,
         flaggedDud: result.flaggedDud,
         slowMover: result.slowMover,
@@ -1388,6 +1357,8 @@ export async function evaluateManifestChunk(
       estimatedNetPerUnit: row.estimatedNetPerUnit != null ? Number(row.estimatedNetPerUnit) : null,
       effectiveUnits: row.effectiveUnits,
       typicalPackSize: row.typicalPackSize,
+      recommendedPackSize: row.recommendedPackSize,
+      recommendedPackBasis: row.recommendedPackBasis as LineEstimateResult["recommendedPackBasis"],
       dataConfidence: row.dataConfidence as LineEstimateResult["dataConfidence"],
       flaggedDud: row.flaggedDud,
       slowMover: row.slowMover,

@@ -1,0 +1,119 @@
+import { getRequestUser } from "@/lib/auth";
+import { EbayApiError, searchActiveListings } from "@/lib/ebay";
+import { parseBundleComponentUnits, unitsFor } from "@/lib/itemUnits";
+import { detectPackSize, parsePackStats, recommendPackSize, splitIntoPacks, summarizeComps } from "@/lib/packSize";
+import { prisma } from "@/lib/prisma";
+import { Prisma } from "@/generated/prisma/client";
+import { NextRequest, NextResponse } from "next/server";
+
+export const maxDuration = 30;
+
+// Pack-size pricing barely moves day to day — a week-old check (the
+// Analyzer's, usually) is plenty for a suggestion, and reusing it keeps
+// scanning from spending eBay Browse API calls.
+const PACK_STATS_MAX_AGE_DAYS = 7;
+
+// GET ?upc=&manifestId= — for the scan page: the best pack size to sell a
+// product in (see src/lib/packSize.ts), and, when scanning into a manifest,
+// how many units of it are still left to list and how to split them. So
+// whoever's scanning doesn't have to go look it up on eBay themselves.
+// Dollar figures are for the owner only.
+export async function GET(request: NextRequest) {
+  const isOwner = getRequestUser(request)?.role === "owner";
+  const upc = request.nextUrl.searchParams.get("upc")?.trim();
+  const manifestId = request.nextUrl.searchParams.get("manifestId");
+  if (!upc) return NextResponse.json({ error: "A UPC is required." }, { status: 400 });
+
+  const lines = manifestId
+    ? await prisma.manifestLine.findMany({ where: { manifestId, upc }, select: { description: true, expectedQuantity: true, retailPrice: true } })
+    : [];
+  const description = lines[0]?.description ?? null;
+
+  // A manifest unit that's itself a multi-pack ("... x 2 pack") gets listed
+  // as-is — no suggestion to re-split it.
+  const alreadyMultipack = description != null && detectPackSize(description) > 1;
+
+  let recommendation = null;
+  if (!alreadyMultipack) {
+    const since = new Date(Date.now() - PACK_STATS_MAX_AGE_DAYS * 24 * 60 * 60 * 1000);
+    const snapshot = await prisma.marketCompSnapshot.findFirst({
+      where: { upc, capturedAt: { gte: since }, packStats: { not: Prisma.DbNull } },
+      orderBy: { capturedAt: "desc" },
+    });
+    let packStats = snapshot ? parsePackStats(snapshot.packStats) : null;
+    if (!packStats) {
+      try {
+        const summary = summarizeComps(
+          await searchActiveListings({ upc, keywords: description ?? upc, excludeListingId: null })
+        );
+        packStats = summary.packStats;
+        await prisma.marketCompSnapshot.create({
+          data: {
+            upc,
+            activeCompCount: summary.activeCompCount,
+            medianPrice: summary.medianPerUnit > 0 ? summary.medianPerUnit : null,
+            packStats,
+          },
+        });
+      } catch (e) {
+        if (!(e instanceof EbayApiError)) throw e;
+        console.error(`[pack-suggestion] comp search failed for UPC ${upc}`, e);
+        packStats = [];
+      }
+    }
+    recommendation = recommendPackSize(packStats, lines[0] ? Number(lines[0].retailPrice) : null);
+  }
+
+  const available = manifestId && lines.length > 0 ? await unitsLeftOnManifest(manifestId, upc, lines) : null;
+  const plan = recommendation && available != null && available > 0 ? splitIntoPacks(available, recommendation.packSize) : null;
+
+  return NextResponse.json({
+    upc,
+    alreadyMultipack,
+    available,
+    plan,
+    recommendation: recommendation && {
+      packSize: recommendation.packSize,
+      basis: recommendation.basis,
+      compCount: recommendation.compCount,
+      ...(isOwner
+        ? {
+            perPackPrice: recommendation.perPackPrice,
+            netPerUnit: recommendation.netPerUnit,
+            singleNetPerUnit: recommendation.singleNetPerUnit,
+          }
+        : {}),
+    },
+  });
+}
+
+// Units of this UPC the manifest said were coming, minus everything
+// already accounted for: scanned in (on its own or inside a bundle), sold
+// at a walk-up, or marked damaged or dud. Same buckets as the manifest
+// page's reconciliation.
+async function unitsLeftOnManifest(
+  manifestId: string,
+  upc: string,
+  lines: { expectedQuantity: number }[]
+): Promise<number> {
+  const [items, bundles, walkups, damaged, duds] = await Promise.all([
+    prisma.item.findMany({ where: { manifestId, upc, isBundle: false }, select: { quantity: true, isMultipack: true, packSize: true } }),
+    prisma.item.findMany({ where: { manifestId, isBundle: true }, select: { quantity: true, bundleComponents: true } }),
+    prisma.manifestWalkupSale.aggregate({ where: { manifestId, upc }, _sum: { quantity: true } }),
+    prisma.manifestDamagedEntry.aggregate({ where: { manifestId, upc }, _sum: { quantity: true } }),
+    prisma.manifestDudEntry.aggregate({ where: { manifestId, upc }, _sum: { quantity: true } }),
+  ]);
+  const expected = lines.reduce((sum, l) => sum + l.expectedQuantity, 0);
+  const scanned = items.reduce((sum, i) => sum + unitsFor(i), 0);
+  const inBundles = bundles.reduce(
+    (sum, b) =>
+      sum +
+      parseBundleComponentUnits(b.bundleComponents)
+        .filter((c) => c.upc === upc)
+        .reduce((s, c) => s + c.unitsPerBundle * b.quantity, 0),
+    0
+  );
+  const accounted =
+    scanned + inBundles + (walkups._sum.quantity ?? 0) + (damaged._sum.quantity ?? 0) + (duds._sum.quantity ?? 0);
+  return Math.max(0, expected - accounted);
+}

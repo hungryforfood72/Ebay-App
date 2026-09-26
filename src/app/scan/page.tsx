@@ -1,6 +1,7 @@
 "use client";
 
 import BarcodeScanner from "@/components/BarcodeScanner";
+import { PackSuggestionCard } from "@/components/PackSuggestionCard";
 import { ScanField } from "@/components/ScanField";
 import { Alert } from "@/components/ui/Alert";
 import { AppShell } from "@/components/ui/AppShell";
@@ -1313,6 +1314,17 @@ function ScanPageInner() {
 
         {step === "quantity" && (
           <Card className="flex flex-col gap-4">
+            {upc.trim() && (
+              <PackSuggestionCard
+                upc={upc.trim()}
+                manifestId={activeManifestId}
+                onApply={(size, listings) => {
+                  setIsMultipack(size > 1);
+                  setPackSize(size > 1 ? String(size) : "");
+                  if (listings != null) setQuantity(String(listings));
+                }}
+              />
+            )}
             <CheckboxRow
               label="Multi-pack"
               description="Several units of the same product sold together as one listing."

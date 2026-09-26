@@ -416,6 +416,8 @@ export async function GET(
         estimatedNetPerUnit: e.estimatedNetPerUnit != null ? Number(e.estimatedNetPerUnit) : null,
         effectiveUnits: e.effectiveUnits,
         typicalPackSize: e.typicalPackSize,
+        recommendedPackSize: e.recommendedPackSize,
+        recommendedPackBasis: e.recommendedPackBasis,
         dataConfidence: e.dataConfidence,
         flaggedDud: e.flaggedDud,
         slowMover: e.slowMover,

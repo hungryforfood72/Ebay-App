@@ -534,6 +534,12 @@ model SourcingLineEstimate {
   // the UI can show it (a real bug this caught live: sunscreen priced as
   // a 3-pack was read as $29.77 PER BOTTLE, tripling the estimate).
   typicalPackSize        Int                @default(1)
+  // Best pack size to sell this in (src/lib/packSize.ts), and whether it's
+  // backed by real listings at that size ("listings") or modeled from
+  // singles ("estimate"). null when there weren't enough listings to say,
+  // or the manifest unit is already a multi-pack.
+  recommendedPackSize    Int?
+  recommendedPackBasis   String?
   dataConfidence         String // "own_history" | "historical_match" | "category_fallback" | "market_only"
   flaggedDud             Boolean            @default(false)
   // Carried alongside the line so a later chunk's finalization step (the
@@ -621,6 +627,11 @@ model MarketCompSnapshot {
   upc             String
   activeCompCount Int
   medianPrice     Decimal? @db.Decimal(10, 2) // null when activeCompCount is 0 — nothing to take a median of
+  // Per pack size: how many listings and their median buyer-paid total
+  // ([{ packSize, count, medianTotal }], see src/lib/packSize.ts) — what
+  // the pack-size recommendation reads, so the scan page can suggest one
+  // without a fresh eBay search. null on snapshots from before this existed.
+  packStats       Json?
   capturedAt      DateTime @default(now())
 
   @@index([upc, capturedAt])

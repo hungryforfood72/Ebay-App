@@ -31,6 +31,8 @@ type SourcingLineEstimate = {
   estimatedNetPerUnit: number | null;
   effectiveUnits: number;
   typicalPackSize: number;
+  recommendedPackSize: number | null;
+  recommendedPackBasis: "listings" | "estimate" | null;
   dataConfidence: string;
   flaggedDud: boolean;
   slowMover: boolean;
@@ -573,7 +575,7 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
                             value={e.estimatedNetPerUnit != null ? `$${e.estimatedNetPerUnit.toFixed(2)}` : "—"}
                           />
                           <MiniStat label="Units" value={String(e.effectiveUnits)} />
-                          <MiniStat label="Sells as" value={e.typicalPackSize > 1 ? `${e.typicalPackSize}-pack` : "single"} />
+                          <MiniStat label="Sell as" value={sellAs(e)} />
                         </dl>
                       </li>
                     ))}
@@ -584,7 +586,7 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
                         <tr className="border-b border-border text-left text-xs font-medium text-muted-foreground">
                           <th className="px-4 py-3">Item</th>
                           <th className="px-3 py-3 text-right">Est. sale/unit</th>
-                          <th className="px-3 py-3 text-right">Sells as</th>
+                          <th className="px-3 py-3 text-right">Sell as</th>
                           <th className="px-3 py-3 text-right">Est. net/unit</th>
                           <th className="px-3 py-3 text-right">Units</th>
                           <th className="px-4 py-3">Confidence</th>
@@ -600,7 +602,7 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
                             <td className="px-3 text-right">
                               {e.estimatedUnitSalePrice != null ? `$${e.estimatedUnitSalePrice.toFixed(2)}` : "—"}
                             </td>
-                            <td className="px-3 text-right">{e.typicalPackSize > 1 ? `${e.typicalPackSize}-pack` : "single"}</td>
+                            <td className="px-3 text-right">{sellAs(e)}</td>
                             <td className="px-3 text-right">
                               {e.estimatedNetPerUnit != null ? `$${e.estimatedNetPerUnit.toFixed(2)}` : "—"}
                             </td>
@@ -849,6 +851,15 @@ function BidVsMax({ bid, maxBid }: { bid: number; maxBid: number | null }) {
 
 function money(n: number): string {
   return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+// The recommended pack size when there is one (see src/lib/packSize.ts),
+// otherwise how it's most commonly listed. "~" marks one modeled from
+// singles rather than priced off real multi-pack listings.
+function sellAs(e: SourcingLineEstimate): string {
+  const size = e.recommendedPackSize ?? e.typicalPackSize;
+  const label = size > 1 ? `${size}-pack` : "single";
+  return e.recommendedPackBasis === "estimate" ? `~${label}` : label;
 }
 
 function Metric({ label, value, emphasis = false }: { label: string; value: string; emphasis?: boolean }) {
