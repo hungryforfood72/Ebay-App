@@ -746,6 +746,10 @@ export type EbayOrderLineItem = {
 export type EbayOrder = {
   orderId: string;
   orderPaymentStatus: string;
+  // cancelStatus.cancelState: NONE_REQUESTED, CANCEL_REQUESTED, CANCELED.
+  // A cancelled order is FULLY_REFUNDED + CANCELED — orderPaymentStatus
+  // alone can't tell it apart from a return refunded after shipping.
+  cancelState: string | null;
   creationDate: string;
   lineItems: EbayOrderLineItem[];
 };
@@ -757,12 +761,14 @@ export async function getOrder(orderId: string): Promise<EbayOrder> {
   const o = (await ebayFetch(`/sell/fulfillment/v1/order/${encodeURIComponent(orderId)}`)) as {
     orderId: string;
     orderPaymentStatus: string;
+    cancelStatus?: { cancelState?: string };
     creationDate: string;
     lineItems?: { lineItemId: string; sku?: string; title?: string; quantity?: number; lineItemCost?: { value: string } }[];
   };
   return {
     orderId: o.orderId,
     orderPaymentStatus: o.orderPaymentStatus,
+    cancelState: o.cancelStatus?.cancelState ?? null,
     creationDate: o.creationDate,
     lineItems: (o.lineItems ?? [])
       .filter((li): li is Required<typeof li> => Boolean(li.sku && li.quantity && li.lineItemCost))
@@ -791,6 +797,7 @@ export async function getRecentOrders(from: Date, to: Date): Promise<EbayOrder[]
       orders?: {
         orderId: string;
         orderPaymentStatus: string;
+        cancelStatus?: { cancelState?: string };
         creationDate: string;
         lineItems?: { lineItemId: string; sku?: string; title?: string; quantity?: number; lineItemCost?: { value: string } }[];
       }[];
@@ -801,6 +808,7 @@ export async function getRecentOrders(from: Date, to: Date): Promise<EbayOrder[]
       orders.push({
         orderId: o.orderId,
         orderPaymentStatus: o.orderPaymentStatus,
+        cancelState: o.cancelStatus?.cancelState ?? null,
         creationDate: o.creationDate,
         lineItems: (o.lineItems ?? [])
           .filter((li): li is Required<typeof li> => Boolean(li.sku && li.quantity && li.lineItemCost))
@@ -1223,10 +1231,17 @@ export async function reviseFixedPriceItemPrice(itemId: string, newPrice: number
 // current "listed" item has an ebayOfferId), but the Inventory section
 // treats both kinds of listing uniformly, same as the existing discount
 // routes already do for price.
-export async function reviseFixedPriceItemQuantity(itemId: string, newQuantity: number): Promise<void> {
+//
+// quantityAvailable is how many are LEFT to buy, not the listing's total.
+// Confirmed live: revising a listing that had 4 sold with Quantity 6 left
+// it at 6 available (GetItem then read Quantity 10, QuantitySold 4). eBay
+// works out the total from its own sold count, which can differ from ours
+// (it keeps counting a cancelled order as sold), so sending "left + our
+// sold" over-listed the item by however many we'd sold.
+export async function reviseFixedPriceItemQuantity(itemId: string, quantityAvailable: number): Promise<void> {
   await tradingApiFetch(
     "ReviseFixedPriceItem",
-    `<ReviseFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents"><Item><ItemID>${xmlEscape(itemId)}</ItemID><Quantity>${newQuantity}</Quantity></Item></ReviseFixedPriceItemRequest>`
+    `<ReviseFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents"><Item><ItemID>${xmlEscape(itemId)}</ItemID><Quantity>${quantityAvailable}</Quantity></Item></ReviseFixedPriceItemRequest>`
   );
 }
 

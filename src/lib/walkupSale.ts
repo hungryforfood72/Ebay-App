@@ -130,7 +130,7 @@ export async function recordItemSale(
     if (item.ebayOfferId) {
       await updateOfferQuantity(item.ebayOfferId, { sku: item.sku, soldQuantity: newSoldQuantity }, newAvailable);
     } else {
-      await reviseFixedPriceItemQuantity(item.ebayListingId!, newAvailable + newSoldQuantity);
+      await reviseFixedPriceItemQuantity(item.ebayListingId!, newAvailable);
     }
     const [updatedItem, adjustment] = await prisma.$transaction([
       prisma.item.update({

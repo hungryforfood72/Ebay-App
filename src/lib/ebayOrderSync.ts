@@ -6,6 +6,7 @@ import {
   getRecentOrders,
   reviseFixedPriceItemQuantity,
   updateOfferQuantity,
+  type EbayOrder,
 } from "./ebay";
 import { endSoldOutListings } from "./endSoldOutListings";
 import { prisma } from "./prisma";
@@ -33,6 +34,17 @@ export type EbayOrderSyncResult = {
 // are still real sales for accounting purposes; only genuinely unpaid/
 // cancelled orders are excluded.
 const NON_SALE_PAYMENT_STATUSES = ["FAILED", "PENDING", "CANCELLED", "NO_PAYMENT_NEEDED"];
+
+// A cancelled order never shows up as a payment status — confirmed live
+// across 37 real cancellations (buyer- and seller-initiated): eBay reports
+// them as orderPaymentStatus FULLY_REFUNDED with cancelStatus.cancelState
+// CANCELED. Checking the payment status alone missed every one of them, so
+// cancelled units kept counting as sold. A return refunded AFTER shipping
+// is also FULLY_REFUNDED but with no cancel, and stays a real sale (its
+// refund comes off profit via EbayItemRefund instead).
+function isNonSale(order: EbayOrder): boolean {
+  return order.cancelState === "CANCELED" || NON_SALE_PAYMENT_STATUSES.includes(order.orderPaymentStatus);
+}
 
 // Confirmed live: eBay's Finances API can take several minutes to post a
 // sale's SHIPPING_LABEL transaction after the order itself is created (one
@@ -132,7 +144,7 @@ async function reverseSale(
     if (item.ebayOfferId) {
       await updateOfferQuantity(item.ebayOfferId, { sku: item.sku, soldQuantity: newSoldQuantity }, newAvailableQuantity);
     } else if (item.ebayListingId) {
-      await reviseFixedPriceItemQuantity(item.ebayListingId, item.quantity);
+      await reviseFixedPriceItemQuantity(item.ebayListingId, newAvailableQuantity);
     }
   } catch (e) {
     console.error(`[ebayOrderSync] reverseSale: failed to push restored quantity to eBay for item ${item.id}`, e);
@@ -152,8 +164,13 @@ async function reverseSale(
 // the normal 7-day window, permanently. Not meant for routine use — the
 // whole point of the normal window is to eventually stop re-checking a
 // sale that genuinely has no shipping label.
+//
+// `orderIds`, when passed, also re-checks those specific orders regardless
+// of when they last changed — for a one-off correction of orders the
+// incremental window has long since moved past (e.g. cancellations that
+// were recorded as sales before cancellation detection was fixed).
 export async function syncEbayOrders(
-  options?: { since?: Date; shippingRecheckWindowDays?: number }
+  options?: { since?: Date; shippingRecheckWindowDays?: number; orderIds?: string[] }
 ): Promise<EbayOrderSyncResult> {
   const result: EbayOrderSyncResult = {
     ordersScanned: 0,
@@ -208,14 +225,18 @@ export async function syncEbayOrders(
       select: { ebayOrderId: true },
       distinct: ["ebayOrderId"],
     });
-    for (const { ebayOrderId } of shippingRecheckDueOrderIds) {
+    const recheckOrderIds = [
+      ...shippingRecheckDueOrderIds.map((s) => s.ebayOrderId),
+      ...(options?.orderIds ?? []),
+    ];
+    for (const ebayOrderId of recheckOrderIds) {
       if (alreadyFetchedOrderIds.has(ebayOrderId)) continue;
       try {
         orders.push(await getOrder(ebayOrderId));
         alreadyFetchedOrderIds.add(ebayOrderId);
       } catch (e) {
         result.errors.push(
-          `Order ${ebayOrderId} (shipping recheck fetch): ${e instanceof Error ? e.message : String(e)}`
+          `Order ${ebayOrderId} (recheck fetch): ${e instanceof Error ? e.message : String(e)}`
         );
       }
     }
@@ -231,7 +252,7 @@ export async function syncEbayOrders(
     // claim, since adding a sibling changes everyone's fair share.
     // shippingTransactionId is already a shared, non-unique key across
     // sibling EbayItemSale rows — no schema change needed to group by it.
-    const salesOrders = orders.filter((o) => !NON_SALE_PAYMENT_STATUSES.includes(o.orderPaymentStatus));
+    const salesOrders = orders.filter((o) => !isNonSale(o));
     const labelOrdersThisRun = new Map<string, Set<string>>();
     const labelAmountByTxnId = new Map<string, number>();
     for (const order of salesOrders) {
@@ -298,7 +319,7 @@ export async function syncEbayOrders(
     }
 
     for (const order of orders) {
-      if (NON_SALE_PAYMENT_STATUSES.includes(order.orderPaymentStatus)) {
+      if (isNonSale(order)) {
         // Might be a real, already-recorded sale that later got cancelled
         // or reversed (PAID -> CANCELLED after the fact) — walk it back if
         // so. An order that was non-sale from the very first time we ever

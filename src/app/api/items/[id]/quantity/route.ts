@@ -122,7 +122,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       newQuantity = await updateOfferQuantity(item.ebayOfferId, item, newAvailableQuantity);
     } else {
       newQuantity = newAvailableQuantity + item.soldQuantity;
-      await reviseFixedPriceItemQuantity(item.ebayListingId!, newQuantity);
+      await reviseFixedPriceItemQuantity(item.ebayListingId!, newAvailableQuantity);
     }
     const [updated, adjustment] = await prisma.$transaction([
       prisma.item.update({ where: { id }, data: { quantity: newQuantity } }),

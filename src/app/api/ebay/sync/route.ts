@@ -13,10 +13,15 @@ export const maxDuration = 90;
 // Optional { since: "ISO date" } body does a one-off historical catch-up
 // instead of the normal incremental window — for sales that happened
 // before this sync feature existed (e.g. on legacy CSV-uploaded listings
-// linked up after the fact via /api/items/link-legacy).
+// linked up after the fact via /api/items/link-legacy). Optional
+// { orderIds: [...] } re-checks specific orders the same way.
 export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({}));
   const since = body?.since ? new Date(body.since) : undefined;
-  const result = await syncEbayOrders(since && !isNaN(since.getTime()) ? { since } : undefined);
+  const orderIds = Array.isArray(body?.orderIds) ? body.orderIds.filter((id: unknown) => typeof id === "string") : [];
+  const result = await syncEbayOrders({
+    ...(since && !isNaN(since.getTime()) ? { since } : {}),
+    ...(orderIds.length > 0 ? { orderIds } : {}),
+  });
   return NextResponse.json(result);
 }
