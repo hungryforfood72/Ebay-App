@@ -61,6 +61,10 @@ type CandidateDetail = {
   title: string;
   supplier: string;
   purchased: boolean;
+  bidStatus: BidStatus;
+  bidAmount: number | null;
+  bidPlacedAt: string | null;
+  bidClosedAt: string | null;
   createdAt: string;
   lines: Line[];
   sourcingEvaluation: SourcingEvaluation | null;
@@ -87,6 +91,8 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleInput, setTitleInput] = useState("");
   const [savingTitle, setSavingTitle] = useState(false);
+  const [savingBid, setSavingBid] = useState(false);
+  const [bidError, setBidError] = useState<string | null>(null);
 
   function load() {
     fetch(`/api/manifests/${id}`)
@@ -154,10 +160,32 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
     }
   }
 
+  async function saveBid(bidStatus: "active" | "lost" | null, bidAmount?: number) {
+    setSavingBid(true);
+    setBidError(null);
+    try {
+      const res = await fetch(`/api/manifests/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bidStatus, bidAmount }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(result.error ?? "Couldn't save the bid.");
+      load();
+    } catch (e) {
+      setBidError(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setSavingBid(false);
+    }
+  }
+
   async function markPurchased() {
+    const wonBid = candidate?.bidStatus === "active" && candidate.bidAmount != null;
     if (
       !confirm(
-        `Mark "${candidate?.title}" as purchased? It'll move to the Manifests list so you can start scanning it in.`
+        wonBid
+          ? `Won "${candidate?.title}" at $${candidate?.bidAmount?.toFixed(2)}? It'll move to the Manifests list so you can start scanning it in.`
+          : `Mark "${candidate?.title}" as purchased? It'll move to the Manifests list so you can start scanning it in.`
       )
     ) {
       return;
@@ -251,10 +279,13 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
       }
       actions={
         <>
-          <Button onClick={markPurchased} disabled={markingPurchased}>
-            <CircleCheck className="size-4" aria-hidden />
-            {markingPurchased ? "Marking…" : "Mark as purchased"}
-          </Button>
+          {/* With an active bid, the Bid card's "Won, mark as purchased" does this. */}
+          {candidate.bidStatus !== "active" && (
+            <Button onClick={markPurchased} disabled={markingPurchased}>
+              <CircleCheck className="size-4" aria-hidden />
+              {markingPurchased ? "Marking…" : "Mark as purchased"}
+            </Button>
+          )}
           <Link href="/analyzer" className={buttonClasses({ variant: "outline" })}>
             <Upload className="size-4" aria-hidden />
             Upload another
@@ -263,6 +294,18 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
       }
     >
       <div className="flex flex-col gap-6">
+        <BidCard
+          bidStatus={candidate.bidStatus}
+          bidAmount={candidate.bidAmount}
+          bidPlacedAt={candidate.bidPlacedAt}
+          bidClosedAt={candidate.bidClosedAt}
+          maxBid={evaluation?.status === "complete" ? evaluation.maxBid : null}
+          saving={savingBid}
+          error={bidError}
+          onSave={saveBid}
+          onWon={markPurchased}
+        />
+
         <Card>
           <SectionHeader
             title="Sourcing recommendation"
@@ -634,6 +677,178 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
       </div>
     </AppShell>
   );
+}
+
+type BidStatus = "active" | "lost" | "won" | null;
+
+// Where this candidate stands at auction: no bid yet, an active bid (with
+// how it compares to the recommended max), or lost. Winning is "Mark as
+// purchased" — the API records the bid as won when that happens.
+function BidCard({
+  bidStatus,
+  bidAmount,
+  bidPlacedAt,
+  bidClosedAt,
+  maxBid,
+  saving,
+  error,
+  onSave,
+  onWon,
+}: {
+  bidStatus: BidStatus;
+  bidAmount: number | null;
+  bidPlacedAt: string | null;
+  bidClosedAt: string | null;
+  maxBid: number | null;
+  saving: boolean;
+  error: string | null;
+  onSave: (status: "active" | "lost" | null, amount?: number) => void;
+  onWon: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [amountInput, setAmountInput] = useState("");
+  const showForm = bidStatus === null || editing;
+  const amount = Number(amountInput);
+  const validAmount = amountInput.trim() !== "" && Number.isFinite(amount) && amount > 0;
+
+  function startEditing(prefill: number | null) {
+    setAmountInput(prefill != null ? prefill.toFixed(2) : "");
+    setEditing(true);
+  }
+
+  function submit() {
+    if (!validAmount) return;
+    onSave("active", amount);
+    setEditing(false);
+  }
+
+  return (
+    <Card>
+      <SectionHeader
+        title="Your bid"
+        action={
+          bidStatus === "active" ? (
+            <Badge tone="primary">Active bid</Badge>
+          ) : bidStatus === "lost" ? (
+            <Badge tone="neutral">Lost</Badge>
+          ) : undefined
+        }
+      />
+
+      {bidStatus === "active" && !editing && bidAmount != null && (
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <p className="text-2xl font-semibold tabular-nums text-foreground">{money(bidAmount)}</p>
+            {bidPlacedAt && (
+              <p className="text-sm text-muted-foreground">placed {new Date(bidPlacedAt).toLocaleDateString()}</p>
+            )}
+          </div>
+          <BidVsMax bid={bidAmount} maxBid={maxBid} />
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={onWon} disabled={saving}>
+              <CircleCheck className="size-4" aria-hidden />
+              Won, mark as purchased
+            </Button>
+            <Button variant="outline" onClick={() => startEditing(bidAmount)} disabled={saving}>
+              Change amount
+            </Button>
+            <Button variant="danger-ghost" onClick={() => onSave("lost")} disabled={saving}>
+              Bid lost
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {bidStatus === "lost" && !editing && (
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-muted-foreground">
+            Lost{bidAmount != null && <> at {money(bidAmount)}</>}
+            {bidClosedAt && <> · {new Date(bidClosedAt).toLocaleDateString()}</>}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={() => startEditing(bidAmount)} disabled={saving}>
+              Bid again
+            </Button>
+            <Button variant="ghost" onClick={() => onSave(null)} disabled={saving}>
+              Move back to under consideration
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {showForm && (
+        <div className="flex flex-col gap-2">
+          {bidStatus === null && (
+            <p className="text-sm text-muted-foreground">
+              Placed a bid on this load? Record it here to keep track of it until you win or lose.
+            </p>
+          )}
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="w-40">
+              <label htmlFor="bid-amount" className="mb-1.5 block text-sm font-medium text-foreground">
+                Bid amount
+              </label>
+              <div className="relative">
+                <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-muted-foreground">
+                  $
+                </span>
+                <Input
+                  id="bid-amount"
+                  type="number"
+                  inputMode="decimal"
+                  step="0.01"
+                  min="0"
+                  value={amountInput}
+                  onChange={(e) => setAmountInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && submit()}
+                  placeholder={maxBid != null ? maxBid.toFixed(2) : "0.00"}
+                  className="pl-7"
+                />
+              </div>
+            </div>
+            <Button onClick={submit} disabled={saving || !validAmount}>
+              {saving ? "Saving…" : bidStatus === "active" ? "Update bid" : "Mark as active bid"}
+            </Button>
+            {editing && (
+              <Button variant="ghost" onClick={() => setEditing(false)} disabled={saving}>
+                Cancel
+              </Button>
+            )}
+          </div>
+          {validAmount ? (
+            <BidVsMax bid={amount} maxBid={maxBid} />
+          ) : (
+            maxBid != null && <p className="text-xs text-muted-foreground">Recommended max bid: {money(maxBid)}</p>
+          )}
+        </div>
+      )}
+
+      {error && <p className="mt-3 text-sm font-medium text-danger">{error}</p>}
+    </Card>
+  );
+}
+
+function BidVsMax({ bid, maxBid }: { bid: number; maxBid: number | null }) {
+  if (maxBid == null) {
+    return <p className="text-xs text-muted-foreground">No recommended max bid yet. Run the evaluation to compare.</p>;
+  }
+  const diff = maxBid - bid;
+  if (Math.abs(diff) < 0.005) {
+    return <p className="text-sm font-medium text-foreground">Right at the recommended max bid.</p>;
+  }
+  return diff > 0 ? (
+    <p className="text-sm font-medium text-success">
+      {money(diff)} under the recommended max of {money(maxBid)}
+    </p>
+  ) : (
+    <p className="text-sm font-medium text-warning">
+      {money(-diff)} over the recommended max of {money(maxBid)}, so below your target margin if you win
+    </p>
+  );
+}
+
+function money(n: number): string {
+  return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 function Metric({ label, value, emphasis = false }: { label: string; value: string; emphasis?: boolean }) {

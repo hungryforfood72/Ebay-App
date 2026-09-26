@@ -371,6 +371,16 @@ enum ManifestSupplier {
   unknown
 }
 
+// Where an Analyzer candidate stands at auction. null = under
+// consideration, no bid placed. "won" is set when a candidate with a bid
+// is marked purchased — kept (not cleared) so bid history can later show
+// how often bids win and by how much.
+enum ManifestBidStatus {
+  active
+  lost
+  won
+}
+
 // One uploaded shipment/load manifest — the source of truth for what was
 // supposed to arrive, so scanning against it can show what's actually been
 // accounted for vs. expected. Items scanned in manifest mode still go
@@ -393,6 +403,13 @@ model Manifest {
   // no data migration, so its sourcing prediction stays attached for
   // later predicted-vs-actual comparison.
   purchased       Boolean          @default(true)
+  // Bid tracking for Analyzer candidates (see ManifestBidStatus). The
+  // amount is what Cristian bid, kept through lost/won. bidPlacedAt is when
+  // the current amount was entered; bidClosedAt when it was lost or won.
+  bidStatus       ManifestBidStatus?
+  bidAmount       Decimal?           @db.Decimal(10, 2)
+  bidPlacedAt     DateTime?
+  bidClosedAt     DateTime?
 
   lines   ManifestLine[]
   damaged ManifestDamagedEntry[]

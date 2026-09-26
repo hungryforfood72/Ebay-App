@@ -75,6 +75,10 @@ type ManifestDetail = {
   title: string;
   supplier: string;
   totalLandedCost?: number | null;
+  // Owner only. Set when this load was won through the Analyzer's bid
+  // tracking — a starting point for the landed cost.
+  bidStatus?: "active" | "lost" | "won" | null;
+  bidAmount?: number | null;
   createdAt: string;
   lines: Line[];
   unmatchedReceived: { upc: string | null; units: number }[];
@@ -392,7 +396,14 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
         {isOwner && (
           <div className="grid gap-6 lg:grid-cols-2">
             <Card>
-              <SectionHeader title="Total landed cost" description="What this whole load actually cost you, delivered." />
+              <SectionHeader
+                title="Total landed cost"
+                description={
+                  manifest.bidStatus === "won" && manifest.bidAmount != null
+                    ? `Won at $${manifest.bidAmount.toFixed(2)}. Add the buyer's fee, shipping and tax on top for what it cost you delivered.`
+                    : "What this whole load actually cost you, delivered."
+                }
+              />
               <div className="flex gap-2">
                 <div className="relative min-w-0 flex-1">
                   <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-muted-foreground">

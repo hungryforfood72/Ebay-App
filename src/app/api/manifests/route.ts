@@ -13,17 +13,34 @@ export async function GET(request: NextRequest) {
   const manifests = await prisma.manifest.findMany({
     where: { purchased },
     orderBy: { createdAt: "desc" },
-    include: { _count: { select: { lines: true, items: true } } },
+    include: {
+      _count: { select: { lines: true, items: true } },
+      // The Analyzer list shows each bid next to the recommended max bid.
+      sourcingEvaluations: {
+        where: { status: "complete" },
+        orderBy: { startedAt: "desc" },
+        take: 1,
+        select: { maxBid: true, recommendation: true },
+      },
+    },
   });
-  // totalLandedCost is what the load cost — a money figure, stripped for
-  // employees same as everywhere else financial.
-  const shaped = isOwner
-    ? manifests
-    : manifests.map((m) => {
-        const { totalLandedCost, ...rest } = m;
-        void totalLandedCost;
-        return rest;
-      });
+  // Landed cost, bids and the recommended max bid are money/bid decisions —
+  // stripped for employees same as everywhere else financial.
+  const shaped = manifests.map((m) => {
+    const { totalLandedCost, bidStatus, bidAmount, bidPlacedAt, bidClosedAt, sourcingEvaluations, ...rest } = m;
+    if (!isOwner) return rest;
+    const latest = sourcingEvaluations[0];
+    return {
+      ...rest,
+      totalLandedCost,
+      bidStatus,
+      bidAmount: bidAmount != null ? Number(bidAmount) : null,
+      bidPlacedAt,
+      bidClosedAt,
+      maxBid: latest?.maxBid != null ? Number(latest.maxBid) : null,
+      recommendation: latest?.recommendation ?? null,
+    };
+  });
   return NextResponse.json(shaped);
 }
 

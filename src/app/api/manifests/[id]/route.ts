@@ -1,7 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 import { getTargetMarginPct, MIN_BID_FLOOR } from "@/lib/sourcingAgent";
-import { getRequestUser } from "@/lib/auth";
+import { getRequestUser, ownerOnly } from "@/lib/auth";
+import type { Prisma } from "@/generated/prisma/client";
 import { parseBundleComponentUnits, soldUnitsFor, unitsFor } from "@/lib/itemUnits";
 
 // Fills each line's expected quantity in order before spilling into the
@@ -350,6 +351,14 @@ export async function GET(
     title: manifest.title,
     supplier: manifest.supplier,
     purchased: manifest.purchased,
+    ...(isOwner
+      ? {
+          bidStatus: manifest.bidStatus,
+          bidAmount: manifest.bidAmount != null ? Number(manifest.bidAmount) : null,
+          bidPlacedAt: manifest.bidPlacedAt,
+          bidClosedAt: manifest.bidClosedAt,
+        }
+      : {}),
     ...(isOwner ? { totalLandedCost } : {}),
     createdAt: manifest.createdAt,
     lines: lines.map((l) =>
@@ -445,7 +454,14 @@ export async function PATCH(
   const { id } = await params;
   const body = await request.json().catch(() => ({}));
 
-  const data: Record<string, unknown> = {};
+  // Landed cost, purchasing and bids are the owner's call. Renaming is the
+  // only change an employee can make here.
+  if (["totalLandedCost", "purchased", "bidStatus", "bidAmount"].some((k) => k in body)) {
+    const denied = ownerOnly(request);
+    if (denied) return denied;
+  }
+
+  const data: Prisma.ManifestUpdateInput = {};
   if ("title" in body) data.title = String(body.title).trim();
   if ("totalLandedCost" in body) {
     data.totalLandedCost = body.totalLandedCost === null || body.totalLandedCost === ""
@@ -458,6 +474,47 @@ export async function PATCH(
   // point, not a toggle.
   if ("purchased" in body) data.purchased = Boolean(body.purchased);
 
+  // Bid tracking (Analyzer). { bidStatus: "active", bidAmount } places or
+  // updates a bid; "lost" closes it; null clears it back to "under
+  // consideration". Marking a candidate with a bid purchased records it as
+  // won — the bid amount stays, as the winning bid.
+  const now = new Date();
+  if ("bidStatus" in body) {
+    const status = body.bidStatus;
+    if (status === "active") {
+      const amount = Number(body.bidAmount);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        return NextResponse.json({ error: "Enter the amount you bid." }, { status: 400 });
+      }
+      data.bidStatus = "active";
+      data.bidAmount = Math.round(amount * 100) / 100;
+      data.bidPlacedAt = now;
+      data.bidClosedAt = null;
+    } else if (status === "lost") {
+      data.bidStatus = "lost";
+      data.bidClosedAt = now;
+    } else if (status === null) {
+      data.bidStatus = null;
+      data.bidAmount = null;
+      data.bidPlacedAt = null;
+      data.bidClosedAt = null;
+    } else {
+      return NextResponse.json({ error: "Unknown bid status." }, { status: 400 });
+    }
+  }
+  if (body.purchased === true) {
+    const current = await prisma.manifest.findUnique({ where: { id }, select: { bidAmount: true } });
+    if (current?.bidAmount != null) {
+      data.bidStatus = "won";
+      data.bidClosedAt = now;
+    }
+  }
+
   const manifest = await prisma.manifest.update({ where: { id }, data });
+  // The full record carries landed cost and the bid — an employee's rename
+  // gets back only what they changed.
+  if (getRequestUser(request)?.role !== "owner") {
+    return NextResponse.json({ id: manifest.id, title: manifest.title });
+  }
   return NextResponse.json(manifest);
 }
