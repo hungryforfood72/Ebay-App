@@ -66,10 +66,38 @@ function parseNumber(raw: string): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+// Liquidation.com has shipped two layouts of the same export: the original
+// ("Product", "Total Retail Price") and a newer one ("UPC" first, then
+// "Product Description", ..., "Total Price") seen on 2026-09-26. Each
+// column is looked up by whichever of its names the file uses.
+const LIQUIDATION_COLUMNS = {
+  product: ["Product", "Product Description"],
+  qty: ["Quantity"],
+  upc: ["UPC"],
+  category: ["Category"],
+  subcategory: ["Subcategory"],
+  retailPrice: ["Retail Price"],
+  extRetail: ["Total Retail Price", "Total Price"],
+};
+
+function indexOfAny(header: string[], names: string[]): number {
+  for (const name of names) {
+    const i = header.indexOf(name);
+    if (i >= 0) return i;
+  }
+  return -1;
+}
+
 export function detectSupplier(headerLine: string): ManifestSupplierKey {
   const fields = parseCsvLine(headerLine).map((f) => f.trim());
   if (fields.includes("TCIN") && fields.includes("Pallet ID")) return "bstock";
-  if (fields.includes("Product") && fields.includes("Total Retail Price")) return "liquidation_com";
+  const hasLiquidationColumns = [
+    LIQUIDATION_COLUMNS.product,
+    LIQUIDATION_COLUMNS.qty,
+    LIQUIDATION_COLUMNS.retailPrice,
+    LIQUIDATION_COLUMNS.extRetail,
+  ].every((names) => indexOfAny(fields, names) >= 0);
+  if (hasLiquidationColumns) return "liquidation_com";
   return "unknown";
 }
 
@@ -109,30 +137,36 @@ function parseBStock(lines: string[]): ParsedManifestLine[] {
   return out;
 }
 
+// Some newer-layout descriptions arrive quoted twice over — wrapped in a
+// literal extra pair of quotes with their inner quotes escaped again
+// ("""Ziploc Sandwich Bags, 5.88"""" Width""" in the raw CSV). Undo the
+// second layer so it reads like every other line.
+function unwrapQuoted(value: string): string {
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    return value.slice(1, -1).replace(/""/g, '"').trim();
+  }
+  return value;
+}
+
 function parseLiquidationCom(lines: string[]): ParsedManifestLine[] {
-  const header = parseCsvLine(lines[0]);
-  const idx = (name: string) => header.indexOf(name);
-  const col = {
-    product: idx("Product"),
-    qty: idx("Quantity"),
-    upc: idx("UPC"),
-    category: idx("Category"),
-    subcategory: idx("Subcategory"),
-    retailPrice: idx("Retail Price"),
-    extRetail: idx("Total Retail Price"),
-  };
+  const header = parseCsvLine(lines[0]).map((f) => f.trim());
+  const col = Object.fromEntries(
+    Object.entries(LIQUIDATION_COLUMNS).map(([key, names]) => [key, indexOfAny(header, names)])
+  ) as Record<keyof typeof LIQUIDATION_COLUMNS, number>;
 
   const out: ParsedManifestLine[] = [];
   for (const line of lines.slice(1)) {
     if (!line.trim()) continue;
     const f = parseCsvLine(line);
-    const description = (f[col.product] ?? "").trim();
-    // The file ends with a totals row (blank/whitespace Product, aggregate
-    // quantity and dollar total) — not a real line item.
-    if (!description) continue;
+    const description = unwrapQuoted((f[col.product] ?? "").trim());
+    // The file ends with a totals row (aggregate quantity and dollar total)
+    // — not a real line item. The original layout leaves its description
+    // blank; the newer one fills the text columns with "?".
+    if (!description || description === "?") continue;
+    const upc = (f[col.upc] ?? "").trim();
     out.push({
       supplierSku: null,
-      upc: (f[col.upc] ?? "").trim() || null,
+      upc: upc && upc !== "?" ? upc : null,
       description,
       expectedQuantity: Math.round(parseNumber(f[col.qty] ?? "0")),
       retailPrice: parseNumber(f[col.retailPrice] ?? "0"),
