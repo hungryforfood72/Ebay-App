@@ -841,3 +841,35 @@ model EbayAuthToken {
   scope                 String?
   updatedAt             DateTime @updatedAt
 }
+
+// The pack-size agent's call for one UPC (see src/lib/packAdvisor.ts):
+// reused by the scan page and the Analyzer for a week, unless Cristian
+// corrects that UPC or its lessons change in the meantime.
+model PackDecision {
+  id        String   @id @default(uuid())
+  upc       String
+  packSize  Int
+  reason    String
+  createdAt DateTime @default(now())
+
+  @@index([upc, createdAt])
+}
+
+// Cristian telling the pack-size agent it got one wrong, and why. The
+// newest few go straight into the agent's next decisions, and the learning
+// pass folds them into the "pack_strategy" SourcingKnowledge note so the
+// lesson carries over to products it has never seen. Owner-only.
+model PackFeedback {
+  id                String   @id @default(uuid())
+  upc               String
+  description       String
+  category          String?
+  suggestedPackSize Int?
+  chosenPackSize    Int
+  reason            String
+  createdBy         String?
+  createdAt         DateTime @default(now())
+
+  @@index([upc, createdAt])
+  @@index([createdAt])
+}

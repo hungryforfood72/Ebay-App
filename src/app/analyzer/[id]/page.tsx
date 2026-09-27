@@ -32,7 +32,7 @@ type SourcingLineEstimate = {
   effectiveUnits: number;
   typicalPackSize: number;
   recommendedPackSize: number | null;
-  recommendedPackBasis: "listings" | "estimate" | null;
+  recommendedPackBasis: "agent" | "listings" | "estimate" | null;
   dataConfidence: string;
   flaggedDud: boolean;
   slowMover: boolean;

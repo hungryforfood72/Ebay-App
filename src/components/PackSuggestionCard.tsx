@@ -1,22 +1,29 @@
 "use client";
 
 import { Button } from "@/components/ui/Button";
+import { Field, Select, Textarea } from "@/components/ui/Input";
+import { MAX_RECOMMENDED_PACK, splitIntoPacks } from "@/lib/packSize";
 import { Boxes, LoaderCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 
 type PackPlanGroup = { packSize: number; listings: number };
 
 type PackSuggestion = {
+  isOwner: boolean;
   alreadyMultipack: boolean;
   available: number | null;
   plan: PackPlanGroup[] | null;
   recommendation: {
     packSize: number;
-    basis: "listings" | "estimate";
+    // "agent": the pack-size agent's call (src/lib/packAdvisor.ts), with a
+    // reason. The others are the formula fallback, with no reason.
+    basis: "agent" | "listings" | "estimate";
+    reason: string | null;
     compCount: number;
-    // Owner only — absent for an employee.
-    perPackPrice?: number;
-    netPerUnit?: number;
+    // Owner only — absent for an employee, null when nobody lists that
+    // pack size yet.
+    perPackPrice?: number | null;
+    netPerUnit?: number | null;
     singleNetPerUnit?: number | null;
   } | null;
 };
@@ -65,7 +72,7 @@ export function PackSuggestionCard({
     return (
       <div className="flex items-center gap-2 rounded-xl border border-border bg-background p-3 text-sm text-muted-foreground">
         <LoaderCircle className="size-4 animate-spin" aria-hidden />
-        Checking eBay for the best pack size…
+        Working out the best pack size…
       </div>
     );
   }
@@ -86,9 +93,11 @@ export function PackSuggestionCard({
             Suggested: sell as {rec.packSize > 1 ? `${rec.packSize}-packs` : "singles"}
           </p>
           <p className="mt-0.5 text-blue-900/80">
-            {rec.basis === "estimate"
-              ? `Only singles are listed on eBay, and shipping eats most of a single's price, so a ${packLabel(rec.packSize)} should earn more per item.`
-              : `Based on ${rec.compCount} eBay listing${rec.compCount === 1 ? "" : "s"} of ${rec.packSize > 1 ? `${rec.packSize}-packs` : "singles"}.`}
+            {rec.reason
+              ? rec.reason
+              : rec.basis === "estimate"
+                ? `Only singles are listed on eBay, and shipping eats most of a single's price, so a ${packLabel(rec.packSize)} should earn more per item.`
+                : `Based on ${rec.compCount} eBay listing${rec.compCount === 1 ? "" : "s"} of ${rec.packSize > 1 ? `${rec.packSize}-packs` : "singles"}.`}
             {rec.perPackPrice != null && rec.netPerUnit != null && (
               <>
                 {" "}
@@ -122,7 +131,104 @@ export function PackSuggestionCard({
               </span>
             )}
           </div>
+
+          {data.isOwner && (
+            <TeachAgent
+              key={key}
+              upc={upc}
+              manifestId={manifestId}
+              suggestedPackSize={rec.packSize}
+              onSaved={(size) => {
+                const firstGroup = data.available != null && data.available > 0 ? splitIntoPacks(data.available, size)[0] : null;
+                onApply(firstGroup?.packSize ?? size, firstGroup?.listings ?? null);
+              }}
+            />
+          )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Owner only: tell the agent it's wrong and why. Saved as a PackFeedback
+// lesson (see /api/pack-feedback) and also fills in the chosen pack size.
+function TeachAgent({
+  upc,
+  manifestId,
+  suggestedPackSize,
+  onSaved,
+}: {
+  upc: string;
+  manifestId: string | null;
+  suggestedPackSize: number;
+  onSaved: (packSize: number) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [chosen, setChosen] = useState(String(suggestedPackSize === 1 ? 2 : 1));
+  const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState<{ ok: boolean; text: string } | null>(null);
+
+  if (status?.ok) return <p className="mt-3 text-xs text-blue-900/80">{status.text}</p>;
+
+  if (!open) {
+    return (
+      <button type="button" className="mt-3 text-xs font-medium text-primary underline" onClick={() => setOpen(true)}>
+        Disagree? Teach it
+      </button>
+    );
+  }
+
+  async function save() {
+    if (!reason.trim()) return setStatus({ ok: false, text: "Say why, so it can learn from it." });
+    setSaving(true);
+    setStatus(null);
+    try {
+      const res = await fetch("/api/pack-feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ upc, manifestId, suggestedPackSize, chosenPackSize: Number(chosen), reason: reason.trim() }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error ?? "Couldn't save that.");
+      }
+      onSaved(Number(chosen));
+      setStatus({ ok: true, text: "Got it. The agent will use this on the next items it decides." });
+    } catch (e) {
+      setStatus({ ok: false, text: e instanceof Error ? e.message : "Couldn't save that." });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="mt-3 flex flex-col gap-3 rounded-lg border border-blue-200 bg-white p-3 text-foreground">
+      <Field label="How should it be sold?">
+        <Select value={chosen} onChange={(e) => setChosen(e.target.value)}>
+          {Array.from({ length: MAX_RECOMMENDED_PACK }, (_, i) => i + 1).map((n) => (
+            <option key={n} value={n}>
+              {n > 1 ? `${n}-packs` : "Singles"}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <Field label="Why?" hint="The agent learns from your reasoning, so a sentence or two helps more than just the answer.">
+        <Textarea
+          rows={3}
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="e.g. Buyers can get this at the store for less, the 3-packs are what actually sell."
+        />
+      </Field>
+      {status && !status.ok && <p className="text-xs text-danger">{status.text}</p>}
+      <div className="flex gap-2">
+        <Button size="sm" onClick={save} disabled={saving}>
+          {saving ? "Saving…" : "Save and fill in"}
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => setOpen(false)} disabled={saving}>
+          Cancel
+        </Button>
       </div>
     </div>
   );

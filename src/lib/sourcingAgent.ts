@@ -11,6 +11,7 @@ import {
 } from "./packSize";
 import { anthropic } from "./anthropic";
 import { logAiUsage } from "./aiUsage";
+import { advisePackSize } from "./packAdvisor";
 import { EbayApiError, searchActiveListings } from "./ebay";
 import type { ManifestSupplier } from "@/generated/prisma/client";
 
@@ -764,7 +765,7 @@ type LineEstimateResult = {
   typicalPackSize: number;
   // See recommendPackSize (./packSize) — null when there's too little to go on.
   recommendedPackSize: number | null;
-  recommendedPackBasis: "listings" | "estimate" | null;
+  recommendedPackBasis: "agent" | "listings" | "estimate" | null;
   dataConfidence: "own_history" | "historical_match" | "web_price_check" | "category_fallback" | "market_only";
   flaggedDud: boolean;
   marketCheckFailed: boolean;
@@ -1248,6 +1249,21 @@ async function estimateLine(
 
   const trendNudge = runTrendCheck ? await getTrendNudge(group, evaluationId) : null;
 
+  // The pack-size agent (see src/lib/packAdvisor.ts) only for lines worth
+  // listing; a dud keeps the free formula answer. Its decision is saved
+  // per UPC, so scanning this item in later reuses it instantly.
+  const packAdvice =
+    manifestUnitPackSize === 1 && !flaggedDud
+      ? await advisePackSize({
+          upc: group.upc,
+          description: group.description,
+          retailPrice: group.retailPrice,
+          category: group.category,
+          packStats,
+          evaluationId,
+        })
+      : packRecommendation;
+
   return {
     upc: group.upc,
     description: group.description,
@@ -1258,8 +1274,8 @@ async function estimateLine(
     estimatedNetPerUnit: flaggedDud ? 0 : rawNet,
     effectiveUnits,
     typicalPackSize,
-    recommendedPackSize: packRecommendation?.packSize ?? null,
-    recommendedPackBasis: packRecommendation?.basis ?? null,
+    recommendedPackSize: packAdvice?.packSize ?? null,
+    recommendedPackBasis: packAdvice?.basis ?? null,
     dataConfidence,
     flaggedDud,
     slowMover,

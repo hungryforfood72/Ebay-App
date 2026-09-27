@@ -49,6 +49,11 @@ export function detectPackSize(title: string): number {
     /\bbundle\s*of\s*(\d{1,3})\b/i,
     /\blot\s*of\s*(\d{1,3})\b/i,
     /\bcase\s*of\s*(\d{1,3})\b/i,
+    // "LOT(2)", "Lot (3)"
+    /\blot\s*\(\s*(\d{1,3})\s*\)/i,
+    // "3X Banana Boat ...", "2 x Banana Boat ..." — only at the very start,
+    // where it can't be a dimension ("4x4 gauze") or a size ("2X shirt").
+    /^\s*(\d{1,2})\s*x\s+(?=[a-z])/i,
   ];
   for (const pattern of patterns) {
     const match = title.match(pattern);
@@ -56,6 +61,16 @@ export function detectPackSize(title: string): number {
       const n = parseInt(match[1], 10);
       if (n >= 2 && n <= 48) return n; // sanity bounds — outside this range is more likely a false match (a model number, a size, etc.)
     }
+  }
+  // "3 Cans", "2 Bottles". Capped low on purpose: "12 cans" or "24
+  // bottles" is usually one retail case (soda, water), the same trap as
+  // "30 ct" above. Found live 2026-09-27: "LOT(2)", "3 Cans" and "3X ..."
+  // sunscreen listings were all read as singles, pushing the single price
+  // up and making singles look like the better way to sell it.
+  const containers = title.match(/\b(\d{1,2})\s*(?:cans|bottles|tubes|jars|canisters)\b/i);
+  if (containers) {
+    const n = parseInt(containers[1], 10);
+    if (n >= 2 && n <= 6) return n;
   }
   return 1;
 }
@@ -73,7 +88,16 @@ function median(sorted: number[]): number {
 }
 
 // What live eBay listings of a product sell for, per pack size.
-export type PackStat = { packSize: number; count: number; medianTotal: number };
+export type PackStat = {
+  packSize: number;
+  count: number;
+  medianTotal: number;
+  // The cheapest listing at this pack size — what a bargain-hunting buyer
+  // actually compares against (see src/lib/packAdvisor.ts). Absent on
+  // snapshots from before 2026-09-27.
+  lowestTotal?: number;
+  cheapestTitle?: string;
+};
 
 export type CompSummary = {
   activeCompCount: number;
@@ -88,12 +112,15 @@ export function summarizeComps(comps: { title: string; totalPrice: number }[]): 
   const perUnit: number[] = [];
   const packSizes: number[] = [];
   const totalsByPack = new Map<number, number[]>();
+  const cheapestByPack = new Map<number, { title: string; totalPrice: number }>();
   for (const c of comps) {
     const packSize = detectPackSize(c.title);
     if (isResellerLot(c.title, packSize)) continue;
     packSizes.push(packSize);
     perUnit.push(c.totalPrice / packSize);
     totalsByPack.set(packSize, [...(totalsByPack.get(packSize) ?? []), c.totalPrice]);
+    const cheapest = cheapestByPack.get(packSize);
+    if (!cheapest || c.totalPrice < cheapest.totalPrice) cheapestByPack.set(packSize, c);
   }
   perUnit.sort((a, b) => a - b);
   const packStats = [...totalsByPack.entries()]
@@ -101,6 +128,8 @@ export function summarizeComps(comps: { title: string; totalPrice: number }[]): 
       packSize,
       count: totals.length,
       medianTotal: Math.round(median(totals.sort((a, b) => a - b)) * 100) / 100,
+      lowestTotal: Math.round(cheapestByPack.get(packSize)!.totalPrice * 100) / 100,
+      cheapestTitle: cheapestByPack.get(packSize)!.title.slice(0, 120),
     }))
     .sort((a, b) => a.packSize - b.packSize);
   return {
@@ -121,7 +150,9 @@ export function parsePackStats(json: unknown): PackStat[] {
       s !== null &&
       Number.isInteger((s as PackStat).packSize) &&
       Number.isInteger((s as PackStat).count) &&
-      typeof (s as PackStat).medianTotal === "number"
+      typeof (s as PackStat).medianTotal === "number" &&
+      ((s as PackStat).lowestTotal === undefined || typeof (s as PackStat).lowestTotal === "number") &&
+      ((s as PackStat).cheapestTitle === undefined || typeof (s as PackStat).cheapestTitle === "string")
   );
 }
 
@@ -146,7 +177,7 @@ export type PackRecommendation = {
 };
 
 const MIN_COMPS_PER_PACK = 3;
-const MAX_RECOMMENDED_PACK = 6;
+export const MAX_RECOMMENDED_PACK = 6;
 // A smaller pack within this share of the best per-unit net wins: it
 // sells faster and to more buyers, and the difference is within noise.
 const NEAR_BEST_SHARE = 0.9;

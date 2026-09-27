@@ -1,8 +1,9 @@
 import { syncEbayOrders } from "@/lib/ebayOrderSync";
+import { updatePackStrategyKnowledge } from "@/lib/packAdvisor";
 import { updateSourcingKnowledge } from "@/lib/sourcingAgent";
 import { NextRequest, NextResponse } from "next/server";
 
-export const maxDuration = 90;
+export const maxDuration = 180;
 
 // Triggered by Vercel Cron (see vercel.json) — Vercel sends
 // `Authorization: Bearer $CRON_SECRET` automatically on requests it
@@ -22,6 +23,11 @@ export async function GET(request: NextRequest) {
     await updateSourcingKnowledge();
   } catch (e) {
     console.error("[cron] updateSourcingKnowledge failed", e);
+  }
+  try {
+    await updatePackStrategyKnowledge();
+  } catch (e) {
+    console.error("[cron] updatePackStrategyKnowledge failed", e);
   }
 
   return NextResponse.json(result);
