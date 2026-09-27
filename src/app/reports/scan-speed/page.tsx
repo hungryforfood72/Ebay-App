@@ -203,7 +203,7 @@ export default function ScanSpeedPage() {
                   )}
                   {t.scans > t.timedScans && (
                     <p className="mt-2 text-xs text-muted-foreground">
-                      {plural(t.scans - t.timedScans, "scan")} came right after a break with no fresh scan session to time them
+                      {plural(t.scans - t.timedScans, "scan")} came right after a break, so there was nothing to time them
                       from. They count in the totals, not the per-hour rate.
                     </p>
                   )}

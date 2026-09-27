@@ -39,13 +39,6 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
 
-type ScanSession = {
-  id: string;
-  label: string | null;
-  startedAt: string;
-  _count: { items: number };
-};
-
 type Photo = {
   id: string;
   previewUrl: string;
@@ -91,7 +84,13 @@ type Step =
 const SINGLE_STEPS: Step[] = ["mode", "upc", "quantity", "expiration", "photos", "shelfLocation", "boxWeight"];
 const BUNDLE_STEPS: Step[] = ["mode", "bundleHeroPhoto", "bundleComponents", "bundleQuantity", "shelfLocation", "boxWeight"];
 
-const ACTIVE_SESSION_KEY = "ebay-tool.activeScanSessionId";
+// Whether this device is mid-scanning, so a reload (the camera app
+// backgrounding the tab can do that) lands back in the scan flow instead of
+// the start screen. Replaced server-side scan sessions on 2026-09-27: with
+// manifests and every item saved as it's scanned, there was nothing left
+// for a session to hold on to.
+const SCANNING_KEY = "ebay-tool.scanning";
+const OLD_SESSION_KEY = "ebay-tool.activeScanSessionId";
 const ACTIVE_MANIFEST_KEY = "ebay-tool.activeManifestId";
 
 function startSinglePhotoUpload(file: File, setPhoto: (p: Photo | null) => void) {
@@ -130,8 +129,7 @@ export default function ScanPage() {
 
 function ScanPageInner() {
   const searchParams = useSearchParams();
-  const [sessions, setSessions] = useState<ScanSession[] | null>(null);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [scanning, setScanning] = useState(false);
   const [savedThisSession, setSavedThisSession] = useState(0);
 
   // Manifest mode is an addition on top of the normal flow, not a
@@ -198,8 +196,8 @@ function ScanPageInner() {
   // listed) rather than mid-sort on a manifest. Found by shelf location +
   // UPC instead of requiring an active manifest session, since there's no
   // way to know which manifest a shelf item came from just by looking at
-  // it — see GET /api/items/shelf-lookup. Reachable with no scan session or
-  // manifest picked first (rendered before the activeSessionId check
+  // it — see GET /api/items/shelf-lookup. Reachable without starting
+  // scanning or picking a manifest first (rendered before the start screen
   // below), unlike Walk-up Sale.
   const [shelfSaleMode, setShelfSaleMode] = useState(false);
   const [shelfSaleLocation, setShelfSaleLocation] = useState("");
@@ -273,21 +271,11 @@ function ScanPageInner() {
   useEffect(() => {
     // Initial hydration from localStorage/API on mount, not a reaction to
     // state we own.
-    const stored = localStorage.getItem(ACTIVE_SESSION_KEY);
-    const manifestIdFromUrl = searchParams.get("manifestId");
-
-    fetch("/api/sessions")
-      .then((r) => r.json())
-      .then((data: ScanSession[]) => {
-        setSessions(data);
-        if (stored && data.some((s) => s.id === stored)) {
-          setActiveSessionId(stored);
-        } else if (manifestIdFromUrl) {
-          // Arrived via "Scan into this manifest" with no session already
-          // running — start one immediately instead of making them pick.
-          startSession();
-        }
-      });
+    // A device still carrying an old scan-session id was mid-scan too.
+    const wasScanning = localStorage.getItem(SCANNING_KEY) === "1" || localStorage.getItem(OLD_SESSION_KEY) !== null;
+    localStorage.removeItem(OLD_SESSION_KEY);
+    // Arrived via "Scan into this manifest": straight into scanning.
+    if (wasScanning || searchParams.get("manifestId")) startScanning();
     fetch("/api/shelf-locations")
       .then((r) => r.json())
       .then(setShelfLocations);
@@ -309,29 +297,15 @@ function ScanPageInner() {
       .catch(() => setManifestTitle(null));
   }, [activeManifestId]);
 
-  async function startSession(existing?: ScanSession) {
-    if (existing) {
-      setActiveSessionId(existing.id);
-      localStorage.setItem(ACTIVE_SESSION_KEY, existing.id);
-      return;
-    }
-    const res = await fetch("/api/sessions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
-    const session: ScanSession = await res.json();
-    setSessions((prev) => [session, ...(prev ?? [])]);
-    setActiveSessionId(session.id);
-    localStorage.setItem(ACTIVE_SESSION_KEY, session.id);
+  function startScanning() {
+    setScanning(true);
+    localStorage.setItem(SCANNING_KEY, "1");
   }
 
-  async function finishSession() {
-    if (!activeSessionId) return;
-    await fetch(`/api/sessions/${activeSessionId}`, { method: "PATCH" });
-    localStorage.removeItem(ACTIVE_SESSION_KEY);
+  function finishScanning() {
+    localStorage.removeItem(SCANNING_KEY);
     localStorage.removeItem(ACTIVE_MANIFEST_KEY);
-    setActiveSessionId(null);
+    setScanning(false);
     setActiveManifestId(null);
     setManifestTitle(null);
     setDamagedMode(false);
@@ -341,9 +315,6 @@ function ScanPageInner() {
     setShelfSaleMode(false);
     resetShelfSale();
     setSavedThisSession(0);
-    setSessions((prev) =>
-      (prev ?? []).filter((s) => s.id !== activeSessionId)
-    );
   }
 
   async function saveDamagedEntry() {
@@ -742,7 +713,6 @@ function ScanPageInner() {
                 expirationDate: c.expirationDate || null,
               }))
             : undefined,
-          scanSessionId: activeSessionId,
           manifestId: activeManifestId,
         }),
       });
@@ -767,7 +737,7 @@ function ScanPageInner() {
   }
 
   // Selling something already on the shelf — no session or manifest needs
-  // to be picked first, so this is checked ahead of the activeSessionId
+  // to be picked first, so this is checked ahead of the start-scanning
   // landing screen below rather than nested inside it.
   if (shelfSaleMode) {
     const packMultiplier = shelfSaleLookup ? walkupPackMultiplier(shelfSaleLookup.alreadyListed, true) : 1;
@@ -921,16 +891,16 @@ function ScanPageInner() {
     );
   }
 
-  if (activeSessionId === null) {
+  if (!scanning) {
     return (
-      <AppShell width="narrow" title="Scan inventory" subtitle="Start a session, or sell something already on the shelf.">
+      <AppShell width="narrow" title="Scan inventory" subtitle="Start scanning, or sell something already on the shelf.">
         <div className="flex flex-col gap-3">
           <OptionCard
             primary
             icon={ScanBarcode}
-            title="Start new scan session"
+            title="Start scanning"
             description="Photograph, scan, and shelve items for listing."
-            onClick={() => startSession()}
+            onClick={startScanning}
           />
           <OptionCard
             href="/manifests"
@@ -945,33 +915,6 @@ function ScanPageInner() {
             onClick={() => setShelfSaleMode(true)}
           />
 
-          {sessions === null && <p className="px-1 text-sm text-muted-foreground">Loading sessions…</p>}
-
-          {sessions && sessions.length > 0 && (
-            <section className="mt-5">
-              <SectionHeader title="Resume a session" description="Pick up where you left off." />
-              <div className="flex flex-col gap-2">
-                {sessions.map((s) => (
-                  <button
-                    key={s.id}
-                    type="button"
-                    onClick={() => startSession(s)}
-                    className="flex items-center gap-3 rounded-xl border border-border bg-surface p-4 text-left shadow-sm transition-colors hover:bg-muted active:bg-muted"
-                  >
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate font-medium text-foreground">
-                        {s.label ?? new Date(s.startedAt).toLocaleString()}
-                      </span>
-                      <span className="text-sm text-muted-foreground">
-                        {s._count.items} item{s._count.items === 1 ? "" : "s"} saved
-                      </span>
-                    </span>
-                    <ChevronRight className="size-5 shrink-0 text-muted-foreground" aria-hidden />
-                  </button>
-                ))}
-              </div>
-            </section>
-          )}
         </div>
       </AppShell>
     );
@@ -1210,13 +1153,13 @@ function ScanPageInner() {
       focused
       width="narrow"
       title="Scanning"
-      subtitle={`${savedThisSession} saved this session`}
+      subtitle={`${savedThisSession} saved`}
       actions={
         <>
           <Link href="/review" className={buttonClasses({ variant: "outline", size: "sm" })}>
             Review
           </Link>
-          <Button variant="danger-ghost" size="sm" onClick={finishSession}>
+          <Button variant="danger-ghost" size="sm" onClick={finishScanning}>
             Finish
           </Button>
         </>

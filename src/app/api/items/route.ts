@@ -91,7 +91,6 @@ export async function POST(request: NextRequest) {
       // Who's signed in, not anything the client sends — this is what the
       // scan-speed report (/reports/scan-speed) attributes the scan to.
       scannedBy: getRequestUser(request)?.username ?? null,
-      scanSessionId: body.scanSessionId ?? null,
       manifestId: body.manifestId ?? null,
       isBundle,
       bundleComponents: isBundle ? body.bundleComponents : undefined,

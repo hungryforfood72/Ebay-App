@@ -10,7 +10,8 @@ import { prisma } from "./prisma";
 // longer than the idle cutoff are a break (lunch, a phone call, the end of
 // the day), not a slow scan: the scan after one starts a new stretch, and
 // is timed from when its scan session was started if that was recent,
-// otherwise left untimed. Untimed scans still count toward the totals,
+// otherwise left untimed. Scan sessions stopped being created on
+// 2026-09-27, so only older scans can still be timed that way. Untimed scans still count toward the totals,
 // just not the per-hour rate, so a break never drags the rate down.
 
 export type ScanKind = "item" | "multipack" | "bundle" | "damaged" | "dud";

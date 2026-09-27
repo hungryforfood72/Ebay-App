@@ -79,6 +79,9 @@ model Session {
   @@index([userId])
 }
 
+// No longer created (removed from the scan page 2026-09-27; manifests and
+// per-item saves made them redundant). Kept so older items keep their
+// link and the scan-speed report can still time older stretches.
 model ScanSession {
   id        String    @id @default(uuid())
   label     String?
