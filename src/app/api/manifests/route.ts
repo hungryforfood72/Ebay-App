@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { parseManifestCsv } from "@/lib/manifestParsers";
-import { getRequestUser } from "@/lib/auth";
+import { getRequestUser, ownerOnly } from "@/lib/auth";
 import { NextRequest, NextResponse } from "next/server";
 
 // ?purchased=false returns Analyzer candidates (not yet bought); anything
@@ -49,7 +49,11 @@ export async function GET(request: NextRequest) {
 // CSV and consistent with how small text payloads are handled elsewhere.
 // purchased defaults true (a real, bought load) — the Analyzer's upload
 // flow is the only caller that ever passes false.
+// Owner only (Cristian, 2026-09-27): employees scan against manifests but
+// never upload them.
 export async function POST(request: NextRequest) {
+  const denied = ownerOnly(request);
+  if (denied) return denied;
   const body = await request.json().catch(() => ({}));
   const title = String(body.title ?? "").trim();
   const csvContent = String(body.csvContent ?? "");

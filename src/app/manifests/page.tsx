@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/Button";
 import { Card, SectionHeader } from "@/components/ui/Card";
 import { Field, Input } from "@/components/ui/Input";
 import { ChevronRight, FileSpreadsheet, Upload } from "lucide-react";
+import { useCurrentUser } from "@/components/UserNav";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
@@ -25,6 +26,9 @@ const SUPPLIER_LABELS: Record<string, string> = {
 };
 
 export default function ManifestsPage() {
+  // Uploading is owner only (the API enforces it too); employees just pick
+  // a manifest to scan against.
+  const isOwner = useCurrentUser()?.role === "owner";
   const [manifests, setManifests] = useState<Manifest[] | null>(null);
   const [title, setTitle] = useState("");
   const [uploading, setUploading] = useState(false);
@@ -71,40 +75,49 @@ export default function ManifestsPage() {
   }
 
   return (
-    <AppShell title="Manifests" subtitle="Upload a supplier manifest, then scan against it to reconcile what arrived.">
+    <AppShell
+      title="Manifests"
+      subtitle={
+        isOwner
+          ? "Upload a supplier manifest, then scan against it to reconcile what arrived."
+          : "Pick a manifest to see what arrived and what's left to scan."
+      }
+    >
       <div className="flex flex-col gap-6">
-        <Card>
-          <SectionHeader
-            title="Upload a new manifest"
-            description="BStock and Liquidation.com CSV exports — the format is detected automatically."
-          />
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-            <Field label="Title" hint="Optional — auto-filled from the file if left blank." className="flex-1">
-              <Input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. BStock pallet 9/24" />
-            </Field>
-            <Button
-              size="lg"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={uploading}
-              className="sm:mb-6"
-            >
-              <Upload className="size-5" aria-hidden />
-              {uploading ? "Parsing…" : "Choose CSV file"}
-            </Button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".csv,text/csv"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) handleFile(file);
-              }}
-              disabled={uploading}
-              className="hidden"
+        {isOwner && (
+          <Card>
+            <SectionHeader
+              title="Upload a new manifest"
+              description="BStock and Liquidation.com CSV exports — the format is detected automatically."
             />
-          </div>
-          {error && <p className="mt-3 text-sm font-medium text-danger">{error}</p>}
-        </Card>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+              <Field label="Title" hint="Optional — auto-filled from the file if left blank." className="flex-1">
+                <Input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. BStock pallet 9/24" />
+              </Field>
+              <Button
+                size="lg"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+                className="sm:mb-6"
+              >
+                <Upload className="size-5" aria-hidden />
+                {uploading ? "Parsing…" : "Choose CSV file"}
+              </Button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv,text/csv"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) handleFile(file);
+                }}
+                disabled={uploading}
+                className="hidden"
+              />
+            </div>
+            {error && <p className="mt-3 text-sm font-medium text-danger">{error}</p>}
+          </Card>
+        )}
 
         <section>
           <SectionHeader
