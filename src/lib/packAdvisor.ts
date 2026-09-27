@@ -266,7 +266,7 @@ ${newFeedback.map((f) => `- "${f.description}"${f.category ? ` (${f.category})` 
 How fast his own eBay listings have actually sold, by category and pack size (all time):
 ${speedByCategory.join("\n") || "not enough data yet"}
 
-Rewrite the lessons. Keep Cristian's own stated reasoning. Turn each correction into a general lesson about why, one that would apply to other products, not a note about that one item. Use the sell-speed data only where there are enough listings to mean something, and say so when it backs up or contradicts a lesson. Short plain sentences, at most 10. Output only the lessons.`;
+Rewrite the lessons. Keep Cristian's own stated reasoning, including any explanation he's given for his own data. Turn each correction into a general lesson about why, one that would apply to other products, not a note about that one item. Use the sell-speed data only where there are enough listings to mean something, and say so when it backs up or contradicts a lesson. A category that sells slowly at every pack size says the products are slow sellers, not which pack size is better: only compare pack sizes against each other. Short plain sentences, at most 10. Output only the lessons.`;
 
   try {
     const response = await anthropic.messages.create(
