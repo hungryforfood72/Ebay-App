@@ -521,7 +521,13 @@ function ItemCard({
     median: number | null;
     low: number | null;
     high: number | null;
+    // "same_pack": listings of this exact pack size. "scaled": none exist,
+    // so median is the per-unit median of other pack sizes times packSize.
+    basis?: "same_pack" | "scaled";
+    packSize?: number;
+    // For the whole listing (unitRetail x packSize).
     retailPrice: number | null;
+    unitRetail?: number | null;
   } | null>(null);
   const [priceResearchError, setPriceResearchError] = useState<string | null>(null);
   const priceResearchedFor = useRef<string | null>(null);
@@ -543,7 +549,15 @@ function ItemCard({
         // Manifest retail price doesn't depend on the eBay call succeeding
         // — still show it even if the comp search itself failed.
         if (result.retailPrice != null) {
-          setPriceResearchResult({ count: 0, median: null, low: null, high: null, retailPrice: result.retailPrice });
+          setPriceResearchResult({
+            count: 0,
+            median: null,
+            low: null,
+            high: null,
+            packSize: result.packSize,
+            retailPrice: result.retailPrice,
+            unitRetail: result.unitRetail,
+          });
         }
         throw new Error(result.error ?? "Price research failed.");
       }
@@ -762,7 +776,9 @@ function ItemCard({
               </Field>
               <div className="mt-2 flex flex-col gap-1 rounded-lg bg-background p-2.5 text-xs">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium text-muted-foreground">Active comps (shipped)</span>
+                  <span className="font-medium text-muted-foreground">
+                    Active comps{priceResearchResult?.packSize && priceResearchResult.packSize > 1 ? ` for ${priceResearchResult.packSize}-packs` : ""} (shipped)
+                  </span>
                   <button
                     type="button"
                     onClick={researchPrice}
@@ -778,16 +794,28 @@ function ItemCard({
                 {!priceResearchError && priceResearchResult && priceResearchResult.count === 0 && (
                   <span className="text-muted-foreground">No active comps found.</span>
                 )}
-                {priceResearchResult && priceResearchResult.count > 0 && (
+                {priceResearchResult && priceResearchResult.count > 0 && priceResearchResult.basis !== "scaled" && (
                   <span className="text-foreground">
                     ${priceResearchResult.low?.toFixed(2)}–${priceResearchResult.high?.toFixed(2)} · median{" "}
                     <strong>${priceResearchResult.median?.toFixed(2)}</strong> · {priceResearchResult.count} comp
                     {priceResearchResult.count === 1 ? "" : "s"}
                   </span>
                 )}
+                {priceResearchResult && priceResearchResult.count > 0 && priceResearchResult.basis === "scaled" && (
+                  <span className="text-foreground">
+                    No {priceResearchResult.packSize}-pack listings. Other pack sizes work out to about{" "}
+                    <strong>${priceResearchResult.median?.toFixed(2)}</strong> for {priceResearchResult.packSize} (
+                    {priceResearchResult.count} comp{priceResearchResult.count === 1 ? "" : "s"})
+                  </span>
+                )}
                 {priceResearchResult?.retailPrice != null && (
                   <span className="text-foreground">
                     Manifest retail ${priceResearchResult.retailPrice.toFixed(2)}
+                    {priceResearchResult.packSize && priceResearchResult.packSize > 1 && priceResearchResult.unitRetail != null && (
+                      <span className="text-muted-foreground">
+                        {` for ${priceResearchResult.packSize} ($${priceResearchResult.unitRetail.toFixed(2)} each)`}
+                      </span>
+                    )}
                     {priceResearchResult.median != null && (
                       <span className="text-muted-foreground">
                         {` (comps ${priceResearchResult.median >= priceResearchResult.retailPrice ? "above" : "below"} retail)`}
