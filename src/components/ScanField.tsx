@@ -103,10 +103,10 @@ export function ScanField({
     // A new scan into a field whose last scan was already submitted (e.g. a
     // lookup that came back "not found") replaces it instead of appending
     // to it — otherwise the rescan becomes a 24-digit mashup of two
-    // barcodes.
+    // barcodes. Keeps only what was just inserted, wherever the caret was.
     const next =
-      !typing && handledValue.current !== null && handledValue.current === value && raw.startsWith(value)
-        ? raw.slice(value.length)
+      !typing && handledValue.current !== null && handledValue.current === value && raw.length > value.length
+        ? insertedText(value, raw)
         : raw;
     const now = Date.now();
     const added = raw.length - value.length;
@@ -163,7 +163,11 @@ export function ScanField({
             autoCapitalize="off"
             spellCheck={false}
             enterKeyHint="go"
-            list={list}
+            // Only while typing: on Android a field with suggestions attached
+            // brings the keyboard up even with inputMode="none" (Cristian,
+            // 2026-09-27: the keyboard kept popping up on the shelf
+            // location scan, the only scan field with a list).
+            list={typing ? list : undefined}
             autoFocus={autoFocus}
             value={value}
             onChange={(e) => handleChange(e.target.value)}
@@ -173,7 +177,16 @@ export function ScanField({
                 submit();
               }
             }}
-            onFocus={() => setFocused(true)}
+            onFocus={(e) => {
+              setFocused(true);
+              // Coming back to a field that already has a scan in it (the
+              // Back button remounts it, which forgets the scan above): on
+              // the handheld the next scan replaces it, and on a desktop
+              // the text is selected so typing or a scan replaces it too.
+              if (typing || !value) return;
+              if (touchDevice.current) handledValue.current = value;
+              else e.currentTarget.select();
+            }}
             onBlur={() => setFocused(false)}
             // The full prompt is in the hint line below — too long to fit
             // in the box itself at the scanner's width.
@@ -225,4 +238,14 @@ export function ScanField({
       </p>
     </div>
   );
+}
+
+// The characters added between `prev` and `next`, e.g. insertedText("123",
+// "1239") === "9" and insertedText("123", "0123") === "0".
+function insertedText(prev: string, next: string): string {
+  let start = 0;
+  while (start < prev.length && prev[start] === next[start]) start++;
+  let end = 0;
+  while (end < prev.length - start && prev[prev.length - 1 - end] === next[next.length - 1 - end]) end++;
+  return next.slice(start, next.length - end);
 }

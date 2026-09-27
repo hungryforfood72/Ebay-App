@@ -1,7 +1,7 @@
 import { getRequestUser } from "@/lib/auth";
 import { EbayApiError, searchActiveListings } from "@/lib/ebay";
 import { parseBundleComponentUnits, unitsFor } from "@/lib/itemUnits";
-import { advisePackSize } from "@/lib/packAdvisor";
+import { advisePackSize, savedPackDecision } from "@/lib/packAdvisor";
 import { detectPackSize, netPerUnit, parsePackStats, splitIntoPacks, summarizeComps, type PackStat } from "@/lib/packSize";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@/generated/prisma/client";
@@ -40,7 +40,19 @@ export async function GET(request: NextRequest) {
   let recommendation = null;
   let reason: string | null = null;
   let stats: PackStat[] = [];
-  if (!alreadyMultipack) {
+  // The Analyzer (or an earlier scan) already decided this UPC: use that
+  // with no eBay lookup at all, so the card shows instantly. The owner's
+  // dollar figures come from the newest saved snapshot, however old.
+  const saved = alreadyMultipack ? null : await savedPackDecision(upc);
+  if (saved) {
+    recommendation = saved;
+    reason = saved.reason;
+    const snapshot = await prisma.marketCompSnapshot.findFirst({
+      where: { upc, packStats: { not: Prisma.DbNull } },
+      orderBy: { capturedAt: "desc" },
+    });
+    stats = snapshot ? parsePackStats(snapshot.packStats) : [];
+  } else if (!alreadyMultipack) {
     const since = new Date(Date.now() - PACK_STATS_MAX_AGE_DAYS * 24 * 60 * 60 * 1000);
     const snapshot = await prisma.marketCompSnapshot.findFirst({
       where: { upc, capturedAt: { gte: since }, packStats: { not: Prisma.DbNull } },

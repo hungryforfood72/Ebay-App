@@ -28,7 +28,11 @@ import {
 // ---------------------------------------------------------------------------
 
 export const PACK_STRATEGY_SCOPE = "pack_strategy";
-const DECISION_REUSE_DAYS = 7;
+// Long enough to cover the gap between running the Analyzer before a bid
+// and the pallet actually arriving to be scanned, so Lizvet's scan reuses
+// the Analyzer's call instead of paying for a new one (Cristian's ask,
+// 2026-09-27). Any new correction from Cristian still invalidates it.
+const DECISION_REUSE_DAYS = 30;
 const FEEDBACK_EXAMPLES = 8;
 // The learning pass re-summarizes sell-speed data at most this often when
 // there's no new correction from Cristian, so the lessons (and every
@@ -58,23 +62,15 @@ export async function advisePackSize(input: {
   // weigh. Same "no suggestion" as before.
   if (input.packStats.length === 0) return null;
 
+  if (input.upc) {
+    const saved = await savedPackDecision(input.upc);
+    if (saved) return saved;
+  }
+
   const [lessons, feedback] = await Promise.all([
     prisma.sourcingKnowledge.findUnique({ where: { scope: PACK_STRATEGY_SCOPE } }),
     prisma.packFeedback.findMany({ orderBy: { createdAt: "desc" }, take: 40 }),
   ]);
-
-  if (input.upc) {
-    const latestForUpc = feedback.find((f) => f.upc === input.upc)?.createdAt ?? null;
-    const cached = await prisma.packDecision.findFirst({
-      where: { upc: input.upc, createdAt: { gte: new Date(Date.now() - DECISION_REUSE_DAYS * DAY_MS) } },
-      orderBy: { createdAt: "desc" },
-    });
-    const stale =
-      !cached ||
-      (latestForUpc && latestForUpc > cached.createdAt) ||
-      (lessons && lessons.updatedAt > cached.createdAt);
-    if (cached && !stale) return { packSize: cached.packSize, reason: cached.reason, basis: "agent" };
-  }
 
   const examples = feedback
     .map((f) => ({
@@ -138,6 +134,22 @@ export async function advisePackSize(input: {
     const rec = recommendPackSize(input.packStats, input.retailPrice);
     return rec ? { packSize: rec.packSize, reason: null, basis: rec.basis } : null;
   }
+}
+
+// A still-valid earlier call for this UPC, from the Analyzer or an earlier
+// scan. Any correction from Cristian made since (for any product) retires
+// it, because a correction is a lesson that can change other calls too.
+// The weekly sell-speed refresh of the lessons doesn't, or every saved call
+// would be thrown away each week.
+export async function savedPackDecision(upc: string): Promise<PackAdvice | null> {
+  const cached = await prisma.packDecision.findFirst({
+    where: { upc, createdAt: { gte: new Date(Date.now() - DECISION_REUSE_DAYS * DAY_MS) } },
+    orderBy: { createdAt: "desc" },
+  });
+  if (!cached) return null;
+  const newerCorrection = await prisma.packFeedback.findFirst({ where: { createdAt: { gt: cached.createdAt } }, select: { id: true } });
+  if (newerCorrection) return null;
+  return { packSize: cached.packSize, reason: cached.reason, basis: "agent" };
 }
 
 function buildPrompt(input: {
