@@ -1,5 +1,6 @@
 import { getRequestUser } from "@/lib/auth";
-import { cogsPerUnitByManifest } from "@/lib/cogs";
+import { unitCostForScan } from "@/lib/cogs";
+import { getTargetMarginPct } from "@/lib/sourcingAgent";
 import { typicalSingleLabelCost } from "@/lib/shippingCost";
 import { EbayApiError, searchActiveListings } from "@/lib/ebay";
 import { parseBundleComponentUnits, unitsFor } from "@/lib/itemUnits";
@@ -107,30 +108,43 @@ export async function GET(request: NextRequest) {
   const available = manifestId && lines.length > 0 ? await unitsLeftOnManifest(manifestId, upc, lines) : null;
   let plan = recommendation && available != null && available > 0 ? splitIntoPacks(available, recommendation.packSize) : null;
 
-  // Leftovers that can't fill the recommended pack (1 lotion when it says
-  // 3-packs), or singles when singles are the call: listed on their own they
-  // can sell for less than the label and fees cost (Cristian's $8 sale with
-  // a $7 label). Those come out of the plan as "set aside" — bundle them
-  // with other things or sell them in person. Off a manifest there's no
-  // count, so the check is on a single, as a heads-up.
-  let setAside: { units: number | null; packSize: number; worth: ListingWorth } | null = null;
+  // Units that shouldn't be listed at the size they'd have to go in. They
+  // come out of the plan and Lizvet sets them aside for Cristian to decide
+  // on later (a bundle, eBay Live, Whatnot) — his rules, 2026-09-28:
+  // - "slow_single": a lone single of something the call says to sell in
+  //   multi-packs. That call means singles of it don't sell well, so it's set
+  //   aside no matter what the math says (1 lotion when it says 3-packs).
+  // - "low_return": any other leftover that can't fill the recommended pack
+  //   (or a single, when singles are the call) and wouldn't make his target
+  //   profit on what the items cost, after fees and a real label cost.
+  // Off a manifest there's no count, so it's a heads-up about a single.
+  type SetAsideWhy = "slow_single" | "low_return";
+  let setAside: { units: number | null; packSize: number; why: SetAsideWhy; worth: ListingWorth | null } | null = null;
+  let targetReturnPct: number | null = null;
   if (recommendation) {
-    const [labelCost, unitCost] = await Promise.all([
+    const [labelCost, unitCost, target] = await Promise.all([
       typicalSingleLabelCost(),
-      manifestId ? cogsPerUnitByManifest(manifestId).then((m) => m.get(upc) ?? null) : Promise.resolve(null),
+      manifestId ? unitCostForScan(manifestId, upc) : Promise.resolve(null),
+      getTargetMarginPct(),
     ]);
+    targetReturnPct = target;
     const retailPrice = lines[0] ? Number(lines[0].retailPrice) : null;
-    const worthOf = (packSize: number) => listingWorth({ packSize, stats, retailPrice, unitCost, labelCost });
-    const undersized = (packSize: number) => packSize < recommendation!.packSize || recommendation!.packSize === 1;
+    const recommended = recommendation.packSize;
+    const verdict = (packSize: number): { why: SetAsideWhy; worth: ListingWorth | null } | null => {
+      if (packSize >= recommended && recommended > 1) return null; // a full pack (or bigger)
+      const worth = listingWorth({ packSize, stats, retailPrice, unitCost, labelCost, targetReturnPct: target });
+      if (packSize === 1 && recommended > 1) return { why: "slow_single", worth };
+      return worth && !worth.worthIt ? { why: "low_return", worth } : null;
+    };
     if (plan) {
       const kept: typeof plan = [];
       let asideUnits = 0;
-      let aside: { packSize: number; worth: ListingWorth } | null = null;
+      let aside: { packSize: number; why: SetAsideWhy; worth: ListingWorth | null } | null = null;
       for (const group of plan) {
-        const worth = undersized(group.packSize) ? worthOf(group.packSize) : null;
-        if (worth && !worth.worthIt) {
+        const v = verdict(group.packSize);
+        if (v) {
           asideUnits += group.packSize * group.listings;
-          aside = { packSize: group.packSize, worth };
+          aside = { packSize: group.packSize, ...v };
         } else {
           kept.push(group);
         }
@@ -138,8 +152,8 @@ export async function GET(request: NextRequest) {
       plan = kept;
       if (aside) setAside = { units: asideUnits, ...aside };
     } else if (available == null) {
-      const worth = worthOf(1);
-      if (worth && !worth.worthIt) setAside = { units: null, packSize: 1, worth };
+      const v = verdict(1);
+      if (v) setAside = { units: null, packSize: 1, ...v };
     }
   }
 
@@ -157,12 +171,15 @@ export async function GET(request: NextRequest) {
     setAside: setAside && {
       units: setAside.units,
       packSize: setAside.packSize,
-      ...(isOwner
+      why: setAside.why,
+      ...(isOwner && setAside.worth
         ? {
             price: setAside.worth.price,
             label: setAside.worth.label,
             itemCost: setAside.worth.itemCost,
-            net: setAside.worth.net,
+            profit: setAside.worth.profit,
+            returnPct: setAside.worth.returnPct,
+            targetReturnPct,
           }
         : {}),
     },

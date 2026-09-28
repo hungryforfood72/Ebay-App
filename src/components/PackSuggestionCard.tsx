@@ -19,10 +19,15 @@ type PackSuggestion = {
   setAside: {
     units: number | null;
     packSize: number;
+    // "slow_single": a lone single of something meant for multi-packs.
+    // "low_return": wouldn't make Cristian's target profit on its cost.
+    why: "slow_single" | "low_return";
     price?: number;
     label?: number;
-    itemCost?: number;
-    net?: number;
+    itemCost?: number | null;
+    profit?: number;
+    returnPct?: number | null;
+    targetReturnPct?: number | null;
   } | null;
   recommendation: {
     packSize: number;
@@ -174,10 +179,9 @@ export function PackSuggestionCard({
   );
 }
 
-// Units that would lose money (or near enough) listed at the only size
-// they can go in — Cristian's rule: don't sell something for $8 when the
-// label is $7 and fees push it under. Set it aside to bundle with other
-// things or sell in person.
+// Units not worth listing at the only size they can go in (see
+// /api/pack-suggestion) — Lizvet sets them aside and moves on; Cristian
+// decides what happens to them later.
 function SetAsideNote({
   setAside,
   recommendedPackSize,
@@ -185,30 +189,49 @@ function SetAsideNote({
   setAside: NonNullable<PackSuggestion["setAside"]>;
   recommendedPackSize: number;
 }) {
-  const what = setAside.packSize > 1 ? `a ${setAside.packSize}-pack` : "a single";
-  const count =
-    setAside.units == null
+  const n = setAside.units;
+  const title =
+    n == null
       ? recommendedPackSize > 1
-        ? `If you have fewer than ${recommendedPackSize}, don't list them on their own.`
-        : "Don't list this on its own."
-      : `Don't list ${setAside.units === 1 ? "this one" : `these ${setAside.units}`} on ${setAside.units === 1 ? "its" : "their"} own.`;
+        ? `If you have fewer than ${recommendedPackSize}, set them aside.`
+        : "Set this aside."
+      : n === 1
+        ? "Set this one aside."
+        : `Set these ${n} aside.`;
+  const what = setAside.packSize > 1 ? `a ${setAside.packSize}-pack` : "a single";
+  const why =
+    setAside.why === "slow_single"
+      ? `Singles of this don't sell well on their own, it's meant to go out as ${recommendedPackSize}-packs.`
+      : `As ${what} it wouldn't make enough profit after shipping and fees.`;
   return (
     <div className="mt-3 flex gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-950">
       <PackageMinus className="mt-0.5 size-5 shrink-0 text-amber-600" aria-hidden />
       <div className="min-w-0">
-        <p className="font-semibold">{count}</p>
+        <p className="font-semibold">{title}</p>
         <p className="mt-0.5 text-amber-900/80">
-          As {what} it would likely lose money after shipping and fees. Set it aside to bundle with other things
-          or sell in person.
-          {setAside.price != null && setAside.label != null && setAside.net != null && (
-            <>
-              {" "}
-              It would likely sell for about {money(setAside.price)}. After ~{money(setAside.label)} shipping
-              {setAside.itemCost ? <>, fees and {money(setAside.itemCost)} item cost</> : <> and fees</>}{" "}
-              {setAside.net < 0 ? <>you&apos;d lose {money(-setAside.net)}</> : <>you&apos;d keep only {money(setAside.net)}</>}.
-            </>
-          )}
+          {why} Don&apos;t list {n === 1 || n == null ? "it" : "them"}, just set {n === 1 || n == null ? "it" : "them"}{" "}
+          aside and move on to the next item.
         </p>
+        {setAside.price != null && setAside.label != null && setAside.profit != null && (
+          <p className="mt-1.5 text-xs text-amber-900/70">
+            As {what}: sells for about {money(setAside.price)}, minus ~{money(setAside.label)} shipping, fees
+            {setAside.itemCost != null ? <> and {money(setAside.itemCost)} item cost</> : null} ={" "}
+            {setAside.profit < 0 ? `a ${money(-setAside.profit)} loss` : `${money(setAside.profit)} profit`}
+            {setAside.itemCost == null ? (
+              <> (no landed cost entered for this load yet)</>
+            ) : setAside.targetReturnPct != null ? (
+              setAside.profit < 0 || setAside.returnPct == null ? (
+                <> (target is {setAside.targetReturnPct}% on cost)</>
+              ) : (
+                <>
+                  {" "}
+                  ({Math.round(setAside.returnPct)}% on cost, target {setAside.targetReturnPct}%)
+                </>
+              )
+            ) : null}
+            .
+          </p>
+        )}
       </div>
     </div>
   );

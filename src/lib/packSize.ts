@@ -258,33 +258,36 @@ export function splitIntoPacks(units: number, packSize: number): { packSize: num
   ];
 }
 
-// Below this, a listing isn't worth the time to list, pack and ship.
-const MIN_WORTHWHILE_NET = 1;
+// Without an item cost to measure a return on (no landed cost entered for
+// the load), a listing at least has to clear this after fees and shipping.
+const MIN_NET_WITHOUT_COST = 1;
 
 export type ListingWorth = {
   worthIt: boolean;
-  // Realistic buyer-paid price for the whole listing, its label, and what's
-  // left after fees, label and the items' own cost.
+  // Realistic buyer-paid price for the whole listing, its label, what the
+  // items in it cost, and the profit after all of that.
   price: number;
   label: number;
-  itemCost: number;
-  net: number;
+  itemCost: number | null;
+  profit: number;
+  // profit / itemCost, as a percent — null without an item cost.
+  returnPct: number | null;
 };
 
-// Whether a listing of `packSize` units is worth making at all — for the
-// leftover that can't fill the recommended pack (1 lotion when it says
-// 3-packs). Cristian: don't sell something for $8 when shipping is $7 and
-// fees push it into a loss; set it aside for a bundle or an in-person sale.
-// The price is the typical listing at that size, or the cheapest per-unit
-// rate across pack sizes scaled to it when nobody lists that size, capped
-// at 1.5x store retail: a single of an everyday product priced above the
-// store just sits.
+// Whether a listing of `packSize` units is worth making — for the leftover
+// that can't fill the recommended pack. Cristian's rule (2026-09-28): each
+// sale should make his target profit (the Analyzer's target margin, 35%)
+// on what he paid for the items. The price is the typical listing at that
+// size, or the cheapest per-unit rate across pack sizes scaled to it when
+// nobody lists that size, capped at 1.5x store retail: a single of an
+// everyday product priced above the store just sits.
 export function listingWorth(input: {
   packSize: number;
   stats: PackStat[];
   retailPrice: number | null;
   unitCost: number | null;
   labelCost: number;
+  targetReturnPct: number;
 }): ListingWorth | null {
   const usable = input.stats.filter((s) => s.count > 0 && s.medianTotal > 0);
   if (usable.length === 0) return null;
@@ -295,7 +298,9 @@ export function listingWorth(input: {
     price = Math.min(price, input.retailPrice * 1.5 * input.packSize);
   }
   const label = input.labelCost + SHIPPING_PER_EXTRA_UNIT * (input.packSize - 1);
-  const itemCost = (input.unitCost ?? 0) * input.packSize;
-  const net = price * (1 - FALLBACK_FEE_RATE) - FALLBACK_FEE_FIXED - label - itemCost;
-  return { worthIt: net >= MIN_WORTHWHILE_NET, price, label, itemCost, net };
+  const itemCost = input.unitCost != null && input.unitCost > 0 ? input.unitCost * input.packSize : null;
+  const profit = price * (1 - FALLBACK_FEE_RATE) - FALLBACK_FEE_FIXED - label - (itemCost ?? 0);
+  const returnPct = itemCost != null ? (profit / itemCost) * 100 : null;
+  const worthIt = returnPct != null ? returnPct >= input.targetReturnPct : profit >= MIN_NET_WITHOUT_COST;
+  return { worthIt, price, label, itemCost, profit, returnPct };
 }

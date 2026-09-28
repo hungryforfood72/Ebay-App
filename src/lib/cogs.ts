@@ -103,3 +103,24 @@ export function costPerListingUnit(
   if (perUnit == null) return { cost: 0, costed: false };
   return { cost: perUnit * (item.isMultipack && item.packSize ? item.packSize : 1), costed: true };
 }
+
+// What one unit of this UPC cost, for the scan page's "is this worth
+// listing" check. Same value-share split as cogsPerUnitByManifest, but a
+// UPC with nothing received yet (the first unit being scanned right now)
+// divides by the manifest's expected quantity instead of coming back empty.
+// null when the load has no landed cost entered.
+export async function unitCostForScan(manifestId: string, upc: string): Promise<number | null> {
+  const fromReceived = (await cogsPerUnitByManifest(manifestId)).get(upc);
+  if (fromReceived != null) return fromReceived;
+  const manifest = await prisma.manifest.findUnique({
+    where: { id: manifestId },
+    select: { totalLandedCost: true, lines: { select: { upc: true, extendedRetail: true, expectedQuantity: true } } },
+  });
+  if (!manifest || manifest.totalLandedCost == null) return null;
+  const total = manifest.lines.reduce((sum, l) => sum + Number(l.extendedRetail), 0);
+  const mine = manifest.lines.filter((l) => l.upc === upc);
+  const expected = mine.reduce((sum, l) => sum + l.expectedQuantity, 0);
+  if (total === 0 || expected === 0) return null;
+  const share = mine.reduce((sum, l) => sum + Number(l.extendedRetail), 0) / total;
+  return (share * Number(manifest.totalLandedCost)) / expected;
+}
