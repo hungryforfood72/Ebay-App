@@ -52,6 +52,10 @@ export async function tryFixMissingAspect(itemId: string, errorMessage: string):
   const match = errorMessage.match(MISSING_ASPECT_PATTERN);
   if (!match) return false;
   const aspectName = match[1].trim();
+  // Printed on this particular unit, not a fact about the product a search
+  // could find — and a made-up date on a health product is worse than a
+  // failed publish. Left for a person to read off the package.
+  if (/expiration/i.test(aspectName)) return false;
   const key = ebayAspectNameToSpecificsKey(aspectName);
 
   const item = await prisma.item.findUniqueOrThrow({ where: { id: itemId } });

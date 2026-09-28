@@ -379,6 +379,8 @@ export type ItemForEbayPublish = {
   categoryId: string;
   condition: "new" | "new_other" | "used" | "for_parts";
   itemSpecifics: Record<string, string> | null;
+  // Sent as the "Expiration Date" item specific (see buildAspects).
+  expirationDate: Date | null;
   photoUrls: string[];
   // Total ever listed (this SKU's own listing-quantity units, e.g. a count
   // of "2-pack" bundles, not individual bottles) — NOT what should be sent
@@ -427,6 +429,7 @@ export function toItemForEbayPublish(
     categoryId: string | null;
     condition: string | null;
     itemSpecifics: unknown;
+    expirationDate?: Date | null;
     photoUrls: string[];
     quantity: number;
     soldQuantity: number;
@@ -444,6 +447,7 @@ export function toItemForEbayPublish(
     categoryId: item.categoryId ?? "",
     condition: (item.condition ?? "used") as ItemForEbayPublish["condition"],
     itemSpecifics: item.itemSpecifics as Record<string, string> | null,
+    expirationDate: item.expirationDate ?? null,
     photoUrls: item.photoUrls,
     quantity: item.quantity,
     soldQuantity: item.soldQuantity,
@@ -497,13 +501,22 @@ export function ebayAspectNameToSpecificsKey(aspectName: string): string {
   return ASPECT_NAME_TO_KEY[aspectName] ?? aspectName;
 }
 
-function buildAspects(specifics: Record<string, string> | null): Record<string, string[]> {
+function buildAspects(specifics: Record<string, string> | null, expirationDate?: Date | null): Record<string, string[]> {
   const s = specifics ?? {};
   const aspects: Record<string, string[]> = {};
   for (const [key, value] of Object.entries(s)) {
     if (!value) continue;
     const aspectName = KNOWN_ASPECT_NAMES[key] ?? key;
     aspects[aspectName] = [value];
+  }
+  // Several health & beauty categories require it (confirmed live
+  // 2026-09-29: an OGX scalp serum in 109075 was rejected with "The item
+  // specific Expiration Date is missing"), and the date scanned off the
+  // package was never being sent. MM/YYYY, the way it's printed on most
+  // packaging; stored at UTC midnight, so read in UTC.
+  if (expirationDate && !aspects["Expiration Date"]) {
+    const d = new Date(expirationDate);
+    aspects["Expiration Date"] = [`${String(d.getUTCMonth() + 1).padStart(2, "0")}/${d.getUTCFullYear()}`];
   }
   return aspects;
 }
@@ -539,7 +552,45 @@ export function toEbaySku(sku: string): string {
   return `${locationPart.slice(0, maxLocationChars)}_${uniquePart}`;
 }
 
+// eBay's Inventory API sometimes answers a perfectly good request with HTTP
+// 500 / errorId 25001 "A system error has occurred" — confirmed live
+// 2026-09-29: 2 of 5 items in one "Publish all" failed that way, and the
+// same items went through unchanged minutes later. The publish steps below
+// wait and retry instead of failing the item. Retrying a POST blindly could
+// double it, so createOffer and publishOffer first check whether eBay
+// actually did the work before failing.
+const TRANSIENT_RETRY_DELAYS_MS = [1500, 4000];
+
+function isTransientEbayError(e: unknown): boolean {
+  if (!(e instanceof EbayApiError)) return false;
+  if (e.status >= 500) return true;
+  const errors = Array.isArray(e.details) ? (e.details as { errorId?: number }[]) : [];
+  return errors.some((x) => x.errorId === 25001);
+}
+
+// Runs `attempt`; on a transient eBay error, waits and tries again. Before
+// each retry, `alreadyDone` (when given) can find the work already done on
+// eBay's side despite the error, and return that result instead.
+async function withEbayRetry<T>(attempt: () => Promise<T>, alreadyDone?: () => Promise<T | null>): Promise<T> {
+  for (let i = 0; ; i++) {
+    try {
+      return await attempt();
+    } catch (e) {
+      if (!isTransientEbayError(e) || i >= TRANSIENT_RETRY_DELAYS_MS.length) throw e;
+      console.warn(`[ebay] transient error, retrying (${i + 1}/${TRANSIENT_RETRY_DELAYS_MS.length})`, e);
+      await new Promise((r) => setTimeout(r, TRANSIENT_RETRY_DELAYS_MS[i]));
+      const done = alreadyDone ? await alreadyDone().catch(() => null) : null;
+      if (done != null) return done;
+    }
+  }
+}
+
 export async function createOrReplaceInventoryItem(item: ItemForEbayPublish): Promise<void> {
+  // A PUT of the whole record: safe to repeat as-is.
+  await withEbayRetry(() => putInventoryItem(item));
+}
+
+async function putInventoryItem(item: ItemForEbayPublish): Promise<void> {
   const totalWeightLbs = (item.weightLbs ?? 0) + (item.weightOz ?? 0) / 16;
   await ebayFetch(`/sell/inventory/v1/inventory_item/${encodeURIComponent(toEbaySku(item.sku))}`, {
     method: "PUT",
@@ -549,7 +600,7 @@ export async function createOrReplaceInventoryItem(item: ItemForEbayPublish): Pr
         title: truncateTitle(item.finalTitle),
         description: item.finalDescription,
         imageUrls: item.photoUrls.slice(0, 12),
-        aspects: buildAspects(item.itemSpecifics),
+        aspects: buildAspects(item.itemSpecifics, item.expirationDate),
         ...(item.upc ? { upc: [item.upc] } : {}),
       },
       ...(totalWeightLbs > 0
@@ -589,11 +640,30 @@ function buildOfferBody(item: ItemForEbayPublish, price: number) {
 }
 
 export async function createOffer(item: ItemForEbayPublish): Promise<string> {
-  const result = (await ebayFetch(`/sell/inventory/v1/offer`, {
-    method: "POST",
-    body: JSON.stringify(buildOfferBody(item, item.price)),
-  })) as { offerId: string };
-  return result.offerId;
+  return withEbayRetry(
+    async () => {
+      const result = (await ebayFetch(`/sell/inventory/v1/offer`, {
+        method: "POST",
+        body: JSON.stringify(buildOfferBody(item, item.price)),
+      })) as { offerId: string };
+      return result.offerId;
+    },
+    // The failed attempt may have created it anyway — reuse it rather than
+    // making a second offer for the same SKU.
+    () => existingOfferId(toEbaySku(item.sku))
+  );
+}
+
+async function existingOfferId(ebaySku: string): Promise<string | null> {
+  try {
+    const result = (await ebayFetch(
+      `/sell/inventory/v1/offer?sku=${encodeURIComponent(ebaySku)}&marketplace_id=EBAY_US`
+    )) as { offers?: { offerId: string }[] };
+    return result.offers?.[0]?.offerId ?? null;
+  } catch (e) {
+    if (e instanceof EbayApiError && e.status === 404) return null; // no offers for this SKU
+    throw e;
+  }
 }
 
 // eBay's Inventory API has no batch endpoint that fits updating many
@@ -719,10 +789,25 @@ export async function getLiveAvailableQuantity(item: {
 }
 
 export async function publishOffer(offerId: string): Promise<string> {
-  const result = (await ebayFetch(`/sell/inventory/v1/offer/${encodeURIComponent(offerId)}/publish`, {
-    method: "POST",
-  })) as { listingId: string };
-  return result.listingId;
+  return withEbayRetry(
+    async () => {
+      const result = (await ebayFetch(`/sell/inventory/v1/offer/${encodeURIComponent(offerId)}/publish`, {
+        method: "POST",
+      })) as { listingId: string };
+      return result.listingId;
+    },
+    // The failed attempt may have gone live anyway — take that listing
+    // rather than publishing twice.
+    () => publishedListingId(offerId)
+  );
+}
+
+async function publishedListingId(offerId: string): Promise<string | null> {
+  const offer = (await ebayFetch(`/sell/inventory/v1/offer/${encodeURIComponent(offerId)}`)) as {
+    status?: string;
+    listing?: { listingId?: string };
+  };
+  return offer.status === "PUBLISHED" && offer.listing?.listingId ? offer.listing.listingId : null;
 }
 
 // Ends the live listing entirely (not just zeroing its quantity) — used by

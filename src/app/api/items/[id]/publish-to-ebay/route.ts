@@ -101,7 +101,11 @@ export async function POST(
     });
     return NextResponse.json(updated);
   } catch (e) {
-    const message = e instanceof EbayApiError || e instanceof Error ? e.message : "Publish failed.";
+    const raw = e instanceof EbayApiError || e instanceof Error ? e.message : "Publish failed.";
+    // The one missing specific only a person can fill: say how, in plain words.
+    const message = /item\s+specific\s+Expiration\s+Date\s+is\s+missing/i.test(raw)
+      ? "eBay needs the expiration date for this category. Send it back to review, add the date printed on the package, and publish again."
+      : raw;
     await prisma.item.update({ where: { id }, data: { ebayPublishError: message } });
     return NextResponse.json({ error: message }, { status: 502 });
   }

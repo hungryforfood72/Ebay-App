@@ -417,9 +417,17 @@ export default function ReviewPage() {
                     </Button>
                   </div>
                   {item.ebayPublishError && (
-                    <p className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-800">
-                      eBay rejected this: {item.ebayPublishError}
-                    </p>
+                    <div className="flex flex-wrap items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-800">
+                      <p className="min-w-0 flex-1">eBay rejected this: {item.ebayPublishError}</p>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => updateItem(item.id, { status: "pending_review" })}
+                        disabled={bulkPublishing || publishingId === item.id}
+                      >
+                        Back to review
+                      </Button>
+                    </div>
                   )}
                 </div>
               ))}
@@ -885,6 +893,15 @@ function ItemCard({
                 <option value="used">Used</option>
                 <option value="for_parts">For parts</option>
               </Select>
+            </Field>
+
+            <Field label="Expiration date" hint="Some categories (lots of health & beauty) require it on eBay.">
+              <Input
+                key={`exp-${item.id}-${item.expirationDate ?? ""}`}
+                type="date"
+                defaultValue={item.expirationDate ? item.expirationDate.slice(0, 10) : ""}
+                onChange={(e) => onChange({ expirationDate: e.target.value || null })}
+              />
             </Field>
           </div>
 
