@@ -82,20 +82,49 @@ export default function ReviewPage() {
   const [publishingId, setPublishingId] = useState<string | null>(null);
   const [bulkPublishing, setBulkPublishing] = useState(false);
 
+  // The 10-second refresh below used to replace every item with whatever the
+  // server had when the request went out. An edit still saving (or made
+  // after that request left) came back as the old value, while the inputs,
+  // which don't re-read from state, kept showing what was typed or picked.
+  // "Mark ready" then checked the stale copy: "needs a condition" with New
+  // showing on screen (Cristian, 2026-09-29). So each edit is remembered
+  // until the server copy has had a chance to catch up, and laid back over
+  // anything a refresh brings in.
+  const localEdits = useRef(new Map<string, { seq: number; fields: Partial<Item> }>());
+  // Increments on every edit; a refresh remembers where it was when it left.
+  const editSeq = useRef(0);
+  const pendingSaves = useRef(new Map<string, Promise<unknown>>());
+  const itemsRef = useRef<Item[] | null>(null);
+  useEffect(() => {
+    itemsRef.current = items;
+  }, [items]);
+
   async function load() {
+    const startedSeq = editSeq.current;
     const [itemsRes, rulesRes, boxSizesRes] = await Promise.all([
       fetch("/api/items"),
       fetch("/api/category-rules"),
       fetch("/api/box-sizes"),
     ]);
-    setItems(await itemsRes.json());
+    const fetched: Item[] = await itemsRes.json();
+    setItems(
+      fetched.map((f) => {
+        const edit = localEdits.current.get(f.id);
+        if (!edit) return f;
+        if (edit.seq <= startedSeq && !pendingSaves.current.has(f.id)) {
+          // Saved before this refresh asked for it: the server copy has it.
+          localEdits.current.delete(f.id);
+          return f;
+        }
+        return { ...f, ...edit.fields };
+      })
+    );
     setRules(await rulesRes.json());
     setBoxSizes(await boxSizesRes.json());
   }
 
   useEffect(() => {
     // Initial data load on mount, not a reaction to state we own.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
     // Items scanned on the phone get their draft + category filled in by a
     // background job (see api/items POST) — poll so they show up here
@@ -115,15 +144,29 @@ export default function ReviewPage() {
   }
 
   async function updateItem(id: string, data: Partial<Item>) {
+    const previous = localEdits.current.get(id);
+    editSeq.current += 1;
+    localEdits.current.set(id, { seq: editSeq.current, fields: { ...previous?.fields, ...data } });
     setItems(
       (prev) =>
         prev?.map((i) => (i.id === id ? { ...i, ...data } : i)) ?? prev
     );
-    await fetch(`/api/items/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data),
-    });
+    // Chained per item so saves land in the order they were made.
+    const save = (pendingSaves.current.get(id) ?? Promise.resolve())
+      .catch(() => {})
+      .then(() =>
+        fetch(`/api/items/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(data),
+        })
+      );
+    pendingSaves.current.set(id, save);
+    try {
+      await save;
+    } finally {
+      if (pendingSaves.current.get(id) === save) pendingSaves.current.delete(id);
+    }
   }
 
   async function deleteItem(item: Item) {
@@ -152,7 +195,12 @@ export default function ReviewPage() {
     }
   }
 
-  async function markReady(item: Item) {
+  async function markReady(clicked: Item) {
+    // Let any save still going for this item (a field just changed or
+    // blurred) finish, then check the newest values, not the copy this
+    // button was rendered with.
+    await pendingSaves.current.get(clicked.id)?.catch(() => {});
+    const item = itemsRef.current?.find((i) => i.id === clicked.id) ?? clicked;
     const label = item.upc ?? item.sku;
     if (!item.finalTitle?.trim() || !item.price) {
       setError(`"${label}" needs a title and price before it can go ready.`);
