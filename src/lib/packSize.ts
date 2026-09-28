@@ -258,9 +258,11 @@ export function splitIntoPacks(units: number, packSize: number): { packSize: num
   ];
 }
 
-// Without an item cost to measure a return on (no landed cost entered for
-// the load), a listing at least has to clear this after fees and shipping.
-const MIN_NET_WITHOUT_COST = 1;
+// Every sale has to clear this much profit no matter how little the items
+// cost — Cristian (2026-09-28): 35% on cost alone is a low bar when a
+// liquidation item cost $0.84 (that's $0.29), not worth listing, packing
+// and shipping for. Also the whole bar when the load has no landed cost.
+export const MIN_PROFIT_PER_SALE = 1.5;
 
 export type ListingWorth = {
   worthIt: boolean;
@@ -272,6 +274,9 @@ export type ListingWorth = {
   profit: number;
   // profit / itemCost, as a percent — null without an item cost.
   returnPct: number | null;
+  // What it had to clear: the target return on cost or MIN_PROFIT_PER_SALE,
+  // whichever is more.
+  requiredProfit: number;
 };
 
 // Whether a listing of `packSize` units is worth making — for the leftover
@@ -301,6 +306,7 @@ export function listingWorth(input: {
   const itemCost = input.unitCost != null && input.unitCost > 0 ? input.unitCost * input.packSize : null;
   const profit = price * (1 - FALLBACK_FEE_RATE) - FALLBACK_FEE_FIXED - label - (itemCost ?? 0);
   const returnPct = itemCost != null ? (profit / itemCost) * 100 : null;
-  const worthIt = returnPct != null ? returnPct >= input.targetReturnPct : profit >= MIN_NET_WITHOUT_COST;
-  return { worthIt, price, label, itemCost, profit, returnPct };
+  const requiredProfit = Math.max(MIN_PROFIT_PER_SALE, itemCost != null ? (itemCost * input.targetReturnPct) / 100 : 0);
+  const worthIt = profit >= requiredProfit;
+  return { worthIt, price, label, itemCost, profit, returnPct, requiredProfit };
 }

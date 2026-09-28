@@ -116,7 +116,8 @@ export async function GET(request: NextRequest) {
   //   aside no matter what the math says (1 lotion when it says 3-packs).
   // - "low_return": any other leftover that can't fill the recommended pack
   //   (or a single, when singles are the call) and wouldn't make his target
-  //   profit on what the items cost, after fees and a real label cost.
+  //   profit on what the items cost (and at least $1.50 a sale), after fees
+  //   and a real label cost.
   // Off a manifest there's no count, so it's a heads-up about a single.
   type SetAsideWhy = "slow_single" | "low_return";
   let setAside: { units: number | null; packSize: number; why: SetAsideWhy; worth: ListingWorth | null } | null = null;
@@ -179,6 +180,7 @@ export async function GET(request: NextRequest) {
             itemCost: setAside.worth.itemCost,
             profit: setAside.worth.profit,
             returnPct: setAside.worth.returnPct,
+            requiredProfit: setAside.worth.requiredProfit,
             targetReturnPct,
           }
         : {}),

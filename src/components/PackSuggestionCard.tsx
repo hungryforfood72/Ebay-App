@@ -28,6 +28,7 @@ type PackSuggestion = {
     profit?: number;
     returnPct?: number | null;
     targetReturnPct?: number | null;
+    requiredProfit?: number;
   } | null;
   recommendation: {
     packSize: number;
@@ -217,18 +218,16 @@ function SetAsideNote({
             As {what}: sells for about {money(setAside.price)}, minus ~{money(setAside.label)} shipping, fees
             {setAside.itemCost != null ? <> and {money(setAside.itemCost)} item cost</> : null} ={" "}
             {setAside.profit < 0 ? `a ${money(-setAside.profit)} loss` : `${money(setAside.profit)} profit`}
-            {setAside.itemCost == null ? (
-              <> (no landed cost entered for this load yet)</>
-            ) : setAside.targetReturnPct != null ? (
-              setAside.profit < 0 || setAside.returnPct == null ? (
-                <> (target is {setAside.targetReturnPct}% on cost)</>
-              ) : (
-                <>
-                  {" "}
-                  ({Math.round(setAside.returnPct)}% on cost, target {setAside.targetReturnPct}%)
-                </>
-              )
-            ) : null}
+            {setAside.requiredProfit != null && (
+              <>
+                {" "}
+                (needs {money(setAside.requiredProfit)}:{" "}
+                {setAside.itemCost == null
+                  ? "the $1.50 minimum, no landed cost entered for this load yet"
+                  : `${setAside.targetReturnPct}% on cost, at least $1.50`}
+                )
+              </>
+            )}
             .
           </p>
         )}
