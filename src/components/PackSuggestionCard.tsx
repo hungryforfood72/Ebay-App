@@ -12,6 +12,13 @@ type PackSuggestion = {
   isOwner: boolean;
   alreadyMultipack: boolean;
   available: number | null;
+  // Set when the count came from a load other than the one being scanned
+  // into (or none was picked): that load's title.
+  manifestTitle: string | null;
+  // Every unit the manifest listed is already scanned in; `available` is
+  // then 1, for the one in hand.
+  alreadyScannedIn: boolean;
+  expected: number | null;
   plan: PackPlanGroup[] | null;
   // Units not worth listing at the size they'd have to go in (see
   // /api/pack-suggestion). units is null off a manifest, where it's a
@@ -53,6 +60,8 @@ const listingsOf = (g: PackPlanGroup) =>
       : "1 single"
     : `${g.listings} listings of ${g.packSize > 1 ? `${g.packSize}-packs` : "singles"}`;
 const money = (n: number) => `$${n.toFixed(2)}`;
+const manifestLabel = (d: { manifestTitle: string | null }) =>
+  d.manifestTitle ? `the "${d.manifestTitle}" manifest` : "this manifest";
 
 // On the scan page's quantity step: what pack size this UPC sells best in
 // (from live eBay listings, see /api/pack-suggestion) and, on a manifest,
@@ -130,7 +139,11 @@ export function PackSuggestionCard({
 
           {data.plan && data.available != null && (data.plan.length > 0 || data.setAside) && (
             <p className="mt-2">
-              <span className="font-medium">{data.available} left on this manifest:</span>{" "}
+              <span className="font-medium">
+                {data.alreadyScannedIn
+                  ? `All ${data.expected ?? ""} on ${manifestLabel(data)} ${data.expected === 1 ? "is" : "are"} already scanned in, so this one looks extra. For this one:`
+                  : `${data.available} left on ${manifestLabel(data)}:`}
+              </span>{" "}
               {[
                 ...data.plan.map(listingsOf),
                 ...(data.setAside?.units ? [`${data.setAside.units} to set aside`] : []),

@@ -37,12 +37,30 @@ export async function GET(request: NextRequest) {
   const manifestId = request.nextUrl.searchParams.get("manifestId");
   if (!upc) return NextResponse.json({ error: "A UPC is required." }, { status: 400 });
 
-  const lines = manifestId
-    ? await prisma.manifestLine.findMany({
-        where: { manifestId, upc },
-        select: { description: true, expectedQuantity: true, retailPrice: true, category: true },
-      })
-    : [];
+  // Which manifest to count against: the one being scanned into, when it
+  // lists this UPC. Otherwise (no manifest picked on the scanner, or a
+  // different load) the newest bought load that has units of it left, or
+  // the newest one listing it at all. Cristian: it knew the manifest said 1
+  // but still said "if you have fewer than 3".
+  let countManifestId: string | null = null;
+  let lines: ManifestLineInfo[] = [];
+  let unitsLeft: number | null = null;
+  let inferredManifestTitle: string | null = null;
+  if (manifestId) {
+    lines = await prisma.manifestLine.findMany({ where: { manifestId, upc }, select: LINE_SELECT });
+    if (lines.length > 0) {
+      countManifestId = manifestId;
+      unitsLeft = await unitsLeftOnManifest(manifestId, upc, lines);
+    }
+  }
+  if (!countManifestId) {
+    const found = await findManifestForUpc(upc);
+    if (found) {
+      ({ lines, unitsLeft } = found);
+      countManifestId = found.manifestId;
+      inferredManifestTitle = found.title;
+    }
+  }
   const description = lines[0]?.description ?? null;
 
   // A manifest unit that's itself a multi-pack ("... x 2 pack") gets listed
@@ -105,8 +123,11 @@ export async function GET(request: NextRequest) {
     reason = advice?.reason ?? null;
   }
 
-  const available = manifestId && lines.length > 0 ? await unitsLeftOnManifest(manifestId, upc, lines) : null;
-  let plan = recommendation && available != null && available > 0 ? splitIntoPacks(available, recommendation.packSize) : null;
+  // Everything the manifest listed is already scanned in, but someone's
+  // holding one: plan for that one, and say it looks extra.
+  const alreadyScannedIn = unitsLeft === 0;
+  const available = unitsLeft == null ? null : Math.max(unitsLeft, 1);
+  let plan = recommendation && available != null ? splitIntoPacks(available, recommendation.packSize) : null;
 
   // Units that shouldn't be listed at the size they'd have to go in. They
   // come out of the plan and Lizvet sets them aside for Cristian to decide
@@ -125,7 +146,7 @@ export async function GET(request: NextRequest) {
   if (recommendation) {
     const [labelCost, unitCost, target] = await Promise.all([
       typicalSingleLabelCost(),
-      manifestId ? unitCostForScan(manifestId, upc) : Promise.resolve(null),
+      countManifestId ? unitCostForScan(countManifestId, upc) : Promise.resolve(null),
       getTargetMarginPct(),
     ]);
     targetReturnPct = target;
@@ -168,6 +189,11 @@ export async function GET(request: NextRequest) {
     isOwner,
     alreadyMultipack,
     available,
+    // Counted against a load other than the one being scanned into (or none
+    // was picked) — its title, so the card can say where the count's from.
+    manifestTitle: inferredManifestTitle,
+    alreadyScannedIn,
+    expected: lines.reduce((sum, l) => sum + l.expectedQuantity, 0) || null,
     plan,
     setAside: setAside && {
       units: setAside.units,
@@ -199,6 +225,33 @@ export async function GET(request: NextRequest) {
         : {}),
     },
   });
+}
+
+const LINE_SELECT = { description: true, expectedQuantity: true, retailPrice: true, category: true } as const;
+type ManifestLineInfo = { description: string; expectedQuantity: number; retailPrice: Prisma.Decimal; category: string | null };
+
+async function findManifestForUpc(
+  upc: string
+): Promise<{ manifestId: string; title: string; lines: ManifestLineInfo[]; unitsLeft: number } | null> {
+  const found = await prisma.manifestLine.findMany({
+    where: { upc, manifest: { purchased: true } },
+    select: { ...LINE_SELECT, manifestId: true, manifest: { select: { title: true, createdAt: true } } },
+  });
+  const byManifest = new Map<string, { title: string; createdAt: Date; lines: ManifestLineInfo[] }>();
+  for (const l of found) {
+    const entry = byManifest.get(l.manifestId) ?? { title: l.manifest.title, createdAt: l.manifest.createdAt, lines: [] };
+    entry.lines.push(l);
+    byManifest.set(l.manifestId, entry);
+  }
+  const newestFirst = [...byManifest.entries()].sort(([, a], [, b]) => b.createdAt.getTime() - a.createdAt.getTime());
+  let fallback: { manifestId: string; title: string; lines: ManifestLineInfo[]; unitsLeft: number } | null = null;
+  for (const [id, m] of newestFirst) {
+    const unitsLeft = await unitsLeftOnManifest(id, upc, m.lines);
+    const candidate = { manifestId: id, title: m.title, lines: m.lines, unitsLeft };
+    if (unitsLeft > 0) return candidate;
+    fallback ??= candidate;
+  }
+  return fallback;
 }
 
 // Units of this UPC the manifest said were coming, minus everything
