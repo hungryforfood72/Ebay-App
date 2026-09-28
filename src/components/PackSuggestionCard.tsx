@@ -3,7 +3,7 @@
 import { Button } from "@/components/ui/Button";
 import { Field, Select, Textarea } from "@/components/ui/Input";
 import { MAX_RECOMMENDED_PACK, splitIntoPacks } from "@/lib/packSize";
-import { Boxes, LoaderCircle } from "lucide-react";
+import { Boxes, LoaderCircle, PackageMinus } from "lucide-react";
 import { useEffect, useState } from "react";
 
 type PackPlanGroup = { packSize: number; listings: number };
@@ -13,6 +13,17 @@ type PackSuggestion = {
   alreadyMultipack: boolean;
   available: number | null;
   plan: PackPlanGroup[] | null;
+  // Units not worth listing at the size they'd have to go in (see
+  // /api/pack-suggestion). units is null off a manifest, where it's a
+  // heads-up about a single. Dollar figures owner only.
+  setAside: {
+    units: number | null;
+    packSize: number;
+    price?: number;
+    label?: number;
+    itemCost?: number;
+    net?: number;
+  } | null;
   recommendation: {
     packSize: number;
     // "agent": the pack-size agent's call (src/lib/packAdvisor.ts), with a
@@ -46,10 +57,13 @@ export function PackSuggestionCard({
   upc,
   manifestId,
   onApply,
+  onSetAside,
 }: {
   upc: string;
   manifestId: string | null;
   onApply: (packSize: number, listings: number | null) => void;
+  // Skip this item without saving it, straight to the next scan.
+  onSetAside: () => void;
 }) {
   const key = `${upc}|${manifestId ?? ""}`;
   const [result, setResult] = useState<{ key: string; data: PackSuggestion | null } | null>(null);
@@ -108,15 +122,25 @@ export function PackSuggestionCard({
             )}
           </p>
 
-          {data.plan && data.available != null && (
+          {data.plan && data.available != null && (data.plan.length > 0 || data.setAside) && (
             <p className="mt-2">
               <span className="font-medium">{data.available} left on this manifest:</span>{" "}
-              {data.plan.map(listingsOf).join(" + ")}.
+              {[
+                ...data.plan.map(listingsOf),
+                ...(data.setAside?.units ? [`${data.setAside.units} to set aside`] : []),
+              ].join(" + ")}
+              .
             </p>
           )}
 
+          {data.setAside && <SetAsideNote setAside={data.setAside} recommendedPackSize={rec.packSize} />}
+
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            {first ? (
+            {data.plan && data.plan.length === 0 && data.setAside ? (
+              <Button size="sm" variant="outline" onClick={onSetAside}>
+                Set aside, scan the next item
+              </Button>
+            ) : first ? (
               <Button size="sm" onClick={() => onApply(first.packSize, first.listings)}>
                 Fill in {listingsOf(first)}
               </Button>
@@ -145,6 +169,46 @@ export function PackSuggestionCard({
             />
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Units that would lose money (or near enough) listed at the only size
+// they can go in — Cristian's rule: don't sell something for $8 when the
+// label is $7 and fees push it under. Set it aside to bundle with other
+// things or sell in person.
+function SetAsideNote({
+  setAside,
+  recommendedPackSize,
+}: {
+  setAside: NonNullable<PackSuggestion["setAside"]>;
+  recommendedPackSize: number;
+}) {
+  const what = setAside.packSize > 1 ? `a ${setAside.packSize}-pack` : "a single";
+  const count =
+    setAside.units == null
+      ? recommendedPackSize > 1
+        ? `If you have fewer than ${recommendedPackSize}, don't list them on their own.`
+        : "Don't list this on its own."
+      : `Don't list ${setAside.units === 1 ? "this one" : `these ${setAside.units}`} on ${setAside.units === 1 ? "its" : "their"} own.`;
+  return (
+    <div className="mt-3 flex gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-950">
+      <PackageMinus className="mt-0.5 size-5 shrink-0 text-amber-600" aria-hidden />
+      <div className="min-w-0">
+        <p className="font-semibold">{count}</p>
+        <p className="mt-0.5 text-amber-900/80">
+          As {what} it would likely lose money after shipping and fees. Set it aside to bundle with other things
+          or sell in person.
+          {setAside.price != null && setAside.label != null && setAside.net != null && (
+            <>
+              {" "}
+              It would likely sell for about {money(setAside.price)}. After ~{money(setAside.label)} shipping
+              {setAside.itemCost ? <>, fees and {money(setAside.itemCost)} item cost</> : <> and fees</>}{" "}
+              {setAside.net < 0 ? <>you&apos;d lose {money(-setAside.net)}</> : <>you&apos;d keep only {money(setAside.net)}</>}.
+            </>
+          )}
+        </p>
       </div>
     </div>
   );

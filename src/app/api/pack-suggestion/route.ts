@@ -1,8 +1,19 @@
 import { getRequestUser } from "@/lib/auth";
+import { cogsPerUnitByManifest } from "@/lib/cogs";
+import { typicalSingleLabelCost } from "@/lib/shippingCost";
 import { EbayApiError, searchActiveListings } from "@/lib/ebay";
 import { parseBundleComponentUnits, unitsFor } from "@/lib/itemUnits";
 import { advisePackSize, savedPackDecision } from "@/lib/packAdvisor";
-import { detectPackSize, netPerUnit, parsePackStats, splitIntoPacks, summarizeComps, type PackStat } from "@/lib/packSize";
+import {
+  detectPackSize,
+  listingWorth,
+  netPerUnit,
+  parsePackStats,
+  splitIntoPacks,
+  summarizeComps,
+  type ListingWorth,
+  type PackStat,
+} from "@/lib/packSize";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@/generated/prisma/client";
 import { NextRequest, NextResponse } from "next/server";
@@ -94,7 +105,43 @@ export async function GET(request: NextRequest) {
   }
 
   const available = manifestId && lines.length > 0 ? await unitsLeftOnManifest(manifestId, upc, lines) : null;
-  const plan = recommendation && available != null && available > 0 ? splitIntoPacks(available, recommendation.packSize) : null;
+  let plan = recommendation && available != null && available > 0 ? splitIntoPacks(available, recommendation.packSize) : null;
+
+  // Leftovers that can't fill the recommended pack (1 lotion when it says
+  // 3-packs), or singles when singles are the call: listed on their own they
+  // can sell for less than the label and fees cost (Cristian's $8 sale with
+  // a $7 label). Those come out of the plan as "set aside" — bundle them
+  // with other things or sell them in person. Off a manifest there's no
+  // count, so the check is on a single, as a heads-up.
+  let setAside: { units: number | null; packSize: number; worth: ListingWorth } | null = null;
+  if (recommendation) {
+    const [labelCost, unitCost] = await Promise.all([
+      typicalSingleLabelCost(),
+      manifestId ? cogsPerUnitByManifest(manifestId).then((m) => m.get(upc) ?? null) : Promise.resolve(null),
+    ]);
+    const retailPrice = lines[0] ? Number(lines[0].retailPrice) : null;
+    const worthOf = (packSize: number) => listingWorth({ packSize, stats, retailPrice, unitCost, labelCost });
+    const undersized = (packSize: number) => packSize < recommendation!.packSize || recommendation!.packSize === 1;
+    if (plan) {
+      const kept: typeof plan = [];
+      let asideUnits = 0;
+      let aside: { packSize: number; worth: ListingWorth } | null = null;
+      for (const group of plan) {
+        const worth = undersized(group.packSize) ? worthOf(group.packSize) : null;
+        if (worth && !worth.worthIt) {
+          asideUnits += group.packSize * group.listings;
+          aside = { packSize: group.packSize, worth };
+        } else {
+          kept.push(group);
+        }
+      }
+      plan = kept;
+      if (aside) setAside = { units: asideUnits, ...aside };
+    } else if (available == null) {
+      const worth = worthOf(1);
+      if (worth && !worth.worthIt) setAside = { units: null, packSize: 1, worth };
+    }
+  }
 
   // Dollar figures from the listings at the chosen pack size, when there
   // are any (the agent can pick a size nobody lists yet).
@@ -107,6 +154,18 @@ export async function GET(request: NextRequest) {
     alreadyMultipack,
     available,
     plan,
+    setAside: setAside && {
+      units: setAside.units,
+      packSize: setAside.packSize,
+      ...(isOwner
+        ? {
+            price: setAside.worth.price,
+            label: setAside.worth.label,
+            itemCost: setAside.worth.itemCost,
+            net: setAside.worth.net,
+          }
+        : {}),
+    },
     recommendation: recommendation && {
       packSize: recommendation.packSize,
       basis: recommendation.basis,

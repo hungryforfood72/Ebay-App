@@ -257,3 +257,45 @@ export function splitIntoPacks(units: number, packSize: number): { packSize: num
     { packSize: leftover, listings: 1 },
   ];
 }
+
+// Below this, a listing isn't worth the time to list, pack and ship.
+const MIN_WORTHWHILE_NET = 1;
+
+export type ListingWorth = {
+  worthIt: boolean;
+  // Realistic buyer-paid price for the whole listing, its label, and what's
+  // left after fees, label and the items' own cost.
+  price: number;
+  label: number;
+  itemCost: number;
+  net: number;
+};
+
+// Whether a listing of `packSize` units is worth making at all — for the
+// leftover that can't fill the recommended pack (1 lotion when it says
+// 3-packs). Cristian: don't sell something for $8 when shipping is $7 and
+// fees push it into a loss; set it aside for a bundle or an in-person sale.
+// The price is the typical listing at that size, or the cheapest per-unit
+// rate across pack sizes scaled to it when nobody lists that size, capped
+// at 1.5x store retail: a single of an everyday product priced above the
+// store just sits.
+export function listingWorth(input: {
+  packSize: number;
+  stats: PackStat[];
+  retailPrice: number | null;
+  unitCost: number | null;
+  labelCost: number;
+}): ListingWorth | null {
+  const usable = input.stats.filter((s) => s.count > 0 && s.medianTotal > 0);
+  if (usable.length === 0) return null;
+  const exact = usable.find((s) => s.packSize === input.packSize);
+  const cheapestPerUnit = Math.min(...usable.map((s) => s.medianTotal / s.packSize));
+  let price = exact ? exact.medianTotal : cheapestPerUnit * input.packSize;
+  if (input.retailPrice != null && input.retailPrice > 0) {
+    price = Math.min(price, input.retailPrice * 1.5 * input.packSize);
+  }
+  const label = input.labelCost + SHIPPING_PER_EXTRA_UNIT * (input.packSize - 1);
+  const itemCost = (input.unitCost ?? 0) * input.packSize;
+  const net = price * (1 - FALLBACK_FEE_RATE) - FALLBACK_FEE_FIXED - label - itemCost;
+  return { worthIt: net >= MIN_WORTHWHILE_NET, price, label, itemCost, net };
+}

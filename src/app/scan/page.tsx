@@ -1270,6 +1270,7 @@ function ScanPageInner() {
                   setPackSize(size > 1 ? String(size) : "");
                   if (listings != null) setQuantity(String(listings));
                 }}
+                onSetAside={resetForm}
               />
             )}
             <CheckboxRow
