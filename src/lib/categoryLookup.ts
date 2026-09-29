@@ -12,6 +12,8 @@ export type CategoryLookupResult = {
 const STOPWORDS = new Set([
   "the", "and", "for", "with", "from", "this", "that", "your", "pack",
   "unit", "units", "item", "new", "used", "single", "best", "premium",
+  // Our own listing words ("Lot of 2 ..."), never what the product is.
+  "lot", "lots",
 ]);
 
 function significantWords(text: string): string[] {
@@ -68,7 +70,7 @@ export async function lookupCategoryForItem(
   // category-relevant than words picked out of the title itself (e.g. a
   // title says "Automatic Spray Refill" but specifics.type says the same
   // thing more plainly, and it's a clean signal on its own).
-  const searchText = [productDescription, specifics.type, specifics.brand]
+  const searchText = [productDescription, specifics.type, specifics.product, specifics.brand]
     .filter(Boolean)
     .join(" ");
 
@@ -134,16 +136,24 @@ async function findLocalCandidates(words: string[]) {
     take: 2000,
   });
 
-  const scored = pool.map((c) => {
-    const nameLower = c.name.toLowerCase();
-    const pathLower = c.path.toLowerCase();
-    let score = 0;
-    for (const w of words) {
-      if (nameLower.includes(w)) score += 3;
-      else if (pathLower.includes(w)) score += 1;
-    }
-    return { candidate: c, score };
-  });
+  // Scored on whole words (plurals allowed), not substrings: the pool query
+  // above can't do word boundaries, and substring scoring let "snow" rank
+  // Snowsuits and "toner" rank copier Toner level with "Cleansers & Toners",
+  // pushing the real category out of the shortlist (a Thayers facial toner,
+  // 2026-09-29). A pool row with no whole-word hit is dropped.
+  const patterns = words.map(
+    (w) => new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:e?s)?\\b`, "i")
+  );
+  const scored = pool
+    .map((c) => {
+      let score = 0;
+      for (const re of patterns) {
+        if (re.test(c.name)) score += 3;
+        else if (re.test(c.path)) score += 1;
+      }
+      return { candidate: c, score };
+    })
+    .filter((s) => s.score > 0);
 
   scored.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
@@ -306,7 +316,7 @@ async function pickBestLocalCategory(
             role: "user",
             content: `Product: "${productDescription}"
 
-Pick the single best-matching eBay category for this product from the candidates below (id: full path). Prefer the most specific matching category over a broad parent. Ignore "Collectibles > Advertising" / memorabilia-style categories that just happen to share a brand name (e.g. a candy brand's "Collectibles > Advertising > ... > Hershey & Reese's" category is for vintage tins and ads, not for selling the actual candy) — only pick those if the product itself is explicitly a collectible/vintage/advertising item. If none of them genuinely fit this product, return null.
+Pick the single best-matching eBay category for this product from the candidates below (id: full path). Prefer the most specific matching category over a broad parent. Ignore "Collectibles > Advertising" / memorabilia-style categories that just happen to share a brand name (e.g. a candy brand's "Collectibles > Advertising > ... > Hershey & Reese's" category is for vintage tins and ads, not for selling the actual candy) — only pick those if the product itself is explicitly a collectible/vintage/advertising item. "Books & Magazines" is for books with printed content (eBay then requires an Author); blank notebooks, journals, composition books and planners are school/office supplies, not books. If none of them genuinely fit this product, return null.
 
 ${candidateList}`,
           },

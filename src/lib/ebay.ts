@@ -654,6 +654,21 @@ export async function createOffer(item: ItemForEbayPublish): Promise<string> {
   );
 }
 
+// Re-sends the whole offer (category, price, description, quantity) for an
+// unpublished offer left over from a failed publish. Without it a retry
+// published the stale offer: confirmed live 2026-09-29, a notebook moved
+// from Books to School Supplies in Review kept failing on "Author is
+// missing" because the old offer still said Books. A full-replace PUT, so
+// safe to repeat.
+export async function refreshOffer(offerId: string, item: ItemForEbayPublish): Promise<void> {
+  await withEbayRetry(() =>
+    ebayFetch(`/sell/inventory/v1/offer/${encodeURIComponent(offerId)}`, {
+      method: "PUT",
+      body: JSON.stringify(buildOfferBody(item, item.price)),
+    })
+  );
+}
+
 async function existingOfferId(ebaySku: string): Promise<string | null> {
   try {
     const result = (await ebayFetch(

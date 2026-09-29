@@ -4,6 +4,7 @@ import {
   EbayApiError,
   getEbayEnvironment,
   publishOffer,
+  refreshOffer,
   toEbaySku,
   toItemForEbayPublish,
 } from "@/lib/ebay";
@@ -37,6 +38,10 @@ async function attemptPublish(id: string, item: Item): Promise<{ listingId: stri
       where: { id },
       data: { ebayOfferId: offerId, ebaySku: toEbaySku(item.sku) },
     });
+  } else {
+    // Same reasoning for the offer: a category/price/description fixed in
+    // Review since the failed attempt has to reach eBay too.
+    await refreshOffer(offerId, publishData);
   }
   const listingId = await publishOffer(offerId);
   return { listingId };
