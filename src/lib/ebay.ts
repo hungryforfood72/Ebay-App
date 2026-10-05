@@ -518,6 +518,11 @@ export function ebayAspectNameToSpecificsKey(aspectName: string): string {
   return ASPECT_NAME_TO_KEY[aspectName] ?? aspectName;
 }
 
+// "50 ml", "3.4 fl oz", "1.7 FL. OZ", "1 L": the first such amount in a
+// size like "3 fl oz (89 mL) x 2". Bare "oz" is left out, since it's just
+// as often a weight.
+const LIQUID_VOLUME_PATTERN = /\d+(?:\.\d+)?\s*(?:ml|fl\.?\s*oz|l|liters?|litres?)\b/i;
+
 function buildAspects(specifics: Record<string, string> | null, expirationDate?: Date | null): Record<string, string[]> {
   const s = specifics ?? {};
   const aspects: Record<string, string[]> = {};
@@ -535,6 +540,13 @@ function buildAspects(specifics: Record<string, string> | null, expirationDate?:
     const d = new Date(expirationDate);
     aspects["Expiration Date"] = [`${String(d.getUTCMonth() + 1).padStart(2, "0")}/${d.getUTCFullYear()}`];
   }
+  // Liquids keep their amount under "size", but some categories require it
+  // as "Volume" (confirmed live 2026-10-05: a 50 ml perfume in 31753 was
+  // rejected with "The item specific Volume is missing", and the web-search
+  // fix-up came back empty with "50 ml" sitting right there). Sent whenever
+  // the size reads as a liquid measure.
+  const volume = s.size?.match(LIQUID_VOLUME_PATTERN)?.[0];
+  if (volume && !aspects["Volume"]) aspects["Volume"] = [volume.trim()];
   return aspects;
 }
 
