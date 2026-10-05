@@ -6,6 +6,7 @@ import { after } from "next/server";
 import { randomUUID } from "node:crypto";
 import { draftItem } from "@/lib/draftItem";
 import { lookupCategoryForItem } from "@/lib/categoryLookup";
+import { earliestBundleExpiration } from "@/lib/csv";
 
 // Draft (up to 45s for a single item, or up to ~90s for a bundle — parallel
 // per-component naming calls plus one final synthesis call) + category
@@ -75,6 +76,13 @@ export async function POST(request: NextRequest) {
   // so it's recognizable at a glance on eBay's side, not just a bare UUID.
   const sku = `(Location - ${String(body.shelfLocation).trim()})-${randomUUID()}`;
 
+  // A bundle's dates are scanned per piece; the bundle itself takes the
+  // earliest. The dashboard's expiring list and the hourly auto-end only
+  // read the item's own date, so without this a bundle never expired: a
+  // Mucinex lot with two bottles dated 9/30/2026 stayed live (2026-10-05).
+  const bundleExpiration = isBundle ? earliestBundleExpiration(body.bundleComponents) : null;
+  const expirationDate = body.expirationDate ?? bundleExpiration;
+
   const item = await prisma.item.create({
     data: {
       sku,
@@ -82,7 +90,7 @@ export async function POST(request: NextRequest) {
       quantity: Number(body.quantity),
       isMultipack: Boolean(body.isMultipack),
       packSize: body.isMultipack ? Number(body.packSize) : null,
-      expirationDate: body.expirationDate ? new Date(body.expirationDate) : null,
+      expirationDate: expirationDate ? new Date(expirationDate) : null,
       shelfLocation: body.shelfLocation,
       boxSize: body.boxSize ?? null,
       weightLbs: body.weightLbs != null ? Number(body.weightLbs) : null,

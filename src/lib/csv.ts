@@ -84,7 +84,7 @@ export type ExportableItem = {
 // different dates, or not at all) — so a bundle in a category that
 // requires "Expiration Date" needs one derived from its components. Using
 // the earliest is the more conservative disclosure to the buyer.
-function earliestBundleExpiration(bundleComponents: unknown): string | null {
+export function earliestBundleExpiration(bundleComponents: unknown): string | null {
   const components = (bundleComponents as { expirationDate?: string | null }[] | null) ?? [];
   const dates = components.map((c) => c.expirationDate).filter((d): d is string => Boolean(d));
   if (dates.length === 0) return null;
