@@ -216,6 +216,23 @@ export async function getAppAccessToken(): Promise<string> {
   return result.accessToken;
 }
 
+// eBay's own category suggestions for a title (Taxonomy API, US tree 0),
+// best first: the same suggestions its listing form shows. Category IDs
+// only. Tested 2026-10-05 on four titles our own search had trouble with
+// (facial toner, incontinence underwear, composition books, a Glade
+// refill): all four right at #1, each in under half a second.
+export async function getCategorySuggestions(query: string): Promise<string[]> {
+  const config = getEbayConfig();
+  const token = await getAppAccessToken();
+  const res = await fetch(
+    `${config.apiBase}/commerce/taxonomy/v1/category_tree/0/get_category_suggestions?q=${encodeURIComponent(query)}`,
+    { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000) }
+  );
+  if (!res.ok) throw new Error(`eBay category suggestions failed (${res.status}): ${(await res.text()).slice(0, 200)}`);
+  const data = (await res.json()) as { categorySuggestions?: { category: { categoryId: string } }[] };
+  return (data.categorySuggestions ?? []).map((s) => s.category.categoryId);
+}
+
 // price is the item price alone; shippingCost is added on top only when
 // the listing has a real FIXED shipping charge (CALCULATED shipping
 // depends on the buyer's address, which the API can't resolve without one

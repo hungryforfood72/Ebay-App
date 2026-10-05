@@ -1,6 +1,9 @@
 import { prisma } from "@/lib/prisma";
 import { anthropic } from "@/lib/anthropic";
 import { logAiUsage } from "@/lib/aiUsage";
+import { getCategorySuggestions } from "@/lib/ebay";
+
+type Candidate = { id: string; name: string; path: string };
 
 export type CategoryLookupResult = {
   categoryId: string | null;
@@ -27,19 +30,16 @@ function significantWords(text: string): string[] {
 // Finds an eBay category for the item and applies it. Order of preference:
 // 1. A saved CategoryRule keyword match (instant, free — something we've
 //    picked before).
-// 2. Local search over eBay's own full category tree (imported from their
-//    official export — see references/ebay-category-ids.md) using literal
-//    words from the title/specifics + a quick, tool-free Claude call to pick
-//    the best match from real candidates. Fast and reliable since there's no
-//    web search involved.
-// 3. If that finds nothing (common when the title is dominated by brand/
-//    scent/flavor words that never appear in a category name — e.g. "Glade
-//    Bergamot & Eucalyptus Automatic Spray Refill" has no literal overlap
-//    with "Air Fresheners"), ask Claude for a few generic category-type
-//    search terms instead, and retry the local search with those. Still no
-//    web search, still fast.
-// 4. AI web search, only as an absolute last resort if step 3 also finds
-//    nothing to work with (e.g. a very generic or unusual title).
+// 2. eBay's own category suggestions for the title (Taxonomy API) at the
+//    top of the shortlist, plus a local word search over eBay's full
+//    category tree (imported from their official export, see
+//    references/ebay-category-ids.md) behind them. A quick, tool-free
+//    Claude call picks the best fit from those real candidates.
+// 3. If Claude rejects them all, ask it for a few generic category-type
+//    terms (e.g. "air freshener" for a Glade refill), widen the local
+//    search with those and pick again.
+// 4. Still nothing: eBay's top suggestion, unsaved as a rule.
+// 5. AI web search, only if eBay's suggestion service was down or empty.
 export async function lookupCategoryForItem(
   itemId: string
 ): Promise<CategoryLookupResult> {
@@ -75,13 +75,16 @@ export async function lookupCategoryForItem(
     .join(" ");
 
   const words = significantWords(searchText);
-  let candidates = await findLocalCandidates(words);
+  // eBay's own suggestions lead the shortlist; our word search fills in
+  // behind them in case eBay's are off. Claude still makes the call.
+  const suggested = await ebaySuggestedCategories(itemId, productDescription);
+  let candidates = mergeCandidates(suggested, await findLocalCandidates(words));
 
   console.log(
-    `[categoryLookup] ${itemId}: title="${productDescription}", words=${JSON.stringify(words)}, local candidates=${candidates.length}`
+    `[categoryLookup] ${itemId}: title="${productDescription}", words=${JSON.stringify(words)}, eBay suggested=${suggested.length}, candidates=${candidates.length}`
   );
 
-  let picked = candidates.length > 0 ? await timedPick(itemId, productDescription, candidates) : null;
+  let picked = candidates.length > 0 ? await timedPick(itemId, productDescription, candidates, suggested) : null;
 
   if (!picked) {
     // Literal word overlap found nothing usable — ask Claude for generic
@@ -95,14 +98,11 @@ export async function lookupCategoryForItem(
       // whole in a category name; their words often do.
       const genericWords = Array.from(new Set([...genericTerms, ...genericTerms.flatMap(significantWords)]));
       const broaderCandidates = await findLocalCandidates(genericWords);
-      // Merge with anything found in the first pass, deduped by id.
-      const merged = new Map(candidates.map((c) => [c.id, c]));
-      for (const c of broaderCandidates) merged.set(c.id, c);
-      candidates = Array.from(merged.values());
+      candidates = mergeCandidates(candidates, broaderCandidates);
 
       console.log(`[categoryLookup] ${itemId}: broadened local candidates=${candidates.length}`);
       if (candidates.length > 0) {
-        picked = await timedPick(itemId, productDescription, candidates);
+        picked = await timedPick(itemId, productDescription, candidates, suggested);
       }
     }
   }
@@ -117,7 +117,41 @@ export async function lookupCategoryForItem(
     };
   }
 
+  if (suggested.length > 0) {
+    // Claude turned everything down, but eBay's top suggestion has been
+    // right far more often than the web search below, which on 2026-10-05
+    // came back empty 3 times out of 3 (17-38s each) on a title eBay placed
+    // instantly. Applied without saving a keyword rule, since nothing
+    // double-checked it.
+    const top = suggested[0];
+    console.log(`[categoryLookup] ${itemId}: no pick, using eBay's top suggestion ${top.id} (${top.path})`);
+    await applyCategory(itemId, top.id, top.name, "");
+    return { categoryId: top.id, categoryName: top.name, sourceUrl: null, fromExistingRule: false };
+  }
+
+  // Only when eBay's suggestion service is down or had nothing.
   return searchWebForCategory(itemId, productDescription);
+}
+
+// eBay's suggestions as rows from our own tree, in eBay's order, leaves
+// only. Empty on any failure: the word search still runs without it.
+async function ebaySuggestedCategories(itemId: string, productDescription: string): Promise<Candidate[]> {
+  try {
+    const ids = await getCategorySuggestions(productDescription);
+    if (ids.length === 0) return [];
+    const rows = await prisma.ebayCategory.findMany({ where: { id: { in: ids } } });
+    const leaves = await filterToLeaves(rows);
+    return ids.map((id) => leaves.find((c) => c.id === id)).filter((c): c is Candidate => Boolean(c));
+  } catch (e) {
+    console.error(`[categoryLookup] ${itemId}: eBay category suggestions failed`, e);
+    return [];
+  }
+}
+
+function mergeCandidates(first: Candidate[], second: Candidate[]): Candidate[] {
+  const merged = new Map(first.map((c) => [c.id, c]));
+  for (const c of second) if (!merged.has(c.id)) merged.set(c.id, c);
+  return Array.from(merged.values());
 }
 
 // Each word gets its own pool query, so a common word can't crowd out a
@@ -211,10 +245,11 @@ function categoryNameRoughlyMatches(claimed: string, actual: { name: string; pat
 async function timedPick(
   itemId: string,
   productDescription: string,
-  candidates: { id: string; name: string; path: string }[]
+  candidates: Candidate[],
+  suggested: Candidate[]
 ) {
   const pickStart = Date.now();
-  const picked = await pickBestLocalCategory(productDescription, candidates);
+  const picked = await pickBestLocalCategory(productDescription, candidates, suggested);
   console.log(
     `[categoryLookup] ${itemId}: local pick took ${Date.now() - pickStart}ms, result=${JSON.stringify(picked)}`
   );
@@ -285,7 +320,8 @@ This product's title is dominated by brand/scent/flavor words that won't literal
 // candidates, or say none fit. No web search, so no timeout risk.
 async function pickBestLocalCategory(
   productDescription: string,
-  candidates: { id: string; name: string; path: string }[]
+  candidates: Candidate[],
+  suggested: Candidate[]
 ): Promise<{ categoryId: string; categoryName: string; keyword: string } | null> {
   const schema = {
     type: "object",
@@ -303,8 +339,9 @@ async function pickBestLocalCategory(
     additionalProperties: false,
   } as const;
 
+  const suggestedRank = new Map(suggested.map((c, i) => [c.id, i + 1]));
   const candidateList = candidates
-    .map((c) => `${c.id}: ${c.path}`)
+    .map((c) => `${c.id}: ${c.path}${suggestedRank.has(c.id) ? ` [eBay suggestion #${suggestedRank.get(c.id)}]` : ""}`)
     .join("\n");
 
   let response;
@@ -321,7 +358,7 @@ async function pickBestLocalCategory(
             role: "user",
             content: `Product: "${productDescription}"
 
-Pick the single best-matching eBay category for this product from the candidates below (id: full path). Prefer the most specific matching category over a broad parent. Ignore "Collectibles > Advertising" / memorabilia-style categories that just happen to share a brand name (e.g. a candy brand's "Collectibles > Advertising > ... > Hershey & Reese's" category is for vintage tins and ads, not for selling the actual candy) — only pick those if the product itself is explicitly a collectible/vintage/advertising item. "Books & Magazines" is for books with printed content (eBay then requires an Author); blank notebooks, journals, composition books and planners are school/office supplies, not books. If none of them genuinely fit this product, return null.
+Pick the single best-matching eBay category for this product from the candidates below (id: full path). Candidates marked [eBay suggestion #N] are eBay's own suggestions for this title, best first. They're usually right, but check that the one you pick really fits the product. Prefer the most specific matching category over a broad parent. Ignore "Collectibles > Advertising" / memorabilia-style categories that just happen to share a brand name (e.g. a candy brand's "Collectibles > Advertising > ... > Hershey & Reese's" category is for vintage tins and ads, not for selling the actual candy) — only pick those if the product itself is explicitly a collectible/vintage/advertising item. "Books & Magazines" is for books with printed content (eBay then requires an Author); blank notebooks, journals, composition books and planners are school/office supplies, not books. If none of them genuinely fit this product, return null.
 
 ${candidateList}`,
           },
@@ -364,8 +401,9 @@ async function applyCategory(
   }
 }
 
-// Last resort — only reached if the local category tree search above found
-// nothing usable. Same web-search approach as before, same timeout caution.
+// Last resort, only when eBay's suggestion service was down or had nothing.
+// Weak on its own: on 2026-10-05 it came back empty 3 times out of 3
+// (17-38s each) on a title eBay's suggestions placed instantly.
 async function searchWebForCategory(
   itemId: string,
   productDescription: string
