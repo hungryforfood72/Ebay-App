@@ -91,7 +91,10 @@ export async function lookupCategoryForItem(
     console.log(`[categoryLookup] ${itemId}: generic terms=${JSON.stringify(genericTerms)}`);
 
     if (genericTerms.length > 0) {
-      const broaderCandidates = await findLocalCandidates(genericTerms);
+      // The phrases themselves ("incontinence underwear") rarely appear
+      // whole in a category name; their words often do.
+      const genericWords = Array.from(new Set([...genericTerms, ...genericTerms.flatMap(significantWords)]));
+      const broaderCandidates = await findLocalCandidates(genericWords);
       // Merge with anything found in the first pass, deduped by id.
       const merged = new Map(candidates.map((c) => [c.id, c]));
       for (const c of broaderCandidates) merged.set(c.id, c);
@@ -117,43 +120,45 @@ export async function lookupCategoryForItem(
   return searchWebForCategory(itemId, productDescription);
 }
 
-// Pulls a generous pool of matches (no ranking from Postgres — `contains`
-// gives no relevance signal), then scores and trims it ourselves. Without
-// this, an unordered `take: N` on a common word like "toy" or "water" — which
-// can match thousands of rows across the 20k+ category tree — returns
-// whatever Postgres happens to hand back first, which is essentially random
-// and can easily miss the one category that actually fits.
+// Each word gets its own pool query, so a common word can't crowd out a
+// rare one. One combined query with an unordered `take: 2000` let "women"
+// and "underwear" (thousands of matches) fill the pool before
+// "incontinence" got in, so Incontinence Aids never reached the shortlist
+// for Always Discreet underwear (2026-10-05).
+const POOL_PER_WORD = 300;
+
 async function findLocalCandidates(words: string[]) {
   if (words.length === 0) return [];
 
-  const pool = await prisma.ebayCategory.findMany({
-    where: {
-      OR: words.flatMap((w) => [
-        { name: { contains: w, mode: "insensitive" as const } },
-        { path: { contains: w, mode: "insensitive" as const } },
-      ]),
-    },
-    take: 2000,
-  });
-
-  // Scored on whole words (plurals allowed), not substrings: the pool query
-  // above can't do word boundaries, and substring scoring let "snow" rank
-  // Snowsuits and "toner" rank copier Toner level with "Cleansers & Toners",
-  // pushing the real category out of the shortlist (a Thayers facial toner,
-  // 2026-09-29). A pool row with no whole-word hit is dropped.
+  // Matched on whole words (plurals allowed), not substrings: Postgres
+  // `contains` can't do word boundaries, and substring matching let "snow"
+  // rank Snowsuits and "toner" rank copier Toner level with "Cleansers &
+  // Toners" (a Thayers facial toner, 2026-09-29).
   const patterns = words.map(
     (w) => new RegExp(`\\b${w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:e?s)?\\b`, "i")
   );
-  const scored = pool
-    .map((c) => {
-      let score = 0;
-      for (const re of patterns) {
-        if (re.test(c.name)) score += 3;
-        else if (re.test(c.path)) score += 1;
-      }
-      return { candidate: c, score };
-    })
-    .filter((s) => s.score > 0);
+  const totalCategories = await prisma.ebayCategory.count();
+  const pool = new Map<string, { id: string; name: string; path: string }>();
+  // A rare word says far more about what the product is than a common one:
+  // "incontinence" (1 category) vs. "women" (hundreds). Inverse frequency.
+  const weights: number[] = [];
+  for (const [i, w] of words.entries()) {
+    const rows = await prisma.ebayCategory.findMany({
+      where: { path: { contains: w, mode: "insensitive" } },
+    });
+    const hits = rows.filter((c) => patterns[i].test(c.path));
+    weights.push(Math.log(totalCategories / (hits.length + 1)));
+    for (const c of hits.slice(0, POOL_PER_WORD)) pool.set(c.id, c);
+  }
+
+  const scored = Array.from(pool.values()).map((c) => {
+    let score = 0;
+    patterns.forEach((re, i) => {
+      if (re.test(c.name)) score += 3 * weights[i];
+      else if (re.test(c.path)) score += weights[i];
+    });
+    return { candidate: c, score };
+  });
 
   scored.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
