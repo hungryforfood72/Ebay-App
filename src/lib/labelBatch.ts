@@ -13,7 +13,8 @@ const CONCURRENCY = 5;
 
 // How many orders one SHIPPING_LABEL charge covers, across the seller's
 // whole account. Buying labels in bulk posts ONE charge for the batch and
-// eBay ties it to every order in it, the VA's included, with no per-order
+// eBay ties it to every order in it, including listings from before this
+// app (no SKU, not tracked here) that ship in the same batch, with no per-order
 // breakdown anywhere (the Finances API gives only the lump sum; Trading
 // GetOrders' ActualShippingCost comes back 0). Confirmed live 2026-10-06:
 // a $106.99 charge covered 14 orders, only 3 tracked here, and splitting it

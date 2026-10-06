@@ -246,7 +246,7 @@ model Item {
 
 // How many orders one SHIPPING_LABEL charge really covers. Buying labels in
 // bulk on eBay posts ONE charge for the whole batch and ties it to every
-// order in it, including orders this app doesn't track (the VA's). Counted
+// order in it, including pre-app listings this app doesn't track. Counted
 // once from eBay (see labelBatch.ts) so the sync can split the charge
 // across the whole batch, not just the orders it knows about.
 model ShippingLabelBatch {

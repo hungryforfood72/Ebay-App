@@ -288,7 +288,7 @@ export async function syncEbayOrders(
 
       const label = labelByTxnId.get(transactionId)!;
       // The whole batch, not just the orders recorded here: a bulk label
-      // buy is one charge across every order in it, the VA's included (see
+      // buy is one charge across every order in it, pre-app listings included (see
       // labelBatch.ts). If counting fails, fall back to the orders we know
       // about and try counting again next run.
       let batchSize = 0;
