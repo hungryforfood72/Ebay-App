@@ -244,6 +244,19 @@ model Item {
   @@index([manifestId])
 }
 
+// How many orders one SHIPPING_LABEL charge really covers. Buying labels in
+// bulk on eBay posts ONE charge for the whole batch and ties it to every
+// order in it, including orders this app doesn't track (the VA's). Counted
+// once from eBay (see labelBatch.ts) so the sync can split the charge
+// across the whole batch, not just the orders it knows about.
+model ShippingLabelBatch {
+  transactionId String   @id
+  amount        Decimal  @db.Decimal(10, 2)
+  orderCount    Int
+  labelDate     DateTime
+  countedAt     DateTime @default(now())
+}
+
 // One row per matched eBay order line item — not folded into Item directly
 // because one Item (quantity > 1) can sell out across several separate
 // orders over time. ebayOrderLineItemId is the sync job's idempotency

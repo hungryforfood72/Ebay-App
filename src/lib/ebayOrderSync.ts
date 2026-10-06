@@ -10,6 +10,7 @@ import {
   type EbayOrder,
 } from "./ebay";
 import { endSoldOutListings } from "./endSoldOutListings";
+import { labelBatchOrderCount } from "./labelBatch";
 import { prisma } from "./prisma";
 import type { Prisma } from "@/generated/prisma/client";
 
@@ -260,7 +261,7 @@ export async function syncEbayOrders(
     // sibling EbayItemSale rows — no schema change needed to group by it.
     const salesOrders = orders.filter((o) => !isNonSale(o));
     const labelOrdersThisRun = new Map<string, Set<string>>();
-    const labelAmountByTxnId = new Map<string, number>();
+    const labelByTxnId = new Map<string, { transactionId: string; amount: number; date: string }>();
     for (const order of salesOrders) {
       if (!earningsCache.has(order.orderId)) {
         earningsCache.set(order.orderId, await getOrderEarnings(order.orderId));
@@ -270,7 +271,7 @@ export async function syncEbayOrders(
         const set = labelOrdersThisRun.get(label.transactionId) ?? new Set<string>();
         set.add(order.orderId);
         labelOrdersThisRun.set(label.transactionId, set);
-        labelAmountByTxnId.set(label.transactionId, label.amount);
+        labelByTxnId.set(label.transactionId, label);
       }
     }
 
@@ -285,8 +286,19 @@ export async function syncEbayOrders(
       const siblingOrderIds = new Set(knownSiblings.map((s) => s.ebayOrderId));
       for (const id of inRunSiblingIds) siblingOrderIds.add(id);
 
-      const labelAmount = labelAmountByTxnId.get(transactionId)!;
-      const sharePerOrder = labelAmount / siblingOrderIds.size;
+      const label = labelByTxnId.get(transactionId)!;
+      // The whole batch, not just the orders recorded here: a bulk label
+      // buy is one charge across every order in it, the VA's included (see
+      // labelBatch.ts). If counting fails, fall back to the orders we know
+      // about and try counting again next run.
+      let batchSize = 0;
+      try {
+        batchSize = await labelBatchOrderCount(label, earningsCache);
+      } catch (e) {
+        result.errors.push(`Label ${transactionId} (batch count): ${e instanceof Error ? e.message : String(e)}`);
+      }
+      const labelAmount = label.amount;
+      const sharePerOrder = labelAmount / Math.max(batchSize, siblingOrderIds.size);
       resolvedPoolPerOrder.set(transactionId, sharePerOrder);
 
       // Rebalance whichever siblings this run's main loop won't otherwise

@@ -937,6 +937,22 @@ export async function getOrder(orderId: string): Promise<EbayOrder> {
 // Pages through GET /sell/fulfillment/v1/order for orders last-modified in
 // [from, to). Vercel Cron's own bearer-token check happens one layer up in
 // the route handler — this just does the paging.
+// Every order created in [from, to], ids only: the seller's whole account,
+// including orders for listings this app never touched.
+export async function getOrderIdsCreatedBetween(from: Date, to: Date): Promise<string[]> {
+  const ids: string[] = [];
+  const limit = 50;
+  const filter = `creationdate:[${from.toISOString()}..${to.toISOString()}]`;
+  for (let offset = 0; ; offset += limit) {
+    const page = (await ebayFetch(
+      `/sell/fulfillment/v1/order?filter=${encodeURIComponent(filter)}&limit=${limit}&offset=${offset}`
+    )) as { orders?: { orderId: string }[] };
+    const pageOrders = page.orders ?? [];
+    ids.push(...pageOrders.map((o) => o.orderId));
+    if (pageOrders.length < limit) return ids;
+  }
+}
+
 export async function getRecentOrders(from: Date, to: Date): Promise<EbayOrder[]> {
   const orders: EbayOrder[] = [];
   const limit = 50;
@@ -1007,7 +1023,7 @@ export type EbayOrderEarnings = {
   // rather than trusting a per-order total. Array, not a single value,
   // since an order could in principle have more than one shipping-label
   // transaction (a split shipment).
-  shippingLabels: { transactionId: string; amount: number }[];
+  shippingLabels: { transactionId: string; amount: number; date: string }[];
   // Buyer refunds against this order — confirmed live in two shapes: most
   // have orderLineItems naming which line(s) were refunded (each with its
   // own marketplaceFees, but as CREDITS here rather than charges — and
@@ -1070,7 +1086,7 @@ export async function getOrderEarnings(orderId: string): Promise<EbayOrderEarnin
 
   const shippingLabels = transactions
     .filter((t) => t.transactionType === "SHIPPING_LABEL" && t.transactionId)
-    .map((t) => ({ transactionId: t.transactionId!, amount: Number(t.amount?.value ?? 0) }));
+    .map((t) => ({ transactionId: t.transactionId!, amount: Number(t.amount?.value ?? 0), date: t.transactionDate ?? "" }));
 
   const adFees = transactions
     .filter((t) => t.transactionType === "NON_SALE_CHARGE" && t.feeType === "AD_FEE")
