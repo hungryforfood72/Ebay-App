@@ -1,4 +1,4 @@
-import { computeDiscountedPrice } from "@/lib/discount";
+import { computeDiscountedPrice, discountBasePrice } from "@/lib/discount";
 import { ownerOnly } from "@/lib/auth";
 import { EbayApiError, reviseFixedPriceItemPrice, toItemForEbayPublish, updateOfferPrice } from "@/lib/ebay";
 import { prisma } from "@/lib/prisma";
@@ -44,15 +44,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   // publish: keeps failures attributable to a specific item and avoids
   // bursting eBay with simultaneous requests.
   for (const item of items) {
-    const newPrice = computeDiscountedPrice(Number(item.price ?? 0), mode, value);
-
     try {
+      const basePrice = await discountBasePrice(item);
+      const newPrice = computeDiscountedPrice(basePrice, mode, value);
       if (item.ebayOfferId) {
         await updateOfferPrice(item.ebayOfferId, toItemForEbayPublish(item, newPrice), newPrice);
       } else {
         await reviseFixedPriceItemPrice(item.ebayListingId!, newPrice);
       }
-      await prisma.item.update({ where: { id: item.id }, data: { price: newPrice } });
+      await prisma.item.update({ where: { id: item.id }, data: { price: newPrice, originalPrice: basePrice } });
       updated++;
     } catch (e) {
       const message = e instanceof EbayApiError || e instanceof Error ? e.message : "Update failed.";

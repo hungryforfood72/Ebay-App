@@ -1,4 +1,4 @@
-import { computeDiscountedPrice } from "@/lib/discount";
+import { computeDiscountedPrice, discountBasePrice } from "@/lib/discount";
 import { ownerOnly } from "@/lib/auth";
 import { EbayApiError, reviseFixedPriceItemPrice, toItemForEbayPublish, updateOfferPrice } from "@/lib/ebay";
 import { prisma } from "@/lib/prisma";
@@ -21,8 +21,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const body = await request.json().catch(() => ({}));
   const mode = body.mode === "amount" ? "amount" : body.mode === "percent" ? "percent" : null;
   const value = Number(body.value);
-  if (!mode || !value || value <= 0) {
-    return NextResponse.json({ error: "A discount mode and positive value are required." }, { status: 400 });
+  // 0 is allowed: back to the original price.
+  if (!mode || !Number.isFinite(value) || value < 0 || (mode === "percent" && value >= 100)) {
+    return NextResponse.json({ error: "Enter a discount from 0 up to (not including) 100%." }, { status: 400 });
   }
 
   const item = await prisma.item.findUnique({ where: { id } });
@@ -33,7 +34,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     return NextResponse.json({ error: "This item isn't currently listed on eBay." }, { status: 400 });
   }
 
-  const newPrice = computeDiscountedPrice(Number(item.price ?? 0), mode, value);
+  const basePrice = await discountBasePrice(item);
+  const newPrice = computeDiscountedPrice(basePrice, mode, value);
 
   try {
     if (item.ebayOfferId) {
@@ -41,7 +43,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     } else {
       await reviseFixedPriceItemPrice(item.ebayListingId!, newPrice);
     }
-    const updated = await prisma.item.update({ where: { id }, data: { price: newPrice } });
+    const updated = await prisma.item.update({ where: { id }, data: { price: newPrice, originalPrice: basePrice } });
     return NextResponse.json(updated);
   } catch (e) {
     const message = e instanceof EbayApiError || e instanceof Error ? e.message : "Discount failed.";

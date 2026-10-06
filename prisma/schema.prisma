@@ -123,6 +123,10 @@ model Item {
   finalTitle       String?
   finalDescription String?
   price            Decimal?       @db.Decimal(10, 2)
+  // The price before any discount from the dashboard or a manifest, so a
+  // new discount replaces the old one instead of stacking on it (15% then
+  // 40% was coming out 49% off). Set by the first discount; see discount.ts.
+  originalPrice    Decimal?       @db.Decimal(10, 2)
   categoryId       String?
   condition        ItemCondition?
   compNotes        String?

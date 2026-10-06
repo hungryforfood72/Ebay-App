@@ -18,6 +18,7 @@ type ExpiringListedItem = {
   sku: string;
   expirationDate: string;
   price: number | null;
+  originalPrice: number | null;
   shelfLocation: string;
   ebayListingId: string | null;
   ebayEnvironment: string | null;
@@ -649,11 +650,30 @@ function ExpiringItemCard({
   const days = daysUntil(item.expirationDate);
   const urgent = days <= 7;
 
+  // Discounts are always taken off the original price (see discount.ts on
+  // the server), so the current one is shown and a new one replaces it.
+  const currentPrice = item.livePrice ?? item.price;
+  const basePrice = item.originalPrice ?? item.liveOriginalPrice ?? currentPrice;
+  const currentPercentOff =
+    basePrice != null && currentPrice != null && currentPrice < basePrice
+      ? Math.round((1 - currentPrice / basePrice) * 100)
+      : 0;
+
   async function applyDiscount() {
     const value = Number(discountValue);
-    if (!value || value <= 0) return;
-    const label = discountMode === "percent" ? `${value}% off` : `$${value.toFixed(2)} off`;
-    if (!confirm(`Apply ${label} to "${item.finalTitle ?? item.sku}"? This changes the real live eBay price.`)) {
+    if (discountValue === "" || !Number.isFinite(value) || value < 0) return;
+    if (discountMode === "percent" && value >= 100) return;
+    const title = item.finalTitle ?? item.sku;
+    let message = `Apply this discount to "${title}"? This changes the real live eBay price.`;
+    if (basePrice != null) {
+      const base = `$${basePrice.toFixed(2)}`;
+      const newPrice = Math.max(discountMode === "percent" ? basePrice * (1 - value / 100) : basePrice - value, 0.99);
+      message =
+        value === 0
+          ? `Put "${title}" back to its original ${base}?`
+          : `Set "${title}" to ${discountMode === "percent" ? `${value}%` : `$${value.toFixed(2)}`} off ${base}, so $${newPrice.toFixed(2)}? This replaces any earlier discount and changes the real live eBay price.`;
+    }
+    if (!confirm(message)) {
       return;
     }
     setActing("discount");
@@ -666,7 +686,15 @@ function ExpiringItemCard({
       });
       const result = await res.json();
       if (!res.ok) throw new Error(result.error ?? "Discount failed.");
-      onChange({ price: Number(result.price) });
+      const price = Number(result.price);
+      const originalPrice = result.originalPrice != null ? Number(result.originalPrice) : null;
+      onChange({
+        price,
+        originalPrice,
+        // Shown until the next refresh, instead of eBay's now-stale numbers.
+        livePrice: price,
+        liveOriginalPrice: originalPrice != null && originalPrice > price ? originalPrice : null,
+      });
       setDiscountValue("");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
@@ -837,7 +865,16 @@ function ExpiringItemCard({
 
       {canManage ? (
         <div className="mt-4 grid gap-4 border-t border-border pt-4 md:grid-cols-3">
-          <ActionGroup label="Discount">
+          <ActionGroup
+            label="Discount"
+            status={
+              currentPercentOff > 0 && basePrice != null ? (
+                <Badge tone="success">
+                  {currentPercentOff}% off ${basePrice.toFixed(2)}
+                </Badge>
+              ) : undefined
+            }
+          >
             <div className="flex gap-2">
               {/* Width lives on the wrapper: form controls are w-full by
                   default (they fill whatever they're placed in), so a width
@@ -860,11 +897,17 @@ function ExpiringItemCard({
                 min={0}
                 value={discountValue}
                 onChange={(e) => setDiscountValue(e.target.value)}
-                placeholder={discountMode === "percent" ? "15" : "5.00"}
+                placeholder={
+                  discountMode === "percent"
+                    ? String(currentPercentOff || 15)
+                    : basePrice != null && currentPrice != null && currentPrice < basePrice
+                      ? (basePrice - currentPrice).toFixed(2)
+                      : "5.00"
+                }
                 aria-label="Discount amount"
                 className="min-w-0"
               />
-              <Button size="md" onClick={applyDiscount} disabled={acting !== null || !discountValue} className="shrink-0">
+              <Button size="md" onClick={applyDiscount} disabled={acting !== null || discountValue === ""} className="shrink-0">
                 {acting === "discount" ? "Applying…" : "Apply"}
               </Button>
             </div>

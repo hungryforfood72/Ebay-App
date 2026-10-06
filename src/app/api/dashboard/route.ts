@@ -49,6 +49,7 @@ export async function GET(request: Request) {
         sku: true,
         expirationDate: true,
         price: true,
+        originalPrice: true,
         shelfLocation: true,
         ebayListingId: true,
         ebayEnvironment: true,
@@ -129,6 +130,7 @@ export async function GET(request: Request) {
       return {
         ...i,
         price: i.price != null ? Number(i.price) : null,
+        originalPrice: i.originalPrice != null ? Number(i.originalPrice) : null,
         livePrice: live?.price ?? null,
         liveOriginalPrice: live?.originalPrice ?? null,
       };
