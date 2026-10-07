@@ -1280,8 +1280,45 @@ export async function createMarkdownPromotion(
   return { promotionId, percentOff, startDate: startDate.toISOString(), endDate: endDate.toISOString() };
 }
 
-// Ends a sale event early / removes it — the listing itself stays live,
-// only the strikethrough markdown is removed. Not routed through the shared
+// Stops a sale event early; the listing itself stays live. eBay refuses to
+// delete a RUNNING one ("A promotion can only be deleted if it is ended",
+// confirmed live 2026-10-07): the delete below only ever worked on a sale
+// still SCHEDULED in the minute before it starts. A running one is ended
+// by moving its end date to a moment from now (same body otherwise, since
+// it's a full-replace PUT; confirmed live). One already over is left alone.
+export async function stopMarkdownPromotion(promotionId: string): Promise<void> {
+  const [token, config] = await Promise.all([getValidAccessToken(), Promise.resolve(getEbayConfig())]);
+  const url = `${config.apiBase}/sell/marketing/v1/item_price_markdown/${encodeURIComponent(promotionId)}`;
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+    "Content-Language": "en-US",
+    "Accept-Language": "en-US",
+  };
+  const res = await fetch(url, { headers });
+  if (res.status === 404) return; // already gone
+  if (!res.ok) throw await markdownError(res);
+  const promotion = (await res.json()) as { promotionStatus?: string } & Record<string, unknown>;
+
+  if (promotion.promotionStatus === "RUNNING") {
+    const endDate = new Date(Date.now() + 2 * 60 * 1000).toISOString();
+    const put = await fetch(url, { method: "PUT", headers, body: JSON.stringify({ ...promotion, endDate }) });
+    if (!put.ok) throw await markdownError(put);
+    return;
+  }
+  if (promotion.promotionStatus === "ENDED") return;
+  await deleteMarkdownPromotion(promotionId);
+}
+
+async function markdownError(res: Response): Promise<EbayApiError> {
+  const errBody = await res.json().catch(() => null);
+  const errors = (errBody as { errors?: { message: string; longMessage?: string }[] } | null)?.errors;
+  const message = errors?.length ? errors.map((e) => e.longMessage ?? e.message).join("; ") : `eBay API error (${res.status})`;
+  return new EbayApiError(message, res.status, errors ?? errBody);
+}
+
+// Removes a sale event that hasn't started (or has ended); use
+// stopMarkdownPromotion for one that may be running. Not routed through the shared
 // ebayFetch() — confirmed live that this endpoint returns 200 with an empty
 // body (not 204 like deleteAd's ad_campaign endpoint), which ebayFetch's
 // unconditional res.json() on any non-204 status would choke on.
