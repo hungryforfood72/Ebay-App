@@ -1,5 +1,6 @@
 "use client";
 
+import { SendOffersSection } from "@/components/SendOffersSection";
 import { Stat } from "@/components/Stat";
 import { Alert } from "@/components/ui/Alert";
 import { AppShell } from "@/components/ui/AppShell";
@@ -237,6 +238,8 @@ export default function DashboardPage() {
         </section>
 
         <SalesSection isOwner={isOwner} refreshKey={salesRefresh} />
+
+        {isOwner && <SendOffersSection />}
 
         <Card>
           <div className="flex flex-wrap items-center justify-between gap-3">

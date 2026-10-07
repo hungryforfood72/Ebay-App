@@ -233,6 +233,52 @@ export async function getCategorySuggestions(query: string): Promise<string[]> {
   return (data.categorySuggestions ?? []).map((s) => s.category.categoryId);
 }
 
+// ---------------------------------------------------------------------------
+// Negotiation API: offers to interested buyers (Seller Hub's "Eligible to
+// send offers"). eBay decides eligibility: a listing shows up once someone
+// is watching it or has it in their cart, and drops off for a while after
+// offers go out. Works with the sell.inventory scope the app already has
+// (confirmed live 2026-10-08).
+// ---------------------------------------------------------------------------
+const NEGOTIATION_HEADERS = { "X-EBAY-C-MARKETPLACE-ID": "EBAY_US" };
+
+// Every eligible listing on the account, the VA's and pre-app ones included;
+// callers keep only the ones this app tracks.
+export async function getOfferEligibleListingIds(): Promise<string[]> {
+  const ids: string[] = [];
+  const limit = 200;
+  for (let offset = 0; ; offset += limit) {
+    const page = (await ebayFetch(`/sell/negotiation/v1/find_eligible_items?limit=${limit}&offset=${offset}`, {
+      headers: NEGOTIATION_HEADERS,
+    })) as { eligibleItems?: { listingId: string }[]; next?: string } | null;
+    const items = page?.eligibleItems ?? [];
+    ids.push(...items.map((i) => i.listingId));
+    if (!page?.next || items.length < limit) return ids;
+  }
+}
+
+// Sends one discount offer to every interested buyer on one listing. Per
+// eBay's spec: one listing per call, at least 5% off the listed price,
+// always 2 days, no counter-offers, message up to 2,000 characters.
+// Returns how many buyers it went to.
+export async function sendOfferToInterestedBuyers(input: {
+  listingId: string;
+  discountPercent: number;
+  message: string | null;
+}): Promise<number> {
+  const result = (await ebayFetch(`/sell/negotiation/v1/send_offer_to_interested_buyers`, {
+    method: "POST",
+    headers: NEGOTIATION_HEADERS,
+    body: JSON.stringify({
+      allowCounterOffer: false,
+      ...(input.message ? { message: input.message.slice(0, 2000) } : {}),
+      offerDuration: { unit: "DAY", value: 2 },
+      offeredItems: [{ listingId: input.listingId, discountPercentage: String(input.discountPercent), quantity: 1 }],
+    }),
+  })) as { offers?: unknown[] } | null;
+  return result?.offers?.length ?? 0;
+}
+
 // price is the item price alone; shippingCost is added on top only when
 // the listing has a real FIXED shipping charge (CALCULATED shipping
 // depends on the buyer's address, which the API can't resolve without one

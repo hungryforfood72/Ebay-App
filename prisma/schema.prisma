@@ -194,6 +194,7 @@ model Item {
   refundedTotal     Decimal @default(0) @db.Decimal(10, 2)
 
   sales EbayItemSale[]
+  sentOffers SentOffer[]
   stockAdjustments StockAdjustment[]
 
   // eBay Promoted Listings ad state — set by /api/items/[id]/promote,
@@ -246,6 +247,26 @@ model Item {
   @@index([status])
   @@index([scanSessionId])
   @@index([manifestId])
+}
+
+// One "send offer to interested buyers" from the dashboard (eBay's
+// Negotiation API). eBay sends it to everyone watching the listing or with
+// it in their cart, all at once; buyerCount is how many it reached. Offers
+// last 2 days (eBay's fixed duration). Kept so the dashboard can show what
+// was last offered on a listing.
+model SentOffer {
+  id              String   @id @default(uuid())
+  item            Item     @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  itemId          String
+  listingId       String
+  discountPercent Decimal  @db.Decimal(5, 2)
+  listPrice       Decimal  @db.Decimal(10, 2)
+  offerPrice      Decimal  @db.Decimal(10, 2)
+  buyerCount      Int
+  message         String?
+  sentAt          DateTime @default(now())
+
+  @@index([itemId])
 }
 
 // How many orders one SHIPPING_LABEL charge really covers. Buying labels in
