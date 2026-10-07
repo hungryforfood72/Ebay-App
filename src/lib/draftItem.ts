@@ -167,10 +167,12 @@ export async function draftItem(itemId: string) {
 ${upcNote}
 ${quantityNote}
 ${packNote}
-Condition: ${item.condition ?? "not specified — infer from the photo if possible, otherwise write neutrally"}
+Condition: ${item.condition ?? "not specified yet (set by hand in review)"}
 ${expirationNote}
 
-Write a clear, keyword-appropriate eBay title (80 characters max) and a short, honest description a buyer would find helpful. Do not invent specifics (model numbers, exact materials) that aren't supported by the UPC data or the photo.`;
+Write a clear, keyword-appropriate eBay title (80 characters max) and a short, honest description a buyer would find helpful. Do not invent specifics (model numbers, exact materials) that aren't supported by the UPC data or the photo.
+
+Describe the item's state the way a seller who has it in hand would: state what the photo clearly shows as plain fact ("The caps are still shrink-wrapped."), and leave out anything the photo can't confirm. Never hedge with "appears", "seems" or "looks like": it reads as if the seller never checked their own item.`;
 
   const content: Anthropic.Messages.ContentBlockParam[] = [
     { type: "text", text: promptText },
