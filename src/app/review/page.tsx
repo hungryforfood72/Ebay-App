@@ -790,24 +790,34 @@ function ItemCard({
                 {titleLength}/80
               </span>
             </div>
+            {/* Every field here is uncontrolled and saves on blur. Two rules
+                keep a stale copy from overwriting newer data (confirmed
+                2026-10-07: a description fixed on the server was put back by
+                an open Review tab when the box lost focus): the key includes
+                the saved value, so a change made elsewhere reloads the box,
+                and blur only saves when the text actually changed. */}
             <Input
               id={`title-${item.id}`}
-              key={`title-${item.id}-${item.aiTitle ?? ""}`}
+              key={`title-${item.id}-${item.finalTitle ?? ""}`}
               type="text"
               placeholder="Title"
               defaultValue={item.finalTitle ?? ""}
               maxLength={80}
               onChange={(e) => setTitleLength(e.target.value.length)}
-              onBlur={(e) => onChange({ finalTitle: e.target.value })}
+              onBlur={(e) => {
+                if (e.target.value !== (item.finalTitle ?? "")) onChange({ finalTitle: e.target.value });
+              }}
             />
           </div>
 
           <Field label="Description">
             <Textarea
-              key={`desc-${item.id}-${item.aiDescription ?? ""}`}
+              key={`desc-${item.id}-${item.finalDescription ?? ""}`}
               placeholder="Description"
               defaultValue={item.finalDescription ?? ""}
-              onBlur={(e) => onChange({ finalDescription: e.target.value })}
+              onBlur={(e) => {
+                if (e.target.value !== (item.finalDescription ?? "")) onChange({ finalDescription: e.target.value });
+              }}
               rows={4}
             />
           </Field>
@@ -820,11 +830,16 @@ function ItemCard({
                     $
                   </span>
                   <Input
+                    key={`price-${item.id}-${item.price ?? ""}`}
                     type="number"
                     step="0.01"
                     placeholder="0.00"
                     defaultValue={item.price ?? ""}
-                    onBlur={(e) => onChange({ price: e.target.value })}
+                    onBlur={(e) => {
+                      if (e.target.value === (item.price ?? "")) return;
+                      if (e.target.value && item.price != null && Number(e.target.value) === Number(item.price)) return;
+                      onChange({ price: e.target.value });
+                    }}
                     onWheel={(e) => e.currentTarget.blur()}
                     className="pl-7"
                   />
@@ -884,6 +899,7 @@ function ItemCard({
 
             <Field label="Condition">
               <Select
+                key={`cond-${item.id}-${item.condition ?? ""}`}
                 defaultValue={item.condition ?? ""}
                 onChange={(e) => onChange({ condition: e.target.value || null })}
               >
@@ -919,6 +935,7 @@ function ItemCard({
                   defaultValue={item.categoryId ?? ""}
                   onBlur={(e) => {
                     const value = e.target.value.trim();
+                    if (value === (item.categoryId ?? "")) return;
                     onChange({ categoryId: value });
                     checkTypedCategoryId(value);
                   }}
@@ -1048,10 +1065,13 @@ function ItemCard({
 
           <Field label="Sold comps notes" hint="Paste from Terapeak — for your reference only.">
             <Input
+              key={`comps-${item.id}-${item.compNotes ?? ""}`}
               type="text"
               placeholder="e.g. 12 sold, $14–$19"
               defaultValue={item.compNotes ?? ""}
-              onBlur={(e) => onChange({ compNotes: e.target.value })}
+              onBlur={(e) => {
+                if (e.target.value !== (item.compNotes ?? "")) onChange({ compNotes: e.target.value });
+              }}
             />
           </Field>
 
@@ -1082,17 +1102,25 @@ function ItemCard({
                 )}
               </div>
               <SuffixNumber
+                key={`lbs-${item.id}-${item.weightLbs ?? ""}`}
                 suffix="lb"
                 min={0}
                 defaultValue={item.weightLbs ?? ""}
-                onBlur={(e) => onChange({ weightLbs: e.target.value ? Number(e.target.value) : null })}
+                onBlur={(e) => {
+                  const value = e.target.value ? Number(e.target.value) : null;
+                  if (value !== item.weightLbs) onChange({ weightLbs: value });
+                }}
               />
               <SuffixNumber
+                key={`oz-${item.id}-${item.weightOz ?? ""}`}
                 suffix="oz"
                 min={0}
                 max={15}
                 defaultValue={item.weightOz ?? ""}
-                onBlur={(e) => onChange({ weightOz: e.target.value ? Number(e.target.value) : null })}
+                onBlur={(e) => {
+                  const value = e.target.value ? Number(e.target.value) : null;
+                  if (value !== item.weightOz) onChange({ weightOz: value });
+                }}
               />
             </div>
           </div>
@@ -1112,10 +1140,13 @@ function ItemCard({
                       {key}
                     </span>
                     <Input
+                      key={`${key}-${value}`}
                       size="sm"
                       type="text"
                       defaultValue={value}
-                      onBlur={(e) => updateSpecific(key, e.target.value)}
+                      onBlur={(e) => {
+                        if (e.target.value !== value) updateSpecific(key, e.target.value);
+                      }}
                       aria-label={key}
                       className="min-w-0"
                     />
