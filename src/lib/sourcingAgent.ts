@@ -607,8 +607,13 @@ ${
   try {
     const response = await anthropic.messages.create(
       {
+        // Stays on Haiku 4.5: tested 2026-10-08 against 20 real sale prices,
+        // Haiku 5.5 priced ~17% low (median miss 23% vs 13%), which would
+        // drag bids down; its ~$11/month token saving isn't worth that.
+        // 400 tokens cut 3 of those 20 off before the PRICE line (a line
+        // with no price); 1000 let all 20 finish.
         model: "claude-haiku-4-5",
-        max_tokens: 400,
+        max_tokens: 1000,
         tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 2, allowed_callers: ["direct"] }],
         messages: [
           {
