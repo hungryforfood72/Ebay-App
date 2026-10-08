@@ -444,8 +444,7 @@ export type ItemForEbayPublish = {
   itemSpecifics: Record<string, string> | null;
   // Sent as the "Expiration Date" item specific (see buildAspects).
   expirationDate: Date | null;
-  // Publishes with the local-pickup-only shipping policy (see
-  // fulfillmentPolicyFor).
+  // Publishes with the local-pickup policies (see policiesFor).
   localPickupOnly: boolean;
   photoUrls: string[];
   // Total ever listed (this SKU's own listing-quantity units, e.g. a count
@@ -670,22 +669,37 @@ export async function createOrReplaceInventoryItem(item: ItemForEbayPublish): Pr
   await withEbayRetry(() => putInventoryItem(item));
 }
 
-// The account's local-pickup-only shipping policy, set once in AppSetting
-// (none of the account's 21 shipping policies was pickup-only on
-// 2026-10-08, so Cristian creates one in Seller Hub). Every other listing
-// keeps the usual policy from the env.
+// The policies a local-pickup-only item publishes with, set once in
+// AppSetting; every other listing keeps the usual ones from the env.
+// Shipping: "Local Pickup Only" (335626253021), created in Seller Hub on
+// 2026-10-08 since none of the account's 21 shipping policies was. Payment:
+// eBay rejects pickup-only with "you can't require immediate payment", and
+// the usual "Payment due at buying" does, so pickup uses "eBay Managed
+// Payments" (333279693021) instead. Both confirmed with
+// VerifyAddFixedPriceItem (no package weight needed).
 export const LOCAL_PICKUP_POLICY_KEY = "ebay.localPickupPolicyId";
+export const LOCAL_PICKUP_PAYMENT_POLICY_KEY = "ebay.localPickupPaymentPolicyId";
 
 export async function getLocalPickupPolicyId(): Promise<string | null> {
   const row = await prisma.appSetting.findUnique({ where: { key: LOCAL_PICKUP_POLICY_KEY } });
   return row?.value || null;
 }
 
-async function fulfillmentPolicyFor(item: ItemForEbayPublish, usual: string): Promise<string> {
+async function policiesFor(
+  item: ItemForEbayPublish,
+  usual: { fulfillmentPolicyId: string; paymentPolicyId: string }
+): Promise<{ fulfillmentPolicyId: string; paymentPolicyId: string }> {
   if (!item.localPickupOnly) return usual;
-  const pickup = await getLocalPickupPolicyId();
-  if (!pickup) throw new Error("This item is local pickup only, but no local-pickup shipping policy is set up yet.");
-  return pickup;
+  const rows = await prisma.appSetting.findMany({
+    where: { key: { in: [LOCAL_PICKUP_POLICY_KEY, LOCAL_PICKUP_PAYMENT_POLICY_KEY] } },
+  });
+  const value = (key: string) => rows.find((r) => r.key === key)?.value || null;
+  const fulfillmentPolicyId = value(LOCAL_PICKUP_POLICY_KEY);
+  const paymentPolicyId = value(LOCAL_PICKUP_PAYMENT_POLICY_KEY);
+  if (!fulfillmentPolicyId || !paymentPolicyId) {
+    throw new Error("This item is local pickup only, but the local-pickup eBay policies aren't set up yet.");
+  }
+  return { fulfillmentPolicyId, paymentPolicyId };
 }
 
 async function putInventoryItem(item: ItemForEbayPublish): Promise<void> {
@@ -715,7 +729,7 @@ async function putInventoryItem(item: ItemForEbayPublish): Promise<void> {
 // price value.
 async function buildOfferBody(item: ItemForEbayPublish, price: number) {
   const config = getEbayConfig();
-  const fulfillmentPolicyId = await fulfillmentPolicyFor(item, config.fulfillmentPolicyId);
+  const { fulfillmentPolicyId, paymentPolicyId } = await policiesFor(item, config);
   return {
     sku: toEbaySku(item.sku),
     marketplaceId: "EBAY_US",
@@ -725,7 +739,7 @@ async function buildOfferBody(item: ItemForEbayPublish, price: number) {
     listingDescription: item.finalDescription,
     listingPolicies: {
       fulfillmentPolicyId,
-      paymentPolicyId: config.paymentPolicyId,
+      paymentPolicyId,
       returnPolicyId: config.returnPolicyId,
       // Matches the CSV export's BestOfferEnabled=true — fixed-price
       // listings that also take offers, with no auto-accept/auto-decline
