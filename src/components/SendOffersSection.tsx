@@ -193,8 +193,15 @@ export function SendOffersSection() {
                         <Badge tone={tone}>
                           {losesMoney
                             ? `loses ${money(-outcome.profit)}`
-                            : `${money(outcome.profit)} profit${l.costKnown ? "" : " before item cost"}`}
+                            : `${money(outcome.profit)} profit`}
                         </Badge>
+                      )}
+                      {l.costKnown && l.unitCost != null ? (
+                        <span>after {money(l.unitCost)} item cost</span>
+                      ) : l.noCostReason === "no_manifest" ? (
+                        <span>no manifest, item cost not counted</span>
+                      ) : (
+                        <span>manifest has no cost yet, item cost not counted</span>
                       )}
                       {l.promotedPercent != null && <span>promoted {l.promotedPercent}%</span>}
                       {l.lastOffer && !state && (

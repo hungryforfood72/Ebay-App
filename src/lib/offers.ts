@@ -10,6 +10,10 @@ export type EligibleOfferListing = OfferEconomics & {
   listingId: string;
   title: string;
   costKnown: boolean;
+  // Why there's no item cost, so the dashboard can say so: scanned outside
+  // a manifest (counted as $0, per Cristian), or its manifest has no
+  // landed cost entered yet (or doesn't list this UPC).
+  noCostReason: "no_manifest" | "manifest_uncosted" | null;
   lastOffer: { discountPercent: number; offerPrice: number; buyerCount: number; sentAt: string } | null;
 };
 
@@ -45,6 +49,7 @@ export async function eligibleOfferListings(): Promise<{
         listPrice: Number(i.price),
         unitCost: costed ? cost : null,
         costKnown: costed,
+        noCostReason: costed ? null : i.manifestId ? ("manifest_uncosted" as const) : ("no_manifest" as const),
         labelCost,
         promotedPercent: i.ebayAdId ? i.promotedBidPercentage : null,
         lastOffer: last
