@@ -50,7 +50,7 @@ export async function eligibleOfferListings(): Promise<{
         unitCost: costed ? cost : null,
         costKnown: costed,
         noCostReason: costed ? null : i.manifestId ? ("manifest_uncosted" as const) : ("no_manifest" as const),
-        labelCost,
+        labelCost: i.localPickupOnly ? 0 : labelCost,
         promotedPercent: i.ebayAdId ? i.promotedBidPercentage : null,
         lastOffer: last
           ? {

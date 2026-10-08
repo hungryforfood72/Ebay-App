@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, SectionHeader } from "@/components/ui/Card";
 import { cn } from "@/components/ui/cn";
-import { Field, Input, Select, Textarea } from "@/components/ui/Input";
+import { CheckboxRow, Field, Input, Select, Textarea } from "@/components/ui/Input";
 import {
   Check,
   Download,
@@ -65,6 +65,7 @@ type Item = {
   boxSize: string | null;
   weightLbs: number | null;
   weightOz: number | null;
+  localPickupOnly: boolean;
   ebayListingId: string | null;
   ebayPublishError: string | null;
   ebayEnvironment: string | null;
@@ -224,7 +225,7 @@ export default function ReviewPage() {
     // eBay's shipping engine requires actual package weight even on free
     // shipping — a real upload failed with "package weight is not valid or
     // is missing" for an item with no weight set.
-    if (!item.weightLbs && !item.weightOz) {
+    if (!item.localPickupOnly && !item.weightLbs && !item.weightOz) {
       setError(`"${label}" needs a package weight before it can go ready.`);
       return;
     }
@@ -1078,9 +1079,18 @@ function ItemCard({
           <div className="rounded-lg border border-border p-3 sm:p-4">
             <p className="text-sm font-medium text-foreground">Shipping</p>
             <p className="mb-3 text-xs text-muted-foreground">
-              Free, USPS Ground Advantage. Weight/box matter either way — accurate numbers keep eBay&apos;s calculated
-              cost (or your absorbed cost on free shipping) from defaulting high.
+              {item.localPickupOnly
+                ? "Local pickup only: the buyer pays on eBay and picks it up. No label, so no weight or box needed."
+                : "Free, USPS Ground Advantage. Weight/box matter either way — accurate numbers keep eBay's calculated cost (or your absorbed cost on free shipping) from defaulting high."}
             </p>
+            <CheckboxRow
+              className="mb-3"
+              label="Local pickup only"
+              description="No shipping. For big, heavy or fragile items."
+              checked={item.localPickupOnly}
+              onChange={(e) => onChange({ localPickupOnly: e.target.checked })}
+            />
+            {!item.localPickupOnly && (
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-[1fr_7rem_7rem]">
               <div className="col-span-2 sm:col-span-1">
                 <Select
@@ -1123,6 +1133,7 @@ function ItemCard({
                 }}
               />
             </div>
+            )}
           </div>
 
           <div className="rounded-lg border border-border p-3 sm:p-4">

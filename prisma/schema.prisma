@@ -123,6 +123,10 @@ model Item {
   finalTitle       String?
   finalDescription String?
   price            Decimal?       @db.Decimal(10, 2)
+  // Published with the local-pickup-only shipping policy (AppSetting
+  // ebay.localPickupPolicyId) instead of the usual one: no label, so no
+  // weight needed and $0 shipping in profit math.
+  localPickupOnly  Boolean        @default(false)
   // The price before any discount from the dashboard or a manifest, so a
   // new discount replaces the old one instead of stacking on it (15% then
   // 40% was coming out 49% off). Set by the first discount; see discount.ts.

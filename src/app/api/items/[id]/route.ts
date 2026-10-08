@@ -17,6 +17,7 @@ const EDITABLE_FIELDS = [
   "weightLbs",
   "weightOz",
   "expirationDate",
+  "localPickupOnly",
 ] as const;
 
 // Update review-step fields on an item (title/description/price/status, etc).

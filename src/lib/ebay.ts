@@ -444,6 +444,9 @@ export type ItemForEbayPublish = {
   itemSpecifics: Record<string, string> | null;
   // Sent as the "Expiration Date" item specific (see buildAspects).
   expirationDate: Date | null;
+  // Publishes with the local-pickup-only shipping policy (see
+  // fulfillmentPolicyFor).
+  localPickupOnly: boolean;
   photoUrls: string[];
   // Total ever listed (this SKU's own listing-quantity units, e.g. a count
   // of "2-pack" bundles, not individual bottles) — NOT what should be sent
@@ -493,6 +496,7 @@ export function toItemForEbayPublish(
     condition: string | null;
     itemSpecifics: unknown;
     expirationDate?: Date | null;
+    localPickupOnly?: boolean;
     photoUrls: string[];
     quantity: number;
     soldQuantity: number;
@@ -511,6 +515,7 @@ export function toItemForEbayPublish(
     condition: (item.condition ?? "used") as ItemForEbayPublish["condition"],
     itemSpecifics: item.itemSpecifics as Record<string, string> | null,
     expirationDate: item.expirationDate ?? null,
+    localPickupOnly: item.localPickupOnly ?? false,
     photoUrls: item.photoUrls,
     quantity: item.quantity,
     soldQuantity: item.soldQuantity,
@@ -665,6 +670,24 @@ export async function createOrReplaceInventoryItem(item: ItemForEbayPublish): Pr
   await withEbayRetry(() => putInventoryItem(item));
 }
 
+// The account's local-pickup-only shipping policy, set once in AppSetting
+// (none of the account's 21 shipping policies was pickup-only on
+// 2026-10-08, so Cristian creates one in Seller Hub). Every other listing
+// keeps the usual policy from the env.
+export const LOCAL_PICKUP_POLICY_KEY = "ebay.localPickupPolicyId";
+
+export async function getLocalPickupPolicyId(): Promise<string | null> {
+  const row = await prisma.appSetting.findUnique({ where: { key: LOCAL_PICKUP_POLICY_KEY } });
+  return row?.value || null;
+}
+
+async function fulfillmentPolicyFor(item: ItemForEbayPublish, usual: string): Promise<string> {
+  if (!item.localPickupOnly) return usual;
+  const pickup = await getLocalPickupPolicyId();
+  if (!pickup) throw new Error("This item is local pickup only, but no local-pickup shipping policy is set up yet.");
+  return pickup;
+}
+
 async function putInventoryItem(item: ItemForEbayPublish): Promise<void> {
   const totalWeightLbs = (item.weightLbs ?? 0) + (item.weightOz ?? 0) / 16;
   await ebayFetch(`/sell/inventory/v1/inventory_item/${encodeURIComponent(toEbaySku(item.sku))}`, {
@@ -690,8 +713,9 @@ async function putInventoryItem(item: ItemForEbayPublish): Promise<void> {
 // endpoint (every field required again, not a partial patch), so a price
 // change has to resend the same body shape as creation, just with a new
 // price value.
-function buildOfferBody(item: ItemForEbayPublish, price: number) {
+async function buildOfferBody(item: ItemForEbayPublish, price: number) {
   const config = getEbayConfig();
+  const fulfillmentPolicyId = await fulfillmentPolicyFor(item, config.fulfillmentPolicyId);
   return {
     sku: toEbaySku(item.sku),
     marketplaceId: "EBAY_US",
@@ -700,7 +724,7 @@ function buildOfferBody(item: ItemForEbayPublish, price: number) {
     categoryId: item.categoryId,
     listingDescription: item.finalDescription,
     listingPolicies: {
-      fulfillmentPolicyId: config.fulfillmentPolicyId,
+      fulfillmentPolicyId,
       paymentPolicyId: config.paymentPolicyId,
       returnPolicyId: config.returnPolicyId,
       // Matches the CSV export's BestOfferEnabled=true — fixed-price
@@ -719,7 +743,7 @@ export async function createOffer(item: ItemForEbayPublish): Promise<string> {
     async () => {
       const result = (await ebayFetch(`/sell/inventory/v1/offer`, {
         method: "POST",
-        body: JSON.stringify(buildOfferBody(item, item.price)),
+        body: JSON.stringify(await buildOfferBody(item, item.price)),
       })) as { offerId: string };
       return result.offerId;
     },
@@ -736,11 +760,9 @@ export async function createOffer(item: ItemForEbayPublish): Promise<string> {
 // missing" because the old offer still said Books. A full-replace PUT, so
 // safe to repeat.
 export async function refreshOffer(offerId: string, item: ItemForEbayPublish): Promise<void> {
+  const body = JSON.stringify(await buildOfferBody(item, item.price));
   await withEbayRetry(() =>
-    ebayFetch(`/sell/inventory/v1/offer/${encodeURIComponent(offerId)}`, {
-      method: "PUT",
-      body: JSON.stringify(buildOfferBody(item, item.price)),
-    })
+    ebayFetch(`/sell/inventory/v1/offer/${encodeURIComponent(offerId)}`, { method: "PUT", body })
   );
 }
 
@@ -765,7 +787,7 @@ async function existingOfferId(ebaySku: string): Promise<string | null> {
 export async function updateOfferPrice(offerId: string, item: ItemForEbayPublish, newPrice: number): Promise<void> {
   await ebayFetch(`/sell/inventory/v1/offer/${encodeURIComponent(offerId)}`, {
     method: "PUT",
-    body: JSON.stringify(buildOfferBody(item, newPrice)),
+    body: JSON.stringify(await buildOfferBody(item, newPrice)),
   });
 }
 

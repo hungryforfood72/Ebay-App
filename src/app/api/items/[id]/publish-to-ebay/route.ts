@@ -70,7 +70,8 @@ export async function POST(
   if (item.price == null) missing.push("price");
   if (!item.categoryId) missing.push("category");
   if (!item.condition) missing.push("condition");
-  if (!item.weightLbs && !item.weightOz) missing.push("weight");
+  // A pickup-only item never gets a label, so no weight to give.
+  if (!item.localPickupOnly && !item.weightLbs && !item.weightOz) missing.push("weight");
   if (item.photoUrls.length === 0) missing.push("at least one photo");
   if (missing.length > 0) {
     return NextResponse.json(

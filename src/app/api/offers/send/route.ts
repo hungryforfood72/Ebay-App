@@ -38,7 +38,7 @@ export async function POST(request: NextRequest) {
     {
       listPrice: Number(item.price),
       unitCost: costed ? cost : null,
-      labelCost: await typicalSingleLabelCost(),
+      labelCost: item.localPickupOnly ? 0 : await typicalSingleLabelCost(),
       promotedPercent: item.ebayAdId ? item.promotedBidPercentage : null,
     },
     discountPercent
