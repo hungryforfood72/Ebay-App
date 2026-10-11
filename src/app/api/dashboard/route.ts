@@ -41,6 +41,8 @@ export async function GET(request: Request) {
         status: { notIn: ["sold", "expired"] },
         OR: [{ ebayOfferId: { not: null } }, { ebayListingId: { not: null } }],
         expirationDate: { not: null, lte: expiringCutoff },
+        // Already off eBay and on the Shopify past-date page.
+        pastDateAt: null,
       },
       orderBy: { expirationDate: "asc" },
       select: {

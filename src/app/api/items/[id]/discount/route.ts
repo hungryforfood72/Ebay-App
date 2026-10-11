@@ -31,7 +31,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   if (!item) {
     return NextResponse.json({ error: "Item not found." }, { status: 404 });
   }
-  if (!item.ebayOfferId && !item.ebayListingId) {
+  if ((!item.ebayOfferId && !item.ebayListingId) || item.listingEndedAt) {
     return NextResponse.json({ error: "This item isn't currently listed on eBay." }, { status: 400 });
   }
 

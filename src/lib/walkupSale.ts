@@ -107,7 +107,10 @@ export class ItemSaleError extends Error {
 // specific to how they found this item (e.g. confirming it belongs to a
 // particular manifest/UPC) before calling this.
 export async function recordItemSale(
-  item: Pick<Item, "id" | "sku" | "quantity" | "soldQuantity" | "ebayOfferId" | "ebayListingId" | "shopifyOnly">,
+  item: Pick<
+    Item,
+    "id" | "sku" | "quantity" | "soldQuantity" | "ebayOfferId" | "ebayListingId" | "shopifyOnly" | "pastDateAt"
+  >,
   input: { quantity: number; pricePerUnit: number; note: string; recordedBy: string | null }
 ): Promise<{ item: Item; adjustment: StockAdjustment }> {
   if (!item.ebayOfferId && !item.ebayListingId && !item.shopifyOnly) {
@@ -115,7 +118,10 @@ export async function recordItemSale(
   }
 
   const storedAvailable = Math.max(0, item.quantity - item.soldQuantity);
-  const currentAvailable = (await getLiveAvailableQuantity(item)) ?? storedAvailable;
+  // Off eBay (Shopify & Whatnot only, or on the past-date page): the app's
+  // own count is the only one.
+  const offEbay = item.shopifyOnly || Boolean(item.pastDateAt);
+  const currentAvailable = (offEbay ? null : await getLiveAvailableQuantity(item)) ?? storedAvailable;
 
   const newAvailable = currentAvailable - input.quantity;
   if (newAvailable < 0) {
@@ -127,7 +133,9 @@ export async function recordItemSale(
   const newSoldQuantity = item.soldQuantity + input.quantity;
 
   try {
-    if (item.ebayOfferId) {
+    if (offEbay) {
+      // Nothing on eBay; Shopify follows below.
+    } else if (item.ebayOfferId) {
       await updateOfferQuantity(item.ebayOfferId, { sku: item.sku, soldQuantity: newSoldQuantity }, newAvailable);
     } else if (item.ebayListingId) {
       await reviseFixedPriceItemQuantity(item.ebayListingId, newAvailable);

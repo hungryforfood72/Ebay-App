@@ -1,7 +1,8 @@
 import { expireDueListings } from "@/lib/expireListings";
+import { runShopifySync } from "@/lib/shopifySync";
 import { NextRequest, NextResponse } from "next/server";
 
-export const maxDuration = 90;
+export const maxDuration = 300;
 
 // Vercel Cron is UTC-only with no timezone/DST awareness, and a fixed UTC
 // offset would drift an hour twice a year — so this fires hourly (see
@@ -29,5 +30,8 @@ export async function GET(request: NextRequest) {
   }
 
   const result = await expireDueListings(now);
-  return NextResponse.json(result);
+  // Off Whatnot, onto the past-date page (or off the store) right away
+  // rather than at the next 10-minute sync.
+  const shopify = result.changedItemIds.length > 0 ? await runShopifySync({ items: result.changedItemIds }) : null;
+  return NextResponse.json({ ...result, shopify });
 }

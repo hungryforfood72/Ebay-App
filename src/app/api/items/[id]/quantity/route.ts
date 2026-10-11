@@ -35,6 +35,17 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     take: 10,
   });
 
+  // Off eBay (Shopify & Whatnot only, or moved to the past-date page): the
+  // app's own count is the only one.
+  if (item.shopifyOnly || item.pastDateAt) {
+    return NextResponse.json({
+      liveAvailableQuantity: null,
+      livePrice: null,
+      storedAvailableQuantity,
+      recentAdjustments,
+    });
+  }
+
   if (!item.ebayOfferId) {
     return NextResponse.json({
       liveAvailableQuantity: await getLiveAvailableQuantity(item),
@@ -101,7 +112,8 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   // back to our own stored figure only if that check fails. This is what
   // the delta gets applied against, not whatever the client last saw.
   const storedAvailableQuantity = Math.max(0, item.quantity - item.soldQuantity);
-  const currentAvailableQuantity = (await getLiveAvailableQuantity(item)) ?? storedAvailableQuantity;
+  const offEbay = item.shopifyOnly || Boolean(item.pastDateAt);
+  const currentAvailableQuantity = (offEbay ? null : await getLiveAvailableQuantity(item)) ?? storedAvailableQuantity;
 
   const signedDelta = direction === "add" ? amount : -amount;
   const newAvailableQuantity = currentAvailableQuantity + signedDelta;
@@ -116,9 +128,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   try {
     let newQuantity: number;
-    if (item.shopifyOnly) {
-      // Shopify & Whatnot only: nothing on eBay to change. Shopify follows
-      // through queueShopifySync below.
+    if (offEbay) {
+      // Not on eBay (Shopify & Whatnot only, or past-date): nothing there to
+      // change. Shopify follows through queueShopifySync below.
       newQuantity = newAvailableQuantity + item.soldQuantity;
     } else if (item.ebayOfferId) {
       newQuantity = await updateOfferQuantity(item.ebayOfferId, item, newAvailableQuantity);

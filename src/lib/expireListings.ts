@@ -1,6 +1,8 @@
 import { EbayApiError, endFixedPriceItem, withdrawOffer } from "./ebay";
 import { parseBundleComponentUnits } from "./itemUnits";
 import { prisma } from "./prisma";
+import { getShopifyConfig } from "./shopify";
+import type { Item } from "@/generated/prisma/client";
 
 // Note on the damaged entries this sweep writes itself — the scan-speed
 // report filters on it so an automatic write never counts as someone's scan.
@@ -9,6 +11,12 @@ export const AUTO_EXPIRED_NOTE = "Auto-expired — removed from eBay by the dail
 export type ExpireListingsResult = {
   scanned: number;
   expired: number;
+  // Moved to the Shopify past-date page instead of pulled.
+  pastDated: number;
+  // Past-date items pulled at PAST_DATE_SELL_MONTHS past their date.
+  pulledPastDate: number;
+  // Everything this run moved or pulled, for the Shopify sync to follow.
+  changedItemIds: string[];
   failed: number;
   errors: string[];
 };
@@ -59,7 +67,15 @@ function chicagoTodayDateString(now: Date): string {
 // Chicago; safe to call more than once since an already-"expired" item
 // won't match the eligibility query again.
 export async function expireDueListings(now: Date = new Date()): Promise<ExpireListingsResult> {
-  const result: ExpireListingsResult = { scanned: 0, expired: 0, failed: 0, errors: [] };
+  const result: ExpireListingsResult = {
+    scanned: 0,
+    expired: 0,
+    pastDated: 0,
+    pulledPastDate: 0,
+    changedItemIds: [],
+    failed: 0,
+    errors: [],
+  };
 
   const bufferDays = await getExpirationBufferDays();
   const chicagoToday = chicagoTodayDateString(now);
@@ -70,9 +86,12 @@ export async function expireDueListings(now: Date = new Date()): Promise<ExpireL
       status: { in: ["listed", "exported"] },
       OR: [{ ebayOfferId: { not: null } }, { ebayListingId: { not: null } }, { shopifyOnly: true }],
       expirationDate: { not: null, lte: cutoff },
+      // Already in the past-date lane: handled by the second pass below.
+      pastDateAt: null,
     },
   });
   result.scanned = items.length;
+  const paths = await categoryPaths(items.map((i) => i.categoryId));
 
   for (const item of items) {
     try {
@@ -82,44 +101,22 @@ export async function expireDueListings(now: Date = new Date()): Promise<ExpireL
         await endFixedPriceItem(item.ebayListingId);
       }
 
-      const remainingByUpc = new Map<string, number>();
-      const remainingUnits = Math.max(0, item.quantity - item.soldQuantity);
-      if (item.isBundle) {
-        for (const c of parseBundleComponentUnits(item.bundleComponents)) {
-          remainingByUpc.set(c.upc, (remainingByUpc.get(c.upc) ?? 0) + c.unitsPerBundle * remainingUnits);
-        }
-      } else if (item.upc) {
-        const packSize = item.isMultipack && item.packSize ? item.packSize : 1;
-        remainingByUpc.set(item.upc, remainingUnits * packSize);
+      if (canGoPastDate(item, paths.get(item.categoryId ?? "") ?? "")) {
+        // Off eBay (just now) and Whatnot (the Shopify sync), still for
+        // sale on the Shopify store at 65% off with the date disclosed. Not
+        // pulled: nothing for staff to do yet.
+        await prisma.item.update({
+          where: { id: item.id },
+          data: { pastDateAt: now, listingEndedAt: item.ebayOfferId || item.ebayListingId ? now : null, ebayEndError: null },
+        });
+        result.pastDated++;
+        result.changedItemIds.push(item.id);
+        continue;
       }
 
-      await prisma.$transaction([
-        prisma.item.update({
-          where: { id: item.id },
-          data: { status: "expired", expiredAt: now, ebayEndError: null },
-        }),
-        // If this came from a manifest, its remaining stock needs to stop
-        // looking "missing" on that manifest's reconciliation — reuses the
-        // exact same bucket the Scan page's own "Damaged/Expired" mode
-        // already writes to (the two are already the same concept in this
-        // app's own UI wording), rather than inventing a separate one.
-        ...(item.manifestId
-          ? [...remainingByUpc.entries()]
-              .filter(([, units]) => units > 0)
-              .map(([upc, units]) =>
-                prisma.manifestDamagedEntry.create({
-                  data: {
-                    manifestId: item.manifestId!,
-                    upc,
-                    quantity: units,
-                    note: AUTO_EXPIRED_NOTE,
-                    recordedBy: null,
-                  },
-                })
-              )
-          : []),
-      ]);
+      await retire(item, now);
       result.expired++;
+      result.changedItemIds.push(item.id);
     } catch (e) {
       const message = e instanceof EbayApiError || e instanceof Error ? e.message : "Failed to end listing.";
       result.failed++;
@@ -134,5 +131,95 @@ export async function expireDueListings(now: Date = new Date()): Promise<ExpireL
     }
   }
 
+  // Past-date items that are now PAST_DATE_SELL_MONTHS past their date:
+  // pulled for real. Status "expired" takes them off Shopify on the next
+  // sync and puts them on the dashboard's shelf-pull list.
+  const todayStart = new Date(`${chicagoToday}T00:00:00.000Z`);
+  const pastDate = await prisma.item.findMany({
+    where: { pastDateAt: { not: null }, status: { in: ["listed", "exported"] }, expirationDate: { not: null } },
+  });
+  for (const item of pastDate) {
+    const pullOn = new Date(item.expirationDate!);
+    pullOn.setUTCMonth(pullOn.getUTCMonth() + PAST_DATE_SELL_MONTHS);
+    if (pullOn > todayStart) continue;
+    try {
+      await retire(item, now);
+      result.pulledPastDate++;
+      result.changedItemIds.push(item.id);
+    } catch (e) {
+      result.failed++;
+      result.errors.push(`Item ${item.id} (${item.sku}): ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
   return result;
+}
+
+// Pulled for good: status "expired", and whatever's left counted as
+// expired on its manifest.
+async function retire(item: Item, now: Date): Promise<void> {
+  const remainingByUpc = new Map<string, number>();
+  const remainingUnits = Math.max(0, item.quantity - item.soldQuantity);
+  if (item.isBundle) {
+    for (const c of parseBundleComponentUnits(item.bundleComponents)) {
+      remainingByUpc.set(c.upc, (remainingByUpc.get(c.upc) ?? 0) + c.unitsPerBundle * remainingUnits);
+    }
+  } else if (item.upc) {
+    const packSize = item.isMultipack && item.packSize ? item.packSize : 1;
+    remainingByUpc.set(item.upc, remainingUnits * packSize);
+  }
+
+  await prisma.$transaction([
+    prisma.item.update({
+      where: { id: item.id },
+      data: { status: "expired", expiredAt: now, ebayEndError: null },
+    }),
+    // If this came from a manifest, its remaining stock needs to stop
+    // looking "missing" on that manifest's reconciliation — reuses the
+    // exact same bucket the Scan page's own "Damaged/Expired" mode
+    // already writes to (the two are already the same concept in this
+    // app's own UI wording), rather than inventing a separate one.
+    ...(item.manifestId
+      ? [...remainingByUpc.entries()]
+          .filter(([, units]) => units > 0)
+          .map(([upc, units]) =>
+            prisma.manifestDamagedEntry.create({
+              data: {
+                manifestId: item.manifestId!,
+                upc,
+                quantity: units,
+                note: AUTO_EXPIRED_NOTE,
+                recordedBy: null,
+              },
+            })
+          )
+      : []),
+  ]);
+}
+
+// Cristian: past-date items can still sell on the Shopify store, disclosed,
+// for up to this long past the date.
+export const PAST_DATE_SELL_MONTHS = 6;
+
+// Never sold past date, even disclosed: drugs (over-the-counter medicine,
+// and sunscreen, which the FDA regulates as one) and infant formula / baby
+// food (federal use-by rules). Matched against the eBay category path.
+const PAST_DATE_EXCLUDED = /Over-the-Counter Medications|Sunscreen|Baby Formula|Baby Food/i;
+
+function canGoPastDate(item: Item, categoryPath: string): boolean {
+  return (
+    Boolean(getShopifyConfig()) &&
+    item.shopifyPublishedAt != null &&
+    item.shopifyArchivedAt == null &&
+    !item.localPickupOnly &&
+    item.quantity - item.soldQuantity > 0 &&
+    !PAST_DATE_EXCLUDED.test(categoryPath)
+  );
+}
+
+async function categoryPaths(categoryIds: (string | null)[]): Promise<Map<string, string>> {
+  const ids = [...new Set(categoryIds.filter((id): id is string => Boolean(id)))];
+  if (ids.length === 0) return new Map();
+  const rows = await prisma.ebayCategory.findMany({ where: { id: { in: ids } }, select: { id: true, path: true } });
+  return new Map(rows.map((r) => [r.id, r.path]));
 }

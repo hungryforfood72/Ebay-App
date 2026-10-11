@@ -8,8 +8,10 @@ import {
 import { formatExpiration } from "./formatExpiration";
 import { prisma } from "./prisma";
 import {
+  addTags,
   archiveProduct,
   createProduct,
+  ensureTagCollection,
   findProductByHandle,
   getLocation,
   getOrdersUpdatedSince,
@@ -19,6 +21,7 @@ import {
   readStock,
   setAvailable,
   unpublishFromChannels,
+  updateDescription,
   updateVariantPrice,
   type ShopifyOrder,
   type ShopifyStockState,
@@ -67,18 +70,39 @@ export function shopifyPriceFor(ebayPrice: number, discountPct: number): number 
   return Math.round(ebayPrice * (1 - discountPct / 100) * 100) / 100;
 }
 
+// Cristian: short-dated and past-date items go 65% off their original
+// price (before any eBay discount), with the regular store price shown
+// struck through, so the "65% off" is against what it actually sold for.
+const PAST_DATE_OFF_PCT = 65;
+
+function expectedPrices(
+  item: Pick<Item, "price" | "originalPrice" | "pastDateAt">,
+  discountPct: number
+): { price: number; compareAt: number | null } {
+  if (!item.pastDateAt) return { price: shopifyPriceFor(Number(item.price ?? 0), discountPct), compareAt: null };
+  const regular = shopifyPriceFor(Number(item.originalPrice ?? item.price ?? 0), discountPct);
+  return { price: Math.max(0.5, Math.round(regular * (1 - PAST_DATE_OFF_PCT / 100) * 100) / 100), compareAt: regular };
+}
+
 // ---------------------------------------------------------------------------
 // Which items belong on Shopify
 // ---------------------------------------------------------------------------
 
-type LiveFields = Pick<Item, "status" | "listingEndedAt" | "expiredAt" | "ebayOfferId" | "ebayListingId" | "shopifyOnly">;
+type LiveFields = Pick<
+  Item,
+  "status" | "listingEndedAt" | "expiredAt" | "ebayOfferId" | "ebayListingId" | "shopifyOnly" | "pastDateAt"
+>;
 
 // Still for sale: live on eBay, or a Shopify & Whatnot only item that's
 // been published (or is mid-publish from review, "ready"). Once that's
 // over (sold out, expired, ended), the Shopify product is archived too:
 // Cristian never restocks a listing.
 function isLive(item: LiveFields): boolean {
-  if (item.listingEndedAt || item.expiredAt) return false;
+  if (item.expiredAt) return false;
+  // Off eBay already (listingEndedAt is set), still for sale on the store
+  // until expireListings pulls it 6 months past its date.
+  if (item.pastDateAt) return item.status === "listed" || item.status === "exported";
+  if (item.listingEndedAt) return false;
   if (item.shopifyOnly) return item.status === "listed" || item.status === "ready";
   return (item.status === "listed" || item.status === "exported") && Boolean(item.ebayOfferId || item.ebayListingId);
 }
@@ -139,6 +163,49 @@ async function categoryPaths(categoryIds: (string | null)[]): Promise<Map<string
   if (ids.length === 0) return new Map();
   const rows = await prisma.ebayCategory.findMany({ where: { id: { in: ids } }, select: { id: true, path: true } });
   return new Map(rows.map((r) => [r.id, r.path]));
+}
+
+// ---------------------------------------------------------------------------
+// Past-date lane
+// ---------------------------------------------------------------------------
+
+const PAST_DATE_TAG = "past-date";
+// The theme's templates/collection.past-date.json shows this one.
+const PAST_DATE_COLLECTION = {
+  handle: "past-date-deals",
+  title: "Past-Date & Short-Dated Deals",
+  templateSuffix: "past-date",
+  descriptionHtml:
+    "<p>Close to or past the date printed on the package, so they're 65% off. Every item shows its date. Check it before you buy.</p>",
+};
+
+function pastDateDisclosure(item: Item): string {
+  const date = item.expirationDate ? formatExpiration(item.expirationDate) : null;
+  return (
+    `<p><strong>Short-dated or past its date${date ? `: ${date}` : ""}.</strong> ` +
+    `This item is 65% off because it's close to or past the date printed on the package. ` +
+    `Please check the date before you buy.</p>`
+  );
+}
+
+// Switches a product over once its item enters the lane (see
+// expireListings.ts): disclosure first in the description, tagged into the
+// Past-Date Deals collection, and on the Online Store only (off Whatnot,
+// which bars expired items, and every other channel). The price follows in
+// the sync's regular price check.
+async function applyPastDate(item: Item, publications: { id: string; name: string }[]): Promise<void> {
+  const onlineStore = publications.find((p) => /^online store$/i.test(p.name));
+  if (!onlineStore) throw new Error("No Online Store channel found to keep the past-date item on.");
+  await ensureTagCollection({ ...PAST_DATE_COLLECTION, tag: PAST_DATE_TAG, publicationIds: [onlineStore.id] });
+  const tags = [PAST_DATE_TAG];
+  if (item.expirationDate) tags.push(`Best by: ${formatExpiration(item.expirationDate)}`);
+  await addTags(item.shopifyProductId!, tags);
+  await updateDescription(item.shopifyProductId!, pastDateDisclosure(item) + shopifyDescription(item));
+  await unpublishFromChannels(
+    item.shopifyProductId!,
+    publications.filter((p) => p.id !== onlineStore.id).map((p) => p.id)
+  );
+  await prisma.item.update({ where: { id: item.id }, data: { shopifyPastDateAppliedAt: new Date() } });
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +387,8 @@ export type ShopifySyncResult = {
   pricesFixed: number;
   // Taken off Whatnot because Whatnot doesn't allow the category.
   offWhatnot: number;
+  // Switched over to the past-date page (off every channel but the store).
+  pastDateApplied: number;
   archived: number;
   published: number;
   errors: string[];
@@ -336,6 +405,7 @@ function emptyResult(): ShopifySyncResult {
     stockSkipped: 0,
     pricesFixed: 0,
     offWhatnot: 0,
+    pastDateApplied: 0,
     archived: 0,
     published: 0,
     errors: [],
@@ -595,7 +665,8 @@ export async function runShopifySync(scope: ShopifySyncScope): Promise<ShopifySy
   }
   try {
     const location = await getLocation();
-    const whatnot = (await getPublications()).find((p) => isWhatnotChannel(p.name));
+    const publications = await getPublications();
+    const whatnot = publications.find((p) => isWhatnotChannel(p.name));
     const preItems = await prisma.item.findMany({
       where: scope.items === "all" ? LINKED : { ...LINKED, id: { in: scope.items } },
       select: { id: true, shopifyInventoryItemId: true },
@@ -646,14 +717,25 @@ export async function runShopifySync(scope: ShopifySyncScope): Promise<ShopifySy
           result.archived++;
           continue;
         }
-        // Also catches products that went up before the rule existed.
-        if (whatnot && stock.onCheckedChannel && WHATNOT_BLOCKED_CATEGORY.test(paths.get(item.categoryId ?? "") ?? "")) {
+        if (item.pastDateAt && !item.shopifyPastDateAppliedAt) {
+          await applyPastDate(item, publications);
+          result.pastDateApplied++;
+        } else if (
+          // Also catches products that went up before the rule existed.
+          !item.pastDateAt &&
+          whatnot &&
+          stock.onCheckedChannel &&
+          WHATNOT_BLOCKED_CATEGORY.test(paths.get(item.categoryId ?? "") ?? "")
+        ) {
           await unpublishFromChannels(item.shopifyProductId!, [whatnot.id]);
           result.offWhatnot++;
         }
-        const price = shopifyPriceFor(Number(item.price ?? 0), discountPct);
-        if (item.price != null && stock.price != null && Math.abs(stock.price - price) >= 0.005) {
-          await updateVariantPrice(item.shopifyProductId!, item.shopifyVariantId!, price);
+        const want = expectedPrices(item, discountPct);
+        const priceOff = stock.price != null && Math.abs(stock.price - want.price) >= 0.005;
+        const compareOff =
+          want.compareAt == null ? stock.compareAtPrice != null : stock.compareAtPrice == null || Math.abs(stock.compareAtPrice - want.compareAt) >= 0.005;
+        if (item.price != null && (priceOff || compareOff)) {
+          await updateVariantPrice(item.shopifyProductId!, item.shopifyVariantId!, want.price, want.compareAt);
           result.pricesFixed++;
         }
       } catch (e) {

@@ -32,6 +32,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       manifestId: id,
       status: { in: ["listed", "exported"] },
       OR: [{ ebayOfferId: { not: null } }, { ebayListingId: { not: null } }],
+      listingEndedAt: null,
     },
   });
   if (items.length === 0) {

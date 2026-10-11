@@ -266,6 +266,15 @@ model Item {
   shopifyPublishedAt     DateTime?
   shopifyArchivedAt      DateTime?
   shopifyError           String?
+  // Short-dated / past-date lane (expireListings.ts): instead of being
+  // pulled at its eBay removal date, the item came off eBay and Whatnot and
+  // stays on the Shopify store's Online Store only, 65% off with the date
+  // disclosed, until 6 months past its date, when it's pulled for real
+  // (status "expired" as usual). Never for drugs, sunscreen or baby
+  // formula. shopifyPastDateAppliedAt: the Shopify side (tags, disclosure,
+  // channels) has been switched over.
+  pastDateAt               DateTime?
+  shopifyPastDateAppliedAt DateTime?
 
   shopifySales ShopifySale[]
 

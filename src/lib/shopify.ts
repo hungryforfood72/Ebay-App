@@ -317,14 +317,73 @@ export async function unpublishFromChannels(productId: string, publicationIds: s
   throwOnUserErrors("Couldn't take it off a sales channel", data.publishableUnpublish.userErrors);
 }
 
-export async function updateVariantPrice(productId: string, variantId: string, price: number): Promise<void> {
+// compareAt: the struck-through "was" price, or null for none.
+export async function updateVariantPrice(
+  productId: string,
+  variantId: string,
+  price: number,
+  compareAt: number | null
+): Promise<void> {
   const data = await shopifyGraphql<{ productVariantsBulkUpdate: { userErrors: UserError[] } }>(
     `mutation($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
       productVariantsBulkUpdate(productId: $productId, variants: $variants) { userErrors { field message } }
     }`,
-    { productId, variants: [{ id: variantId, price: price.toFixed(2) }] }
+    { productId, variants: [{ id: variantId, price: price.toFixed(2), compareAtPrice: compareAt != null ? compareAt.toFixed(2) : null }] }
   );
   throwOnUserErrors("Couldn't update the Shopify price", data.productVariantsBulkUpdate.userErrors);
+}
+
+export async function addTags(productId: string, tags: string[]): Promise<void> {
+  const data = await shopifyGraphql<{ tagsAdd: { userErrors: UserError[] } }>(
+    `mutation($id: ID!, $tags: [String!]!) { tagsAdd(id: $id, tags: $tags) { userErrors { field message } } }`,
+    { id: productId, tags }
+  );
+  throwOnUserErrors("Couldn't tag the Shopify product", data.tagsAdd.userErrors);
+}
+
+export async function updateDescription(productId: string, descriptionHtml: string): Promise<void> {
+  const data = await shopifyGraphql<{ productUpdate: { userErrors: UserError[] } }>(
+    `mutation($product: ProductUpdateInput!) { productUpdate(product: $product) { userErrors { field message } } }`,
+    { product: { id: productId, descriptionHtml } }
+  );
+  throwOnUserErrors("Couldn't update the Shopify description", data.productUpdate.userErrors);
+}
+
+// A smart collection of every product with `tag`, shown with the theme's
+// collection.<templateSuffix> template, on the Online Store only. Found by
+// handle first, so it's made once.
+export async function ensureTagCollection(input: {
+  handle: string;
+  title: string;
+  tag: string;
+  templateSuffix: string;
+  descriptionHtml: string;
+  publicationIds: string[];
+}): Promise<string> {
+  const found = await shopifyGraphql<{ collectionByIdentifier: { id: string } | null }>(
+    `query($identifier: CollectionIdentifierInput!) { collectionByIdentifier(identifier: $identifier) { id } }`,
+    { identifier: { handle: input.handle } }
+  );
+  if (found.collectionByIdentifier) return found.collectionByIdentifier.id;
+  const data = await shopifyGraphql<{ collectionCreate: { collection: { id: string } | null; userErrors: UserError[] } }>(
+    `mutation($input: CollectionInput!) {
+      collectionCreate(input: $input) { collection { id } userErrors { field message } }
+    }`,
+    {
+      input: {
+        handle: input.handle,
+        title: input.title,
+        descriptionHtml: input.descriptionHtml,
+        templateSuffix: input.templateSuffix,
+        sortOrder: "CREATED_DESC",
+        ruleSet: { appliedDisjunctively: false, rules: [{ column: "TAG", relation: "EQUALS", condition: input.tag }] },
+      },
+    }
+  );
+  throwOnUserErrors("Couldn't create the collection", data.collectionCreate.userErrors);
+  const id = data.collectionCreate.collection!.id;
+  await publishToChannels(id, input.publicationIds);
+  return id;
 }
 
 // Takes it off every sales channel (Whatnot included) but keeps it, and
@@ -345,6 +404,7 @@ export type ShopifyStockState = {
   // null when the item isn't stocked at the location at all
   available: number | null;
   price: number | null;
+  compareAtPrice: number | null;
   productStatus: string | null;
   // Whether it's on the channel passed as checkPublicationId (null when
   // none was passed).
@@ -368,7 +428,11 @@ export async function readStock(
       nodes: ({
         id: string;
         inventoryLevel: { quantities: { name: string; quantity: number }[] } | null;
-        variant: { price: string; product: { status: string; publishedOnPublication?: boolean } } | null;
+        variant: {
+          price: string;
+          compareAtPrice: string | null;
+          product: { status: string; publishedOnPublication?: boolean };
+        } | null;
       } | null)[];
     }>(
       `query($ids: [ID!]!, $locationId: ID!${channelVar}) {
@@ -376,7 +440,7 @@ export async function readStock(
           ... on InventoryItem {
             id
             inventoryLevel(locationId: $locationId) { quantities(names: ["available"]) { name quantity } }
-            variant { price product { status ${channelField} } }
+            variant { price compareAtPrice product { status ${channelField} } }
           }
         }
       }`,
@@ -387,6 +451,7 @@ export async function readStock(
       result.set(node.id, {
         available: node.inventoryLevel?.quantities.find((q) => q.name === "available")?.quantity ?? null,
         price: node.variant ? Number(node.variant.price) : null,
+        compareAtPrice: node.variant?.compareAtPrice != null ? Number(node.variant.compareAtPrice) : null,
         productStatus: node.variant?.product.status ?? null,
         onCheckedChannel: node.variant?.product.publishedOnPublication ?? null,
       });
