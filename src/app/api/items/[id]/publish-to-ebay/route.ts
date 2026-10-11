@@ -10,6 +10,7 @@ import {
 } from "@/lib/ebay";
 import { tryFixMissingAspect } from "@/lib/publishRemediation";
 import { prisma } from "@/lib/prisma";
+import { queueShopifyPublish } from "@/lib/shopifySync";
 import { NextRequest, NextResponse } from "next/server";
 import type { Item } from "@/generated/prisma/client";
 
@@ -105,6 +106,10 @@ export async function POST(
         ebayEnvironment: getEbayEnvironment(),
       },
     });
+    // Everything that goes live on eBay goes on Shopify too, once this
+    // response is out. A failure there is saved on the item and retried by
+    // the cron; it never undoes the eBay listing.
+    queueShopifyPublish(id);
     return NextResponse.json(updated);
   } catch (e) {
     const raw = e instanceof EbayApiError || e instanceof Error ? e.message : "Publish failed.";

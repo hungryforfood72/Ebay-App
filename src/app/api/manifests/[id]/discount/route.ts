@@ -2,6 +2,7 @@ import { computeDiscountedPrice, discountBasePrice } from "@/lib/discount";
 import { ownerOnly } from "@/lib/auth";
 import { EbayApiError, reviseFixedPriceItemPrice, toItemForEbayPublish, updateOfferPrice } from "@/lib/ebay";
 import { prisma } from "@/lib/prisma";
+import { queueShopifySync } from "@/lib/shopifySync";
 import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 90;
@@ -39,6 +40,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
   const failed: { itemId: string; title: string; message: string }[] = [];
   let updated = 0;
+  const updatedIds: string[] = [];
 
   // Sequential, not parallel — same reasoning as the review page's bulk
   // publish: keeps failures attributable to a specific item and avoids
@@ -54,11 +56,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       }
       await prisma.item.update({ where: { id: item.id }, data: { price: newPrice, originalPrice: basePrice } });
       updated++;
+      updatedIds.push(item.id);
     } catch (e) {
       const message = e instanceof EbayApiError || e instanceof Error ? e.message : "Update failed.";
       failed.push({ itemId: item.id, title: item.finalTitle ?? item.sku, message });
     }
   }
 
+  queueShopifySync(updatedIds);
   return NextResponse.json({ updated, failed });
 }

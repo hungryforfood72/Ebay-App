@@ -19,6 +19,12 @@ const SELL_FULFILLMENT_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.fulfil
 const SELL_FINANCES_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.finances";
 const SELL_MARKETING_SCOPE = "https://api.ebay.com/oauth/api_scope/sell.marketing";
 const REQUIRED_SCOPES = [SELL_INVENTORY_SCOPE, SELL_FULFILLMENT_SCOPE, SELL_FINANCES_SCOPE, SELL_MARKETING_SCOPE];
+// Asked for on every connect, but deliberately not in REQUIRED_SCOPES: it's
+// only needed to turn on instant sale alerts (ebayNotifications.ts), and
+// making it required would stop the order sync for a connection made
+// before it existed until Cristian reconnected.
+export const NOTIFICATION_SUBSCRIPTION_SCOPE =
+  "https://api.ebay.com/oauth/api_scope/commerce.notification.subscription";
 
 export function getEbayConfig() {
   const environment = getEbayEnvironment();
@@ -85,7 +91,7 @@ export function buildAuthorizeUrl(state: string): string {
     client_id: config.clientId,
     redirect_uri: config.redirectUri,
     response_type: "code",
-    scope: REQUIRED_SCOPES.join(" "),
+    scope: [...REQUIRED_SCOPES, NOTIFICATION_SUBSCRIPTION_SCOPE].join(" "),
     state,
   });
   return `${config.authBase}/oauth2/authorize?${params.toString()}`;
@@ -139,7 +145,8 @@ export async function exchangeCodeForToken(
   // eBay's consent screen is all-or-nothing (accept/decline, not a
   // per-scope picker), so if the token response ever omits `scope`,
   // whatever was requested is exactly what was granted.
-  return { ...result, scope: result.scope ?? REQUIRED_SCOPES.join(" ") } as Required<Omit<TokenResult, "scope">> & {
+  const requested = [...REQUIRED_SCOPES, NOTIFICATION_SUBSCRIPTION_SCOPE].join(" ");
+  return { ...result, scope: result.scope ?? requested } as Required<Omit<TokenResult, "scope">> & {
     scope: string;
   };
 }
@@ -188,6 +195,11 @@ export async function getMissingScopes(): Promise<string[]> {
   if (!token) return [];
   const granted = token.scope ?? SELL_INVENTORY_SCOPE;
   return REQUIRED_SCOPES.filter((s) => !granted.includes(s));
+}
+
+export async function hasEbayScope(scope: string): Promise<boolean> {
+  const token = await prisma.ebayAuthToken.findUnique({ where: { environment: getEbayEnvironment() } });
+  return Boolean(token?.scope?.split(" ").includes(scope));
 }
 
 // ---------------------------------------------------------------------------
@@ -1565,4 +1577,147 @@ export function listingUrl(environment: string, listingId: string): string {
   return environment === "production"
     ? `https://www.ebay.com/itm/${listingId}`
     : `https://sandbox.ebay.com/itm/${listingId}`;
+}
+
+// ---------------------------------------------------------------------------
+// Notification API (instant sale alerts, see ebayNotifications.ts). Mixed
+// auth: destinations, topics and public keys take the app token; the
+// subscription to a seller's own order topic takes the user token, with
+// NOTIFICATION_SUBSCRIPTION_SCOPE granted. Its own fetch rather than
+// ebayFetch, since a create answers 201 with an empty body and the new id
+// only in the Location header.
+// ---------------------------------------------------------------------------
+
+const NOTIFICATION_PATH = "/commerce/notification/v1";
+
+async function notificationFetch(
+  path: string,
+  auth: "app" | "user",
+  init: RequestInit = {}
+): Promise<{ status: number; location: string | null; body: unknown }> {
+  const config = getEbayConfig();
+  const token = auth === "app" ? await getAppAccessToken() : await getValidAccessToken();
+  const res = await fetch(`${config.apiBase}${NOTIFICATION_PATH}${path}`, {
+    ...init,
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, ...(init.headers ?? {}) },
+    signal: AbortSignal.timeout(30_000),
+  });
+  const text = await res.text();
+  let body: unknown = null;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = text;
+  }
+  if (!res.ok) {
+    const errors = (body as { errors?: { message: string; longMessage?: string }[] } | null)?.errors;
+    const message = errors?.length
+      ? errors.map((e) => e.longMessage ?? e.message).join("; ")
+      : `eBay Notification API error (${res.status})`;
+    throw new EbayApiError(message, res.status, errors ?? body);
+  }
+  return { status: res.status, location: res.headers.get("location"), body };
+}
+
+function idFromLocation(location: string | null): string | null {
+  return location?.split("/").filter(Boolean).pop() ?? null;
+}
+
+export type EbayNotificationDestination = { destinationId: string; status: string; endpoint: string };
+
+export async function getNotificationDestinations(): Promise<EbayNotificationDestination[]> {
+  const { body } = await notificationFetch(`/destination?limit=100`, "app");
+  const list = (body as { destinations?: { destinationId: string; status: string; deliveryConfig?: { endpoint?: string } }[] })
+    ?.destinations;
+  return (list ?? []).map((d) => ({ destinationId: d.destinationId, status: d.status, endpoint: d.deliveryConfig?.endpoint ?? "" }));
+}
+
+// eBay calls the endpoint with a challenge before it answers this, so the
+// endpoint has to be live and know the verification token already.
+export async function createNotificationDestination(endpoint: string, verificationToken: string): Promise<string> {
+  const { location } = await notificationFetch(`/destination`, "app", {
+    method: "POST",
+    body: JSON.stringify({ name: "Listing tool", status: "ENABLED", deliveryConfig: { endpoint, verificationToken } }),
+  });
+  const id = idFromLocation(location) ?? (await getNotificationDestinations()).find((d) => d.endpoint === endpoint)?.destinationId;
+  if (!id) throw new EbayApiError("eBay created the alert destination but didn't say its id.", 201, null);
+  return id;
+}
+
+export async function updateNotificationDestination(
+  destinationId: string,
+  endpoint: string,
+  verificationToken: string
+): Promise<void> {
+  await notificationFetch(`/destination/${encodeURIComponent(destinationId)}`, "app", {
+    method: "PUT",
+    body: JSON.stringify({ name: "Listing tool", status: "ENABLED", deliveryConfig: { endpoint, verificationToken } }),
+  });
+}
+
+// The newest payload version eBay offers for a topic.
+export async function getNotificationSchemaVersion(topicId: string): Promise<string> {
+  const { body } = await notificationFetch(`/topic/${encodeURIComponent(topicId)}`, "app");
+  const payloads = (body as { supportedPayloads?: { schemaVersion: string; deprecated?: boolean }[] })?.supportedPayloads ?? [];
+  const usable = payloads.filter((p) => !p.deprecated);
+  const versions = (usable.length ? usable : payloads).map((p) => p.schemaVersion);
+  if (versions.length === 0) throw new EbayApiError(`eBay lists no payload version for ${topicId}.`, 200, body);
+  return versions.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))[0];
+}
+
+export type EbayNotificationSubscription = {
+  subscriptionId: string;
+  topicId: string;
+  status: string;
+  destinationId: string;
+};
+
+export async function getNotificationSubscriptions(): Promise<EbayNotificationSubscription[]> {
+  const { body } = await notificationFetch(`/subscription?limit=100`, "user");
+  return ((body as { subscriptions?: EbayNotificationSubscription[] })?.subscriptions ?? []).map((s) => ({
+    subscriptionId: s.subscriptionId,
+    topicId: s.topicId,
+    status: s.status,
+    destinationId: s.destinationId,
+  }));
+}
+
+function subscriptionPayload(schemaVersion: string) {
+  return { format: "JSON", schemaVersion, deliveryProtocol: "HTTPS" };
+}
+
+export async function createNotificationSubscription(
+  topicId: string,
+  destinationId: string,
+  schemaVersion: string
+): Promise<string> {
+  const { location } = await notificationFetch(`/subscription`, "user", {
+    method: "POST",
+    body: JSON.stringify({ topicId, status: "ENABLED", destinationId, payload: subscriptionPayload(schemaVersion) }),
+  });
+  const id =
+    idFromLocation(location) ?? (await getNotificationSubscriptions()).find((s) => s.topicId === topicId)?.subscriptionId;
+  if (!id) throw new EbayApiError("eBay created the sale alert subscription but didn't say its id.", 201, null);
+  return id;
+}
+
+export async function updateNotificationSubscription(
+  subscriptionId: string,
+  destinationId: string,
+  schemaVersion: string
+): Promise<void> {
+  await notificationFetch(`/subscription/${encodeURIComponent(subscriptionId)}`, "user", {
+    method: "PUT",
+    body: JSON.stringify({ status: "ENABLED", destinationId, payload: subscriptionPayload(schemaVersion) }),
+  });
+}
+
+// eBay sends a made-up notification to the destination right away.
+export async function testNotificationSubscription(subscriptionId: string): Promise<void> {
+  await notificationFetch(`/subscription/${encodeURIComponent(subscriptionId)}/test`, "user", { method: "POST" });
+}
+
+export async function getNotificationPublicKey(keyId: string): Promise<{ algorithm: string; digest: string; key: string }> {
+  const { body } = await notificationFetch(`/public_key/${encodeURIComponent(keyId)}`, "app");
+  return body as { algorithm: string; digest: string; key: string };
 }

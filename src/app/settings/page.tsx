@@ -28,6 +28,8 @@ function SettingsPageInner() {
       <div className="flex flex-col gap-8">
         <SettingsGroup title="Connections">
           <EbayConnectionStatus />
+          <EbaySaleAlerts />
+          <ShopifyConnection />
         </SettingsGroup>
 
         <SettingsGroup title="Scanning">
@@ -534,6 +536,321 @@ function EbayConnectionStatus() {
               {status.connected ? "Reconnect eBay account" : "Connect eBay account"}
             </a>
           )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+type ShopifyStatus = {
+  configured: boolean;
+  missingEnvVars?: string[];
+  discountPct: number;
+  shop?: { name: string; domain: string } | null;
+  missingScopes?: string[];
+  location?: { id: string; name: string } | null;
+  channels?: string[] | null;
+  webhookUrl?: string;
+  missingWebhooks?: string[] | null;
+  counts?: { onShopify: number; waiting: number; failed: number };
+  recentErrors?: { id: string; finalTitle: string | null; shopifyError: string | null }[];
+  errors?: string[];
+};
+
+// The Shopify store every eBay listing also goes on (and Whatnot sells
+// from). The connection itself is three Vercel env vars, which Cristian
+// sets in the dashboard; this shows whether they work and what's missing.
+function ShopifyConnection() {
+  const [status, setStatus] = useState<ShopifyStatus | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<"webhooks" | "publish" | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [discount, setDiscount] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  function load() {
+    fetch("/api/shopify/status")
+      .then(async (r) => {
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error ?? "Couldn't load Shopify status.");
+        return data as ShopifyStatus;
+      })
+      .then((data) => {
+        setStatus(data);
+        setDiscount(String(data.discountPct));
+        setLoadError(null);
+      })
+      .catch((e) => setLoadError(e instanceof Error ? e.message : "Couldn't load Shopify status."));
+  }
+
+  useEffect(load, []);
+
+  async function setUpWebhooks() {
+    setBusy("webhooks");
+    setMessage(null);
+    try {
+      const res = await fetch("/api/shopify/setup-webhooks", { method: "POST" });
+      const data = await res.json();
+      setMessage(res.ok ? `Order webhooks set up (${data.created} added).` : data.error);
+      load();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function publishWaiting() {
+    setBusy("publish");
+    setMessage(null);
+    try {
+      const res = await fetch("/api/shopify/publish-waiting", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        setMessage(data.error ?? "Something went wrong.");
+      } else {
+        const problems: string[] = data.errors ?? [];
+        setMessage(
+          `${data.published} item(s) put on Shopify.` +
+            (problems.length ? ` ${problems.length} problem(s): ${problems.slice(0, 3).join(" · ")}` : "")
+        );
+      }
+      load();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function saveDiscount() {
+    setSaving(true);
+    setSaved(false);
+    try {
+      const res = await fetch("/api/settings/shopify-discount", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ discountPct: Number(discount) }),
+      });
+      if (res.ok) setSaved(true);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const connected = Boolean(status?.shop);
+  const missingWebhooks = (status?.missingWebhooks?.length ?? 0) > 0;
+  const needsAttention = connected && ((status?.missingScopes?.length ?? 0) > 0 || missingWebhooks);
+
+  return (
+    <Card>
+      <SectionHeader
+        title="Shopify store"
+        description="Every item that goes live on eBay also goes on Shopify (and Whatnot, through its Shopify app), all selling from one stock count."
+      />
+      {loadError && <p className="mb-3 text-sm font-medium text-danger">{loadError}</p>}
+      {!status ? (
+        !loadError && <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : !status.configured ? (
+        <p className="text-sm text-muted-foreground">
+          Not set up. Add these in Vercel (Settings → Environment Variables), then redeploy:{" "}
+          <strong>{status.missingEnvVars?.join(", ")}</strong>.
+        </p>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <div className="rounded-lg border border-border bg-background p-3">
+            <p className="flex items-center gap-2 font-medium text-foreground">
+              <span
+                className={
+                  connected && !needsAttention
+                    ? "size-2.5 rounded-full bg-green-500"
+                    : connected
+                      ? "size-2.5 rounded-full bg-amber-500"
+                      : "size-2.5 rounded-full bg-red-500"
+                }
+                aria-hidden
+              />
+              {status.shop ? status.shop.name : "Can't reach Shopify"}
+              {status.shop && <Badge>{status.shop.domain}</Badge>}
+            </p>
+            {status.location && (
+              <p className="mt-0.5 text-xs text-muted-foreground">Stock kept at: {status.location.name}</p>
+            )}
+            {status.channels && (
+              <p className="mt-0.5 text-xs text-muted-foreground">Sales channels: {status.channels.join(", ")}</p>
+            )}
+            {status.counts && (
+              <p className="mt-1 text-sm text-foreground">
+                {status.counts.onShopify} on Shopify · {status.counts.waiting} waiting
+                {status.counts.failed > 0 && <span className="text-danger"> · {status.counts.failed} failed</span>}
+              </p>
+            )}
+            {(status.missingScopes?.length ?? 0) > 0 && (
+              <p className="mt-1 text-xs font-medium text-warning">
+                The Shopify app is missing these permissions: {status.missingScopes!.join(", ")}. Add them in the Dev
+                Dashboard, release a new version, and approve it on the store.
+              </p>
+            )}
+            {status.errors?.map((e) => (
+              <p key={e} className="mt-1 text-xs font-medium text-danger">
+                {e}
+              </p>
+            ))}
+          </div>
+
+          {connected && (
+            <div className="flex flex-wrap gap-2">
+              {missingWebhooks && (
+                <Button size="sm" onClick={setUpWebhooks} disabled={busy !== null}>
+                  {busy === "webhooks" ? "Setting up…" : "Set up order webhooks"}
+                </Button>
+              )}
+              {status.counts && status.counts.waiting + status.counts.failed > 0 && (
+                <Button size="sm" variant="outline" onClick={publishWaiting} disabled={busy !== null}>
+                  {busy === "publish" ? "Sending…" : "Send waiting items now"}
+                </Button>
+              )}
+            </div>
+          )}
+          {connected && missingWebhooks && (
+            <p className="text-xs text-muted-foreground">
+              Order webhooks let a Shopify or Whatnot sale come off eBay within seconds. They&apos;ll point at{" "}
+              {status.webhookUrl}, so press this from the app&apos;s real domain. Without them, sales still sync every
+              10 minutes.
+            </p>
+          )}
+          {message && <p className="text-sm text-foreground">{message}</p>}
+
+          <div>
+            <p className="mb-1 text-sm font-medium text-foreground">Shopify price</p>
+            <p className="mb-2 text-xs text-muted-foreground">
+              How far under the eBay price, since Shopify buyers pay their own shipping. Follows every eBay price
+              change, discounts included.
+            </p>
+            <div className="flex flex-wrap items-center gap-3">
+              <SuffixInput
+                suffix="% off"
+                step="1"
+                min={0}
+                value={discount}
+                aria-label="Shopify discount percent"
+                onChange={(e) => {
+                  setDiscount(e.target.value);
+                  setSaved(false);
+                }}
+              />
+              <SaveButton onClick={saveDiscount} disabled={saving || discount === ""} saving={saving} saved={saved} />
+            </div>
+          </div>
+
+          {(status.recentErrors?.length ?? 0) > 0 && (
+            <div>
+              <p className="mb-1 text-sm font-medium text-foreground">Recent Shopify problems</p>
+              <ul className="flex flex-col gap-1 text-xs text-muted-foreground">
+                {status.recentErrors!.map((e) => (
+                  <li key={e.id}>
+                    <span className="font-medium text-foreground">{e.finalTitle ?? e.id}:</span> {e.shopifyError}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+type SaleAlertStatus = {
+  hasScope: boolean;
+  endpoint: string | null;
+  subscriptionStatus: string | null;
+  lastReceived: { at: string; verified: boolean; orderId: string | null; test: boolean } | null;
+};
+
+// eBay's instant sale alerts: an eBay sale comes off Shopify within seconds
+// instead of at the next 10-minute sync.
+function EbaySaleAlerts() {
+  const [status, setStatus] = useState<SaleAlertStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  function load() {
+    fetch("/api/ebay/notifications/setup")
+      .then((r) => r.json())
+      .then((data) => setStatus(data as SaleAlertStatus))
+      .catch(() => setStatus(null));
+  }
+
+  useEffect(load, []);
+
+  async function turnOn() {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const res = await fetch("/api/ebay/notifications/setup", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        setMessage(data.error ?? "Couldn't turn on sale alerts.");
+      } else {
+        setStatus(data);
+        setMessage("Turned on. eBay is sending a test alert now; refresh in a minute to see it below.");
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const on = status?.subscriptionStatus === "ENABLED";
+
+  return (
+    <Card>
+      <SectionHeader
+        title="eBay instant sale alerts"
+        description="eBay tells the app the moment something sells, so Shopify and Whatnot drop that unit within seconds. The 10-minute sync stays on as a backup."
+      />
+      {!status ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-background p-3">
+            <div className="min-w-0">
+              <p className="flex items-center gap-2 font-medium text-foreground">
+                <span
+                  className={on ? "size-2.5 rounded-full bg-green-500" : "size-2.5 rounded-full bg-zinc-300"}
+                  aria-hidden
+                />
+                {on
+                  ? "On"
+                  : status.subscriptionStatus
+                    ? `Subscription ${status.subscriptionStatus.toLowerCase()}`
+                    : "Off"}
+              </p>
+              {status.lastReceived ? (
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Last alert: {new Date(status.lastReceived.at).toLocaleString()}
+                  {status.lastReceived.test ? " (test)" : ""}
+                  {!status.lastReceived.verified && (
+                    <span className="font-medium text-danger"> · signature didn&apos;t check out, ignored</span>
+                  )}
+                </p>
+              ) : (
+                <p className="mt-0.5 text-xs text-muted-foreground">No alerts received yet.</p>
+              )}
+              {!status.hasScope && (
+                <p className="mt-1 text-xs font-medium text-warning">
+                  Needs one more eBay permission. Reconnect eBay first; everything else stays as it is.
+                </p>
+              )}
+            </div>
+            {!status.hasScope ? (
+              <a href="/api/ebay/connect" className={buttonClasses({ size: "sm" })}>
+                Reconnect eBay
+              </a>
+            ) : (
+              <Button size="sm" variant={on ? "outline" : "primary"} onClick={turnOn} disabled={busy}>
+                {busy ? "Working…" : on ? "Re-check" : "Turn on"}
+              </Button>
+            )}
+          </div>
+          {message && <p className="text-sm text-foreground">{message}</p>}
         </div>
       )}
     </Card>

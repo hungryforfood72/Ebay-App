@@ -1,5 +1,6 @@
 import { EbayApiError, getLiveAvailableQuantity, reviseFixedPriceItemQuantity, updateOfferQuantity } from "./ebay";
 import { prisma } from "./prisma";
+import { queueShopifySync } from "./shopifySync";
 import type { Item, StockAdjustment } from "@/generated/prisma/client";
 
 // Same key/value AppSetting store already used for the sourcing agent's
@@ -151,6 +152,7 @@ export async function recordItemSale(
         },
       }),
     ]);
+    queueShopifySync([item.id]);
     return { item: updatedItem, adjustment };
   } catch (e) {
     // eBay push failed — don't touch the Item (DB and the live listing must

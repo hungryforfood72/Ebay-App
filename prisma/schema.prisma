@@ -245,12 +245,105 @@ model Item {
   // Offers and auto-renewing every 30 days.
   listingEndedAt DateTime?
 
+  // The same listing on the Shopify store (which also feeds Whatnot through
+  // Whatnot's Shopify app). Set by src/lib/shopifySync.ts, never by the
+  // client. One stock count for every channel: quantity/soldQuantity above
+  // stay the truth, and each store is pushed what's left. Shopify sales
+  // live in ShopifySale. shopifyPublishedAt is only set once the product is
+  // live on Shopify's sales channels, so a product that was created but
+  // never published gets finished on the next run instead of duplicated.
+  // shopifyArchivedAt: archived on Shopify because the item sold out,
+  // expired or its eBay listing ended (never restocked, same as eBay).
+  shopifyProductId       String?
+  shopifyVariantId       String?   @unique
+  shopifyInventoryItemId String?
+  shopifyPublishedAt     DateTime?
+  shopifyArchivedAt      DateTime?
+  shopifyError           String?
+
+  shopifySales ShopifySale[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([status])
   @@index([scanSessionId])
   @@index([manifestId])
+}
+
+// One row per Shopify order line item matched to an Item, including
+// Whatnot sales, which Whatnot's Shopify app writes into Shopify as normal
+// orders. Kept apart from EbayItemSale: the eBay order sync, the sourcing
+// agent's own-sales history and the label math all assume an eBay order.
+// shopifyLineItemId is the idempotency checkpoint, like
+// EbayItemSale.ebayOrderLineItemId. ebayPushedAt is set once the eBay
+// listing's count came down by this sale; until then every Shopify sync
+// retries the push, since a missed push is how a unit sells twice.
+model ShopifySale {
+  id                String    @id @default(uuid())
+  item              Item      @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  itemId            String
+  shopifyOrderId    String
+  shopifyOrderName  String
+  shopifyLineItemId String    @unique
+  // "shopify" for the online store, "whatnot", or whatever other app
+  // placed the order (lowercased app name).
+  channel           String
+  quantity          Int
+  revenue           Decimal   @db.Decimal(10, 2) // item price after discounts; buyer-paid shipping and tax left out
+  fees              Decimal   @default(0) @db.Decimal(10, 2)
+  // Whatnot's fees never reach Shopify, so they're estimated from its
+  // published rates (see shopifySync.ts). Shopify Payments fees are real.
+  feesEstimated     Boolean   @default(false)
+  soldAt            DateTime
+  ebayPushedAt      DateTime?
+  ebayPushError     String?
+  createdAt         DateTime  @default(now())
+
+  refunds ShopifyRefund[]
+
+  @@index([itemId])
+  @@index([shopifyOrderId])
+  @@index([soldAt])
+}
+
+// A refund on a recorded Shopify sale. Like EbayItemRefund, the money
+// comes off profit and the sale itself still counts (a return goes on a
+// new listing). Keyed "{refundId}:{lineItemId}" for idempotency.
+model ShopifyRefund {
+  id              String      @id @default(uuid())
+  sale            ShopifySale @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  saleId          String
+  shopifyRefundId String      @unique
+  amount          Decimal     @db.Decimal(10, 2)
+  refundedAt      DateTime
+  createdAt       DateTime    @default(now())
+
+  @@index([saleId])
+  @@index([refundedAt])
+}
+
+// Shopify Admin API token from the client credentials grant (24 hours),
+// cached here like EbayAppToken so serverless cold starts don't ask for a
+// new one on every call.
+model ShopifyAppToken {
+  shop        String   @id
+  accessToken String
+  expiresAt   DateTime
+  updatedAt   DateTime @updatedAt
+}
+
+// Keeps two runs of the same sync from overlapping (the 10-minute cron, an
+// eBay sale alert and a Shopify webhook can all land at once). A run that
+// finds the lock taken sets rerunRequested and returns; the run holding
+// the lock goes again before letting go, so nothing that arrived mid-run
+// waits for the next cron. lockedUntil expires on its own if a run dies.
+model SyncLock {
+  name           String   @id
+  lockedUntil    DateTime
+  rerunRequested Boolean  @default(false)
+  // "full" outranks "quick" when two different eBay syncs asked to rerun.
+  rerunMode      String?
 }
 
 // One "send offer to interested buyers" from the dashboard (eBay's

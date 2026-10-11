@@ -12,6 +12,8 @@ export const USER_ID_HEADER = "x-user-id";
 export const USER_ROLE_HEADER = "x-user-role";
 export const USERNAME_HEADER = "x-username";
 
+const PUBLIC_WEBHOOK_PATHS = ["/api/shopify/webhook", "/api/ebay/notifications"];
+
 // Per-user session gate for the whole site, since it holds inventory
 // photos, pricing, and (for the owner) financial data. Next.js 16 runs
 // proxy.ts on the Node.js runtime by default (confirmed against the
@@ -34,6 +36,12 @@ export async function proxy(request: NextRequest) {
     // its headers attached, or getRequestUser() would never see who's
     // signed in.
     if (pathname.startsWith("/login") || pathname.startsWith("/api/auth") || pathname.startsWith("/api/cron")) {
+      return NextResponse.next();
+    }
+    // Shopify's order webhooks and eBay's sale alerts: each route checks
+    // the sender's own signature instead. Exact paths only, so nothing
+    // under them (like the alert setup route) slips through signed-out.
+    if (PUBLIC_WEBHOOK_PATHS.includes(pathname)) {
       return NextResponse.next();
     }
     if (pathname.startsWith("/api/")) {

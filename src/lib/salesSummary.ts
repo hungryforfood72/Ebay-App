@@ -9,18 +9,30 @@ export type SalesSummary = {
   cogs: number;
   refunded: number;
   profit: number;
+  // Revenue split by where it sold: "ebay", "shopify", "whatnot", ...
+  revenueByChannel: Record<string, number>;
 };
 
-// Sales, refunds and profit for app-tracked eBay sales in [from, to) —
+// Sales, refunds and profit for app-tracked eBay, Shopify and Whatnot sales
+// in [from, to) —
 // either bound null for open-ended. Sales are scoped by when they sold,
 // refunds by when the refund itself posted (not the original sale date): a
 // September refund on an August sale belongs in September's numbers.
 // EbayItemRefund can only exist attached to an EbayItemSale, so both are
-// automatically scoped to app-tracked listings only.
+// automatically scoped to app-tracked listings only. Shopify sales carry
+// no shipping cost: the buyer pays for the label there.
 export async function salesSummary(from: Date | null, to: Date | null): Promise<SalesSummary> {
   const range = from || to ? { ...(from ? { gte: from } : {}), ...(to ? { lt: to } : {}) } : undefined;
 
-  const [sales, refunds] = await Promise.all([
+  const itemSelect = {
+    manifestId: true,
+    upc: true,
+    isMultipack: true,
+    packSize: true,
+    isBundle: true,
+    bundleComponents: true,
+  } as const;
+  const [sales, refunds, shopifySales, shopifyRefunds] = await Promise.all([
     // Full rows, not an aggregate — computing profit needs each sale's item
     // (for manifestId/upc/multipack) to look up COGS, which a plain _sum
     // can't give us.
@@ -31,38 +43,36 @@ export async function salesSummary(from: Date | null, to: Date | null): Promise<
         revenue: true,
         fees: true,
         shipping: true,
-        item: {
-          select: {
-            manifestId: true,
-            upc: true,
-            isMultipack: true,
-            packSize: true,
-            isBundle: true,
-            bundleComponents: true,
-          },
-        },
+        item: { select: itemSelect },
       },
     }),
     prisma.ebayItemRefund.findMany({
       where: { refundedAt: range },
       select: { amount: true, feeCredit: true },
     }),
+    prisma.shopifySale.findMany({
+      where: { soldAt: range },
+      select: { quantity: true, revenue: true, fees: true, channel: true, item: { select: itemSelect } },
+    }),
+    prisma.shopifyRefund.findMany({ where: { refundedAt: range }, select: { amount: true } }),
   ]);
 
   // COGS is manifest-derived, $0 for anything with no manifest at all
   // (items scanned outside manifest mode, per Cristian's instruction).
-  const cogsMaps = await cogsMapsFor(sales.map((s) => s.item.manifestId));
+  const cogsMaps = await cogsMapsFor([...sales, ...shopifySales].map((s) => s.item.manifestId));
 
   let units = 0;
   let revenue = 0;
   let fees = 0;
   let shipping = 0;
   let cogs = 0;
-  for (const sale of sales) {
+  const revenueByChannel: Record<string, number> = {};
+  for (const sale of [...sales.map((s) => ({ ...s, channel: "ebay" })), ...shopifySales]) {
     units += sale.quantity;
     revenue += Number(sale.revenue);
     fees += Number(sale.fees);
-    shipping += Number(sale.shipping);
+    if ("shipping" in sale) shipping += Number(sale.shipping);
+    revenueByChannel[sale.channel] = (revenueByChannel[sale.channel] ?? 0) + Number(sale.revenue);
     // Per listing unit (a pack, a bundle) — sale.quantity is on that scale.
     cogs += costPerListingUnit(sale.item, cogsMaps).cost * sale.quantity;
   }
@@ -76,6 +86,8 @@ export async function salesSummary(from: Date | null, to: Date | null): Promise<
     refunded += Number(refund.amount);
     refundFeeCredit += Number(refund.feeCredit);
   }
+  // Shopify Payments keeps its fee on a refund, so there's no credit.
+  for (const refund of shopifyRefunds) refunded += Number(refund.amount);
 
   return {
     units,
@@ -85,5 +97,6 @@ export async function salesSummary(from: Date | null, to: Date | null): Promise<
     cogs,
     refunded,
     profit: revenue - fees - shipping - cogs - (refunded - refundFeeCredit),
+    revenueByChannel,
   };
 }

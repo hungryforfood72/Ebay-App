@@ -104,6 +104,7 @@ type SyncResult = {
   salesReversed: number;
   listingsEnded?: number;
   soldOutLeftUp?: string[];
+  shopifySalesRecorded?: number;
   errors: string[];
 };
 
@@ -264,7 +265,11 @@ export default function DashboardPage() {
                   {syncResult.salesReversed > 0
                     ? `, ${syncResult.salesReversed} sale(s) reversed (cancelled after being recorded)`
                     : ""}
-                  {syncResult.listingsEnded ? `, ${syncResult.listingsEnded} sold-out listing(s) ended` : ""}.
+                  {syncResult.listingsEnded ? `, ${syncResult.listingsEnded} sold-out listing(s) ended` : ""}
+                  {syncResult.shopifySalesRecorded
+                    ? `, ${syncResult.shopifySalesRecorded} Shopify/Whatnot sale(s) recorded`
+                    : ""}
+                  .
                 </p>
               )}
               {syncResult.soldOutLeftUp && syncResult.soldOutLeftUp.length > 0 && (
@@ -443,7 +448,10 @@ type SalesSummary = {
   cogs?: number;
   refunded?: number;
   profit?: number;
+  revenueByChannel?: Record<string, number>;
 };
+
+const CHANNEL_LABEL: Record<string, string> = { ebay: "eBay", shopify: "Shopify", whatnot: "Whatnot" };
 
 type SalesPreset = "mtd" | "last-month" | "last-30" | "qtd" | "ytd" | "last-year" | "all" | "custom";
 
@@ -620,10 +628,20 @@ function SalesSection({ isOwner, refreshKey }: { isOwner: boolean; refreshKey: n
       ) : (
         !error && <p className="text-sm text-muted-foreground">Loading…</p>
       )}
+      {summary?.revenueByChannel && Object.keys(summary.revenueByChannel).some((c) => c !== "ebay") && (
+        <p className="mt-2 text-sm text-muted-foreground">
+          Revenue by store:{" "}
+          {Object.entries(summary.revenueByChannel)
+            .sort((a, b) => b[1] - a[1])
+            .map(([channel, amount]) => `${CHANNEL_LABEL[channel] ?? channel} $${amount.toFixed(2)}`)
+            .join(" · ")}
+        </p>
+      )}
       {isOwner && (
         <p className="mt-2 text-xs text-muted-foreground">
           Only counts items scanned and listed through this app. Profit uses manifest COGS where available, $0 for
-          anything with no manifest.
+          anything with no manifest. Whatnot fees are estimated from Whatnot&apos;s published rates (Whatnot doesn&apos;t
+          share the real ones with Shopify), and Shopify sales have no shipping cost since the buyer pays for the label.
         </p>
       )}
     </section>

@@ -7,6 +7,7 @@ import {
 } from "@/lib/ebay";
 import { getRequestUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { queueShopifySync } from "@/lib/shopifySync";
 import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 30;
@@ -134,6 +135,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         },
       }),
     ]);
+    queueShopifySync([id]);
     return NextResponse.json({
       ...updated,
       availableQuantity: Math.max(0, updated.quantity - updated.soldQuantity),

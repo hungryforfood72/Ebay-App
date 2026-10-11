@@ -2,6 +2,7 @@ import { computeDiscountedPrice, discountBasePrice } from "@/lib/discount";
 import { ownerOnly } from "@/lib/auth";
 import { EbayApiError, reviseFixedPriceItemPrice, toItemForEbayPublish, updateOfferPrice } from "@/lib/ebay";
 import { prisma } from "@/lib/prisma";
+import { queueShopifySync } from "@/lib/shopifySync";
 import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 30;
@@ -44,6 +45,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       await reviseFixedPriceItemPrice(item.ebayListingId!, newPrice);
     }
     const updated = await prisma.item.update({ where: { id }, data: { price: newPrice, originalPrice: basePrice } });
+    queueShopifySync([id]);
     return NextResponse.json(updated);
   } catch (e) {
     const message = e instanceof EbayApiError || e instanceof Error ? e.message : "Discount failed.";

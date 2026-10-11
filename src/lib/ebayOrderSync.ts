@@ -26,6 +26,9 @@ export type EbayOrderSyncResult = {
   // showed stock (see endSoldOutListings).
   listingsEnded: number;
   soldOutLeftUp: string[];
+  // Items whose sold count changed this run (new sales, reversals), so the
+  // caller can bring Shopify's count along.
+  changedItemIds: string[];
   errors: string[];
 };
 
@@ -176,8 +179,14 @@ async function reverseSale(
 // of when they last changed — for a one-off correction of orders the
 // incremental window has long since moved past (e.g. cancellations that
 // were recorded as sales before cancellation detection was fixed).
+//
+// `quick` skips re-fetching older orders still waiting on a shipping label
+// (the shipping recheck). The 10-minute cron and eBay's instant sale
+// alerts run quick, since all they're after is new sales; the 4-hourly
+// run does the full recheck, which would otherwise be repeated 24 times as
+// often for nothing.
 export async function syncEbayOrders(
-  options?: { since?: Date; shippingRecheckWindowDays?: number; orderIds?: string[] }
+  options?: { since?: Date; shippingRecheckWindowDays?: number; orderIds?: string[]; quick?: boolean }
 ): Promise<EbayOrderSyncResult> {
   const result: EbayOrderSyncResult = {
     ordersScanned: 0,
@@ -188,8 +197,10 @@ export async function syncEbayOrders(
     salesReversed: 0,
     listingsEnded: 0,
     soldOutLeftUp: [],
+    changedItemIds: [],
     errors: [],
   };
+  const changedItemIds = new Set<string>();
 
   const missingScopes = await getMissingScopes();
   if (missingScopes.length > 0) {
@@ -227,11 +238,13 @@ export async function syncEbayOrders(
       syncStartedAt.getTime() - shippingRecheckWindowDays * 24 * 60 * 60 * 1000
     );
     const alreadyFetchedOrderIds = new Set(orders.map((o) => o.orderId));
-    const shippingRecheckDueOrderIds = await prisma.ebayItemSale.findMany({
-      where: { shipping: 0, shippingTransactionId: null, soldAt: { gte: shippingRecheckCutoff } },
-      select: { ebayOrderId: true },
-      distinct: ["ebayOrderId"],
-    });
+    const shippingRecheckDueOrderIds = options?.quick
+      ? []
+      : await prisma.ebayItemSale.findMany({
+          where: { shipping: 0, shippingTransactionId: null, soldAt: { gte: shippingRecheckCutoff } },
+          select: { ebayOrderId: true },
+          distinct: ["ebayOrderId"],
+        });
     const recheckOrderIds = [
       ...shippingRecheckDueOrderIds.map((s) => s.ebayOrderId),
       ...(options?.orderIds ?? []),
@@ -352,6 +365,7 @@ export async function syncEbayOrders(
             if (!existingSale) continue;
             await reverseSale(existingSale, existingSale.item);
             result.salesReversed++;
+            changedItemIds.add(existingSale.itemId);
           } catch (e) {
             result.errors.push(
               `Order ${order.orderId} line ${lineItem.lineItemId} (reversal): ${e instanceof Error ? e.message : String(e)}`
@@ -484,6 +498,7 @@ export async function syncEbayOrders(
             }),
           ]);
           result.itemsUpdated++;
+          changedItemIds.add(item.id);
         } catch (e) {
           result.errors.push(
             `Order ${order.orderId} line ${lineItem.lineItemId}: ${e instanceof Error ? e.message : String(e)}`
@@ -558,6 +573,7 @@ export async function syncEbayOrders(
     // Don't advance the watermark below — the whole window gets retried
     // next run. Per-line-item checkpoints (ebayOrderLineItemId) make that
     // safe, not wasteful.
+    result.changedItemIds = [...changedItemIds];
     return result;
   }
 
@@ -578,5 +594,6 @@ export async function syncEbayOrders(
     update: { lastOrderSyncAt: syncStartedAt },
   });
 
+  result.changedItemIds = [...changedItemIds];
   return result;
 }
