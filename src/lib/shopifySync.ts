@@ -18,6 +18,7 @@ import {
   publishToChannels,
   readStock,
   setAvailable,
+  unpublishFromChannels,
   updateVariantPrice,
   type ShopifyOrder,
   type ShopifyStockState,
@@ -113,6 +114,28 @@ export async function shopifyCounts(): Promise<{ onShopify: number; waiting: num
     prisma.item.count({ where: { ...waitingForShopifyWhere(), shopifyError: { not: null } } }),
   ]);
   return { onShopify, waiting, failed };
+}
+
+// ---------------------------------------------------------------------------
+// Channel rules
+// ---------------------------------------------------------------------------
+
+// eBay categories Whatnot doesn't allow: its supplements policy bars
+// over-the-counter medications (Tylenol, NyQuil, Mucinex...). Those stay
+// on the Shopify store and every other channel, just never on Whatnot.
+// Matched against the item's eBay category path. Vitamins and dietary
+// supplements are allowed there and aren't matched.
+const WHATNOT_BLOCKED_CATEGORY = /Over-the-Counter Medications/i;
+
+function isWhatnotChannel(name: string): boolean {
+  return /whatnot/i.test(name);
+}
+
+async function categoryPaths(categoryIds: (string | null)[]): Promise<Map<string, string>> {
+  const ids = [...new Set(categoryIds.filter((id): id is string => Boolean(id)))];
+  if (ids.length === 0) return new Map();
+  const rows = await prisma.ebayCategory.findMany({ where: { id: { in: ids } }, select: { id: true, path: true } });
+  return new Map(rows.map((r) => [r.id, r.path]));
 }
 
 // ---------------------------------------------------------------------------
@@ -241,7 +264,11 @@ export async function publishItemToShopify(itemId: string): Promise<PublishOutco
     });
 
     const publications = await getPublications();
-    await publishToChannels(refs.productId, publications.map((p) => p.id));
+    const blockedOnWhatnot = WHATNOT_BLOCKED_CATEGORY.test(category?.path ?? "");
+    await publishToChannels(
+      refs.productId,
+      publications.filter((p) => !(blockedOnWhatnot && isWhatnotChannel(p.name))).map((p) => p.id)
+    );
     await prisma.item.update({
       where: { id: item.id },
       data: { shopifyPublishedAt: new Date(), shopifyError: null },
@@ -281,6 +308,8 @@ export type ShopifySyncResult = {
   stockSet: number;
   stockSkipped: number;
   pricesFixed: number;
+  // Taken off Whatnot because Whatnot doesn't allow the category.
+  offWhatnot: number;
   archived: number;
   published: number;
   errors: string[];
@@ -296,6 +325,7 @@ function emptyResult(): ShopifySyncResult {
     stockSet: 0,
     stockSkipped: 0,
     pricesFixed: 0,
+    offWhatnot: 0,
     archived: 0,
     published: 0,
     errors: [],
@@ -555,11 +585,12 @@ export async function runShopifySync(scope: ShopifySyncScope): Promise<ShopifySy
   }
   try {
     const location = await getLocation();
+    const whatnot = (await getPublications()).find((p) => isWhatnotChannel(p.name));
     const preItems = await prisma.item.findMany({
       where: scope.items === "all" ? LINKED : { ...LINKED, id: { in: scope.items } },
       select: { id: true, shopifyInventoryItemId: true },
     });
-    const before = await readStock(preItems.map((i) => i.shopifyInventoryItemId!), location.id);
+    const before = await readStock(preItems.map((i) => i.shopifyInventoryItemId!), location.id, whatnot?.id);
 
     const orderRun = await withSyncLock("shopify-orders", "quick", () => syncShopifyOrders(result));
     const ordersRan = orderRun.ran;
@@ -569,9 +600,10 @@ export async function runShopifySync(scope: ShopifySyncScope): Promise<ShopifySy
     const items = await prisma.item.findMany({ where: { ...LINKED, id: { in: [...ids] } } });
     const notReadYet = items.filter((i) => !before.has(i.shopifyInventoryItemId!));
     const lateRead = notReadYet.length
-      ? await readStock(notReadYet.map((i) => i.shopifyInventoryItemId!), location.id)
+      ? await readStock(notReadYet.map((i) => i.shopifyInventoryItemId!), location.id, whatnot?.id)
       : new Map<string, ShopifyStockState>();
     const discountPct = await getShopifyDiscountPct();
+    const paths = await categoryPaths(items.map((i) => i.categoryId));
 
     for (const item of items) {
       const invId = item.shopifyInventoryItemId!;
@@ -603,6 +635,11 @@ export async function runShopifySync(scope: ShopifySyncScope): Promise<ShopifySy
           await prisma.item.update({ where: { id: item.id }, data: { shopifyArchivedAt: new Date() } });
           result.archived++;
           continue;
+        }
+        // Also catches products that went up before the rule existed.
+        if (whatnot && stock.onCheckedChannel && WHATNOT_BLOCKED_CATEGORY.test(paths.get(item.categoryId ?? "") ?? "")) {
+          await unpublishFromChannels(item.shopifyProductId!, [whatnot.id]);
+          result.offWhatnot++;
         }
         const price = shopifyPriceFor(Number(item.price ?? 0), discountPct);
         if (item.price != null && stock.price != null && Math.abs(stock.price - price) >= 0.005) {

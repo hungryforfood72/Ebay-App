@@ -304,6 +304,19 @@ export async function publishToChannels(productId: string, publicationIds: strin
   throwOnUserErrors("Couldn't publish to Shopify's sales channels", data.publishablePublish.userErrors);
 }
 
+// Takes a product off some channels and leaves it on the rest. A no-op
+// for a channel it isn't on.
+export async function unpublishFromChannels(productId: string, publicationIds: string[]): Promise<void> {
+  if (publicationIds.length === 0) return;
+  const data = await shopifyGraphql<{ publishableUnpublish: { userErrors: UserError[] } }>(
+    `mutation($id: ID!, $input: [PublicationInput!]!) {
+      publishableUnpublish(id: $id, input: $input) { userErrors { field message } }
+    }`,
+    { id: productId, input: publicationIds.map((publicationId) => ({ publicationId })) }
+  );
+  throwOnUserErrors("Couldn't take it off a sales channel", data.publishableUnpublish.userErrors);
+}
+
 export async function updateVariantPrice(productId: string, variantId: string, price: number): Promise<void> {
   const data = await shopifyGraphql<{ productVariantsBulkUpdate: { userErrors: UserError[] } }>(
     `mutation($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
@@ -333,31 +346,41 @@ export type ShopifyStockState = {
   available: number | null;
   price: number | null;
   productStatus: string | null;
+  // Whether it's on the channel passed as checkPublicationId (null when
+  // none was passed).
+  onCheckedChannel: boolean | null;
 };
 
-// Current available count and price for many inventory items at once.
-// Items missing from the result no longer exist on Shopify (deleted there).
-export async function readStock(inventoryItemIds: string[], locationId: string): Promise<Map<string, ShopifyStockState>> {
+// Current available count and price for many inventory items at once,
+// and optionally whether each is on one sales channel. Items missing from
+// the result no longer exist on Shopify (deleted there).
+export async function readStock(
+  inventoryItemIds: string[],
+  locationId: string,
+  checkPublicationId?: string
+): Promise<Map<string, ShopifyStockState>> {
   const result = new Map<string, ShopifyStockState>();
+  const channelField = checkPublicationId ? "publishedOnPublication(publicationId: $publicationId)" : "";
+  const channelVar = checkPublicationId ? ", $publicationId: ID!" : "";
   for (let i = 0; i < inventoryItemIds.length; i += 50) {
     const ids = inventoryItemIds.slice(i, i + 50);
     const data = await shopifyGraphql<{
       nodes: ({
         id: string;
         inventoryLevel: { quantities: { name: string; quantity: number }[] } | null;
-        variant: { price: string; product: { status: string } } | null;
+        variant: { price: string; product: { status: string; publishedOnPublication?: boolean } } | null;
       } | null)[];
     }>(
-      `query($ids: [ID!]!, $locationId: ID!) {
+      `query($ids: [ID!]!, $locationId: ID!${channelVar}) {
         nodes(ids: $ids) {
           ... on InventoryItem {
             id
             inventoryLevel(locationId: $locationId) { quantities(names: ["available"]) { name quantity } }
-            variant { price product { status } }
+            variant { price product { status ${channelField} } }
           }
         }
       }`,
-      { ids, locationId }
+      { ids, locationId, ...(checkPublicationId ? { publicationId: checkPublicationId } : {}) }
     );
     for (const node of data.nodes) {
       if (!node?.id) continue;
@@ -365,6 +388,7 @@ export async function readStock(inventoryItemIds: string[], locationId: string):
         available: node.inventoryLevel?.quantities.find((q) => q.name === "available")?.quantity ?? null,
         price: node.variant ? Number(node.variant.price) : null,
         productStatus: node.variant?.product.status ?? null,
+        onCheckedChannel: node.variant?.product.publishedOnPublication ?? null,
       });
     }
   }
