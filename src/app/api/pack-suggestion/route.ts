@@ -10,12 +10,15 @@ import {
   listingWorth,
   netPerUnit,
   parsePackStats,
+  shopChannelWorth,
   splitIntoPacks,
   summarizeComps,
   type ListingWorth,
   type PackStat,
 } from "@/lib/packSize";
 import { prisma } from "@/lib/prisma";
+import { getShopifyConfig } from "@/lib/shopify";
+import { getShopifyDiscountPct } from "@/lib/shopifySync";
 import { Prisma } from "@/generated/prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -179,6 +182,19 @@ export async function GET(request: NextRequest) {
     }
   }
 
+  // The same set-aside on Shopify/Whatnot instead, where the buyer pays the
+  // label: Lizvet can send it there rather than to the shelf. Only offered
+  // once the store is connected. worthIt null = no eBay comps to price it.
+  let shopChannel: { worthIt: boolean | null; price: number | null; profit: number | null } | null = null;
+  if (setAside && getShopifyConfig()) {
+    if (setAside.worth) {
+      const w = shopChannelWorth(setAside.worth, await getShopifyDiscountPct());
+      shopChannel = { worthIt: w.worthIt, price: w.price, profit: w.profit };
+    } else {
+      shopChannel = { worthIt: null, price: null, profit: null };
+    }
+  }
+
   // Dollar figures from the listings at the chosen pack size, when there
   // are any (the agent can pick a size nobody lists yet).
   const chosenStat = recommendation ? stats.find((s) => s.packSize === recommendation.packSize) : undefined;
@@ -210,6 +226,10 @@ export async function GET(request: NextRequest) {
             targetReturnPct,
           }
         : {}),
+      shopChannel: shopChannel && {
+        worthIt: shopChannel.worthIt,
+        ...(isOwner ? { price: shopChannel.price, profit: shopChannel.profit } : {}),
+      },
     },
     recommendation: recommendation && {
       packSize: recommendation.packSize,

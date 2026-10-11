@@ -127,6 +127,12 @@ model Item {
   // ebay.localPickupPolicyId) instead of the usual one: no label, so no
   // weight needed and $0 shipping in profit math.
   localPickupOnly  Boolean        @default(false)
+  // Sold only on the Shopify store (and Whatnot through it), never listed on
+  // eBay: things the scan page would set aside because an eBay sale can't
+  // pay for the label, which Shopify and Whatnot buyers pay themselves.
+  // price is still the eBay-equivalent price (from the same price
+  // research); Shopify takes its usual discount off it.
+  shopifyOnly      Boolean        @default(false)
   // The price before any discount from the dashboard or a manifest, so a
   // new discount replaces the old one instead of stacking on it (15% then
   // 40% was coming out 49% off). Set by the first discount; see discount.ts.

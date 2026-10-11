@@ -102,6 +102,7 @@ export async function POST(request: NextRequest) {
       manifestId: body.manifestId ?? null,
       isBundle,
       bundleComponents: isBundle ? body.bundleComponents : undefined,
+      shopifyOnly: !isBundle && body.shopifyOnly === true,
     },
   });
 

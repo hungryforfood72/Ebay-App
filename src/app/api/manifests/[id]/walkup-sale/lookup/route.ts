@@ -62,7 +62,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
       upc,
       isBundle: false,
       status: { in: ["listed", "exported"] },
-      OR: [{ ebayOfferId: { not: null } }, { ebayListingId: { not: null } }],
+      OR: [{ ebayOfferId: { not: null } }, { ebayListingId: { not: null } }, { shopifyOnly: true }],
     },
     select: {
       id: true,

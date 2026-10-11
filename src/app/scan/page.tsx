@@ -237,6 +237,9 @@ function ScanPageInner() {
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [upc, setUpc] = useState("");
   const [isMultipack, setIsMultipack] = useState(false);
+  // Set from the pack suggestion's "Sell on Shopify & Whatnot instead": this
+  // item skips eBay entirely. Cleared for every new item.
+  const [shopifyOnly, setShopifyOnly] = useState(false);
   const [packSize, setPackSize] = useState("");
   const [expirationDate, setExpirationDate] = useState("");
 
@@ -608,6 +611,7 @@ function ScanPageInner() {
   }
 
   function resetForm() {
+    setShopifyOnly(false);
     setPhotos([]);
     setUpc("");
     setIsMultipack(false);
@@ -714,6 +718,7 @@ function ScanPageInner() {
               }))
             : undefined,
           manifestId: activeManifestId,
+          shopifyOnly: !isBundle && shopifyOnly,
         }),
       });
 
@@ -1190,6 +1195,17 @@ function ScanPageInner() {
 
         <StepProgress current={stepIndex} total={steps.length} />
 
+        {shopifyOnly && !isBundle && step !== "mode" && step !== "upc" && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm text-violet-950">
+            <span>
+              <span className="font-semibold">Shopify &amp; Whatnot only.</span> This one won&apos;t be listed on eBay.
+            </span>
+            <button type="button" className="text-xs font-medium underline" onClick={() => setShopifyOnly(false)}>
+              List on eBay instead
+            </button>
+          </div>
+        )}
+
         {step === "mode" && (
           <section className="flex flex-col gap-3">
             <p className="text-sm font-medium text-foreground">What are you scanning?</p>
@@ -1271,6 +1287,12 @@ function ScanPageInner() {
                   if (listings != null) setQuantity(String(listings));
                 }}
                 onSetAside={resetForm}
+                onShopifyOnly={(size, listings) => {
+                  setShopifyOnly(true);
+                  setIsMultipack(size > 1);
+                  setPackSize(size > 1 ? String(size) : "");
+                  if (listings != null) setQuantity(String(listings));
+                }}
               />
             )}
             <CheckboxRow

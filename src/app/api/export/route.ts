@@ -8,7 +8,8 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({}));
 
   const readyItems = await prisma.item.findMany({
-    where: { status: "ready" },
+    // Shopify & Whatnot only items never go to eBay.
+    where: { status: "ready", shopifyOnly: false },
   });
 
   if (readyItems.length === 0) {

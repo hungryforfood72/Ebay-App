@@ -71,31 +71,34 @@ export function shopifyPriceFor(ebayPrice: number, discountPct: number): number 
 // Which items belong on Shopify
 // ---------------------------------------------------------------------------
 
-type LiveFields = Pick<Item, "status" | "listingEndedAt" | "expiredAt" | "ebayOfferId" | "ebayListingId">;
+type LiveFields = Pick<Item, "status" | "listingEndedAt" | "expiredAt" | "ebayOfferId" | "ebayListingId" | "shopifyOnly">;
 
-// Still up for sale on eBay. Once that's over (sold out, expired, ended),
-// the Shopify product is archived too: Cristian never restocks a listing.
-function isLiveOnEbay(item: LiveFields): boolean {
-  return (
-    (item.status === "listed" || item.status === "exported") &&
-    !item.listingEndedAt &&
-    !item.expiredAt &&
-    Boolean(item.ebayOfferId || item.ebayListingId)
-  );
+// Still for sale: live on eBay, or a Shopify & Whatnot only item that's
+// been published (or is mid-publish from review, "ready"). Once that's
+// over (sold out, expired, ended), the Shopify product is archived too:
+// Cristian never restocks a listing.
+function isLive(item: LiveFields): boolean {
+  if (item.listingEndedAt || item.expiredAt) return false;
+  if (item.shopifyOnly) return item.status === "listed" || item.status === "ready";
+  return (item.status === "listed" || item.status === "exported") && Boolean(item.ebayOfferId || item.ebayListingId);
 }
 
 function shopifyTarget(item: LiveFields & Pick<Item, "quantity" | "soldQuantity">): number {
-  return isLiveOnEbay(item) ? Math.max(0, item.quantity - item.soldQuantity) : 0;
+  return isLive(item) ? Math.max(0, item.quantity - item.soldQuantity) : 0;
 }
 
-// Everything live on eBay and not on Shopify yet. Local-pickup-only items
-// stay off: a Shopify buyer would be charged shipping on something that
-// can't ship.
+// Everything live on eBay and not on Shopify yet, plus Shopify-only items
+// whose publish from review didn't finish (retried; a "ready" one is only
+// ever published by its own Publish button). Local-pickup-only items stay
+// off: a Shopify buyer would be charged shipping on something that can't
+// ship.
 function waitingForShopifyWhere(): Prisma.ItemWhereInput {
   return {
     status: { in: ["listed", "exported"] },
-    OR: [{ ebayOfferId: { not: null } }, { ebayListingId: { not: null } }],
-    ebayEnvironment: getEbayEnvironment(),
+    OR: [
+      { ebayEnvironment: getEbayEnvironment(), OR: [{ ebayOfferId: { not: null } }, { ebayListingId: { not: null } }] },
+      { shopifyOnly: true },
+    ],
     listingEndedAt: null,
     expiredAt: null,
     shopifyPublishedAt: null,
@@ -188,10 +191,17 @@ export type PublishOutcome = "published" | "nothing_left" | "not_eligible";
 // it to every sales channel the store has. Saves the error on the item and
 // rethrows when it fails, so Settings can show it and a retry can pick it
 // up.
-export async function publishItemToShopify(itemId: string): Promise<PublishOutcome> {
+// fromReview: the Publish button on a Shopify & Whatnot only item, which
+// is still "ready" until this succeeds and flips it to "listed".
+export async function publishItemToShopify(itemId: string, options?: { fromReview?: boolean }): Promise<PublishOutcome> {
   const item = await prisma.item.findUnique({ where: { id: itemId } });
   if (!item) throw new Error("Item not found.");
-  const eligible = await prisma.item.count({ where: { id: itemId, ...waitingForShopifyWhere() } });
+  const where = waitingForShopifyWhere();
+  const eligible = await prisma.item.count({
+    where: options?.fromReview
+      ? { ...where, id: itemId, shopifyOnly: true, status: "ready", OR: undefined }
+      : { ...where, id: itemId },
+  });
   if (!eligible) return "not_eligible";
 
   try {
@@ -271,7 +281,7 @@ export async function publishItemToShopify(itemId: string): Promise<PublishOutco
     );
     await prisma.item.update({
       where: { id: item.id },
-      data: { shopifyPublishedAt: new Date(), shopifyError: null },
+      data: { shopifyPublishedAt: new Date(), shopifyError: null, ...(item.shopifyOnly ? { status: "listed" } : {}) },
     });
     return "published";
   } catch (e) {
@@ -630,7 +640,7 @@ export async function runShopifySync(scope: ShopifySyncScope): Promise<ShopifySy
             result.stockSkipped++;
           }
         }
-        if (!isLiveOnEbay(item)) {
+        if (!isLive(item)) {
           if (stock.productStatus !== "ARCHIVED") await archiveProduct(item.shopifyProductId!);
           await prisma.item.update({ where: { id: item.id }, data: { shopifyArchivedAt: new Date() } });
           result.archived++;

@@ -11,17 +11,22 @@ export async function GET(request: NextRequest) {
   const items = await prisma.item.findMany({
     where: {
       status: "listed",
-      OR: [{ ebayOfferId: { not: null } }, { ebayListingId: { not: null } }],
-      ...(q
-        ? {
-            OR: [
-              { finalTitle: { contains: q, mode: "insensitive" } },
-              { upc: { contains: q } },
-              { ebayListingId: { contains: q } },
-              { sku: { contains: q, mode: "insensitive" } },
-            ],
-          }
-        : {}),
+      AND: [
+        // Live somewhere: on eBay, or Shopify & Whatnot only.
+        { OR: [{ ebayOfferId: { not: null } }, { ebayListingId: { not: null } }, { shopifyOnly: true }] },
+        ...(q
+          ? [
+              {
+                OR: [
+                  { finalTitle: { contains: q, mode: "insensitive" as const } },
+                  { upc: { contains: q } },
+                  { ebayListingId: { contains: q } },
+                  { sku: { contains: q, mode: "insensitive" as const } },
+                ],
+              },
+            ]
+          : []),
+      ],
     },
     select: {
       id: true,

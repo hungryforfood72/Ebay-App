@@ -66,6 +66,9 @@ type Item = {
   weightLbs: number | null;
   weightOz: number | null;
   localPickupOnly: boolean;
+  // Shopify & Whatnot only: never listed on eBay (see Item.shopifyOnly).
+  shopifyOnly: boolean;
+  shopifyError: string | null;
   ebayListingId: string | null;
   ebayPublishError: string | null;
   ebayEnvironment: string | null;
@@ -234,15 +237,19 @@ export default function ReviewPage() {
   }
 
   // Distinct from "Mark ready" — this is the actual, not-cleanly-undoable
-  // publish to eBay via the real Inventory API. Errors (a bad category ID,
-  // a missing business policy, etc.) come back from eBay's own validation
-  // and are shown inline on the item rather than swallowed. Returns whether
-  // it succeeded, so publishAllToEbay can tally results across a batch.
+  // publish to eBay via the real Inventory API (or, for a Shopify & Whatnot
+  // only item, to the Shopify store instead). Errors (a bad category ID,
+  // a missing business policy, etc.) come back from the store's own
+  // validation and are shown inline on the item rather than swallowed.
+  // Returns whether it succeeded, so publishAllToEbay can tally results
+  // across a batch.
   async function publishToEbay(item: Item): Promise<boolean> {
     setPublishingId(item.id);
     setError(null);
     try {
-      const res = await fetch(`/api/items/${item.id}/publish-to-ebay`, { method: "POST" });
+      const res = await fetch(`/api/items/${item.id}/${item.shopifyOnly ? "publish-to-shopify" : "publish-to-ebay"}`, {
+        method: "POST",
+      });
       const result = await res.json();
       if (!res.ok) {
         throw new Error(result.error ?? "Publish failed.");
@@ -269,7 +276,7 @@ export default function ReviewPage() {
     if (ready.length === 0) return;
     if (
       !confirm(
-        `Publish all ${ready.length} ready item(s) to eBay now? This creates real, live listings and isn't easily undone.`
+        `Publish all ${ready.length} ready item(s) now? This creates real, live listings (on eBay, or on Shopify & Whatnot for the Shopify-only ones) and isn't easily undone.`
       )
     ) {
       return;
@@ -406,7 +413,10 @@ export default function ReviewPage() {
                     <Thumb src={item.photoUrls[0]} />
                     <div className="min-w-0 flex-1">
                       <p className="line-clamp-2 text-sm font-medium text-foreground">{item.finalTitle}</p>
-                      <p className="text-sm font-semibold tabular-nums text-foreground">${item.price}</p>
+                      <p className="flex flex-wrap items-center gap-2 text-sm font-semibold tabular-nums text-foreground">
+                        ${item.price}
+                        {item.shopifyOnly && <Badge>Shopify &amp; Whatnot only</Badge>}
+                      </p>
                     </div>
                     <Button
                       size="sm"
@@ -417,9 +427,12 @@ export default function ReviewPage() {
                       {publishingId === item.id ? "Publishing…" : "Publish"}
                     </Button>
                   </div>
-                  {item.ebayPublishError && (
+                  {(item.shopifyOnly ? item.shopifyError : item.ebayPublishError) && (
                     <div className="flex flex-wrap items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-800">
-                      <p className="min-w-0 flex-1">eBay rejected this: {item.ebayPublishError}</p>
+                      <p className="min-w-0 flex-1">
+                        {item.shopifyOnly ? "Shopify" : "eBay"} rejected this:{" "}
+                        {item.shopifyOnly ? item.shopifyError : item.ebayPublishError}
+                      </p>
                       <Button
                         size="sm"
                         variant="outline"
@@ -438,11 +451,12 @@ export default function ReviewPage() {
 
         {listed.length > 0 && (
           <section>
-            <SectionHeader title="Listed on eBay" action={<Badge tone="success">{listed.length}</Badge>} />
+            <SectionHeader title="Listed" action={<Badge tone="success">{listed.length}</Badge>} />
             <Card padded={false} className="divide-y divide-border">
               {listed.map((item) => (
                 <div key={item.id} className="flex items-center gap-3 px-4 py-2.5 text-sm">
                   <span className="min-w-0 flex-1 truncate text-foreground">{item.finalTitle}</span>
+                  {item.shopifyOnly && <Badge>Shopify &amp; Whatnot</Badge>}
                   {item.ebayListingId && (
                     <a
                       href={
@@ -1076,13 +1090,29 @@ function ItemCard({
             />
           </Field>
 
+          {!item.isBundle && (
+            <CheckboxRow
+              label="Shopify & Whatnot only"
+              description={
+                item.shopifyOnly
+                  ? "Won't be listed on eBay. Price it like eBay; the Shopify store takes its discount off, and the buyer pays shipping."
+                  : "Skip eBay. For things that can't pay for an eBay label, since Shopify and Whatnot buyers pay their own shipping."
+              }
+              checked={item.shopifyOnly}
+              onChange={(e) => onChange({ shopifyOnly: e.target.checked })}
+            />
+          )}
+
           <div className="rounded-lg border border-border p-3 sm:p-4">
             <p className="text-sm font-medium text-foreground">Shipping</p>
             <p className="mb-3 text-xs text-muted-foreground">
-              {item.localPickupOnly
+              {item.shopifyOnly
+                ? "The buyer pays shipping on Shopify and Whatnot, worked out from this weight, so get it close."
+                : item.localPickupOnly
                 ? "Local pickup only: the buyer pays on eBay and picks it up. No label, so no weight or box needed."
                 : "Free, USPS Ground Advantage. Weight/box matter either way — accurate numbers keep eBay's calculated cost (or your absorbed cost on free shipping) from defaulting high."}
             </p>
+            {!item.shopifyOnly && (
             <CheckboxRow
               className="mb-3"
               label="Local pickup only"
@@ -1090,6 +1120,7 @@ function ItemCard({
               checked={item.localPickupOnly}
               onChange={(e) => onChange({ localPickupOnly: e.target.checked })}
             />
+            )}
             {!item.localPickupOnly && (
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-[1fr_7rem_7rem]">
               <div className="col-span-2 sm:col-span-1">

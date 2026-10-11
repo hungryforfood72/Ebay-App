@@ -36,6 +36,10 @@ type PackSuggestion = {
     returnPct?: number | null;
     targetReturnPct?: number | null;
     requiredProfit?: number;
+    // Sold on Shopify/Whatnot instead, where the buyer pays the label. Only
+    // there once the store is connected. worthIt null: no eBay listings to
+    // price it from. Dollar figures owner only.
+    shopChannel?: { worthIt: boolean | null; price?: number | null; profit?: number | null } | null;
   } | null;
   recommendation: {
     packSize: number;
@@ -73,12 +77,15 @@ export function PackSuggestionCard({
   manifestId,
   onApply,
   onSetAside,
+  onShopifyOnly,
 }: {
   upc: string;
   manifestId: string | null;
   onApply: (packSize: number, listings: number | null) => void;
   // Skip this item without saving it, straight to the next scan.
   onSetAside: () => void;
+  // Keep scanning it in, but for Shopify & Whatnot only (no eBay listing).
+  onShopifyOnly: (packSize: number, listings: number | null) => void;
 }) {
   const key = `${upc}|${manifestId ?? ""}`;
   const [result, setResult] = useState<{ key: string; data: PackSuggestion | null } | null>(null);
@@ -112,6 +119,11 @@ export function PackSuggestionCard({
 
   const first = data.plan?.[0] ?? null;
   const rest = data.plan?.slice(1) ?? [];
+  // Offered when everything in hand is a set-aside and the store makes it
+  // worth selling (or there are no comps to tell either way).
+  const allAside = Boolean(data.setAside) && (!data.plan || data.plan.length === 0);
+  const shopChannel = data.setAside?.shopChannel ?? null;
+  const offerShop = allAside && shopChannel != null && shopChannel.worthIt !== false;
 
   return (
     <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-950">
@@ -155,7 +167,22 @@ export function PackSuggestionCard({
           {data.setAside && <SetAsideNote setAside={data.setAside} recommendedPackSize={rec.packSize} />}
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            {data.plan && data.plan.length === 0 && data.setAside ? (
+            {allAside && offerShop && data.setAside ? (
+              <>
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    const aside = data.setAside!;
+                    onShopifyOnly(aside.packSize, aside.units != null ? Math.max(1, Math.round(aside.units / aside.packSize)) : null);
+                  }}
+                >
+                  Sell on Shopify &amp; Whatnot instead
+                </Button>
+                <Button size="sm" variant="outline" onClick={onSetAside}>
+                  Set aside anyway
+                </Button>
+              </>
+            ) : data.plan && data.plan.length === 0 && data.setAside ? (
               <Button size="sm" variant="outline" onClick={onSetAside}>
                 Set aside, scan the next item
               </Button>
@@ -244,8 +271,39 @@ function SetAsideNote({
             .
           </p>
         )}
+        {setAside.shopChannel && <ShopChannelLine shop={setAside.shopChannel} what={what} />}
       </div>
     </div>
+  );
+}
+
+// What happens if it goes to Shopify & Whatnot instead of the shelf.
+function ShopChannelLine({
+  shop,
+  what,
+}: {
+  shop: NonNullable<NonNullable<PackSuggestion["setAside"]>["shopChannel"]>;
+  what: string;
+}) {
+  if (shop.worthIt === null) {
+    return (
+      <p className="mt-1.5 text-xs text-amber-900/80">
+        No eBay listings to price it from. It can still go to Shopify &amp; Whatnot, priced by hand in review.
+      </p>
+    );
+  }
+  const numbers =
+    shop.price != null && shop.profit != null
+      ? ` As ${what} there: about ${money(shop.price)}, ${shop.profit < 0 ? `a ${money(-shop.profit)} loss` : `${money(shop.profit)} profit`} after Whatnot-level fees.`
+      : "";
+  return shop.worthIt ? (
+    <p className="mt-1.5 font-medium text-amber-950">
+      On Shopify &amp; Whatnot the buyer pays shipping, so it&apos;s worth selling there.{numbers}
+    </p>
+  ) : (
+    <p className="mt-1.5 text-xs text-amber-900/80">
+      Too thin even on Shopify &amp; Whatnot.{numbers} Set it aside for a Whatnot live bundle.
+    </p>
   );
 }
 

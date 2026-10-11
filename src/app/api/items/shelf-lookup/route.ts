@@ -32,7 +32,7 @@ export async function GET(request: NextRequest) {
     where: {
       shelfLocation: { equals: shelfLocation, mode: "insensitive" },
       status: { in: ["listed", "exported"] },
-      OR: [{ ebayOfferId: { not: null } }, { ebayListingId: { not: null } }],
+      OR: [{ ebayOfferId: { not: null } }, { ebayListingId: { not: null } }, { shopifyOnly: true }],
     },
     select: {
       id: true,

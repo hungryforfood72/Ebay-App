@@ -68,7 +68,7 @@ export async function expireDueListings(now: Date = new Date()): Promise<ExpireL
   const items = await prisma.item.findMany({
     where: {
       status: { in: ["listed", "exported"] },
-      OR: [{ ebayOfferId: { not: null } }, { ebayListingId: { not: null } }],
+      OR: [{ ebayOfferId: { not: null } }, { ebayListingId: { not: null } }, { shopifyOnly: true }],
       expirationDate: { not: null, lte: cutoff },
     },
   });

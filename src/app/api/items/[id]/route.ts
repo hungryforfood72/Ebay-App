@@ -18,6 +18,7 @@ const EDITABLE_FIELDS = [
   "weightOz",
   "expirationDate",
   "localPickupOnly",
+  "shopifyOnly",
 ] as const;
 
 // Update review-step fields on an item (title/description/price/status, etc).
@@ -39,6 +40,17 @@ export async function PATCH(
       return NextResponse.json({ error: "That expiration date isn't a real date." }, { status: 400 });
     }
     data.expirationDate = date;
+  }
+  // Switching stores is only for items not live anywhere yet: an eBay
+  // listing can't become Shopify-only (or the other way) after the fact.
+  if ("shopifyOnly" in data) {
+    const current = await prisma.item.findUnique({
+      where: { id },
+      select: { ebayOfferId: true, ebayListingId: true, shopifyPublishedAt: true },
+    });
+    if (current && (current.ebayOfferId || current.ebayListingId || current.shopifyPublishedAt)) {
+      return NextResponse.json({ error: "This item is already live, so it can't switch stores now." }, { status: 400 });
+    }
   }
   if ("status" in data && data.status === "ready") {
     data.reviewedAt = new Date();

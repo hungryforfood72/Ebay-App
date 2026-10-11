@@ -107,10 +107,10 @@ export class ItemSaleError extends Error {
 // specific to how they found this item (e.g. confirming it belongs to a
 // particular manifest/UPC) before calling this.
 export async function recordItemSale(
-  item: Pick<Item, "id" | "sku" | "quantity" | "soldQuantity" | "ebayOfferId" | "ebayListingId">,
+  item: Pick<Item, "id" | "sku" | "quantity" | "soldQuantity" | "ebayOfferId" | "ebayListingId" | "shopifyOnly">,
   input: { quantity: number; pricePerUnit: number; note: string; recordedBy: string | null }
 ): Promise<{ item: Item; adjustment: StockAdjustment }> {
-  if (!item.ebayOfferId && !item.ebayListingId) {
+  if (!item.ebayOfferId && !item.ebayListingId && !item.shopifyOnly) {
     throw new ItemSaleError("This item isn't currently listed on eBay.", 400);
   }
 
@@ -129,9 +129,10 @@ export async function recordItemSale(
   try {
     if (item.ebayOfferId) {
       await updateOfferQuantity(item.ebayOfferId, { sku: item.sku, soldQuantity: newSoldQuantity }, newAvailable);
-    } else {
-      await reviseFixedPriceItemQuantity(item.ebayListingId!, newAvailable);
+    } else if (item.ebayListingId) {
+      await reviseFixedPriceItemQuantity(item.ebayListingId, newAvailable);
     }
+    // Shopify & Whatnot only: no eBay listing; Shopify follows below.
     const [updatedItem, adjustment] = await prisma.$transaction([
       prisma.item.update({
         where: { id: item.id },

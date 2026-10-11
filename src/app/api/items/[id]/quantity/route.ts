@@ -93,7 +93,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   if (!item) {
     return NextResponse.json({ error: "Item not found." }, { status: 404 });
   }
-  if (!item.ebayOfferId && !item.ebayListingId) {
+  if (!item.ebayOfferId && !item.ebayListingId && !item.shopifyOnly) {
     return NextResponse.json({ error: "This item isn't currently listed on eBay." }, { status: 400 });
   }
 
@@ -116,7 +116,11 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
   try {
     let newQuantity: number;
-    if (item.ebayOfferId) {
+    if (item.shopifyOnly) {
+      // Shopify & Whatnot only: nothing on eBay to change. Shopify follows
+      // through queueShopifySync below.
+      newQuantity = newAvailableQuantity + item.soldQuantity;
+    } else if (item.ebayOfferId) {
       newQuantity = await updateOfferQuantity(item.ebayOfferId, item, newAvailableQuantity);
     } else {
       newQuantity = newAvailableQuantity + item.soldQuantity;
