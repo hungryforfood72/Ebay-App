@@ -196,7 +196,12 @@ export async function getPublications(): Promise<{ id: string; name: string }[]>
   const data = await shopifyGraphql<{ publications: { nodes: { id: string; catalog: { title: string } | null }[] } }>(
     `{ publications(first: 50) { nodes { id catalog { title } } } }`
   );
-  return data.publications.nodes.map((p) => ({ id: p.id, name: p.catalog?.title ?? "Sales channel" }));
+  // Catalog titles read like "Channel Catalog 270568685938 for Whatnot";
+  // the channel's own name is the part after "for".
+  return data.publications.nodes.map((p) => ({
+    id: p.id,
+    name: (p.catalog?.title ?? "Sales channel").replace(/^Channel Catalog \d+ for /, ""),
+  }));
 }
 
 // ---------------------------------------------------------------------------
