@@ -473,6 +473,8 @@ export type ShopifySyncResult = {
   offWhatnot: number;
   // Switched over to the past-date page (off every channel but the store).
   pastDateApplied: number;
+  // Not reached before the time budget ran out; the next run does them.
+  leftForNextRun: number;
   archived: number;
   published: number;
   errors: string[];
@@ -490,6 +492,7 @@ function emptyResult(): ShopifySyncResult {
     pricesFixed: 0,
     offWhatnot: 0,
     pastDateApplied: 0,
+    leftForNextRun: 0,
     archived: 0,
     published: 0,
     errors: [],
@@ -722,6 +725,24 @@ async function syncShopifyOrders(result: ShopifySyncResult): Promise<Set<string>
 // The one entry point
 // ---------------------------------------------------------------------------
 
+// A Vercel function gets 5 minutes; the eBay sync runs first in the same
+// cron call, so the Shopify pass keeps well under what's left.
+const SYNC_BUDGET_MS = 150_000;
+// Products worked on at once. Shopify's rate limit handles a few in
+// parallel easily (and shopifyGraphql waits out any throttling).
+const ITEM_CONCURRENCY = 5;
+
+// Runs fn over list, `concurrency` at a time, starting no new one after
+// `deadline`. Returns how many were left unstarted.
+async function eachUntil<T>(list: T[], concurrency: number, deadline: number, fn: (t: T) => Promise<void>): Promise<number> {
+  let next = 0;
+  const worker = async () => {
+    while (next < list.length && Date.now() < deadline) await fn(list[next++]);
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, list.length) }, worker));
+  return list.length - next;
+}
+
 const LINKED: Prisma.ItemWhereInput = { shopifyInventoryItemId: { not: null }, shopifyArchivedAt: null };
 
 export type ShopifySyncScope = {
@@ -747,6 +768,7 @@ export async function runShopifySync(scope: ShopifySyncScope): Promise<ShopifySy
     result.skipped = "Shopify isn't set up yet.";
     return result;
   }
+  const deadline = Date.now() + SYNC_BUDGET_MS;
   try {
     const location = await getLocation();
     const publications = await getPublications();
@@ -771,7 +793,7 @@ export async function runShopifySync(scope: ShopifySyncScope): Promise<ShopifySy
     const paths = await categoryPaths(items.map((i) => i.categoryId));
     const retail = await retailPrices(items);
 
-    for (const item of items) {
+    const fixItem = async (item: (typeof items)[number]) => {
       const invId = item.shopifyInventoryItemId!;
       const readFirst = before.has(invId);
       const stock = before.get(invId) ?? lateRead.get(invId);
@@ -781,7 +803,7 @@ export async function runShopifySync(scope: ShopifySyncScope): Promise<ShopifySy
           // Deleted on Shopify by hand: that's a choice, not a problem.
           // Leave it gone and don't put it back up.
           await prisma.item.update({ where: { id: item.id }, data: { shopifyArchivedAt: new Date(), shopifyError: null } });
-          continue;
+          return;
         }
         const target = shopifyTarget(item);
         if (stock.available != null && stock.available !== target) {
@@ -798,7 +820,7 @@ export async function runShopifySync(scope: ShopifySyncScope): Promise<ShopifySy
           if (stock.productStatus !== "ARCHIVED") await archiveProduct(item.shopifyProductId!);
           await prisma.item.update({ where: { id: item.id }, data: { shopifyArchivedAt: new Date() } });
           result.archived++;
-          continue;
+          return;
         }
         if (item.pastDateAt && !item.shopifyPastDateAppliedAt) {
           await applyPastDate(item, publications);
@@ -827,7 +849,12 @@ export async function runShopifySync(scope: ShopifySyncScope): Promise<ShopifySy
       } catch (e) {
         result.errors.push(`${label}: ${errorText(e)}`);
       }
-    }
+    };
+    // Several products at once, and stop with time to spare: a run that
+    // has to touch every product (the discount changed, say) used to hit
+    // the 5-minute limit partway and leave the rest on old prices. Whatever
+    // is left gets done by the next run.
+    result.leftForNextRun += await eachUntil(items, ITEM_CONCURRENCY, deadline, fixItem);
 
     if (scope.publish) {
       const waiting = await prisma.item.findMany({
@@ -837,6 +864,10 @@ export async function runShopifySync(scope: ShopifySyncScope): Promise<ShopifySy
         select: { id: true, finalTitle: true },
       });
       for (const w of waiting) {
+        if (Date.now() > deadline) {
+          result.leftForNextRun++;
+          continue;
+        }
         try {
           if ((await publishItemToShopify(w.id)) === "published") result.published++;
         } catch (e) {
