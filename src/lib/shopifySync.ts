@@ -70,11 +70,9 @@ export function shopifyPriceFor(ebayPrice: number, discountPct: number): number 
   return Math.round(ebayPrice * (1 - discountPct / 100) * 100) / 100;
 }
 
-// Cristian: short-dated and past-date items go 65% off the price they were
-// originally listed at on eBay (originalPrice, from before any eBay
-// discount), not off the Shopify price and not off a discounted eBay
-// price. The struck-through "was" price shows that original price, so the
-// 65% reads true against it. The store's usual discount doesn't apply.
+// Cristian: short-dated and past-date items go 65% off their original
+// price (before any eBay discount), with the regular store price shown
+// struck through, so the "65% off" is against what it actually sold for.
 const PAST_DATE_OFF_PCT = 65;
 
 function expectedPrices(
@@ -82,8 +80,8 @@ function expectedPrices(
   discountPct: number
 ): { price: number; compareAt: number | null } {
   if (!item.pastDateAt) return { price: shopifyPriceFor(Number(item.price ?? 0), discountPct), compareAt: null };
-  const original = Math.round(Number(item.originalPrice ?? item.price ?? 0) * 100) / 100;
-  return { price: Math.max(0.5, Math.round(original * (1 - PAST_DATE_OFF_PCT / 100) * 100) / 100), compareAt: original };
+  const regular = shopifyPriceFor(Number(item.originalPrice ?? item.price ?? 0), discountPct);
+  return { price: Math.max(0.5, Math.round(regular * (1 - PAST_DATE_OFF_PCT / 100) * 100) / 100), compareAt: regular };
 }
 
 // ---------------------------------------------------------------------------
