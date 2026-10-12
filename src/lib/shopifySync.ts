@@ -170,9 +170,12 @@ function shopifyTarget(item: LiveFields & Pick<Item, "quantity" | "soldQuantity"
 // were never on Shopify (brought back after being pulled; they go up
 // straight onto the past-date page). Local-pickup-only items stay off: a
 // Shopify buyer would be charged shipping on something that can't ship.
+// Sold-out ones (old CSV listings mostly) don't count: there's nothing to
+// put up, and they'd otherwise sit in "waiting" forever.
 function waitingForShopifyWhere(): Prisma.ItemWhereInput {
   return {
     status: { in: ["listed", "exported"] },
+    quantity: { gt: prisma.item.fields.soldQuantity },
     OR: [
       {
         ebayEnvironment: getEbayEnvironment(),
@@ -775,11 +778,9 @@ export async function runShopifySync(scope: ShopifySyncScope): Promise<ShopifySy
       const label = item.finalTitle ?? item.id;
       try {
         if (!stock) {
-          // Deleted on Shopify by hand: leave it gone.
-          await prisma.item.update({
-            where: { id: item.id },
-            data: { shopifyArchivedAt: new Date(), shopifyError: "The product was deleted on Shopify." },
-          });
+          // Deleted on Shopify by hand: that's a choice, not a problem.
+          // Leave it gone and don't put it back up.
+          await prisma.item.update({ where: { id: item.id }, data: { shopifyArchivedAt: new Date(), shopifyError: null } });
           continue;
         }
         const target = shopifyTarget(item);
