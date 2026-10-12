@@ -14,6 +14,7 @@ import {
   createProduct,
   ensureTagCollection,
   findProductByHandle,
+  listProductSkus,
   getLocation,
   getOrdersUpdatedSince,
   getPublications,
@@ -475,6 +476,9 @@ export type ShopifySyncResult = {
   pastDateApplied: number;
   // Not reached before the time budget ran out; the next run does them.
   leftForNextRun: number;
+  // Extra copies of a listing (same SKU, not the product the item is
+  // linked to) archived so they can't sell untracked.
+  duplicatesArchived: number;
   archived: number;
   published: number;
   errors: string[];
@@ -493,6 +497,7 @@ function emptyResult(): ShopifySyncResult {
     offWhatnot: 0,
     pastDateApplied: 0,
     leftForNextRun: 0,
+    duplicatesArchived: 0,
     archived: 0,
     published: 0,
     errors: [],
@@ -856,29 +861,70 @@ export async function runShopifySync(scope: ShopifySyncScope): Promise<ShopifySy
     // is left gets done by the next run.
     result.leftForNextRun += await eachUntil(items, ITEM_CONCURRENCY, deadline, fixItem);
 
-    if (scope.publish) {
-      const waiting = await prisma.item.findMany({
-        where: { ...waitingForShopifyWhere(), ...(scope.publish.retryFailed ? {} : { shopifyError: null }) },
-        orderBy: { createdAt: "asc" },
-        take: scope.publish.limit,
-        select: { id: true, finalTitle: true },
-      });
-      for (const w of waiting) {
-        if (Date.now() > deadline) {
-          result.leftForNextRun++;
-          continue;
-        }
-        try {
-          if ((await publishItemToShopify(w.id)) === "published") result.published++;
-        } catch (e) {
-          result.errors.push(`Listing ${w.finalTitle ?? w.id} on Shopify: ${errorText(e)}`);
-        }
-      }
-    }
+    if (scope.items === "all") await archiveDuplicates(result);
+
+    // One publisher at a time: the cron and Settings' "Send waiting items
+    // now" running together both took the same waiting items and each made
+    // its own product. Whichever comes second just skips this step.
+    const publishRun = scope.publish
+      ? await withSyncLock("shopify-publish", "quick", async () => {
+          await publishWaiting(scope.publish!, deadline, result);
+        })
+      : null;
+    if (publishRun && !publishRun.ran) result.errors.push("Another run was already putting items on Shopify; skipped here.");
   } catch (e) {
     result.errors.push(`Shopify sync failed: ${errorText(e)}`);
   }
   return result;
+}
+
+async function publishWaiting(
+  publish: NonNullable<ShopifySyncScope["publish"]>,
+  deadline: number,
+  result: ShopifySyncResult
+): Promise<void> {
+  const waiting = await prisma.item.findMany({
+    where: { ...waitingForShopifyWhere(), ...(publish.retryFailed ? {} : { shopifyError: null }) },
+    orderBy: { createdAt: "asc" },
+    take: publish.limit,
+    select: { id: true, finalTitle: true },
+  });
+  for (const w of waiting) {
+    if (Date.now() > deadline) {
+      result.leftForNextRun++;
+      continue;
+    }
+    try {
+      if ((await publishItemToShopify(w.id)) === "published") result.published++;
+    } catch (e) {
+      result.errors.push(`Listing ${w.finalTitle ?? w.id} on Shopify: ${errorText(e)}`);
+    }
+  }
+}
+
+// Extra Shopify copies of one listing: a product whose SKU belongs to an
+// item that's linked to a different product. The app doesn't track the
+// copy, so a sale of it would never come off eBay. Archived, not deleted,
+// so nothing is lost if one turns out to be wanted.
+async function archiveDuplicates(result: ShopifySyncResult): Promise<void> {
+  const products = await listProductSkus();
+  const skus = [...new Set(products.map((p) => p.sku).filter((s): s is string => Boolean(s)))];
+  if (skus.length === 0) return;
+  const items = await prisma.item.findMany({
+    where: { sku: { in: skus }, shopifyProductId: { not: null } },
+    select: { sku: true, shopifyProductId: true, finalTitle: true },
+  });
+  const linkedBySku = new Map(items.map((i) => [i.sku, i]));
+  for (const p of products) {
+    const item = p.sku ? linkedBySku.get(p.sku) : undefined;
+    if (!item || item.shopifyProductId === p.id || p.status === "ARCHIVED") continue;
+    try {
+      await archiveProduct(p.id);
+      result.duplicatesArchived++;
+    } catch (e) {
+      result.errors.push(`Archiving a duplicate of ${item.finalTitle ?? item.sku}: ${errorText(e)}`);
+    }
+  }
 }
 
 // For routes that just changed an item's stock or price on eBay: brings
@@ -898,7 +944,11 @@ export function queueShopifyPublish(itemId: string): void {
   if (!getShopifyConfig()) return;
   after(async () => {
     try {
-      await publishItemToShopify(itemId);
+      // Same lock as the cron's publish step, so the two never both make a
+      // product for this item; if it's busy, the cron puts this one up.
+      await withSyncLock("shopify-publish", "quick", async () => {
+        await publishItemToShopify(itemId);
+      });
     } catch (e) {
       console.error(`[shopifySync] publishing ${itemId} to Shopify failed`, e);
     }

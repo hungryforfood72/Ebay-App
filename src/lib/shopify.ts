@@ -397,6 +397,33 @@ export async function ensureTagCollection(input: {
   return id;
 }
 
+// Every product in the store with its first variant's SKU, for finding
+// copies of the same listing.
+export async function listProductSkus(): Promise<{ id: string; status: string; sku: string | null }[]> {
+  const out: { id: string; status: string; sku: string | null }[] = [];
+  let after: string | null = null;
+  for (let page = 0; page < 40; page++) {
+    const data: {
+      products: {
+        pageInfo: { hasNextPage: boolean; endCursor: string | null };
+        nodes: { id: string; status: string; variants: { nodes: { sku: string | null }[] } }[];
+      };
+    } = await shopifyGraphql(
+      `query($after: String) {
+        products(first: 250, after: $after) {
+          pageInfo { hasNextPage endCursor }
+          nodes { id status variants(first: 1) { nodes { sku } } }
+        }
+      }`,
+      { after }
+    );
+    for (const p of data.products.nodes) out.push({ id: p.id, status: p.status, sku: p.variants.nodes[0]?.sku ?? null });
+    if (!data.products.pageInfo.hasNextPage) break;
+    after = data.products.pageInfo.endCursor;
+  }
+  return out;
+}
+
 // Takes it off every sales channel (Whatnot included) but keeps it, and
 // its orders, in the admin.
 export async function archiveProduct(productId: string): Promise<void> {
