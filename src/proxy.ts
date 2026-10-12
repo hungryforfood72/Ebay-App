@@ -44,6 +44,11 @@ export async function proxy(request: NextRequest) {
     if (PUBLIC_WEBHOOK_PATHS.includes(pathname)) {
       return NextResponse.next();
     }
+    // The Shopify app proxy (the store's /apps/deals/*, deal alerts): the
+    // route checks Shopify's signature on every request.
+    if (pathname.startsWith("/api/shopify-proxy/")) {
+      return NextResponse.next();
+    }
     if (pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "Not signed in." }, { status: 401 });
     }

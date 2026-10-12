@@ -1026,3 +1026,17 @@ model PackFeedback {
   @@index([upc, createdAt])
   @@index([createdAt])
 }
+
+// A shopper's phone or browser that opted in to Epic Steals deal alerts
+// (web push, see src/lib/dealAlerts.ts). endpoint is the push service's
+// address for that device, unique per device; p256dh/auth are its
+// encryption keys. Removed when the push service says the device is gone.
+model PushSubscription {
+  id          String    @id @default(uuid())
+  endpoint    String    @unique
+  p256dh      String
+  auth        String
+  userAgent   String?
+  createdAt   DateTime  @default(now())
+  lastSentAt  DateTime?
+}

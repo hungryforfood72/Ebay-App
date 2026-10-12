@@ -30,6 +30,7 @@ function SettingsPageInner() {
           <EbayConnectionStatus />
           <EbaySaleAlerts />
           <ShopifyConnection />
+          <DealAlertsCard />
         </SettingsGroup>
 
         <SettingsGroup title="Scanning">
@@ -754,6 +755,58 @@ function ShopifyConnection() {
           )}
         </div>
       )}
+    </Card>
+  );
+}
+
+// Epic Steals deal alerts (web push to shoppers who opted in on the store):
+// how many signed up, and a test alert to check it end to end.
+function DealAlertsCard() {
+  const [subscribers, setSubscribers] = useState<number | null>(null);
+  const [sending, setSending] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  function load() {
+    fetch("/api/deal-alerts")
+      .then((r) => r.json())
+      .then((d: { subscribers?: number }) => setSubscribers(d.subscribers ?? null))
+      .catch(() => setSubscribers(null));
+  }
+
+  useEffect(load, []);
+
+  async function sendTest() {
+    setSending(true);
+    setMessage(null);
+    try {
+      const res = await fetch("/api/deal-alerts", { method: "POST" });
+      const d = await res.json();
+      setMessage(
+        res.ok
+          ? `Sent to ${d.sent} device(s).${d.removed ? ` ${d.removed} had turned alerts off and were removed.` : ""}${d.failed ? ` ${d.failed} failed.` : ""}`
+          : (d.error ?? "Couldn't send.")
+      );
+      load();
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <Card>
+      <SectionHeader
+        title="Deal alerts"
+        description="Phone notifications for Epic Steals shoppers who tap Get deal alerts: one at 6 PM when 3 or more new items went up that day, and one when items move to the past-date page."
+      />
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-background p-3">
+        <p className="text-sm text-foreground">
+          {subscribers == null ? "Loading…" : `${subscribers} device${subscribers === 1 ? "" : "s"} signed up`}
+        </p>
+        <Button size="sm" variant="outline" onClick={sendTest} disabled={sending || !subscribers}>
+          {sending ? "Sending…" : "Send test alert"}
+        </Button>
+      </div>
+      {message && <p className="mt-2 text-sm text-foreground">{message}</p>}
     </Card>
   );
 }
