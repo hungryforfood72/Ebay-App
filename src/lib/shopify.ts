@@ -236,6 +236,8 @@ export type NewShopifyProduct = {
   tags: string[];
   photoUrls: string[];
   price: number;
+  // Struck-through "was" price, or null for none.
+  compareAtPrice?: number | null;
   sku: string;
   barcode: string | null;
   weightLbs: number | null;
@@ -269,6 +271,7 @@ export async function createProduct(p: NewShopifyProduct): Promise<ShopifyProduc
           {
             optionValues: [{ optionName: "Title", name: "Default Title" }],
             price: p.price.toFixed(2),
+            ...(p.compareAtPrice ? { compareAtPrice: p.compareAtPrice.toFixed(2) } : {}),
             sku: p.sku,
             ...(p.barcode ? { barcodes: [{ value: p.barcode }] } : {}),
             inventoryPolicy: "DENY",

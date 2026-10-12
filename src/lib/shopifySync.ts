@@ -113,17 +113,22 @@ function shopifyTarget(item: LiveFields & Pick<Item, "quantity" | "soldQuantity"
 
 // Everything live on eBay and not on Shopify yet, plus Shopify-only items
 // whose publish from review didn't finish (retried; a "ready" one is only
-// ever published by its own Publish button). Local-pickup-only items stay
-// off: a Shopify buyer would be charged shipping on something that can't
-// ship.
+// ever published by its own Publish button), plus past-date items that
+// were never on Shopify (brought back after being pulled; they go up
+// straight onto the past-date page). Local-pickup-only items stay off: a
+// Shopify buyer would be charged shipping on something that can't ship.
 function waitingForShopifyWhere(): Prisma.ItemWhereInput {
   return {
     status: { in: ["listed", "exported"] },
     OR: [
-      { ebayEnvironment: getEbayEnvironment(), OR: [{ ebayOfferId: { not: null } }, { ebayListingId: { not: null } }] },
-      { shopifyOnly: true },
+      {
+        ebayEnvironment: getEbayEnvironment(),
+        listingEndedAt: null,
+        OR: [{ ebayOfferId: { not: null } }, { ebayListingId: { not: null } }],
+      },
+      { shopifyOnly: true, listingEndedAt: null },
+      { pastDateAt: { not: null } },
     ],
-    listingEndedAt: null,
     expiredAt: null,
     shopifyPublishedAt: null,
     shopifyArchivedAt: null,
@@ -277,7 +282,7 @@ export async function publishItemToShopify(itemId: string, options?: { fromRevie
     // right ones (see getLiveAvailableQuantity). Once Shopify sells from
     // the same stock, this app's count has to agree with eBay's, so line it
     // up here, on the record.
-    if (!item.ebayOfferId && item.ebayListingId) {
+    if (!item.ebayOfferId && item.ebayListingId && !item.listingEndedAt) {
       const live = await getLiveAvailableQuantity(item);
       if (live != null && live !== available) {
         await prisma.$transaction([
@@ -306,6 +311,16 @@ export async function publishItemToShopify(itemId: string, options?: { fromRevie
     const specifics = (item.itemSpecifics ?? {}) as Record<string, string>;
     const handle = shopifyHandle(item);
     const weightLbs = (item.weightLbs ?? 0) + (item.weightOz ?? 0) / 16;
+    // A past-date item goes up already in its past-date state: price,
+    // disclosure, tags and Online Store only, never a moment at full price
+    // or on Whatnot.
+    const pastDate = Boolean(item.pastDateAt);
+    const prices = expectedPrices(item, discountPct);
+    const tags = item.condition ? [`Condition: ${CONDITION_LABEL[item.condition] ?? item.condition}`] : [];
+    if (pastDate) {
+      tags.push(PAST_DATE_TAG);
+      if (item.expirationDate) tags.push(`Best by: ${formatExpiration(item.expirationDate)}`);
+    }
 
     // Already made on an earlier try that failed before publishing: reuse
     // it, even if the title (and so the handle) changed since.
@@ -319,12 +334,13 @@ export async function publishItemToShopify(itemId: string, options?: { fromRevie
       (await createProduct({
         handle,
         title: item.finalTitle!,
-        descriptionHtml: shopifyDescription(item),
+        descriptionHtml: pastDate ? pastDateDisclosure(item) + shopifyDescription(item) : shopifyDescription(item),
         vendor: specifics.brand?.trim() || null,
         productType: category?.name ?? null,
-        tags: item.condition ? [`Condition: ${CONDITION_LABEL[item.condition] ?? item.condition}`] : [],
+        tags,
         photoUrls: item.photoUrls,
-        price: shopifyPriceFor(Number(item.price), discountPct),
+        price: prices.price,
+        compareAtPrice: prices.compareAt,
         sku: item.sku,
         barcode: item.upc,
         weightLbs: weightLbs > 0 ? weightLbs : null,
@@ -341,14 +357,25 @@ export async function publishItemToShopify(itemId: string, options?: { fromRevie
     });
 
     const publications = await getPublications();
-    const blockedOnWhatnot = WHATNOT_BLOCKED_CATEGORY.test(category?.path ?? "");
-    await publishToChannels(
-      refs.productId,
-      publications.filter((p) => !(blockedOnWhatnot && isWhatnotChannel(p.name))).map((p) => p.id)
-    );
+    let channels: { id: string; name: string }[];
+    if (pastDate) {
+      const onlineStore = publications.find((p) => /^online store$/i.test(p.name));
+      if (!onlineStore) throw new Error("No Online Store channel found to put the past-date item on.");
+      await ensureTagCollection({ ...PAST_DATE_COLLECTION, tag: PAST_DATE_TAG, publicationIds: [onlineStore.id] });
+      channels = [onlineStore];
+    } else {
+      const blockedOnWhatnot = WHATNOT_BLOCKED_CATEGORY.test(category?.path ?? "");
+      channels = publications.filter((p) => !(blockedOnWhatnot && isWhatnotChannel(p.name)));
+    }
+    await publishToChannels(refs.productId, channels.map((p) => p.id));
     await prisma.item.update({
       where: { id: item.id },
-      data: { shopifyPublishedAt: new Date(), shopifyError: null, ...(item.shopifyOnly ? { status: "listed" } : {}) },
+      data: {
+        shopifyPublishedAt: new Date(),
+        shopifyError: null,
+        ...(pastDate ? { shopifyPastDateAppliedAt: new Date() } : {}),
+        ...(item.shopifyOnly ? { status: "listed" } : {}),
+      },
     });
     return "published";
   } catch (e) {
