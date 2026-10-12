@@ -10,6 +10,7 @@ import { prisma } from "./prisma";
 import {
   addTags,
   archiveProduct,
+  removeTags,
   createProduct,
   ensureTagCollection,
   findProductByHandle,
@@ -70,18 +71,70 @@ export function shopifyPriceFor(ebayPrice: number, discountPct: number): number 
   return Math.round(ebayPrice * (1 - discountPct / 100) * 100) / 100;
 }
 
-// Cristian: short-dated and past-date items go 65% off their original
-// price (before any eBay discount), with the regular store price shown
-// struck through, so the "65% off" is against what it actually sold for.
+// Cristian: short-dated and past-date items go 65% off the regular store
+// price (the original eBay price, from before any eBay discount, less the
+// store discount).
 const PAST_DATE_OFF_PCT = 65;
+
+// The crossed-out price is the item's retail price when there's a
+// believable one (see believableRetail), labeled "Retail" by the theme
+// through RETAIL_TAG. Without one: past-date items show the regular store
+// price crossed out, regular items show none.
+export const RETAIL_TAG = "retail-compare";
+// Supplier manifests sometimes carry inflated "retail" values (a box of
+// Nexcare DUO bandages at $21, really ~$6). Showing one of those as the
+// struck-through price would be a fake discount, so retail only counts
+// when it's at most this many times the original eBay price, which is
+// what the item actually goes for.
+const MAX_RETAIL_TO_EBAY = 3;
+
+type ExpectedPrices = { price: number; compareAt: number | null; retailCompare: boolean };
 
 function expectedPrices(
   item: Pick<Item, "price" | "originalPrice" | "pastDateAt">,
-  discountPct: number
-): { price: number; compareAt: number | null } {
-  if (!item.pastDateAt) return { price: shopifyPriceFor(Number(item.price ?? 0), discountPct), compareAt: null };
-  const regular = shopifyPriceFor(Number(item.originalPrice ?? item.price ?? 0), discountPct);
-  return { price: Math.max(0.5, Math.round(regular * (1 - PAST_DATE_OFF_PCT / 100) * 100) / 100), compareAt: regular };
+  discountPct: number,
+  retail: number | null
+): ExpectedPrices {
+  const original = Number(item.originalPrice ?? item.price ?? 0);
+  const regular = shopifyPriceFor(original, discountPct);
+  const price = item.pastDateAt
+    ? Math.max(0.5, Math.round(regular * (1 - PAST_DATE_OFF_PCT / 100) * 100) / 100)
+    : shopifyPriceFor(Number(item.price ?? 0), discountPct);
+  const goodRetail = believableRetail(retail, price, original);
+  if (goodRetail != null) return { price, compareAt: goodRetail, retailCompare: true };
+  return { price, compareAt: item.pastDateAt ? regular : null, retailCompare: false };
+}
+
+// Retail worth showing: on record, at least 5% above what it sells for
+// here (several items sell above manifest retail, since the eBay price
+// includes shipping), and not wildly above the original eBay price.
+function believableRetail(retail: number | null, price: number, ebayOriginal: number): number | null {
+  if (retail == null || retail <= 0) return null;
+  if (retail < price * 1.05) return null;
+  if (ebayOriginal > 0 && retail > ebayOriginal * MAX_RETAIL_TO_EBAY) return null;
+  return Math.round(retail * 100) / 100;
+}
+
+// Retail for each item's whole listing (a 3-pack is 3x the unit retail),
+// from its manifest line. Bundles and items scanned outside a manifest
+// have none.
+async function retailPrices(
+  items: Pick<Item, "id" | "manifestId" | "upc" | "isMultipack" | "packSize" | "isBundle">[]
+): Promise<Map<string, number>> {
+  const wanted = items.filter((i) => i.manifestId && i.upc && !i.isBundle);
+  const result = new Map<string, number>();
+  if (wanted.length === 0) return result;
+  const lines = await prisma.manifestLine.findMany({
+    where: { OR: wanted.map((i) => ({ manifestId: i.manifestId!, upc: i.upc! })) },
+    select: { manifestId: true, upc: true, retailPrice: true },
+  });
+  for (const i of wanted) {
+    const line = lines.find((l) => l.manifestId === i.manifestId && l.upc === i.upc && Number(l.retailPrice) > 0);
+    if (!line) continue;
+    const pack = i.isMultipack && i.packSize ? i.packSize : 1;
+    result.set(i.id, Number(line.retailPrice) * pack);
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -181,14 +234,14 @@ const PAST_DATE_COLLECTION = {
   title: "Past-Date & Short-Dated Deals",
   templateSuffix: "past-date",
   descriptionHtml:
-    "<p>Close to or past the date printed on the package, so they're 65% off. Every item shows its date. Check it before you buy.</p>",
+    "<p>Close to or past the date printed on the package, so they're an extra 65% off our regular prices. Every item shows its date. Check it before you buy.</p>",
 };
 
 function pastDateDisclosure(item: Item): string {
   const date = item.expirationDate ? formatExpiration(item.expirationDate) : null;
   return (
     `<p><strong>Short-dated or past its date${date ? `: ${date}` : ""}.</strong> ` +
-    `This item is 65% off because it's close to or past the date printed on the package. ` +
+    `It's marked down an extra 65% from our regular price because it's close to or past the date printed on the package. ` +
     `Please check the date before you buy.</p>`
   );
 }
@@ -315,8 +368,9 @@ export async function publishItemToShopify(itemId: string, options?: { fromRevie
     // disclosure, tags and Online Store only, never a moment at full price
     // or on Whatnot.
     const pastDate = Boolean(item.pastDateAt);
-    const prices = expectedPrices(item, discountPct);
+    const prices = expectedPrices(item, discountPct, (await retailPrices([item])).get(item.id) ?? null);
     const tags = item.condition ? [`Condition: ${CONDITION_LABEL[item.condition] ?? item.condition}`] : [];
+    if (prices.retailCompare) tags.push(RETAIL_TAG);
     if (pastDate) {
       tags.push(PAST_DATE_TAG);
       if (item.expirationDate) tags.push(`Best by: ${formatExpiration(item.expirationDate)}`);
@@ -712,6 +766,7 @@ export async function runShopifySync(scope: ShopifySyncScope): Promise<ShopifySy
       : new Map<string, ShopifyStockState>();
     const discountPct = await getShopifyDiscountPct();
     const paths = await categoryPaths(items.map((i) => i.categoryId));
+    const retail = await retailPrices(items);
 
     for (const item of items) {
       const invId = item.shopifyInventoryItemId!;
@@ -757,7 +812,10 @@ export async function runShopifySync(scope: ShopifySyncScope): Promise<ShopifySy
           await unpublishFromChannels(item.shopifyProductId!, [whatnot.id]);
           result.offWhatnot++;
         }
-        const want = expectedPrices(item, discountPct);
+        const want = expectedPrices(item, discountPct, retail.get(item.id) ?? null);
+        const hasRetailTag = stock.tags.includes(RETAIL_TAG);
+        if (want.retailCompare && !hasRetailTag) await addTags(item.shopifyProductId!, [RETAIL_TAG]);
+        if (!want.retailCompare && hasRetailTag) await removeTags(item.shopifyProductId!, [RETAIL_TAG]);
         const priceOff = stock.price != null && Math.abs(stock.price - want.price) >= 0.005;
         const compareOff =
           want.compareAt == null ? stock.compareAtPrice != null : stock.compareAtPrice == null || Math.abs(stock.compareAtPrice - want.compareAt) >= 0.005;

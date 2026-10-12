@@ -344,6 +344,14 @@ export async function addTags(productId: string, tags: string[]): Promise<void> 
   throwOnUserErrors("Couldn't tag the Shopify product", data.tagsAdd.userErrors);
 }
 
+export async function removeTags(productId: string, tags: string[]): Promise<void> {
+  const data = await shopifyGraphql<{ tagsRemove: { userErrors: UserError[] } }>(
+    `mutation($id: ID!, $tags: [String!]!) { tagsRemove(id: $id, tags: $tags) { userErrors { field message } } }`,
+    { id: productId, tags }
+  );
+  throwOnUserErrors("Couldn't untag the Shopify product", data.tagsRemove.userErrors);
+}
+
 export async function updateDescription(productId: string, descriptionHtml: string): Promise<void> {
   const data = await shopifyGraphql<{ productUpdate: { userErrors: UserError[] } }>(
     `mutation($product: ProductUpdateInput!) { productUpdate(product: $product) { userErrors { field message } } }`,
@@ -409,6 +417,7 @@ export type ShopifyStockState = {
   price: number | null;
   compareAtPrice: number | null;
   productStatus: string | null;
+  tags: string[];
   // Whether it's on the channel passed as checkPublicationId (null when
   // none was passed).
   onCheckedChannel: boolean | null;
@@ -434,7 +443,7 @@ export async function readStock(
         variant: {
           price: string;
           compareAtPrice: string | null;
-          product: { status: string; publishedOnPublication?: boolean };
+          product: { status: string; tags: string[]; publishedOnPublication?: boolean };
         } | null;
       } | null)[];
     }>(
@@ -443,7 +452,7 @@ export async function readStock(
           ... on InventoryItem {
             id
             inventoryLevel(locationId: $locationId) { quantities(names: ["available"]) { name quantity } }
-            variant { price compareAtPrice product { status ${channelField} } }
+            variant { price compareAtPrice product { status tags ${channelField} } }
           }
         }
       }`,
@@ -456,6 +465,7 @@ export async function readStock(
         price: node.variant ? Number(node.variant.price) : null,
         compareAtPrice: node.variant?.compareAtPrice != null ? Number(node.variant.compareAtPrice) : null,
         productStatus: node.variant?.product.status ?? null,
+        tags: node.variant?.product.tags ?? [],
         onCheckedChannel: node.variant?.product.publishedOnPublication ?? null,
       });
     }
