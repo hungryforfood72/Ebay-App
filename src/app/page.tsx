@@ -451,7 +451,12 @@ type SalesSummary = {
   revenueByChannel?: Record<string, number>;
 };
 
-const CHANNEL_LABEL: Record<string, string> = { ebay: "eBay", shopify: "Shopify", whatnot: "Whatnot" };
+const CHANNEL_LABEL: Record<string, string> = {
+  ebay: "eBay",
+  shopify: "Shopify",
+  whatnot: "Whatnot",
+  in_person: "In person",
+};
 
 type SalesPreset = "mtd" | "last-month" | "last-30" | "qtd" | "ytd" | "last-year" | "all" | "custom";
 
@@ -641,7 +646,8 @@ function SalesSection({ isOwner, refreshKey }: { isOwner: boolean; refreshKey: n
         <p className="mt-2 text-xs text-muted-foreground">
           Only counts items scanned and listed through this app. Profit uses manifest COGS where available, $0 for
           anything with no manifest. Whatnot fees are estimated from Whatnot&apos;s published rates (Whatnot doesn&apos;t
-          share the real ones with Shopify), and Shopify sales have no shipping cost since the buyer pays for the label.
+          share the real ones with Shopify), and Shopify sales have no shipping cost since the buyer pays for the label. In-person shelf and walk-up
+          sales have no fees or shipping.
         </p>
       )}
     </section>

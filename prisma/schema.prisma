@@ -277,6 +277,7 @@ model Item {
   shopifyPastDateAppliedAt DateTime?
 
   shopifySales ShopifySale[]
+  inPersonSales InPersonSale[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -959,6 +960,28 @@ model ManifestWalkupSale {
 // the change, not just an audit note. recordedBy is free-text for now
 // (matches ManifestDudEntry/ManifestDamagedEntry's existing convention) —
 // ready to become a real user reference once accounts exist.
+// An in-person sale (cash, off the shelf or walk-up) of an already-listed
+// Item, written by recordItemSale in walkupSale.ts. Its own row so the
+// dashboard's sales/profit can count it next to eBay and Shopify sales: no
+// fees, no shipping. A sale straight off a manifest that was never scanned
+// in is a ManifestWalkupSale instead, and the dashboard counts those too.
+model InPersonSale {
+  id                String   @id @default(uuid())
+  item              Item     @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  itemId            String
+  quantity          Int
+  pricePerUnit      Decimal  @db.Decimal(10, 2)
+  revenue           Decimal  @db.Decimal(10, 2)
+  recordedBy        String?
+  // The stock adjustment logged with the sale. Unique so a backfill from
+  // the adjustment log can never record the same sale twice.
+  stockAdjustmentId String?  @unique
+  soldAt            DateTime @default(now())
+
+  @@index([itemId])
+  @@index([soldAt])
+}
+
 model StockAdjustment {
   id                String   @id @default(uuid())
   item              Item     @relation(fields: [itemId], references: [id], onDelete: Cascade)

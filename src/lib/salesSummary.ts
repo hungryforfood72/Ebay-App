@@ -13,14 +13,15 @@ export type SalesSummary = {
   revenueByChannel: Record<string, number>;
 };
 
-// Sales, refunds and profit for app-tracked eBay, Shopify and Whatnot sales
-// in [from, to) —
+// Sales, refunds and profit for app-tracked eBay, Shopify, Whatnot and
+// in-person (shelf/walk-up, cash) sales in [from, to) —
 // either bound null for open-ended. Sales are scoped by when they sold,
 // refunds by when the refund itself posted (not the original sale date): a
 // September refund on an August sale belongs in September's numbers.
 // EbayItemRefund can only exist attached to an EbayItemSale, so both are
 // automatically scoped to app-tracked listings only. Shopify sales carry
-// no shipping cost: the buyer pays for the label there.
+// no shipping cost: the buyer pays for the label there. In-person sales
+// carry no fees and no shipping.
 export async function salesSummary(from: Date | null, to: Date | null): Promise<SalesSummary> {
   const range = from || to ? { ...(from ? { gte: from } : {}), ...(to ? { lt: to } : {}) } : undefined;
 
@@ -32,7 +33,7 @@ export async function salesSummary(from: Date | null, to: Date | null): Promise<
     isBundle: true,
     bundleComponents: true,
   } as const;
-  const [sales, refunds, shopifySales, shopifyRefunds] = await Promise.all([
+  const [sales, refunds, shopifySales, shopifyRefunds, inPersonSales, manifestWalkups] = await Promise.all([
     // Full rows, not an aggregate — computing profit needs each sale's item
     // (for manifestId/upc/multipack) to look up COGS, which a plain _sum
     // can't give us.
@@ -55,11 +56,29 @@ export async function salesSummary(from: Date | null, to: Date | null): Promise<
       select: { quantity: true, revenue: true, fees: true, channel: true, item: { select: itemSelect } },
     }),
     prisma.shopifyRefund.findMany({ where: { refundedAt: range }, select: { amount: true } }),
+    prisma.inPersonSale.findMany({
+      where: { soldAt: range },
+      select: { quantity: true, revenue: true, item: { select: itemSelect } },
+    }),
+    // Sold straight off a manifest without ever being scanned in, so there's
+    // no Item: costed as one plain unit of that manifest's UPC.
+    prisma.manifestWalkupSale.findMany({
+      where: { createdAt: range },
+      select: { manifestId: true, upc: true, quantity: true, pricePerUnit: true },
+    }),
   ]);
+  const inPerson = [
+    ...inPersonSales,
+    ...manifestWalkups.map((w) => ({
+      quantity: w.quantity,
+      revenue: Number(w.pricePerUnit) * w.quantity,
+      item: { manifestId: w.manifestId, upc: w.upc, isMultipack: false, packSize: null, isBundle: false, bundleComponents: null },
+    })),
+  ].map((s) => ({ ...s, fees: 0, channel: "in_person" }));
 
   // COGS is manifest-derived, $0 for anything with no manifest at all
   // (items scanned outside manifest mode, per Cristian's instruction).
-  const cogsMaps = await cogsMapsFor([...sales, ...shopifySales].map((s) => s.item.manifestId));
+  const cogsMaps = await cogsMapsFor([...sales, ...shopifySales, ...inPerson].map((s) => s.item.manifestId));
 
   let units = 0;
   let revenue = 0;
@@ -67,7 +86,7 @@ export async function salesSummary(from: Date | null, to: Date | null): Promise<
   let shipping = 0;
   let cogs = 0;
   const revenueByChannel: Record<string, number> = {};
-  for (const sale of [...sales.map((s) => ({ ...s, channel: "ebay" })), ...shopifySales]) {
+  for (const sale of [...sales.map((s) => ({ ...s, channel: "ebay" })), ...shopifySales, ...inPerson]) {
     units += sale.quantity;
     revenue += Number(sale.revenue);
     fees += Number(sale.fees);

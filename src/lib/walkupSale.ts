@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { EbayApiError, getLiveAvailableQuantity, reviseFixedPriceItemQuantity, updateOfferQuantity } from "./ebay";
 import { prisma } from "./prisma";
 import { queueShopifySync } from "./shopifySync";
@@ -141,6 +142,7 @@ export async function recordItemSale(
       await reviseFixedPriceItemQuantity(item.ebayListingId, newAvailable);
     }
     // Shopify & Whatnot only: no eBay listing; Shopify follows below.
+    const adjustmentId = randomUUID();
     const [updatedItem, adjustment] = await prisma.$transaction([
       prisma.item.update({
         where: { id: item.id },
@@ -152,12 +154,24 @@ export async function recordItemSale(
       }),
       prisma.stockAdjustment.create({
         data: {
+          id: adjustmentId,
           itemId: item.id,
           delta: -input.quantity,
           previousAvailable: currentAvailable,
           newAvailable,
           note: input.note,
           recordedBy: input.recordedBy,
+        },
+      }),
+      // What the dashboard's sales/profit count (see salesSummary.ts).
+      prisma.inPersonSale.create({
+        data: {
+          itemId: item.id,
+          quantity: input.quantity,
+          pricePerUnit: input.pricePerUnit,
+          revenue: input.quantity * input.pricePerUnit,
+          recordedBy: input.recordedBy,
+          stockAdjustmentId: adjustmentId,
         },
       }),
     ]);
