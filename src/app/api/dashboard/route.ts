@@ -61,6 +61,7 @@ export async function GET(request: Request) {
         ebayPromoteError: true,
         ebayMarkdownId: true,
         markdownPercentOff: true,
+        markdownStartedAt: true,
         markdownEndsAt: true,
         ebayMarkdownError: true,
       },

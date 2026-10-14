@@ -30,6 +30,7 @@ type ExpiringListedItem = {
   ebayPromoteError: string | null;
   ebayMarkdownId: string | null;
   markdownPercentOff: number | null;
+  markdownStartedAt: string | null;
   markdownEndsAt: string | null;
   ebayMarkdownError: string | null;
   livePrice: number | null;
@@ -89,6 +90,10 @@ type DashboardData = {
 
 function shortScopeName(scope: string): string {
   return scope.split("/").pop() ?? scope;
+}
+
+function isFuture(dateStr: string | null): boolean {
+  return dateStr != null && new Date(dateStr).getTime() > Date.now();
 }
 
 function daysUntil(dateStr: string): number {
@@ -672,13 +677,25 @@ function ExpiringItemCard({
   const [discountValue, setDiscountValue] = useState("");
   const [bidPercentage, setBidPercentage] = useState("");
   const [markdownPercent, setMarkdownPercent] = useState("");
-  const [acting, setActing] = useState<"discount" | "promote" | "bid" | "stop" | "markdown" | "stop-markdown" | null>(
+  const [acting, setActing] = useState<"discount" | "promote" | "bid" | "stop" | "markdown" | "update-markdown" | "stop-markdown" | null>(
     null
   );
   const [error, setError] = useState<string | null>(null);
   // Set by the sync when eBay skipped the listing (MARKDOWN_SKIPPED_PREFIX
   // in src/lib/markdownCheck.ts, not imported since that file uses Prisma).
   const markdownSkipped = item.ebayMarkdownError?.startsWith("eBay didn't apply this sale:") ?? false;
+  // A sale started or updated while an older one wound down begins a few
+  // minutes out; until then buyers still see the regular price.
+  const markdownStartsLater = isFuture(item.markdownStartedAt);
+  // Re-render once it starts, so the badge flips without a page reload.
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!item.markdownStartedAt) return;
+    const wait = new Date(item.markdownStartedAt).getTime() - Date.now();
+    if (wait <= 0) return;
+    const timer = setTimeout(() => setTick((n) => n + 1), wait + 1000);
+    return () => clearTimeout(timer);
+  }, [item.markdownStartedAt]);
 
   const days = daysUntil(item.expirationDate);
   const urgent = days <= 7;
@@ -828,7 +845,50 @@ function ExpiringItemCard({
       onChange({
         ebayMarkdownId: result.ebayMarkdownId,
         markdownPercentOff: result.markdownPercentOff,
+        markdownStartedAt: result.markdownStartedAt,
         markdownEndsAt: result.markdownEndsAt,
+        ebayMarkdownError: null,
+      });
+      setMarkdownPercent("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setActing(null);
+    }
+  }
+
+  async function updateMarkdown() {
+    const value = Number(markdownPercent);
+    if (!value || value < 1 || value > 80) return;
+    if (
+      !confirm(
+        `Change the sale on "${item.finalTitle ?? item.sku}" from ${item.markdownPercentOff}% to ${value}% off? eBay needs the current sale fully over before a new one can start, so the listing shows its regular price for about 3 minutes in between.`
+      )
+    ) {
+      return;
+    }
+    setActing("update-markdown");
+    setError(null);
+    try {
+      const res = await fetch(`/api/items/${item.id}/markdown`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ percentOff: value }),
+      });
+      const result = await res.json();
+      if (!res.ok) {
+        // The old sale may already be ended even though the new one failed.
+        if (/^Ended the /.test(result.error ?? "")) {
+          onChange({ ebayMarkdownId: null, markdownPercentOff: null, markdownStartedAt: null, markdownEndsAt: null, ebayMarkdownError: result.error });
+        }
+        throw new Error(result.error ?? "Updating the sale event failed.");
+      }
+      onChange({
+        ebayMarkdownId: result.ebayMarkdownId,
+        markdownPercentOff: result.markdownPercentOff,
+        markdownStartedAt: result.markdownStartedAt,
+        markdownEndsAt: result.markdownEndsAt,
+        ebayMarkdownError: null,
       });
       setMarkdownPercent("");
     } catch (e) {
@@ -848,7 +908,7 @@ function ExpiringItemCard({
       const res = await fetch(`/api/items/${item.id}/markdown`, { method: "DELETE" });
       const result = await res.json();
       if (!res.ok) throw new Error(result.error ?? "Failed to end the sale event.");
-      onChange({ ebayMarkdownId: null, markdownPercentOff: null, markdownEndsAt: null });
+      onChange({ ebayMarkdownId: null, markdownPercentOff: null, markdownStartedAt: null, markdownEndsAt: null, ebayMarkdownError: null });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
@@ -996,6 +1056,11 @@ function ExpiringItemCard({
               item.ebayMarkdownId ? (
                 markdownSkipped ? (
                   <Badge tone="danger">{item.markdownPercentOff}% off, not on the listing</Badge>
+                ) : markdownStartsLater ? (
+                  <Badge tone="warning">
+                    {item.markdownPercentOff}% off starts{" "}
+                    {new Date(item.markdownStartedAt!).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                  </Badge>
                 ) : (
                   <Badge tone="purple">
                     {item.markdownPercentOff}% off
@@ -1006,9 +1071,32 @@ function ExpiringItemCard({
             }
           >
             {item.ebayMarkdownId ? (
-              <Button variant="danger-ghost" onClick={stopMarkdown} disabled={acting !== null}>
-                {acting === "stop-markdown" ? "Ending…" : "End sale event"}
-              </Button>
+              <div className="flex flex-col gap-2">
+                <div className="flex gap-2">
+                  <Input
+                    size="sm"
+                    type="number"
+                    min={1}
+                    max={80}
+                    value={markdownPercent}
+                    onChange={(e) => setMarkdownPercent(e.target.value)}
+                    placeholder="new %"
+                    aria-label="New sale percentage off"
+                    className="min-w-0"
+                  />
+                  <Button
+                    variant="outline"
+                    onClick={updateMarkdown}
+                    disabled={acting !== null || !markdownPercent}
+                    className="shrink-0"
+                  >
+                    {acting === "update-markdown" ? "Updating…" : "Update"}
+                  </Button>
+                </div>
+                <Button variant="danger-ghost" onClick={stopMarkdown} disabled={acting !== null}>
+                  {acting === "stop-markdown" ? "Ending…" : "End sale event"}
+                </Button>
+              </div>
             ) : (
               <div className="flex gap-2">
                 <Input
