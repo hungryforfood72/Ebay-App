@@ -119,7 +119,7 @@ function believableRetail(retail: number | null, price: number, ebayOriginal: nu
 // Retail for each item's whole listing (a 3-pack is 3x the unit retail),
 // from its manifest line. Bundles and items scanned outside a manifest
 // have none.
-async function retailPrices(
+export async function retailPrices(
   items: Pick<Item, "id" | "manifestId" | "upc" | "isMultipack" | "packSize" | "isBundle">[]
 ): Promise<Map<string, number>> {
   const wanted = items.filter((i) => i.manifestId && i.upc && !i.isBundle);

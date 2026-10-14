@@ -4,6 +4,7 @@ import type { OfferEconomics } from "./offerMath";
 import { prisma } from "./prisma";
 import { typicalSingleLabelCost } from "./shippingCost";
 import { estimateLabelCost, zoneForZip3 } from "./shippingZone";
+import { retailPrices } from "./shopifySync";
 import { getTargetMarginPct } from "./sourcingAgent";
 
 export type BuyerOfferRow = ReceivedBestOffer &
@@ -16,6 +17,11 @@ export type BuyerOfferRow = ReceivedBestOffer &
     zone: number | null;
     weightLbs: number | null;
     localPickupOnly: boolean;
+    // Manifest retail for one listing unit (a 3-pack is 3x the unit
+    // retail), the same number Shopify shows crossed out. Not checked for
+    // believability here, so it's labeled as the manifest's figure.
+    retailPrice: number | null;
+    packSize: number;
   };
 
 // Pending Best Offers buyers sent, kept to listings this app tracks (same
@@ -36,7 +42,7 @@ export async function pendingBuyerOffers(): Promise<{
     getTargetMarginPct(),
   ]);
   const byListing = new Map(items.map((i) => [i.ebayListingId!, i]));
-  const cogsMaps = await cogsMapsFor(items.map((i) => i.manifestId));
+  const [cogsMaps, retail] = await Promise.all([cogsMapsFor(items.map((i) => i.manifestId)), retailPrices(items)]);
 
   const offers: BuyerOfferRow[] = [];
   for (const o of pending) {
@@ -60,6 +66,8 @@ export async function pendingBuyerOffers(): Promise<{
       zone,
       weightLbs: weight,
       localPickupOnly: item.localPickupOnly,
+      retailPrice: retail.get(item.id) ?? null,
+      packSize: item.isMultipack && item.packSize ? item.packSize : 1,
     });
   }
   offers.sort((a, b) => a.expiresAt.localeCompare(b.expiresAt));

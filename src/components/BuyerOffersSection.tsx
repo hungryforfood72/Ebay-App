@@ -28,6 +28,13 @@ function timeLeft(iso: string): string {
   return hours > 0 ? `${hours}h left` : `${Math.max(1, Math.round(ms / 60_000))}m left`;
 }
 
+// "32% under retail" / "13% over retail", per unit against the manifest's
+// retail for one listing unit.
+function vsRetail(price: number, retail: number): string {
+  const pct = Math.round((price / retail - 1) * 100);
+  return pct === 0 ? "at retail" : pct < 0 ? `${-pct}% under retail` : `${pct}% over retail`;
+}
+
 // What this sale has to clear to be green: the target margin on cost, or
 // $1.50 a sale, whichever is higher. Same rule as the send-offers section.
 function targetProfit(o: BuyerOfferRow, quantity: number, targetMarginPct: number): number | null {
@@ -195,6 +202,17 @@ function OfferCard({ offer: o, targetMarginPct }: { offer: BuyerOfferRow; target
           {o.kind === "BuyerCounterOffer" && <Badge tone="purple">their counter</Badge>}
           <span>{timeLeft(o.expiresAt)}</span>
         </div>
+        <p className="text-sm text-muted-foreground">
+          {o.retailPrice != null ? (
+            <>
+              Retail <span className="font-medium text-foreground">{money(o.retailPrice)}</span>
+              {o.packSize > 1 && ` (${o.packSize} x ${money(o.retailPrice / o.packSize)})`} on the manifest. Offer is{" "}
+              {vsRetail(o.price, o.retailPrice)}, your list price is {vsRetail(o.listPrice, o.retailPrice)}.
+            </>
+          ) : (
+            "No retail price on the manifest for this one."
+          )}
+        </p>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
           <span>
             {o.buyer.userId}
@@ -272,6 +290,9 @@ function OfferCard({ offer: o, targetMarginPct }: { offer: BuyerOfferRow; target
               {state?.status === "sending" && state.action === "Counter" ? "Countering…" : "Counter"}
             </Button>
             {atCounter && <Badge tone={toneFor(atCounter.profit)}>{profitLabel(atCounter.profit)}</Badge>}
+            {atCounter && o.retailPrice != null && (
+              <span className="text-xs text-muted-foreground">{vsRetail(counterNum, o.retailPrice)}</span>
+            )}
             <div className="ml-auto flex gap-2">
               <Button size="sm" variant="danger-ghost" onClick={() => respond("Decline")} disabled={busy}>
                 {state?.status === "sending" && state.action === "Decline" ? "Declining…" : "Decline"}
