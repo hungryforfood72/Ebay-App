@@ -1,5 +1,6 @@
 "use client";
 
+import { BuyerOffersSection } from "@/components/BuyerOffersSection";
 import { SendOffersSection } from "@/components/SendOffersSection";
 import { Stat } from "@/components/Stat";
 import { Alert } from "@/components/ui/Alert";
@@ -239,6 +240,8 @@ export default function DashboardPage() {
         </section>
 
         <SalesSection isOwner={isOwner} refreshKey={salesRefresh} />
+
+        {isOwner && <BuyerOffersSection />}
 
         {isOwner && <SendOffersSection />}
 

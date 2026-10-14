@@ -20,7 +20,15 @@ export type OfferEconomics = {
 // so both always agree. Same fee estimate as the set-aside rule (packSize).
 export function offerOutcome(e: OfferEconomics, discountPercent: number) {
   const offerPrice = Math.round(e.listPrice * (1 - discountPercent / 100) * 100) / 100;
-  const fees = offerPrice * (FALLBACK_FEE_RATE + (e.promotedPercent ?? 0) / 100) + FALLBACK_FEE_FIXED;
-  const profit = offerPrice - fees - e.labelCost - (e.unitCost ?? 0);
-  return { offerPrice, profit };
+  return { offerPrice, profit: priceOutcome(e, offerPrice).profit };
+}
+
+// Same math at a set price per unit, for answering a buyer's Best Offer. A
+// multi-unit offer is one order: fees on the total, one label (labelCost
+// should already be for the combined weight), the item cost per unit.
+export function priceOutcome(e: OfferEconomics, unitPrice: number, quantity = 1) {
+  const total = unitPrice * quantity;
+  const fees = total * (FALLBACK_FEE_RATE + (e.promotedPercent ?? 0) / 100) + FALLBACK_FEE_FIXED;
+  const profit = total - fees - e.labelCost - (e.unitCost ?? 0) * quantity;
+  return { total, fees, profit };
 }

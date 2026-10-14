@@ -1573,6 +1573,129 @@ export async function getListingStatus(itemId: string): Promise<{ available: num
   return { available: Math.max(0, quantity - quantitySold), active: listingStatus === "Active" };
 }
 
+// Best Offers buyers sent us. Unlike sendOfferToInterestedBuyers (we offer,
+// Negotiation API), receiving and answering a buyer's offer only exists in
+// the Trading API. Confirmed live 2026-10-14: eBay gives the buyer's state
+// and a masked ZIP ("320**-****"), never the city or full address.
+export type ReceivedBestOffer = {
+  bestOfferId: string;
+  listingId: string;
+  listingTitle: string;
+  buyItNowPrice: number | null;
+  price: number;
+  quantity: number;
+  expiresAt: string;
+  // BuyerBestOffer (a first offer) or BuyerCounterOffer (answering our counter).
+  kind: string;
+  buyerMessage: string | null;
+  buyer: {
+    userId: string;
+    feedbackScore: number | null;
+    state: string | null;
+    country: string | null;
+    zip3: string | null;
+  };
+};
+
+function xmlDecode(value: string): string {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+    .replace(/&amp;/g, "&");
+}
+
+function xmlField(block: string, tag: string): string | null {
+  const m = block.match(new RegExp(`<${tag}(?: [^>]*)?>([\\s\\S]*?)</${tag}>`));
+  return m ? xmlDecode(m[1]) : null;
+}
+
+// Every pending offer on the account (all listings, not just the app's).
+export async function getPendingBestOffers(): Promise<ReceivedBestOffer[]> {
+  const offers: ReceivedBestOffer[] = [];
+  for (let page = 1; ; page++) {
+    const xml = await tradingApiFetch(
+      "GetBestOffers",
+      `<GetBestOffersRequest xmlns="urn:ebay:apis:eBLBaseComponents"><BestOfferStatus>Active</BestOfferStatus><DetailLevel>ReturnAll</DetailLevel><Pagination><EntriesPerPage>200</EntriesPerPage><PageNumber>${page}</PageNumber></Pagination></GetBestOffersRequest>`
+    );
+    // One <ItemBestOffers> per listing: its offers, then the <Item> they're on.
+    for (const group of xml.split("<ItemBestOffers>").slice(1)) {
+      const itemBlock = group.slice(group.indexOf("<Item>"));
+      const listingId = xmlField(itemBlock, "ItemID");
+      if (!listingId) continue;
+      const bin = xmlField(itemBlock, "BuyItNowPrice");
+      for (const block of group.split("<BestOffer>").slice(1)) {
+        const status = xmlField(block, "Status");
+        if (status !== "Pending") continue;
+        const zip = xmlField(block, "PostalCode")?.match(/^(\d{3})/)?.[1] ?? null;
+        const feedback = xmlField(block, "FeedbackScore");
+        offers.push({
+          bestOfferId: xmlField(block, "BestOfferID") ?? "",
+          listingId,
+          listingTitle: xmlField(itemBlock, "Title") ?? listingId,
+          buyItNowPrice: bin != null ? Number(bin) : null,
+          price: Number(xmlField(block, "Price")),
+          quantity: Number(xmlField(block, "Quantity") ?? 1),
+          expiresAt: xmlField(block, "ExpirationTime") ?? "",
+          kind: xmlField(block, "BestOfferCodeType") ?? "BuyerBestOffer",
+          buyerMessage: xmlField(block, "BuyerMessage")?.trim() || null,
+          buyer: {
+            userId: xmlField(block, "UserID") ?? "",
+            feedbackScore: feedback != null ? Number(feedback) : null,
+            state: xmlField(block, "StateOrProvince"),
+            country: xmlField(block, "CountryName"),
+            zip3: zip,
+          },
+        });
+      }
+    }
+    const totalPages = Number(xml.match(/<TotalNumberOfPages>(\d+)<\/TotalNumberOfPages>/)?.[1] ?? 1);
+    if (page >= totalPages) break;
+  }
+  return offers;
+}
+
+export const SELLER_RESPONSE_MAX = 250;
+
+export async function respondToBestOffer(input: {
+  listingId: string;
+  bestOfferId: string;
+  action: "Accept" | "Decline" | "Counter";
+  sellerResponse: string | null;
+  counterPrice?: number;
+  counterQuantity?: number;
+}): Promise<void> {
+  const counter =
+    input.action === "Counter"
+      ? `<CounterOfferPrice currencyID="USD">${input.counterPrice!.toFixed(2)}</CounterOfferPrice><CounterOfferQuantity>${input.counterQuantity ?? 1}</CounterOfferQuantity>`
+      : "";
+  // Confirmed live: eBay refuses a note with "<" in it (even escaped) as
+  // "characters ... not supported". &, >, quotes and emoji all go through.
+  const note = input.sellerResponse?.replace(/</g, "").trim().slice(0, SELLER_RESPONSE_MAX);
+  const response = note ? `<SellerResponse>${xmlEscape(note)}</SellerResponse>` : "";
+  let xml: string;
+  try {
+    xml = await tradingApiFetch(
+      "RespondToBestOffer",
+      `<RespondToBestOfferRequest xmlns="urn:ebay:apis:eBLBaseComponents"><Action>${input.action}</Action><BestOfferID>${xmlEscape(input.bestOfferId)}</BestOfferID><ItemID>${xmlEscape(input.listingId)}</ItemID>${response}${counter}</RespondToBestOfferRequest>`
+    );
+  } catch (e) {
+    // A withdrawn, expired or already-answered offer comes back as
+    // 'Best Offer &quot;{0}&quot; is invalid, or no longer in our database.'
+    if (e instanceof EbayApiError && /is invalid, or no longer in our database/.test(e.message)) {
+      throw new EbayApiError("That offer is gone. The buyer withdrew it, it expired, or it was already answered.", e.status, e.details);
+    }
+    throw e;
+  }
+  // Ack can be Success/Warning while the offer itself still failed.
+  if (/<CallStatus>Failure<\/CallStatus>/.test(xml)) {
+    const message = xml.match(/<LongMessage>(.*?)<\/LongMessage>/)?.[1];
+    throw new EbayApiError(message ? xmlDecode(message) : "eBay didn't take that response.", 200, xml);
+  }
+}
+
 export function listingUrl(environment: string, listingId: string): string {
   return environment === "production"
     ? `https://www.ebay.com/itm/${listingId}`
