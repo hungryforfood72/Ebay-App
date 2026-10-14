@@ -1268,30 +1268,49 @@ export async function createAdByListingId(listingId: string, bidPercentage: numb
 // app's integration existed (created directly in Seller Hub, or from an
 // earlier manual campaign) — createAdByListingId 403s "already exists" for
 // those. This looks the existing ad up so the promote route can self-heal
-// by linking it instead of just failing.
-export async function findAdByListingId(listingId: string): Promise<{ adId: string; bidPercentage: number } | null> {
-  const campaignId = getAdCampaignId();
-  const result = (await ebayFetch(
-    `/sell/marketing/v1/ad_campaign/${encodeURIComponent(campaignId)}/ad?listing_ids=${encodeURIComponent(listingId)}`
-  )) as { ads?: { adId: string; listingId: string; bidPercentage?: string }[] };
-  const ad = result.ads?.find((a) => a.listingId === listingId);
-  return ad ? { adId: ad.adId, bidPercentage: Number(ad.bidPercentage ?? 0) } : null;
+// by linking it instead of just failing. Confirmed live 2026-10-14: the ad
+// can be in one of Cristian's older campaigns (Hershey's 227466625595 was
+// at 10% in "Campaign 02/18/2026"), so every cost-per-sale campaign is
+// checked, the app's own first. Cost-per-click campaigns have no per-ad
+// bid, so they're skipped. campaignId is null for the app's own campaign.
+export async function findAdByListingId(
+  listingId: string
+): Promise<{ adId: string; bidPercentage: number; campaignId: string | null } | null> {
+  const appCampaignId = getAdCampaignId();
+  const others = (await getAdCampaigns()) as { campaignId: string; campaignStatus: string; fundingStrategy?: { fundingModel?: string } }[];
+  const campaignIds = [
+    appCampaignId,
+    ...others
+      .filter((c) => c.campaignId !== appCampaignId && c.fundingStrategy?.fundingModel !== "COST_PER_CLICK")
+      .map((c) => c.campaignId),
+  ];
+  for (const campaignId of campaignIds) {
+    const result = (await ebayFetch(
+      `/sell/marketing/v1/ad_campaign/${encodeURIComponent(campaignId)}/ad?listing_ids=${encodeURIComponent(listingId)}`
+    )) as { ads?: { adId: string; listingId: string; bidPercentage?: string }[] };
+    const ad = result.ads?.find((a) => a.listingId === listingId);
+    if (ad) {
+      return { adId: ad.adId, bidPercentage: Number(ad.bidPercentage ?? 0), campaignId: campaignId === appCampaignId ? null : campaignId };
+    }
+  }
+  return null;
 }
 
 // Path is /update_bid, not just /bid — confirmed live (the latter 404s).
-export async function updateAdBid(adId: string, bidPercentage: number): Promise<void> {
-  const campaignId = getAdCampaignId();
+// campaignId null = the app's own campaign.
+export async function updateAdBid(adId: string, bidPercentage: number, campaignId?: string | null): Promise<void> {
+  const campaign = campaignId ?? getAdCampaignId();
   await ebayFetch(
-    `/sell/marketing/v1/ad_campaign/${encodeURIComponent(campaignId)}/ad/${encodeURIComponent(adId)}/update_bid`,
+    `/sell/marketing/v1/ad_campaign/${encodeURIComponent(campaign)}/ad/${encodeURIComponent(adId)}/update_bid`,
     { method: "POST", body: JSON.stringify({ bidPercentage: String(bidPercentage) }) }
   );
 }
 
 // Stops promoting an item (removes it from the campaign) — the listing
 // itself stays live, only the ad is deleted.
-export async function deleteAd(adId: string): Promise<void> {
-  const campaignId = getAdCampaignId();
-  await ebayFetch(`/sell/marketing/v1/ad_campaign/${encodeURIComponent(campaignId)}/ad/${encodeURIComponent(adId)}`, {
+export async function deleteAd(adId: string, campaignId?: string | null): Promise<void> {
+  const campaign = campaignId ?? getAdCampaignId();
+  await ebayFetch(`/sell/marketing/v1/ad_campaign/${encodeURIComponent(campaign)}/ad/${encodeURIComponent(adId)}`, {
     method: "DELETE",
   });
 }
@@ -1330,10 +1349,14 @@ export async function createMarkdownPromotion(
   percentOff: number,
   endDate: Date,
   description: string,
-  promotionImageUrl: string
+  promotionImageUrl: string,
+  // When an earlier sale on the listing is still winding down (see
+  // findMarkdownOnListing), start after it instead of overlapping it.
+  startAfter?: Date
 ): Promise<MarkdownPromotion> {
   const [token, config] = await Promise.all([getValidAccessToken(), Promise.resolve(getEbayConfig())]);
-  const startDate = new Date(Date.now() + 60 * 1000); // eBay rejects a startDate that's already in the past by the time it processes the request
+  const soonest = Date.now() + 60 * 1000; // eBay rejects a startDate that's already in the past by the time it processes the request
+  const startDate = new Date(Math.max(soonest, (startAfter?.getTime() ?? 0) + 60 * 1000));
   const body = {
     name: `Sale event — ${percentOff}% off`,
     description,
@@ -1372,6 +1395,53 @@ export async function createMarkdownPromotion(
     throw new Error("eBay didn't return a promotion id (no Location header) when creating the sale event.");
   }
   return { promotionId, percentOff, startDate: startDate.toISOString(), endDate: endDate.toISOString() };
+}
+
+// A sale eBay counts as live on this listing (RUNNING or SCHEDULED), if
+// any. Confirmed live 2026-10-14: a new sale that starts before the old
+// one's end date gets the listing SKIPPED ("We can't discount items that
+// are already marked down."), even when eBay already reset the old price.
+// stopMarkdownPromotion ends a running sale 2 minutes out, so ending one
+// and starting another right away always overlapped.
+export async function findMarkdownOnListing(
+  listingId: string
+): Promise<{ promotionId: string; name: string; endDate: Date } | null> {
+  for (const status of ["RUNNING", "SCHEDULED"]) {
+    const result = (await ebayFetch(
+      `/sell/marketing/v1/promotion?marketplace_id=EBAY_US&promotion_type=MARKDOWN_SALE&promotion_status=${status}&limit=200`
+    )) as { promotions?: { promotionId: string; name: string; endDate: string }[] };
+    for (const p of result.promotions ?? []) {
+      const set = (await ebayFetch(
+        `/sell/marketing/v1/promotion/${encodeURIComponent(p.promotionId)}/get_listing_set?limit=200`
+      )) as { listings?: { listingId: string }[] };
+      if (set.listings?.some((l) => l.listingId === listingId)) {
+        return { promotionId: p.promotionId, name: p.name, endDate: new Date(p.endDate) };
+      }
+    }
+  }
+  return null;
+}
+
+// What eBay actually did with a listing in a sale, newest first: MARKED_DOWN
+// (the sale price is live), MARKED_UP (reset after it ended) or SKIPPED,
+// with eBay's reason. The promotion itself still reads RUNNING when its only
+// listing was skipped, so this is the only way to tell. null = eBay hasn't
+// processed it yet (it took ~30s live).
+export async function getMarkdownListingStatus(
+  promotionId: string,
+  listingId: string
+): Promise<{ status: string; message: string | null } | null> {
+  const set = (await ebayFetch(
+    `/sell/marketing/v1/promotion/${encodeURIComponent(promotionId)}/get_listing_set?limit=200`
+  )) as {
+    listings?: {
+      listingId: string;
+      listingPromotionStatuses?: { statusChangedDate: string; listingMarkdownStatus: string; statusMessage?: string }[];
+    }[];
+  };
+  const statuses = set.listings?.find((l) => l.listingId === listingId)?.listingPromotionStatuses ?? [];
+  const latest = [...statuses].sort((a, b) => b.statusChangedDate.localeCompare(a.statusChangedDate))[0];
+  return latest ? { status: latest.listingMarkdownStatus, message: latest.statusMessage ?? null } : null;
 }
 
 // Stops a sale event early; the listing itself stays live. eBay refuses to
@@ -1655,6 +1725,45 @@ export async function getPendingBestOffers(): Promise<ReceivedBestOffer[]> {
     if (page >= totalPages) break;
   }
   return offers;
+}
+
+// One step in the back-and-forth on a listing. Confirmed live 2026-10-14:
+// eBay keeps every offer on a listing (BestOfferStatus All), our counters
+// included as BestOfferCodeType "SellerCounterOffer" with our note in
+// SellerMessage. Status is what happened to that step: on a buyer's offer,
+// "Countered"/"Declined" is what we did; on our counter, it's what the
+// buyer did. There's no created time (ExpirationTime moves when an offer is
+// answered), but BestOfferIDs only go up, so they give the order.
+export type BestOfferStep = {
+  bestOfferId: string;
+  userId: string;
+  price: number;
+  quantity: number;
+  status: string;
+  kind: string;
+  buyerMessage: string | null;
+  sellerMessage: string | null;
+};
+
+export async function getBestOfferHistory(listingId: string): Promise<BestOfferStep[]> {
+  const xml = await tradingApiFetch(
+    "GetBestOffers",
+    `<GetBestOffersRequest xmlns="urn:ebay:apis:eBLBaseComponents"><ItemID>${xmlEscape(listingId)}</ItemID><BestOfferStatus>All</BestOfferStatus><DetailLevel>ReturnAll</DetailLevel></GetBestOffersRequest>`
+  );
+  return xml
+    .split("<BestOffer>")
+    .slice(1)
+    .map((block) => ({
+      bestOfferId: xmlField(block, "BestOfferID") ?? "",
+      userId: xmlField(block, "UserID") ?? "",
+      price: Number(xmlField(block, "Price")),
+      quantity: Number(xmlField(block, "Quantity") ?? 1),
+      status: xmlField(block, "Status") ?? "",
+      kind: xmlField(block, "BestOfferCodeType") ?? "BuyerBestOffer",
+      buyerMessage: xmlField(block, "BuyerMessage")?.trim() || null,
+      sellerMessage: xmlField(block, "SellerMessage")?.trim() || null,
+    }))
+    .sort((a, b) => Number(a.bestOfferId) - Number(b.bestOfferId));
 }
 
 export const SELLER_RESPONSE_MAX = 250;

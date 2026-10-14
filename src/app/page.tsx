@@ -676,6 +676,9 @@ function ExpiringItemCard({
     null
   );
   const [error, setError] = useState<string | null>(null);
+  // Set by the sync when eBay skipped the listing (MARKDOWN_SKIPPED_PREFIX
+  // in src/lib/markdownCheck.ts, not imported since that file uses Prisma).
+  const markdownSkipped = item.ebayMarkdownError?.startsWith("eBay didn't apply this sale:") ?? false;
 
   const days = daysUntil(item.expirationDate);
   const urgent = days <= 7;
@@ -991,10 +994,14 @@ function ExpiringItemCard({
             label="Sale event"
             status={
               item.ebayMarkdownId ? (
-                <Badge tone="purple">
-                  {item.markdownPercentOff}% off
-                  {item.markdownEndsAt ? ` until ${new Date(item.markdownEndsAt).toLocaleDateString()}` : ""}
-                </Badge>
+                markdownSkipped ? (
+                  <Badge tone="danger">{item.markdownPercentOff}% off, not on the listing</Badge>
+                ) : (
+                  <Badge tone="purple">
+                    {item.markdownPercentOff}% off
+                    {item.markdownEndsAt ? ` until ${new Date(item.markdownEndsAt).toLocaleDateString()}` : ""}
+                  </Badge>
+                )
               ) : undefined
             }
           >
@@ -1042,7 +1049,11 @@ function ExpiringItemCard({
       )}
 
       {canManage && (error || item.ebayPromoteError || item.ebayMarkdownError) && (
-        <p className="mt-3 text-sm text-danger">{error ?? item.ebayPromoteError ?? item.ebayMarkdownError}</p>
+        <div className="mt-3 flex flex-col gap-1 text-sm text-danger">
+          {error && <p>{error}</p>}
+          {!error && item.ebayPromoteError && <p>{item.ebayPromoteError}</p>}
+          {!error && item.ebayMarkdownError && <p>{item.ebayMarkdownError}</p>}
+        </div>
       )}
     </Card>
   );

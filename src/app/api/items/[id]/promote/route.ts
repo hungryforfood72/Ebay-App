@@ -37,7 +37,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
   try {
     let adId: string;
+    let campaignId: string | null = null;
     let actualBid = bidPercentage;
+    let note: string | null = null;
     try {
       adId = await createAdByListingId(item.ebayListingId, bidPercentage);
     } catch (e) {
@@ -45,19 +47,36 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       // integration existed (Seller Hub, an earlier manual campaign) —
       // eBay rejects a second one for the same listing. Self-heal by
       // linking the existing ad instead of just failing, same spirit as
-      // /api/items/link-legacy for listings themselves.
+      // /api/items/link-legacy for listings themselves, then move it to
+      // the bid that was asked for.
       if (e instanceof EbayApiError && /already exists/i.test(e.message)) {
         const existing = await findAdByListingId(item.ebayListingId);
         if (!existing) throw e;
         adId = existing.adId;
+        campaignId = existing.campaignId;
         actualBid = existing.bidPercentage || bidPercentage;
+        if (actualBid !== bidPercentage) {
+          try {
+            await updateAdBid(adId, bidPercentage, campaignId);
+            actualBid = bidPercentage;
+          } catch (bidError) {
+            // Linked either way; say why the bid didn't move.
+            note = `Linked the existing ${actualBid}% ad, but couldn't change its bid: ${bidError instanceof Error ? bidError.message : "unknown error"}`;
+          }
+        }
       } else {
         throw e;
       }
     }
     const updated = await prisma.item.update({
       where: { id },
-      data: { ebayAdId: adId, promotedBidPercentage: actualBid, promotedAt: new Date(), ebayPromoteError: null },
+      data: {
+        ebayAdId: adId,
+        ebayAdCampaignId: campaignId,
+        promotedBidPercentage: actualBid,
+        promotedAt: new Date(),
+        ebayPromoteError: note,
+      },
     });
     return NextResponse.json(updated);
   } catch (e) {
@@ -86,7 +105,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   }
 
   try {
-    await updateAdBid(item.ebayAdId, bidPercentage);
+    await updateAdBid(item.ebayAdId, bidPercentage, item.ebayAdCampaignId);
     const updated = await prisma.item.update({
       where: { id },
       data: { promotedBidPercentage: bidPercentage, ebayPromoteError: null },
@@ -114,10 +133,10 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
   }
 
   try {
-    await deleteAd(item.ebayAdId);
+    await deleteAd(item.ebayAdId, item.ebayAdCampaignId);
     const updated = await prisma.item.update({
       where: { id },
-      data: { ebayAdId: null, promotedBidPercentage: null, promotedAt: null, ebayPromoteError: null },
+      data: { ebayAdId: null, ebayAdCampaignId: null, promotedBidPercentage: null, promotedAt: null, ebayPromoteError: null },
     });
     return NextResponse.json(updated);
   } catch (e) {

@@ -11,6 +11,7 @@ import {
 } from "./ebay";
 import { endSoldOutListings } from "./endSoldOutListings";
 import { labelBatchOrderCount } from "./labelBatch";
+import { checkMarkdowns } from "./markdownCheck";
 import { prisma } from "./prisma";
 import type { Prisma } from "@/generated/prisma/client";
 
@@ -586,6 +587,13 @@ export async function syncEbayOrders(
     result.errors.push(...ended.errors.map((e) => `Ending sold-out listing ${e}`));
   } catch (e) {
     result.errors.push(`Ending sold-out listings failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  try {
+    const markdowns = await checkMarkdowns();
+    result.errors.push(...markdowns.errors.map((e) => `Checking sale event ${e}`));
+  } catch (e) {
+    result.errors.push(`Checking sale events failed: ${e instanceof Error ? e.message : String(e)}`);
   }
 
   await prisma.ebaySyncState.upsert({

@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/Button";
 import { Card, SectionHeader } from "@/components/ui/Card";
 import { Input, Textarea } from "@/components/ui/Input";
 import type { BuyerOfferRow } from "@/lib/buyerOffers";
+import type { BestOfferStep } from "@/lib/ebay";
 import { priceOutcome } from "@/lib/offerMath";
 import { FALLBACK_FEE_FIXED, FALLBACK_FEE_RATE, MIN_PROFIT_PER_SALE } from "@/lib/packSize";
 import { ExternalLink, MapPin, RefreshCw } from "lucide-react";
@@ -33,6 +34,32 @@ function timeLeft(iso: string): string {
 function vsRetail(price: number, retail: number): string {
   const pct = Math.round((price / retail - 1) * 100);
   return pct === 0 ? "at retail" : pct < 0 ? `${-pct}% under retail` : `${pct}% over retail`;
+}
+
+// One line of the back-and-forth. On their offer, the status is what we
+// did with it; on our counter, it's what they did.
+function describeStep(h: BestOfferStep): { who: "them" | "you"; text: string } {
+  const qty = h.quantity > 1 ? ` x${h.quantity}` : "";
+  if (h.kind === "SellerCounterOffer") {
+    const outcome: Record<string, string> = {
+      Countered: "they countered",
+      Declined: "they declined",
+      Accepted: "they accepted",
+      Expired: "expired",
+      Pending: "waiting on them",
+    };
+    return { who: "you", text: `You countered ${money(h.price)}${qty}${outcome[h.status] ? `, ${outcome[h.status]}` : ""}` };
+  }
+  const outcome: Record<string, string> = {
+    Countered: "you countered",
+    Declined: "you declined",
+    Accepted: "you accepted",
+    Expired: "expired",
+    Retracted: "they withdrew it",
+    AdminEnded: "ended by eBay",
+  };
+  const verb = h.kind === "BuyerCounterOffer" ? "They countered" : "They offered";
+  return { who: "them", text: `${verb} ${money(h.price)}${qty}${outcome[h.status] ? `, ${outcome[h.status]}` : ""}` };
 }
 
 // What this sale has to clear to be green: the target margin on cost, or
@@ -225,6 +252,28 @@ function OfferCard({ offer: o, targetMarginPct }: { offer: BuyerOfferRow; target
             </span>
           )}
         </div>
+        {o.history.length > 0 && (
+          <div className="mt-1 rounded-lg border border-border px-3 py-2">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+              History with {o.buyer.userId} on this listing
+            </p>
+            <ol className="mt-1 flex flex-col gap-1 text-sm">
+              {o.history.map((h) => {
+                const step = describeStep(h);
+                return (
+                  <li key={h.bestOfferId} className={step.who === "you" ? "text-foreground" : "text-muted-foreground"}>
+                    {step.text}
+                    {h.buyerMessage && <span className="block pl-3 text-xs italic">&ldquo;{h.buyerMessage}&rdquo;</span>}
+                    {h.sellerMessage && <span className="block pl-3 text-xs">Your note: &ldquo;{h.sellerMessage}&rdquo;</span>}
+                  </li>
+                );
+              })}
+              <li className="font-medium text-foreground">
+                Now: they {o.kind === "BuyerCounterOffer" ? "countered" : "offered"} {money(o.price)}
+              </li>
+            </ol>
+          </div>
+        )}
         {o.buyerMessage && (
           <p className="mt-1 whitespace-pre-line rounded-lg bg-muted px-3 py-2 text-sm text-foreground">&ldquo;{o.buyerMessage}&rdquo;</p>
         )}

@@ -1,5 +1,5 @@
 import { cogsMapsFor, costPerListingUnit } from "./cogs";
-import { getPendingBestOffers, type ReceivedBestOffer } from "./ebay";
+import { getBestOfferHistory, getPendingBestOffers, type BestOfferStep, type ReceivedBestOffer } from "./ebay";
 import type { OfferEconomics } from "./offerMath";
 import { prisma } from "./prisma";
 import { typicalSingleLabelCost } from "./shippingCost";
@@ -22,6 +22,9 @@ export type BuyerOfferRow = ReceivedBestOffer &
     // believability here, so it's labeled as the manifest's figure.
     retailPrice: number | null;
     packSize: number;
+    // Earlier steps between this buyer and us on this listing, oldest
+    // first, not counting the pending offer itself.
+    history: BestOfferStep[];
   };
 
 // Pending Best Offers buyers sent, kept to listings this app tracks (same
@@ -42,7 +45,14 @@ export async function pendingBuyerOffers(): Promise<{
     getTargetMarginPct(),
   ]);
   const byListing = new Map(items.map((i) => [i.ebayListingId!, i]));
-  const [cogsMaps, retail] = await Promise.all([cogsMapsFor(items.map((i) => i.manifestId)), retailPrices(items)]);
+  // One history call per listing with a pending offer; there are only ever
+  // a handful at once.
+  const historyListings = [...byListing.keys()].filter((id) => pending.some((o) => o.listingId === id));
+  const [cogsMaps, retail, histories] = await Promise.all([
+    cogsMapsFor(items.map((i) => i.manifestId)),
+    retailPrices(items),
+    Promise.all(historyListings.map(async (id) => [id, await getBestOfferHistory(id)] as const)).then((h) => new Map(h)),
+  ]);
 
   const offers: BuyerOfferRow[] = [];
   for (const o of pending) {
@@ -68,6 +78,9 @@ export async function pendingBuyerOffers(): Promise<{
       localPickupOnly: item.localPickupOnly,
       retailPrice: retail.get(item.id) ?? null,
       packSize: item.isMultipack && item.packSize ? item.packSize : 1,
+      history: (histories.get(o.listingId) ?? []).filter(
+        (h) => h.userId === o.buyer.userId && h.bestOfferId !== o.bestOfferId
+      ),
     });
   }
   offers.sort((a, b) => a.expiresAt.localeCompare(b.expiresAt));

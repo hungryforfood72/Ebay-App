@@ -1,4 +1,4 @@
-import { createMarkdownPromotion, EbayApiError, stopMarkdownPromotion } from "@/lib/ebay";
+import { createMarkdownPromotion, EbayApiError, findMarkdownOnListing, stopMarkdownPromotion } from "@/lib/ebay";
 import { ownerOnly } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
@@ -6,6 +6,10 @@ import { NextRequest, NextResponse } from "next/server";
 export const maxDuration = 30;
 
 const MAX_DURATION_DAYS = 14;
+// An earlier sale ending within this long is one being wound down (ending a
+// running sale moves its end 2 minutes out), so the new one waits for it.
+// Anything longer is a real sale, e.g. one set up in Seller Hub.
+const WIND_DOWN_MS = 15 * 60 * 1000;
 
 function parsePercentOff(body: unknown): number | null {
   const value = Number((body as { percentOff?: unknown })?.percentOff);
@@ -49,9 +53,27 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     : maxEnd;
 
   try {
+    // eBay skips a listing whose new sale overlaps an old one by even a
+    // minute, while still reporting the new sale as RUNNING.
+    const existing = await findMarkdownOnListing(item.ebayListingId);
+    if (existing && existing.endDate.getTime() - Date.now() > WIND_DOWN_MS) {
+      return NextResponse.json(
+        {
+          error: `This listing is already in "${existing.name}" until ${existing.endDate.toLocaleDateString("en-US")}. End that one in Seller Hub first.`,
+        },
+        { status: 400 }
+      );
+    }
     // Confirmed live: eBay caps this at 50 characters.
     const description = `${percentOff}% off for a limited time!`.slice(0, 50);
-    const promotion = await createMarkdownPromotion(item.ebayListingId, percentOff, endDate, description, item.photoUrls[0]);
+    const promotion = await createMarkdownPromotion(
+      item.ebayListingId,
+      percentOff,
+      endDate,
+      description,
+      item.photoUrls[0],
+      existing?.endDate
+    );
     const updated = await prisma.item.update({
       where: { id },
       data: {

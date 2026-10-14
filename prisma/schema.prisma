@@ -208,10 +208,13 @@ model Item {
   stockAdjustments StockAdjustment[]
 
   // eBay Promoted Listings ad state — set by /api/items/[id]/promote,
-  // never by the client. One campaign is shared across every item in an
+  // never by the client. New ads go in the app's one campaign per
   // environment (see scripts/ebay-setup-campaign.ts and the
-  // *_AD_CAMPAIGN_ID env vars), so no per-item campaign id is stored here.
+  // *_AD_CAMPAIGN_ID env vars). ebayAdCampaignId is set only when the
+  // listing already had an ad in one of Cristian's older campaigns and the
+  // app linked that one instead; null means the app's campaign.
   ebayAdId              String?
+  ebayAdCampaignId      String?
   promotedBidPercentage Int?
   promotedAt            DateTime?
   ebayPromoteError      String?
