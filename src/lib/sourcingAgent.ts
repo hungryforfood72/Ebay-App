@@ -13,6 +13,7 @@ import { anthropic } from "./anthropic";
 import { logAiUsage } from "./aiUsage";
 import { advisePackSize } from "./packAdvisor";
 import { EbayApiError, searchActiveListings } from "./ebay";
+import { ebayBanReason } from "./ebayBanned";
 import type { ManifestSupplier } from "@/generated/prisma/client";
 
 // ---------------------------------------------------------------------------
@@ -792,6 +793,35 @@ async function estimateLine(
   compSaturationThreshold: number,
   maxMonthsToSellThrough: number
 ): Promise<LineEstimateResult> {
+  // Can't be listed on eBay at all (needles, Rx devices — see ebayBanned),
+  // so it's worth $0 whatever the comps say. Skipped before any lookup:
+  // live listings exist for some of these and would otherwise price them.
+  if (ebayBanReason(group.description)) {
+    return {
+      upc: group.upc,
+      description: group.description,
+      extendedRetail: group.extendedRetail,
+      estimatedUnitSalePrice: null,
+      estimatedUnitFees: null,
+      estimatedUnitShipping: null,
+      estimatedNetPerUnit: 0,
+      effectiveUnits: Math.round(group.expectedQuantity * receiveRate),
+      typicalPackSize: 1,
+      recommendedPackSize: null,
+      recommendedPackBasis: null,
+      dataConfidence: "market_only",
+      flaggedDud: true,
+      marketCheckFailed: false,
+      marketTrend: null,
+      eventEnded: false,
+      postHolidayFiller: false,
+      trendNudge: null,
+      seasonal: null,
+      slowMover: false,
+      monthsToSellThrough: null,
+    };
+  }
+
   // Own-history: exact UPC, across every manifest ever sold, not just this one.
   let ownSalesCount = 0;
   let ownAvgSalePrice = 0;
@@ -1606,7 +1636,12 @@ export async function evaluateManifestChunk(
       .slice()
       .sort((a, b) => (b.estimatedNetPerUnit ?? 0) * b.effectiveUnits - (a.estimatedNetPerUnit ?? 0) * a.effectiveUnits)
       .slice(0, 8),
-    dudLines: lineEstimates.filter((e) => e.flaggedDud).slice(0, 5),
+    dudLines: lineEstimates.filter((e) => e.flaggedDud && !ebayBanReason(e.description)).slice(0, 5),
+    bannedLines: lineEstimates
+      .filter((e) => ebayBanReason(e.description))
+      .map((e) => `- ${e.description} (${e.effectiveUnits} units): ${ebayBanReason(e.description)}`)
+      .slice(0, 10),
+    bannedLineCount: lineEstimates.filter((e) => ebayBanReason(e.description)).length,
     marketDataUnavailableCount: lineEstimates.filter((e) => e.marketCheckFailed).length,
     expiredEventLines: lineEstimates
       .filter((e) => e.eventEnded)
@@ -1690,6 +1725,8 @@ async function writeReasoning(input: {
   inventoryLoad: { weeksOnHand: number; activeListedUnits: number; recentSoldUnitsPerWeek: number };
   topLines: LineEstimateResult[];
   dudLines: LineEstimateResult[];
+  bannedLines: string[];
+  bannedLineCount: number;
   marketDataUnavailableCount: number;
   expiredEventLines: string[];
   postHolidayLines: string[];
@@ -1717,6 +1754,9 @@ ${input.topLines.map((l) => `- ${l.description} (UPC ${l.upc ?? "n/a"}): est. $$
 Lines flagged as likely duds:
 ${input.dudLines.map((l) => `- ${l.description} (UPC ${l.upc ?? "n/a"})`).join("\n") || "none"}
 
+Lines eBay doesn't allow listing at all (needles, prescription devices, COVID tests), valued at $0 and counted as duds (${input.bannedLineCount} total${input.bannedLineCount > 10 ? ", first 10 shown" : ""}):
+${input.bannedLines.join("\n") || "none"}
+
 Lines where live eBay market data couldn't be checked at all right now (API outage/rate limit, not a confirmed lack of demand — NOT counted as duds, but genuinely unpriced): ${input.marketDataUnavailableCount}${input.marketDataUnavailableCount > 0 ? " — mention this as a real caveat (worth a re-run later for a fuller read), don't imply these items don't sell." : ""}
 
 Lines flagged as licensed merch for an event that has already concluded (treated as dead stock regardless of live comps):
@@ -1740,7 +1780,7 @@ ${input.trendNudges.join("\n") || "none notable"}
 Real measured market movement since we last checked these UPCs ourselves (our own repeated live comp checks over time — more reliable than the web-search signal above, since it's an actual price change we observed, not an LLM's read of outside chatter):
 ${input.marketTrends.join("\n") || "none notable — either no prior check to compare against yet, or nothing moved enough to be worth mentioning"}
 
-Write 3-6 sentences: which items drove the call, any supplier/category patterns applied, seasonal timing if relevant, any trend signal factored in (the measured market movement above and the web-search trend signal are different kinds of evidence — don't conflate them if both are mentioned), and if the inventory load meaningfully affected how a crowded-market line was judged, say so plainly. If any slow movers were flagged, mention that plainly too — it's a different kind of caution from a plain margin/dud problem (a genuinely slow seller, not necessarily an unprofitable one) and worth calling out as its own reason, not lumped in with the other dud reasons. Plain language, no bullet points, no restating the raw numbers verbatim.`;
+Write 3-6 sentences: which items drove the call, any supplier/category patterns applied, seasonal timing if relevant, any trend signal factored in (the measured market movement above and the web-search trend signal are different kinds of evidence — don't conflate them if both are mentioned), and if the inventory load meaningfully affected how a crowded-market line was judged, say so plainly. If any lines are ones eBay doesn't allow, say so plainly as its own reason (they can't be sold on eBay at any price, which is different from a weak market). If any slow movers were flagged, mention that plainly too — it's a different kind of caution from a plain margin/dud problem (a genuinely slow seller, not necessarily an unprofitable one) and worth calling out as its own reason, not lumped in with the other dud reasons. Plain language, no bullet points, no restating the raw numbers verbatim.`;
 
   try {
     const response = await anthropic.messages.create(

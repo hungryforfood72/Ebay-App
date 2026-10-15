@@ -3,6 +3,7 @@
 import { Alert } from "@/components/ui/Alert";
 import { AppShell } from "@/components/ui/AppShell";
 import { Badge, type BadgeTone } from "@/components/ui/Badge";
+import { ebayBanReason } from "@/lib/ebayBanned";
 import { Button, buttonClasses } from "@/components/ui/Button";
 import { Card, SectionHeader } from "@/components/ui/Card";
 import { cn } from "@/components/ui/cn";
@@ -898,12 +899,15 @@ function ConfidenceBadge({ confidence }: { confidence: string }) {
 
 // Dud / slow-mover flags (and, on phones where there's no confidence
 // column, the confidence badge) under an estimate's description.
+// Banned is worked out from the description (lib/ebayBanned), so rows from
+// evaluations that ran before it existed get labeled too.
 function EstimateTags({ estimate: e, showConfidence = true }: { estimate: SourcingLineEstimate; showConfidence?: boolean }) {
-  if (!e.flaggedDud && !e.slowMover && !showConfidence) return null;
+  const banned = ebayBanReason(e.description);
+  if (!e.flaggedDud && !e.slowMover && !banned && !showConfidence) return null;
   return (
     <div className="mt-1.5 flex flex-wrap gap-1.5">
       {showConfidence && <ConfidenceBadge confidence={e.dataConfidence} />}
-      {e.flaggedDud && <Badge tone="warning">dud</Badge>}
+      {banned ? <Badge tone="danger">{banned}</Badge> : e.flaggedDud && <Badge tone="warning">dud</Badge>}
       {e.slowMover && (
         <Badge tone="purple">
           slow mover
