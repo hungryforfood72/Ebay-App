@@ -6,6 +6,7 @@ import { EbayApiError, searchActiveListings } from "@/lib/ebay";
 import { parseBundleComponentUnits, unitsFor } from "@/lib/itemUnits";
 import { advisePackSize, readableProductName, savedPackDecision } from "@/lib/packAdvisor";
 import {
+  MAX_RECOMMENDED_PACK,
   detectPackSize,
   listingWorth,
   netPerUnit,
@@ -138,7 +139,6 @@ export async function GET(request: NextRequest) {
   // holding one: plan for that one, and say it looks extra.
   const alreadyScannedIn = unitsLeft === 0;
   const available = unitsLeft == null ? null : Math.max(unitsLeft, 1);
-  let plan = recommendation && available != null ? splitIntoPacks(available, recommendation.packSize) : null;
 
   // Units that shouldn't be listed at the size they'd have to go in. They
   // come out of the plan and Lizvet sets them aside for Cristian to decide
@@ -151,9 +151,25 @@ export async function GET(request: NextRequest) {
   //   profit on what the items cost (and at least $1.50 a sale), after fees
   //   and a real label cost.
   // Off a manifest there's no count, so it's a heads-up about a single.
+  //
+  // Full packs get the same profit check too (Cristian, 2026-10-15). The
+  // agent works from a $5 label and uncapped asking prices, so it said
+  // 3-packs for 20 ChapStick tubes ($1.38 retail) that lose about $3.66 each
+  // with his real ~$7 label. When the recommended size fails, a bigger pack
+  // (one label over more units) takes over if one clears the bar; if none
+  // up to MAX_RECOMMENDED_PACK does, the whole lot is set aside, and the
+  // card points to Shopify & Whatnot, where the buyer pays the label.
   type SetAsideWhy = "slow_single" | "low_return";
-  let setAside: { units: number | null; packSize: number; why: SetAsideWhy; worth: ListingWorth | null } | null = null;
+  let setAside: {
+    units: number | null;
+    packSize: number;
+    why: SetAsideWhy;
+    worth: ListingWorth | null;
+    everything: boolean;
+    shopPlan: { packSize: number; listings: number }[] | null;
+  } | null = null;
   let targetReturnPct: number | null = null;
+  let plan: { packSize: number; listings: number }[] | null = null;
   if (recommendation) {
     const [labelCost, unitCost, target] = await Promise.all([
       typicalSingleLabelCost(),
@@ -162,31 +178,59 @@ export async function GET(request: NextRequest) {
     ]);
     targetReturnPct = target;
     const retailPrice = lines[0] ? Number(lines[0].retailPrice) : null;
-    const recommended = recommendation.packSize;
-    const verdict = (packSize: number): { why: SetAsideWhy; worth: ListingWorth | null } | null => {
-      if (packSize >= recommended && recommended > 1) return null; // a full pack (or bigger)
-      const worth = listingWorth({ packSize, stats, retailPrice, unitCost, labelCost, targetReturnPct: target });
-      if (packSize === 1 && recommended > 1) return { why: "slow_single", worth };
-      return worth && !worth.worthIt ? { why: "low_return", worth } : null;
-    };
-    if (plan) {
-      const kept: typeof plan = [];
-      let asideUnits = 0;
-      let aside: { packSize: number; why: SetAsideWhy; worth: ListingWorth | null } | null = null;
-      for (const group of plan) {
-        const v = verdict(group.packSize);
-        if (v) {
-          asideUnits += group.packSize * group.listings;
-          aside = { packSize: group.packSize, ...v };
-        } else {
-          kept.push(group);
-        }
+    const worthAt = (packSize: number) =>
+      listingWorth({ packSize, stats, retailPrice, unitCost, labelCost, targetReturnPct: target });
+
+    const called = recommendation.packSize;
+    const calledWorth = worthAt(called);
+    let notWorthOnEbay = false;
+    // Only for a multi-pack call. A "singles" call means it sells alone
+    // (collectibles, hype items), and a single that can't make the bar was
+    // already set aside by the leftover rule below, never bundled.
+    if (called > 1 && calledWorth && !calledWorth.worthIt) {
+      const bigger = Array.from({ length: Math.max(0, MAX_RECOMMENDED_PACK - called) }, (_, i) => called + 1 + i).find(
+        (n) => worthAt(n)?.worthIt
+      );
+      if (bigger) {
+        recommendation = { ...recommendation, packSize: bigger };
+        reason = `${reason ? `${reason} ` : ""}Bumped up to ${bigger}-packs: as ${called > 1 ? `${called}-packs` : "singles"} it wouldn't make enough profit after shipping and fees.`;
+      } else {
+        notWorthOnEbay = true;
       }
-      plan = kept;
-      if (aside) setAside = { units: asideUnits, ...aside };
-    } else if (available == null) {
-      const v = verdict(1);
-      if (v) setAside = { units: null, packSize: 1, ...v };
+    }
+
+    const recommended = recommendation.packSize;
+    if (notWorthOnEbay) {
+      const shopPlan = available != null ? splitIntoPacks(available, recommended) : null;
+      plan = available != null ? [] : null;
+      setAside = { units: available, packSize: recommended, why: "low_return", worth: calledWorth, everything: true, shopPlan };
+    } else {
+      plan = available != null ? splitIntoPacks(available, recommended) : null;
+      const verdict = (packSize: number): { why: SetAsideWhy; worth: ListingWorth | null } | null => {
+        if (packSize >= recommended && recommended > 1) return null; // a full pack (or bigger), checked above
+        const worth = worthAt(packSize);
+        if (packSize === 1 && recommended > 1) return { why: "slow_single", worth };
+        return worth && !worth.worthIt ? { why: "low_return", worth } : null;
+      };
+      if (plan) {
+        const kept: typeof plan = [];
+        let asideUnits = 0;
+        let aside: { packSize: number; why: SetAsideWhy; worth: ListingWorth | null } | null = null;
+        for (const group of plan) {
+          const v = verdict(group.packSize);
+          if (v) {
+            asideUnits += group.packSize * group.listings;
+            aside = { packSize: group.packSize, ...v };
+          } else {
+            kept.push(group);
+          }
+        }
+        plan = kept;
+        if (aside) setAside = { units: asideUnits, ...aside, everything: false, shopPlan: null };
+      } else if (available == null) {
+        const v = verdict(1);
+        if (v) setAside = { units: null, packSize: 1, ...v, everything: false, shopPlan: null };
+      }
     }
   }
 
@@ -225,6 +269,8 @@ export async function GET(request: NextRequest) {
       units: setAside.units,
       packSize: setAside.packSize,
       why: setAside.why,
+      everything: setAside.everything,
+      shopPlan: setAside.shopPlan,
       ...(isOwner && setAside.worth
         ? {
             price: setAside.worth.price,

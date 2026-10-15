@@ -30,6 +30,11 @@ type PackSuggestion = {
     // "slow_single": a lone single of something meant for multi-packs.
     // "low_return": wouldn't make Cristian's target profit on its cost.
     why: "slow_single" | "low_return";
+    // No pack size up to the max makes Cristian's target on eBay, so the
+    // whole lot is set aside, and shopPlan is how it'd split for
+    // Shopify & Whatnot instead (null off a manifest).
+    everything?: boolean;
+    shopPlan?: PackPlanGroup[] | null;
     price?: number;
     label?: number;
     itemCost?: number | null;
@@ -126,6 +131,9 @@ export function PackSuggestionCard({
   const allAside = Boolean(data.setAside) && (!data.plan || data.plan.length === 0);
   const shopChannel = data.setAside?.shopChannel ?? null;
   const offerShop = allAside && shopChannel != null && shopChannel.worthIt !== false;
+  const notForEbay = Boolean(data.setAside?.everything);
+  const shopFirst = data.setAside?.shopPlan?.[0] ?? null;
+  const shopRest = data.setAside?.shopPlan?.slice(1) ?? [];
 
   return (
     <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-950">
@@ -133,15 +141,19 @@ export function PackSuggestionCard({
         <Boxes className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden />
         <div className="min-w-0">
           <p className="font-semibold">
-            Suggested: sell as {rec.packSize > 1 ? `${rec.packSize}-packs` : "singles"}
+            {notForEbay
+              ? "Not worth listing on eBay"
+              : `Suggested: sell as ${rec.packSize > 1 ? `${rec.packSize}-packs` : "singles"}`}
           </p>
           <p className="mt-0.5 text-blue-900/80">
-            {rec.reason
+            {notForEbay
+              ? `Shipping eats the whole sale: even bundled up to ${MAX_RECOMMENDED_PACK}-packs it wouldn't make enough profit on eBay after fees and a label.`
+              : rec.reason
               ? rec.reason
               : rec.basis === "estimate"
                 ? `Only singles are listed on eBay, and shipping eats most of a single's price, so a ${packLabel(rec.packSize)} should earn more per item.`
                 : `Based on ${rec.compCount} eBay listing${rec.compCount === 1 ? "" : "s"} of ${rec.packSize > 1 ? `${rec.packSize}-packs` : "singles"}.`}
-            {rec.perPackPrice != null && rec.netPerUnit != null && (
+            {!notForEbay && rec.perPackPrice != null && rec.netPerUnit != null && (
               <>
                 {" "}
                 About {money(rec.perPackPrice)} per {packLabel(rec.packSize)}, {money(rec.netPerUnit)} per item after
@@ -167,6 +179,12 @@ export function PackSuggestionCard({
           )}
 
           {data.setAside && <SetAsideNote setAside={data.setAside} recommendedPackSize={rec.packSize} />}
+          {notForEbay && offerShop && shopRest.length > 0 && (
+            <p className="mt-2 text-xs text-blue-900/80">
+              For Shopify &amp; Whatnot: {[shopFirst, ...shopRest].filter(Boolean).map((g) => listingsOf(g!)).join(" + ")}.
+              Fill in the first, then save and scan it again for the rest.
+            </p>
+          )}
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
             {allAside && offerShop && data.setAside ? (
@@ -175,7 +193,8 @@ export function PackSuggestionCard({
                   size="sm"
                   onClick={() => {
                     const aside = data.setAside!;
-                    onShopifyOnly(aside.packSize, aside.units != null ? Math.max(1, Math.round(aside.units / aside.packSize)) : null);
+                    if (shopFirst) onShopifyOnly(shopFirst.packSize, shopFirst.listings);
+                    else onShopifyOnly(aside.packSize, aside.units != null ? Math.max(1, Math.round(aside.units / aside.packSize)) : null);
                   }}
                 >
                   Sell on Shopify &amp; Whatnot instead
@@ -277,7 +296,9 @@ function SetAsideNote({
   const n = setAside.units;
   const title =
     n == null
-      ? recommendedPackSize > 1
+      ? setAside.everything
+        ? "Set these aside."
+        : recommendedPackSize > 1
         ? `If you have fewer than ${recommendedPackSize}, set them aside.`
         : "Set this aside."
       : n === 1
@@ -287,7 +308,9 @@ function SetAsideNote({
   const why =
     setAside.why === "slow_single"
       ? `Singles of this don't sell well on their own, it's meant to go out as ${recommendedPackSize}-packs.`
-      : `As ${what} it wouldn't make enough profit after shipping and fees.`;
+      : setAside.everything
+        ? `Even as ${what} it wouldn't make enough profit after shipping and fees.`
+        : `As ${what} it wouldn't make enough profit after shipping and fees.`;
   return (
     <div className="mt-3 flex gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-950">
       <PackageMinus className="mt-0.5 size-5 shrink-0 text-amber-600" aria-hidden />
