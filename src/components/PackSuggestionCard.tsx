@@ -16,6 +16,7 @@ type PackSuggestion = {
   // available came from a count typed on the card; manifestLeft is what
   // the manifest said (null off a manifest).
   countedByHand?: boolean;
+  handCount?: number | null;
   manifestLeft?: number | null;
   // Set when the count came from a load other than the one being scanned
   // into (or none was picked): that load's title.
@@ -77,10 +78,12 @@ const money = (n: number) => `$${n.toFixed(2)}`;
 const manifestLabel = (d: { manifestTitle: string | null }) =>
   d.manifestTitle ? `the "${d.manifestTitle}" manifest` : "this manifest";
 // "5 on hand:" for a typed count, "3 left on this manifest:" otherwise.
-const countLabel = (d: PackSuggestion) =>
-  d.countedByHand
-    ? `You have ${d.available}${d.manifestLeft != null ? ` (the manifest said ${d.manifestLeft} left)` : ""}`
-    : `${d.available} left on ${manifestLabel(d)}`;
+const countLabel = (d: PackSuggestion, what = "") =>
+  !d.countedByHand
+    ? `${d.available}${what} left on ${manifestLabel(d)}`
+    : d.handCount != null && d.available !== d.handCount
+      ? `${d.available}${what} left of the ${d.handCount} you counted`
+      : `You have ${d.available}${what}${d.manifestLeft != null ? ` (the manifest said ${d.manifestLeft} left)` : ""}`;
 
 // On the scan page's quantity step: what pack size this UPC sells best in
 // (from live eBay listings, see /api/pack-suggestion) and, on a manifest,
@@ -102,20 +105,25 @@ export function PackSuggestionCard({
   // Keep scanning it in, but for Shopify & Whatnot only (no eBay listing).
   onShopifyOnly: (packSize: number, listings: number | null) => void;
 }) {
-  const baseKey = `${upc}|${manifestId ?? ""}`;
-  // A count Lizvet typed in, for this UPC only: a new scan starts over
-  // from the manifest's count.
-  const [have, setHave] = useState<{ key: string; count: number } | null>(null);
-  const haveCount = have?.key === baseKey ? have.count : null;
-  const key = `${baseKey}|${haveCount ?? ""}`;
+  // Bumped after a typed count is saved, to fetch the plan again. The count
+  // itself lives on the server, so the next scan of this UPC (the 2-pack
+  // after the 3-pack) already plans for what's left of it.
+  const [refresh, setRefresh] = useState(0);
+  const key = `${upc}|${manifestId ?? ""}|${refresh}`;
   const [result, setResult] = useState<{ key: string; data: PackSuggestion | null } | null>(null);
   const loading = result?.key !== key;
-  const changeCount = (count: number | null) => setHave(count == null ? null : { key: baseKey, count });
+  const changeCount = async (count: number | null) => {
+    await fetch("/api/pack-suggestion", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ upc, manifestId, count }),
+    }).catch(() => null);
+    setRefresh((n) => n + 1);
+  };
 
   useEffect(() => {
     const params = new URLSearchParams({ upc });
     if (manifestId) params.set("manifestId", manifestId);
-    if (haveCount != null) params.set("have", String(haveCount));
     let cancelled = false;
     fetch(`/api/pack-suggestion?${params}`)
       .then((r) => (r.ok ? r.json() : null))
@@ -124,7 +132,7 @@ export function PackSuggestionCard({
     return () => {
       cancelled = true;
     };
-  }, [upc, manifestId, key, haveCount]);
+  }, [upc, manifestId, key]);
 
   if (loading) {
     return (
@@ -288,9 +296,7 @@ function AlreadyMultipackCard({
               <span className="font-medium">
                 {data.alreadyScannedIn
                   ? `All ${data.expected ?? ""} on ${manifestLabel(data)} ${data.expected === 1 ? "is" : "are"} already scanned in, so this one looks extra.`
-                  : data.countedByHand
-                    ? `You have ${left} ${n}-pack${left === 1 ? "" : "s"}${data.manifestLeft != null ? ` (the manifest said ${data.manifestLeft} left)` : ""}.`
-                    : `${left} ${n}-pack${left === 1 ? "" : "s"} left on ${manifestLabel(data)}.`}
+                  : `${countLabel(data, ` ${n}-pack${left === 1 ? "" : "s"}`)}.`}
               </span>
             </p>
           )}

@@ -1076,3 +1076,18 @@ model PushSubscription {
   createdAt   DateTime  @default(now())
   lastSentAt  DateTime?
 }
+
+// How many of a product Lizvet said she actually has, typed on the scan
+// page's pack card when the manifest's count is off. Each later scan of the
+// UPC plans for this count minus everything of it saved since (listed,
+// bundled, walk-up, damaged, dud), so after a 3-pack out of 5 the card
+// already knows 2 are left. Cleared once used up; ignored after a few days.
+model HandCount {
+  id         String   @id @default(uuid())
+  upc        String
+  manifestId String?
+  count      Int
+  createdAt  DateTime @default(now())
+
+  @@index([upc, manifestId, createdAt])
+}

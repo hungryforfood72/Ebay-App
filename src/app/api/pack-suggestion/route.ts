@@ -141,11 +141,10 @@ export async function GET(request: NextRequest) {
   // holding one: plan for that one, and say it looks extra.
   // How many Lizvet says she actually has, typed on the card when it doesn't
   // match the manifest (Cristian, 2026-10-15: 5 Hawaiian Tropic in hand,
-  // manifest said 3 left). Plans for that count instead.
-  const haveParam = Number(request.nextUrl.searchParams.get("have"));
-  const have = Number.isInteger(haveParam) && haveParam > 0 && haveParam <= 1000 ? haveParam : null;
-  const alreadyScannedIn = have == null && unitsLeft === 0;
-  const available = have ?? (unitsLeft == null ? null : Math.max(unitsLeft, 1));
+  // manifest said 3 left), less what she's saved of it since.
+  const hand = await handCountLeft(upc, manifestId);
+  const alreadyScannedIn = hand == null && unitsLeft === 0;
+  const available = hand?.left ?? (unitsLeft == null ? null : Math.max(unitsLeft, 1));
 
   // Units that shouldn't be listed at the size they'd have to go in. They
   // come out of the plan and Lizvet sets them aside for Cristian to decide
@@ -286,7 +285,9 @@ export async function GET(request: NextRequest) {
     manifestPackSize,
     available,
     // available is the count typed on the card, not the manifest's.
-    countedByHand: have != null,
+    countedByHand: hand != null,
+    // The count she typed (available is what's left of it).
+    handCount: hand?.count ?? null,
     // What the manifest says is left, for "the manifest says 3".
     manifestLeft: unitsLeft,
     // Counted against a load other than the one being scanned into (or none
@@ -331,6 +332,66 @@ export async function GET(request: NextRequest) {
         : {}),
     },
   });
+}
+
+// POST { upc, manifestId, count } — saves the count Lizvet typed on the
+// pack card; count null clears it, back to the manifest's count.
+export async function POST(request: NextRequest) {
+  const body = (await request.json().catch(() => null)) as { upc?: string; manifestId?: string | null; count?: number | null } | null;
+  const upc = body?.upc?.trim();
+  if (!upc) return NextResponse.json({ error: "A UPC is required." }, { status: 400 });
+  const manifestId = body?.manifestId || null;
+  const count = Number(body?.count);
+  if (body?.count != null && (!Number.isInteger(count) || count < 1 || count > 1000)) {
+    return NextResponse.json({ error: "Enter a whole number from 1 to 1000." }, { status: 400 });
+  }
+  await prisma.handCount.deleteMany({ where: { upc, manifestId } });
+  if (body?.count != null) await prisma.handCount.create({ data: { upc, manifestId, count } });
+  return NextResponse.json({ ok: true });
+}
+
+// A typed count older than this is from another day's work, not the
+// product in hand now.
+const HAND_COUNT_MAX_AGE_DAYS = 3;
+
+// The typed count for this UPC (on this manifest, or off any), less every
+// unit of it saved since it was typed: listed, inside a bundle, sold at a
+// walk-up, or marked damaged or dud. Used up = cleared, and the card goes
+// back to the manifest's own count.
+async function handCountLeft(upc: string, manifestId: string | null): Promise<{ count: number; left: number } | null> {
+  const hc = await prisma.handCount.findFirst({
+    where: { upc, manifestId, createdAt: { gte: new Date(Date.now() - HAND_COUNT_MAX_AGE_DAYS * 24 * 60 * 60 * 1000) } },
+    orderBy: { createdAt: "desc" },
+  });
+  if (!hc) return null;
+  const since = { gte: hc.createdAt };
+  const none = Promise.resolve({ _sum: { quantity: 0 as number | null } });
+  const [items, bundles, walkups, damaged, duds] = await Promise.all([
+    prisma.item.findMany({ where: { manifestId, upc, isBundle: false, createdAt: since }, select: { quantity: true, isMultipack: true, packSize: true } }),
+    prisma.item.findMany({ where: { manifestId, isBundle: true, createdAt: since }, select: { quantity: true, bundleComponents: true } }),
+    manifestId ? prisma.manifestWalkupSale.aggregate({ where: { manifestId, upc, createdAt: since }, _sum: { quantity: true } }) : none,
+    manifestId ? prisma.manifestDamagedEntry.aggregate({ where: { manifestId, upc, createdAt: since }, _sum: { quantity: true } }) : none,
+    manifestId ? prisma.manifestDudEntry.aggregate({ where: { manifestId, upc, createdAt: since }, _sum: { quantity: true } }) : none,
+  ]);
+  const used =
+    items.reduce((sum, i) => sum + unitsFor(i), 0) +
+    bundles.reduce(
+      (sum, b) =>
+        sum +
+        parseBundleComponentUnits(b.bundleComponents)
+          .filter((c) => c.upc === upc)
+          .reduce((s, c) => s + c.unitsPerBundle * b.quantity, 0),
+      0
+    ) +
+    (walkups._sum.quantity ?? 0) +
+    (damaged._sum.quantity ?? 0) +
+    (duds._sum.quantity ?? 0);
+  const left = hc.count - used;
+  if (left <= 0) {
+    await prisma.handCount.delete({ where: { id: hc.id } }).catch(() => {});
+    return null;
+  }
+  return { count: hc.count, left };
 }
 
 const LINE_SELECT = { description: true, expectedQuantity: true, retailPrice: true, category: true } as const;
