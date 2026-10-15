@@ -81,11 +81,29 @@ export function detectPackSize(title: string): number {
   return 1;
 }
 
+// detectPackSize for a comp of a listing that is itself `listingPackSize`
+// units. When we're selling a lot of 28 beef sticks, "Archer Beef Sticks
+// 24 Count" is a 24-pack of the same stick, not one retail box: a count
+// close to our own pack size (half to double) is read as the pack size.
+// Found live 2026-10-15: 20/22/24-count comps at $18-28 were read as single
+// sticks and scaled to "$780 for 28".
+export function detectPackSizeNear(title: string, listingPackSize: number): number {
+  const size = detectPackSize(title);
+  if (size > 1 || listingPackSize < 2) return size;
+  const count = title.match(/\b(\d{1,3})\s*-?\s*(?:count|ct|pcs|pieces|sticks|bars|packets|pouches)\b/i);
+  if (!count) return size;
+  const n = parseInt(count[1], 10);
+  return n >= listingPackSize / 2 && n <= listingPackSize * 2 ? n : size;
+}
+
 // Excluded outright rather than normalized — a genuine reseller/wholesale
 // lot's pricing reflects business-to-business economics, not what an
-// individual retail listing of the same physical units would fetch.
-export function isResellerLot(title: string, packSize: number): boolean {
-  return RESELLER_BULK_PATTERN.test(title) || packSize > LARGE_LOT_THRESHOLD;
+// individual retail listing of the same physical units would fetch. Pass
+// the size of what we're listing: a 28-stick lot's comps are other 20-30
+// stick lots, not reseller lots (before 2026-10-15 every pack over 10 was
+// thrown out, so a big lot could never match a comp at all).
+export function isResellerLot(title: string, packSize: number, listingPackSize = 1): boolean {
+  return RESELLER_BULK_PATTERN.test(title) || packSize > Math.max(LARGE_LOT_THRESHOLD, listingPackSize * 2);
 }
 
 function median(sorted: number[]): number {
@@ -114,14 +132,16 @@ export type CompSummary = {
   packStats: PackStat[];
 };
 
-export function summarizeComps(comps: { title: string; totalPrice: number }[]): CompSummary {
+// `listingPackSize`: the size of what's being priced, when known (see
+// detectPackSizeNear and isResellerLot).
+export function summarizeComps(comps: { title: string; totalPrice: number }[], listingPackSize = 1): CompSummary {
   const perUnit: number[] = [];
   const packSizes: number[] = [];
   const totalsByPack = new Map<number, number[]>();
   const cheapestByPack = new Map<number, { title: string; totalPrice: number }>();
   for (const c of comps) {
-    const packSize = detectPackSize(c.title);
-    if (isResellerLot(c.title, packSize)) continue;
+    const packSize = detectPackSizeNear(c.title, listingPackSize);
+    if (isResellerLot(c.title, packSize, listingPackSize)) continue;
     packSizes.push(packSize);
     perUnit.push(c.totalPrice / packSize);
     totalsByPack.set(packSize, [...(totalsByPack.get(packSize) ?? []), c.totalPrice]);

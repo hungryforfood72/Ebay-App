@@ -1,7 +1,7 @@
 import { getRequestUser } from "@/lib/auth";
 import { cogsMapsFor, costPerListingUnit, unitCostForScan } from "@/lib/cogs";
 import { EbayApiError, searchActiveListings } from "@/lib/ebay";
-import { detectPackSize, isResellerLot, summarizeComps } from "@/lib/packSize";
+import { detectPackSizeNear, isResellerLot, summarizeComps } from "@/lib/packSize";
 import { prisma } from "@/lib/prisma";
 import { typicalSingleLabelCost } from "@/lib/shippingCost";
 import { getTargetMarginPct } from "@/lib/sourcingAgent";
@@ -72,8 +72,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       excludeListingId: item.ebayListingId,
     });
     const samePack = comps.filter((c) => {
-      const size = detectPackSize(c.title);
-      return size === packSize && !isResellerLot(c.title, size);
+      const size = detectPackSizeNear(c.title, packSize);
+      return size === packSize && !isResellerLot(c.title, size, packSize);
     });
 
     if (samePack.length > 0) {
@@ -94,16 +94,34 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       });
     }
 
-    // Nobody lists this pack size: scale the per-unit median across every
-    // other pack size up to this one, labeled as an estimate.
-    const summary = summarizeComps(comps);
+    // Nobody lists this pack size: scale the per-unit median up to this one,
+    // labeled as an estimate. Pack sizes near ours (half to double) are the
+    // basis when there are any: a single's price carries a whole shipping
+    // charge, so 28 x a single stick's price is far more than a 28-stick lot
+    // goes for.
+    const summary = summarizeComps(comps, packSize);
+    const isNear = (size: number) => size > 1 && size >= packSize / 2 && size <= packSize * 2;
+    const nearStats = packSize > 1 ? summary.packStats.filter((s) => isNear(s.packSize)) : [];
+    let scaledPerUnit = summary.medianPerUnit;
+    let scaledCount = summary.activeCompCount;
+    if (nearStats.length > 0) {
+      const perUnit = comps
+        .map((c) => ({ c, size: detectPackSizeNear(c.title, packSize) }))
+        .filter(({ c, size }) => isNear(size) && !isResellerLot(c.title, size, packSize))
+        .map(({ c, size }) => c.totalPrice / size)
+        .sort((a, b) => a - b);
+      const mid = Math.floor(perUnit.length / 2);
+      scaledPerUnit = perUnit.length % 2 === 0 ? (perUnit[mid - 1] + perUnit[mid]) / 2 : perUnit[mid];
+      scaledCount = perUnit.length;
+    }
     return NextResponse.json({
       comps: [],
-      count: summary.activeCompCount,
-      median: summary.activeCompCount > 0 ? summary.medianPerUnit * packSize : null,
+      count: scaledCount,
+      median: scaledCount > 0 ? scaledPerUnit * packSize : null,
       low: null,
       high: null,
       basis: "scaled",
+      nearPacks: nearStats.map((s) => ({ packSize: s.packSize, count: s.count, medianTotal: s.medianTotal })),
       packSize,
       retailPrice,
       unitRetail,

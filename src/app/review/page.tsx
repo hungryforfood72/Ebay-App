@@ -677,6 +677,8 @@ function ItemCard({
     // so median is the per-unit median of other pack sizes times packSize.
     basis?: "same_pack" | "scaled";
     packSize?: number;
+    // Scaled only: the pack sizes near this one the estimate came from.
+    nearPacks?: { packSize: number; count: number; medianTotal: number }[];
     // For the whole listing (unitRetail x packSize).
     retailPrice: number | null;
     unitRetail?: number | null;
@@ -986,6 +988,13 @@ function ItemCard({
                     No {priceResearchResult.packSize}-pack listings. Other pack sizes work out to about{" "}
                     <strong>${priceResearchResult.median?.toFixed(2)}</strong> for {priceResearchResult.packSize} (
                     {priceResearchResult.count} comp{priceResearchResult.count === 1 ? "" : "s"})
+                    {priceResearchResult.nearPacks && priceResearchResult.nearPacks.length > 0 && (
+                      <span className="block text-muted-foreground">
+                        {priceResearchResult.nearPacks
+                          .map((p) => `${p.packSize}-pack $${p.medianTotal.toFixed(2)}${p.count > 1 ? ` (${p.count})` : ""}`)
+                          .join(" · ")}
+                      </span>
+                    )}
                   </span>
                 )}
                 {priceResearchResult?.retailPrice != null && (
