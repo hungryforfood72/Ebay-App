@@ -12,6 +12,7 @@ import { cn } from "@/components/ui/cn";
 import { Input, Select } from "@/components/ui/Input";
 import { ClipboardCheck, ExternalLink, RefreshCw, ScanBarcode } from "lucide-react";
 import { describeBreakdown, type ExpirySplit } from "@/lib/expirationBreakdown";
+import type { RelistProgress } from "@/lib/relist";
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 
@@ -61,7 +62,7 @@ type ExpiredNeedingPullItem = {
   expirationDate: string | null;
   expiredAt: string;
   // A multi-date listing pulled because only some units hit their date.
-  expirySplit: ExpirySplit | null;
+  expirySplit: (ExpirySplit & { relisted?: RelistProgress }) | null;
 };
 
 type ExpiredEndFailedItem = {
@@ -443,26 +444,32 @@ function ShelfPullRow({
         </p>
         {item.expirySplit && (
           <div className="mt-2 text-xs text-foreground">
-            <p className="font-medium">Units have different dates. Split it up:</p>
+            <p className="font-medium">Units have different dates. Relist splits it up for you:</p>
             <ul className="mt-1 list-disc pl-4">
               <li>
-                Still good ({describeBreakdown(item.expirySplit.stillGood)}): re-scan as a new eBay listing with new
-                photos.
+                Still good ({describeBreakdown(item.expirySplit.stillGood)}): new eBay listing
+                {item.expirySplit.relisted?.good ? " (done)" : ""}.
               </li>
               <li>
                 Past date ({describeBreakdown(item.expirySplit.pastDate)}):{" "}
                 {item.expirySplit.pastDateLane === false
-                  ? "can't be resold (medicine, sunscreen or baby food), log it as Damaged / expired."
-                  : "scan it and list it Shopify & Whatnot only. It goes on the past-date deals page."}
+                  ? "can't be resold (medicine, sunscreen or baby food), logged as expired and tossed."
+                  : `Shopify & Whatnot only, past-date deals page${item.expirySplit.relisted?.past ? " (done)" : ""}.`}
               </li>
             </ul>
           </div>
         )}
         {error && <p className="mt-1 text-xs text-danger">{error}</p>}
       </div>
-      <Button size="sm" onClick={acknowledge} disabled={saving} className="shrink-0">
-        {saving ? "Saving…" : "Mark as pulled"}
-      </Button>
+      {item.expirySplit ? (
+        <Link href={`/scan?relist=${item.id}`} className={cn(buttonClasses({ size: "sm" }), "shrink-0")}>
+          {item.expirySplit.relisted?.good ? "Continue relist" : "Relist"}
+        </Link>
+      ) : (
+        <Button size="sm" onClick={acknowledge} disabled={saving} className="shrink-0">
+          {saving ? "Saving…" : "Mark as pulled"}
+        </Button>
+      )}
     </div>
   );
 }

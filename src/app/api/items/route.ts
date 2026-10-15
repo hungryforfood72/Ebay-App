@@ -8,6 +8,7 @@ import { draftItem } from "@/lib/draftItem";
 import { lookupCategoryForItem } from "@/lib/categoryLookup";
 import { earliestBundleExpiration } from "@/lib/csv";
 import { normalizeBreakdown } from "@/lib/expirationBreakdown";
+import { inheritedFields, recordRelistPart, relistPlan, type RelistPart } from "@/lib/relist";
 
 // Draft (up to 45s for a single item, or up to ~90s for a bundle — parallel
 // per-component naming calls plus one final synthesis call) + category
@@ -73,6 +74,22 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // Guided relist of a split multi-date listing (src/lib/relist.ts): the
+  // UPC and manifest come from the original, never the phone, and the
+  // past-date part is always Shopify & Whatnot only.
+  const relistOf = typeof body.relistOf === "string" ? body.relistOf : null;
+  const relistPart: RelistPart = body.relistPart === "past" ? "past" : "good";
+  const original = relistOf ? await prisma.item.findUnique({ where: { id: relistOf } }) : null;
+  if (relistOf) {
+    const plan = original ? relistPlan(original) : null;
+    if (!plan || isBundle) {
+      return NextResponse.json({ error: "That listing isn't waiting to be relisted." }, { status: 400 });
+    }
+    if (plan[relistPart].done) {
+      return NextResponse.json({ error: "Those units were already relisted." }, { status: 400 });
+    }
+  }
+
   // Prefix the SKU with the shelf location (e.g. "(Location - A6)-<uuid>")
   // so it's recognizable at a glance on eBay's side, not just a bare UUID.
   const sku = `(Location - ${String(body.shelfLocation).trim()})-${randomUUID()}`;
@@ -95,7 +112,7 @@ export async function POST(request: NextRequest) {
   const item = await prisma.item.create({
     data: {
       sku,
-      upc: isBundle ? null : body.upc || null,
+      upc: original ? original.upc : isBundle ? null : body.upc || null,
       quantity: Number(body.quantity),
       isMultipack: Boolean(body.isMultipack),
       packSize: body.isMultipack ? Number(body.packSize) : null,
@@ -109,12 +126,16 @@ export async function POST(request: NextRequest) {
       // Who's signed in, not anything the client sends — this is what the
       // scan-speed report (/reports/scan-speed) attributes the scan to.
       scannedBy: getRequestUser(request)?.username ?? null,
-      manifestId: body.manifestId ?? null,
+      manifestId: original ? original.manifestId : body.manifestId ?? null,
       isBundle,
       bundleComponents: isBundle ? body.bundleComponents : undefined,
-      shopifyOnly: !isBundle && body.shopifyOnly === true,
+      shopifyOnly: !isBundle && (body.shopifyOnly === true || (original != null && relistPart === "past")),
+      ...(original ? inheritedFields(original) : {}),
     },
   });
+
+  const relistNext = original ? await recordRelistPart(original.id, relistPart, item.id) : undefined;
+  const keepCategory = Boolean(original?.categoryId);
 
   // Run drafting + category lookup here, after responding, so it's fully
   // server-side and doesn't depend on the phone's browser tab staying in the
@@ -132,6 +153,8 @@ export async function POST(request: NextRequest) {
       console.error(`[items after()] ${item.id}: draft failed`, e);
       return;
     }
+    // A relist already has the original's category.
+    if (keepCategory) return;
     try {
       await lookupCategoryForItem(item.id);
     } catch (e) {
@@ -139,5 +162,6 @@ export async function POST(request: NextRequest) {
     }
   });
 
-  return NextResponse.json(item, { status: 201 });
+  // relistNext: the relist part still to do (null = finished), only on a relist.
+  return NextResponse.json({ ...item, relistNext }, { status: 201 });
 }

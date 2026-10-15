@@ -36,7 +36,9 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+import { describeBreakdown } from "@/lib/expirationBreakdown";
+import type { RelistPart, RelistPlan } from "@/lib/relist";
 import { Suspense, useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
 
 type Photo = {
@@ -129,6 +131,7 @@ export default function ScanPage() {
 
 function ScanPageInner() {
   const searchParams = useSearchParams();
+  const router = useRouter();
   const [scanning, setScanning] = useState(false);
   const [savedThisSession, setSavedThisSession] = useState(0);
 
@@ -248,6 +251,13 @@ function ScanPageInner() {
   // description lists each date.
   const [extraDates, setExtraDates] = useState<{ date: string; units: string }[]>([]);
   const [firstDateUnits, setFirstDateUnits] = useState("");
+  // Guided relist from the dashboard (/scan?relist={id}): a multi-date
+  // listing the sweep pulled, redone as the still-good units (eBay) and
+  // then the past-date ones (Shopify & Whatnot only), on its own manifest.
+  const [relist, setRelist] = useState<{ plan: RelistPlan; part: RelistPart } | null>(null);
+  // The manifest being scanned before the relist switched to the
+  // original's, put back when it's over so the next scans land right.
+  const preRelistManifest = useRef<string | null | undefined>(undefined);
 
   // Bundle mode — expiration is asked per item added to the bundle, not
   // once for the whole listing, since different items in the same bundle
@@ -285,6 +295,21 @@ function ScanPageInner() {
     localStorage.removeItem(OLD_SESSION_KEY);
     // Arrived via "Scan into this manifest": straight into scanning.
     if (wasScanning || searchParams.get("manifestId")) startScanning();
+    const relistId = searchParams.get("relist");
+    if (relistId) {
+      fetch(`/api/items/${relistId}/relist`)
+        .then(async (r) => {
+          const data = await r.json();
+          if (!r.ok) throw new Error(data.error ?? "Couldn't load that relist.");
+          return data as RelistPlan;
+        })
+        .then((plan) => {
+          if (!plan.next) throw new Error("That one's already relisted.");
+          startScanning();
+          applyRelistPart(plan, plan.next);
+        })
+        .catch((e) => setMessage(e instanceof Error ? e.message : "Couldn't load that relist."));
+    }
     fetch("/api/shelf-locations")
       .then((r) => r.json())
       .then(setShelfLocations);
@@ -643,6 +668,51 @@ function ScanPageInner() {
     setStep(isBundle ? "bundleHeroPhoto" : "upc");
   }
 
+  // Fills in everything the relist already knows (the original's UPC,
+  // manifest, shelf, box, and these units' count and dates) and goes
+  // straight to photos. Weight is left blank: fewer units weigh less.
+  function applyRelistPart(plan: RelistPlan, part: RelistPart) {
+    const p = plan[part];
+    const [first, ...rest] = p.batches;
+    setIsBundle(false);
+    setUpc(plan.upc ?? "");
+    if (preRelistManifest.current === undefined) preRelistManifest.current = activeManifestId;
+    if (plan.manifestId) setActiveManifestId(plan.manifestId);
+    setIsMultipack(p.isMultipack);
+    setPackSize(p.packSize ? String(p.packSize) : "");
+    setQuantity(String(p.quantity));
+    setExpirationDate(first?.date ?? "");
+    setFirstDateUnits(rest.length > 0 && first ? String(first.units) : "");
+    setExtraDates(rest.map((b) => ({ date: b.date, units: String(b.units) })));
+    setShopifyOnly(part === "past");
+    setShelfLocation(plan.shelfLocation);
+    setBoxSize(plan.boxSize ?? "");
+    setWeightLbs("");
+    setWeightOz("");
+    setPhotos([]);
+    setRelist({ plan, part });
+    setStep("photos");
+  }
+
+  function endRelist() {
+    setRelist(null);
+    const previous = preRelistManifest.current;
+    preRelistManifest.current = undefined;
+    if (previous !== undefined) {
+      setActiveManifestId(previous);
+      if (previous === null) {
+        localStorage.removeItem(ACTIVE_MANIFEST_KEY);
+        setManifestTitle(null);
+      }
+    }
+    router.replace("/scan");
+  }
+
+  function cancelRelist() {
+    resetForm();
+    endRelist();
+  }
+
   const steps = isBundle ? BUNDLE_STEPS : SINGLE_STEPS;
   const stepIndex = steps.indexOf(step);
 
@@ -752,6 +822,8 @@ function ScanPageInner() {
             : undefined,
           manifestId: activeManifestId,
           shopifyOnly: !isBundle && shopifyOnly,
+          relistOf: relist?.plan.id,
+          relistPart: relist?.part,
         }),
       });
 
@@ -765,8 +837,24 @@ function ScanPageInner() {
       // for the phone to trigger or wait on here, so it's unaffected by the
       // camera app backgrounding the tab between scans.
       setSavedThisSession((n) => n + 1);
-      setMessage("Saved. Ready for the next item.");
+      const saved: { relistNext?: RelistPart | null } = await res.json().catch(() => ({}));
       resetForm();
+      if (relist) {
+        const done = { ...relist.plan, [relist.part]: { ...relist.plan[relist.part], done: true } };
+        if (saved.relistNext) {
+          applyRelistPart(done, saved.relistNext);
+          setMessage("Saved the good units. Now the past-date ones.");
+        } else {
+          endRelist();
+          setMessage(
+            relist.plan.pastDateLane
+              ? "Relist done. Both new listings are in Review."
+              : "Relist done. The new listing is in Review, and the past-date units were logged as expired."
+          );
+        }
+      } else {
+        setMessage("Saved. Ready for the next item.");
+      }
     } catch (e) {
       setMessage(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
@@ -1228,7 +1316,37 @@ function ScanPageInner() {
 
         <StepProgress current={stepIndex} total={steps.length} />
 
-        {shopifyOnly && !isBundle && step !== "mode" && step !== "upc" && (
+        {relist && (
+          <div className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-2.5 text-sm text-sky-950">
+            <div className="flex items-start justify-between gap-2">
+              <p className="font-semibold">
+                Relisting
+                {relist.plan.pastDateLane ? ` · part ${relist.part === "good" ? 1 : 2} of 2` : ""}
+              </p>
+              <button type="button" className="shrink-0 text-xs font-medium underline" onClick={cancelRelist}>
+                Cancel
+              </button>
+            </div>
+            <p className="mt-0.5 text-sky-900">{relist.plan.title}</p>
+            <p className="mt-1.5">
+              {relist.part === "good" ? (
+                <>
+                  <strong>Still-good units</strong> ({describeBreakdown(relist.plan.good.batches)}). Set the past-date
+                  ones aside and take new photos of just these. They go back on eBay.
+                  {!relist.plan.pastDateLane &&
+                    ` The past-date ones (${describeBreakdown(relist.plan.past.batches)}) can't be resold, so they get logged as expired when you save. Toss them.`}
+                </>
+              ) : (
+                <>
+                  <strong>Past-date units</strong> ({describeBreakdown(relist.plan.past.batches)}). Take new photos of
+                  just these. They go on Shopify &amp; Whatnot only, on the past-date deals page.
+                </>
+              )}
+            </p>
+          </div>
+        )}
+
+        {shopifyOnly && !relist && !isBundle && step !== "mode" && step !== "upc" && (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm text-violet-950">
             <span>
               <span className="font-semibold">Shopify &amp; Whatnot only.</span> This one won&apos;t be listed on eBay.
