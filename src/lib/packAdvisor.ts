@@ -4,13 +4,14 @@ import { logAiUsage } from "./aiUsage";
 import {
   FALLBACK_FEE_FIXED,
   FALLBACK_FEE_RATE,
-  FALLBACK_SHIPPING_COST,
   MAX_RECOMMENDED_PACK,
+  PACKAGING_OZ,
   SHIPPING_PER_EXTRA_UNIT,
-  netPerUnit,
   recommendPackSize,
   type PackStat,
 } from "./packSize";
+import { typicalSingleLabelCost } from "./shippingCost";
+import { labelForWeight } from "./shippingZone";
 
 // ---------------------------------------------------------------------------
 // Pack-size agent — decides whether a product should be listed as singles
@@ -33,6 +34,10 @@ export const PACK_STRATEGY_SCOPE = "pack_strategy";
 // the Analyzer's call instead of paying for a new one (Cristian's ask,
 // 2026-09-27). Any new correction from Cristian still invalidates it.
 const DECISION_REUSE_DAYS = 30;
+// Calls made before the agent priced shipping by weight (it assumed $5 plus
+// $0.75 per extra unit, which undervalued bigger packs of light items) are
+// re-decided once, Cristian's call 2026-10-15.
+const REAL_SHIPPING_SINCE = new Date("2026-10-15T17:15:00Z");
 const FEEDBACK_EXAMPLES = 8;
 // The learning pass re-summarizes sell-speed data at most this often when
 // there's no new correction from Cristian, so the lessons (and every
@@ -88,7 +93,17 @@ export async function advisePackSize(input: {
 
   const ownHistory = input.upc ? await ownSellSpeedForUpc(input.upc) : [];
 
-  const prompt = buildPrompt({ ...input, lessons: lessons?.notes ?? null, examples, ownHistory });
+  const [typicalLabel, unitWeightOz] = await Promise.all([
+    typicalSingleLabelCost(),
+    input.upc ? unitShippingWeightOz(input.upc, input.description) : Promise.resolve(null),
+  ]);
+  const prompt = buildPrompt({
+    ...input,
+    lessons: lessons?.notes ?? null,
+    examples,
+    ownHistory,
+    shipping: { typicalLabel, unitWeightOz },
+  });
 
   try {
     const response = await anthropic.messages.create(
@@ -130,7 +145,7 @@ export async function advisePackSize(input: {
     }
     if (input.upc) {
       await prisma.packDecision
-        .create({ data: { upc: input.upc, packSize, reason } })
+        .create({ data: { upc: input.upc, packSize, reason, unitWeightOz } })
         .catch((e) => console.error(`[packAdvisor] failed to save decision for ${input.upc}`, e));
     }
     return { packSize, reason, basis: "agent" };
@@ -202,8 +217,12 @@ export async function unitShippingWeightOz(upc: string, description: string): Pr
     .sort((a, b) => a - b);
   if (perUnit.length > 0) return perUnit[Math.floor(perUnit.length / 2)];
 
+  const weighed = await prisma.packDecision.findFirst({
+    where: { upc, unitWeightOz: { not: null } },
+    orderBy: { createdAt: "desc" },
+  });
+  if (weighed?.unitWeightOz) return weighed.unitWeightOz;
   const decision = await prisma.packDecision.findFirst({ where: { upc }, orderBy: { createdAt: "desc" } });
-  if (decision?.unitWeightOz) return decision.unitWeightOz;
 
   try {
     const response = await anthropic.messages.create(
@@ -252,7 +271,10 @@ Product: "${description}" (UPC ${upc})`,
 // would be thrown away each week.
 export async function savedPackDecision(upc: string): Promise<PackAdvice | null> {
   const cached = await prisma.packDecision.findFirst({
-    where: { upc, createdAt: { gte: new Date(Date.now() - DECISION_REUSE_DAYS * DAY_MS) } },
+    where: {
+      upc,
+      createdAt: { gte: new Date(Math.max(Date.now() - DECISION_REUSE_DAYS * DAY_MS, REAL_SHIPPING_SINCE.getTime())) },
+    },
     orderBy: { createdAt: "desc" },
   });
   if (!cached) return null;
@@ -267,9 +289,25 @@ function buildPrompt(input: {
   category: string | null;
   packStats: PackStat[];
   lessons: string | null;
+  shipping: { typicalLabel: number; unitWeightOz: number | null };
   examples: { description: string; suggestedPackSize: number | null; chosenPackSize: number; reason: string }[];
   ownHistory: string[];
 }): string {
+  // The label for a box of this many units: by weight when the unit weight
+  // is known (USPS charges the same for anything under 1 lb), else the
+  // typical label plus a rough amount per extra unit.
+  const { typicalLabel, unitWeightOz } = input.shipping;
+  const labelFor = (units: number) =>
+    unitWeightOz != null
+      ? labelForWeight(typicalLabel, (unitWeightOz * units + PACKAGING_OZ) / 16)
+      : typicalLabel + SHIPPING_PER_EXTRA_UNIT * (units - 1);
+  const keepPerUnit = (price: number, units: number) =>
+    (price * (1 - FALLBACK_FEE_RATE) - FALLBACK_FEE_FIXED - labelFor(units)) / units;
+  const underOneLb = unitWeightOz != null ? Math.floor((16 - PACKAGING_OZ) / unitWeightOz) : null;
+  const shippingLine =
+    unitWeightOz != null
+      ? `shipping label ~${money(typicalLabel)} for any box under 1 lb. One unit weighs about ${unitWeightOz} oz, so ${underOneLb != null && underOneLb >= 1 ? `up to ${underOneLb} unit${underOneLb === 1 ? "" : "s"} ship for that same label` : "even one unit is over 1 lb"}; heavier boxes cost more (a ${packWord(MAX_RECOMMENDED_PACK)} box would be ~${money(labelFor(MAX_RECOMMENDED_PACK))})`
+      : `shipping label ~${money(typicalLabel)} plus ~${money(SHIPPING_PER_EXTRA_UNIT)} per extra unit in the box`;
   const market = input.packStats
     .filter((s) => s.packSize <= 12)
     .map((s) => {
@@ -278,7 +316,7 @@ function buildPrompt(input: {
         s.lowestTotal != null
           ? `, cheapest ${money(s.lowestTotal)} (${money(s.lowestTotal / s.packSize)} per unit to the buyer)${s.cheapestTitle ? `: "${s.cheapestTitle}"` : ""}`
           : "";
-      return `- ${label}: ${s.count} active listing${s.count === 1 ? "" : "s"}, typical ${money(s.medianTotal)} (${money(s.medianTotal / s.packSize)} per unit to the buyer)${lowest}. At the typical price Cristian would keep about ${money(netPerUnit(s.medianTotal, s.packSize))} per unit.`;
+      return `- ${label}: ${s.count} active listing${s.count === 1 ? "" : "s"}, typical ${money(s.medianTotal)} (${money(s.medianTotal / s.packSize)} per unit to the buyer)${lowest}. At the typical price Cristian would keep about ${money(keepPerUnit(s.medianTotal, s.packSize))} per unit (${money(keepPerUnit(s.medianTotal, s.packSize) * s.packSize)} per listing).`;
     })
     .join("\n");
 
@@ -302,7 +340,7 @@ Category: ${input.category ?? "unknown"}
 Live eBay listings by pack size:
 ${market || "None. Nobody has this exact product listed on eBay right now (searched by UPC and by name), so there's nothing to compare against. Decide from what the product is, its store retail price and the costs below, and say in the reason that there were no eBay listings to go by."}
 
-Cost assumptions behind "keep about": eBay fees ~${(FALLBACK_FEE_RATE * 100).toFixed(2)}% + ${money(FALLBACK_FEE_FIXED)}, shipping label ~${money(FALLBACK_SHIPPING_COST)} plus ~${money(SHIPPING_PER_EXTRA_UNIT)} per extra unit in the box. You can pick a pack size nobody lists yet if your reasoning supports it.
+Cost assumptions behind "keep about": eBay fees ~${(FALLBACK_FEE_RATE * 100).toFixed(2)}% + ${money(FALLBACK_FEE_FIXED)}, ${shippingLine}. When a bigger pack ships for the same label, it usually keeps much more per listing, so weigh that against how much slower a bigger pack might sell. You can pick a pack size nobody lists yet if your reasoning supports it.
 
 Cristian's own past listings of this exact product:
 ${input.ownHistory.length > 0 ? input.ownHistory.join("\n") : "none yet"}

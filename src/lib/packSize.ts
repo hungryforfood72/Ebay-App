@@ -286,7 +286,7 @@ export type ListingWorth = {
 };
 
 // The mailer or box itself, on top of the items in it.
-const PACKAGING_OZ = 2;
+export const PACKAGING_OZ = 2;
 // A lot bigger than any pack size eBay lists has no price of its own; it's
 // priced off the cheapest per-unit rate, less this much, since buyers expect
 // a bulk lot to come cheaper per unit than a small pack.

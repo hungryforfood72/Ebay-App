@@ -225,22 +225,6 @@ export async function GET(request: NextRequest) {
       } else {
         notWorthOnEbay = true;
       }
-    } else if (called > 1 && calledWorth?.worthIt && available != null && available > called) {
-      // The call works, but a bigger pack can make a lot more for what's on
-      // hand: small items ship for one label either way. Cristian,
-      // 2026-10-15: 6 Vaseline tins as two 3-packs make $6.33, as one
-      // 6-pack $13.38. Only a clear win counts (UPGRADE_MIN_GAIN), since
-      // smaller packs still sell faster.
-      const base = totalProfit(called);
-      let best = called;
-      for (let n = called + 1; n <= Math.min(MAX_RECOMMENDED_PACK, available); n++) {
-        if (totalProfit(n) >= totalProfit(best)) best = n;
-      }
-      const gain = totalProfit(best) - base;
-      if (best !== called && gain >= UPGRADE_MIN_GAIN.dollars && totalProfit(best) >= base * UPGRADE_MIN_GAIN.ratio) {
-        recommendation = { ...recommendation, packSize: best };
-        reason = `${reason ? `${reason} ` : ""}Bumped up to ${best}-packs: for the ${available} you have, that makes a lot more after fees and shipping than ${called}-packs, since they ship for about the same label.`;
-      }
     }
 
     const recommended = recommendation.packSize;
@@ -368,10 +352,6 @@ export async function POST(request: NextRequest) {
   if (body?.count != null) await prisma.handCount.create({ data: { upc, manifestId, count } });
   return NextResponse.json({ ok: true });
 }
-
-// A bigger pack replaces a call that already works only when it makes at
-// least this much more in total for the units on hand.
-const UPGRADE_MIN_GAIN = { dollars: 2, ratio: 1.25 };
 
 // A typed count older than this is from another day's work, not the
 // product in hand now.
