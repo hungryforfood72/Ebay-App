@@ -887,6 +887,12 @@ model ManifestLine {
   // allocated to lines in this order, filling one before spilling to the
   // next, rather than crediting the same total to every matching line.
   sortOrder        Int      @default(0)
+  // Other-supplier manifests only (set in the upload's column mapper):
+  // pieces in one box as eBay sells it. expectedQuantity stays the piece
+  // count; the Analyzer prices by box (expectedQuantity / this), since
+  // comps are per box — Medical Supplies 2026-10-15 had Hollister 14204 as
+  // 30 pieces = 6 boxes of 5, valued per piece at a box price (5x high).
+  piecesPerBox     Int?
 
   @@index([manifestId, upc])
 }

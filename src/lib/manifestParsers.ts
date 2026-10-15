@@ -16,6 +16,8 @@ export type ParsedManifestLine = {
   condition: string | null;
   category: string | null;
   subcategory: string | null;
+  // Other-supplier manifests only (see ManifestLine.piecesPerBox).
+  piecesPerBox: number | null;
 };
 
 export type ParsedManifest = {
@@ -132,6 +134,7 @@ function parseBStock(lines: string[]): ParsedManifestLine[] {
       condition: (f[col.condition] ?? "").trim() || null,
       category: (f[col.category] ?? "").trim() || null,
       subcategory: (f[col.subcategory] ?? "").trim() || null,
+      piecesPerBox: null,
     });
   }
   return out;
@@ -174,6 +177,7 @@ function parseLiquidationCom(lines: string[]): ParsedManifestLine[] {
       condition: null,
       category: (f[col.category] ?? "").trim() || null,
       subcategory: (f[col.subcategory] ?? "").trim() || null,
+      piecesPerBox: null,
     });
   }
   return out;

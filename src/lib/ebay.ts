@@ -377,6 +377,14 @@ export async function searchActiveListings(query: {
   return [...merged.values()];
 }
 
+// A single search, by GTIN or by keywords — unlike searchActiveListings,
+// which merges both. The other-supplier Analyzer path needs to know which
+// listings came from an exact UPC match (see estimateOtherSupplierLine).
+export async function searchActiveListingsBy(query: { gtin: string } | { keywords: string }): Promise<ActiveListingComp[]> {
+  const params = new URLSearchParams({ limit: "50", ...("gtin" in query ? { gtin: query.gtin } : { q: query.keywords }) });
+  return fetchActiveListingComps(params);
+}
+
 export type LiveListingPrice = { price: number; originalPrice: number | null };
 
 // GET /buy/browse/v1/item/get_item_by_legacy_id — the app's own stored

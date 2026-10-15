@@ -217,6 +217,9 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
   }
 
   const evaluation = candidate.sourcingEvaluation;
+  // Other-supplier manifests are priced by the box (see
+  // estimateOtherSupplierLine), so their counts are boxes, not pieces.
+  const unitsLabel = candidate.supplier === "unknown" ? "Boxes" : "Units";
 
   return (
     <AppShell
@@ -575,7 +578,7 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
                             label="Net/unit"
                             value={e.estimatedNetPerUnit != null ? `$${e.estimatedNetPerUnit.toFixed(2)}` : "—"}
                           />
-                          <MiniStat label="Units" value={String(e.effectiveUnits)} />
+                          <MiniStat label={unitsLabel} value={String(e.effectiveUnits)} />
                           <MiniStat label="Sell as" value={sellAs(e)} />
                         </dl>
                       </li>
@@ -589,7 +592,7 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
                           <th className="px-3 py-3 text-right">Est. sale/unit</th>
                           <th className="px-3 py-3 text-right">Sell as</th>
                           <th className="px-3 py-3 text-right">Est. net/unit</th>
-                          <th className="px-3 py-3 text-right">Units</th>
+                          <th className="px-3 py-3 text-right">{unitsLabel}</th>
                           <th className="px-4 py-3">Confidence</th>
                         </tr>
                       </thead>
@@ -889,6 +892,7 @@ const CONFIDENCE_TONES: Record<string, BadgeTone> = {
   web_price_check: "primary",
   category_fallback: "warning",
   market_only: "neutral",
+  exact_match: "primary",
 };
 
 function ConfidenceBadge({ confidence }: { confidence: string }) {

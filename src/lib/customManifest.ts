@@ -13,6 +13,10 @@ export type ColumnMapping = {
   // Optional multiplier for manifests whose quantity counts cases: units =
   // quantity × this column (e.g. Qty 23 cases × Case/Pack 5 = 115).
   packSize: number | null;
+  // Pieces in one box as eBay sells it, so the Analyzer can price boxes
+  // instead of loose pieces (see ManifestLine.piecesPerBox). Usually the
+  // same Case/Pack column, whether or not quantity is already in pieces.
+  piecesPerBox: number | null;
   upc: number | null;
   sku: number | null;
   unitRetail: number | null;
@@ -119,7 +123,8 @@ export function guessMapping(rows: string[][], headerRow: number, hiddenColumns:
   // quantity × case pack when there isn't one.
   const totalUnits = find(PATTERNS.totalUnits);
   const quantity = totalUnits ?? find(PATTERNS.quantity, PATTERNS.quantityExclude) ?? find(PATTERNS.quantityCases);
-  const packSize = totalUnits == null && quantity != null ? find(PATTERNS.packSize) : null;
+  const packColumn = find(PATTERNS.packSize);
+  const packSize = totalUnits == null && quantity != null ? packColumn : null;
   const category = find(PATTERNS.category);
   const condition = find(PATTERNS.condition);
   const extraDescription = labels.flatMap((l, i) => (!hidden.has(i) && !taken.has(i) && PATTERNS.extra.test(l) ? [i] : []));
@@ -129,6 +134,7 @@ export function guessMapping(rows: string[][], headerRow: number, hiddenColumns:
     description,
     quantity,
     packSize,
+    piecesPerBox: packColumn,
     upc,
     sku,
     unitRetail,
@@ -213,6 +219,7 @@ export function applyMapping(rows: string[][], mapping: ColumnMapping): ParsedMa
     const retailPrice = unitCol ?? (totalCol != null ? totalCol / units : 0);
     const extendedRetail = totalCol ?? retailPrice * units;
 
+    const boxSize = mapping.piecesPerBox != null ? Math.round(parseNumber(cell(row, mapping.piecesPerBox))) : 0;
     const sku = cell(row, mapping.sku);
     out.push({
       supplierSku: isBlankish(sku) ? null : sku,
@@ -224,6 +231,7 @@ export function applyMapping(rows: string[][], mapping: ColumnMapping): ParsedMa
       condition: cell(row, mapping.condition) || null,
       category: cell(row, mapping.category) || null,
       subcategory: null,
+      piecesPerBox: boxSize > 1 ? boxSize : null,
     });
   }
   return out;

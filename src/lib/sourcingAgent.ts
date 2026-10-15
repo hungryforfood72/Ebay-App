@@ -12,8 +12,9 @@ import {
 import { anthropic } from "./anthropic";
 import { logAiUsage } from "./aiUsage";
 import { advisePackSize } from "./packAdvisor";
-import { EbayApiError, searchActiveListings } from "./ebay";
+import { EbayApiError, searchActiveListings, searchActiveListingsBy, type ActiveListingComp } from "./ebay";
 import { ebayBanReason } from "./ebayBanned";
+import { boxesFor, exactSearchKeywords, isExactTitleMatch, LOT_TITLE, priceFromExactComps } from "./exactComps";
 import type { ManifestSupplier } from "@/generated/prisma/client";
 
 // ---------------------------------------------------------------------------
@@ -757,6 +758,13 @@ type LineGroup = {
   expectedQuantity: number;
   extendedRetail: number;
   retailPrice: number;
+  // Other-supplier manifests only (supplier "unknown") — see
+  // estimateOtherSupplierLine. strictPricing switches to that path; the
+  // rest feed it.
+  strictPricing: boolean;
+  supplierSku: string | null;
+  piecesPerBox: number | null;
+  boxes: number;
 };
 
 type LineEstimateResult = {
@@ -772,7 +780,7 @@ type LineEstimateResult = {
   // See recommendPackSize (./packSize) — null when there's too little to go on.
   recommendedPackSize: number | null;
   recommendedPackBasis: "agent" | "listings" | "estimate" | null;
-  dataConfidence: "own_history" | "historical_match" | "web_price_check" | "category_fallback" | "market_only";
+  dataConfidence: "own_history" | "historical_match" | "web_price_check" | "category_fallback" | "market_only" | "exact_match";
   flaggedDud: boolean;
   marketCheckFailed: boolean;
   marketTrend: string | null;
@@ -783,6 +791,99 @@ type LineEstimateResult = {
   slowMover: boolean;
   monthsToSellThrough: number | null;
 };
+
+// Other-supplier manifests (supplier "unknown", uploaded through the
+// column mapper). Cristian's call 2026-10-15: these three fixes apply ONLY
+// here — BStock / Liquidation.com keep estimateLine's blend below.
+//   1. Priced by the box eBay sells (group.boxes), not by loose pieces.
+//   2. Only exact comps: under the UPC, or titled with the item's own
+//      number; lots skipped (see exactComps.ts). No exact listing = no
+//      price, never a borrowed one.
+//   3. Stand-in for the retail cap (most of these manifests list no
+//      retail): 1–2 exact listings use the lowest price, not the median.
+//      When retail is given, the usual cap applies per box.
+// The crowded-market dud rule is kept as-is, counted over exact listings.
+async function estimateOtherSupplierLine(
+  group: LineGroup,
+  receiveRate: number,
+  compSaturationThreshold: number
+): Promise<LineEstimateResult> {
+  const effectiveUnits = Math.round(group.boxes * receiveRate);
+  const base = {
+    upc: group.upc,
+    description: group.description,
+    extendedRetail: group.extendedRetail,
+    effectiveUnits,
+    typicalPackSize: 1,
+    recommendedPackSize: null,
+    recommendedPackBasis: null,
+    dataConfidence: "exact_match" as const,
+    marketTrend: null,
+    eventEnded: false,
+    postHolidayFiller: isPostHolidayFiller(group.description),
+    trendNudge: null,
+    seasonal: null,
+    slowMover: false,
+    monthsToSellThrough: null,
+  };
+
+  const comps: ActiveListingComp[] = [];
+  try {
+    const [byUpc, byKeywords] = await Promise.all([
+      group.upc && /^\d{12,14}$/.test(group.upc) ? searchActiveListingsBy({ gtin: group.upc }) : Promise.resolve([]),
+      searchActiveListingsBy({ keywords: exactSearchKeywords(group.description, group.supplierSku) }),
+    ]);
+    const seen = new Set<string>();
+    for (const c of [...byUpc, ...byKeywords.filter((c) => isExactTitleMatch(c.title, group.description, group.supplierSku))]) {
+      if (seen.has(c.itemId) || LOT_TITLE.test(c.title)) continue;
+      seen.add(c.itemId);
+      comps.push(c);
+    }
+  } catch (e) {
+    if (!(e instanceof EbayApiError)) throw e;
+    console.error(`[sourcingAgent] exact comp search failed for "${group.description}"`, e);
+    // Unknown, not a confirmed dud — same reasoning as estimateLine.
+    return {
+      ...base,
+      estimatedUnitSalePrice: null,
+      estimatedUnitFees: null,
+      estimatedUnitShipping: null,
+      estimatedNetPerUnit: null,
+      flaggedDud: false,
+      marketCheckFailed: true,
+    };
+  }
+
+  const { price: rawPrice } = priceFromExactComps(comps.map((c) => c.totalPrice));
+  if (rawPrice == null) {
+    return {
+      ...base,
+      estimatedUnitSalePrice: null,
+      estimatedUnitFees: null,
+      estimatedUnitShipping: null,
+      estimatedNetPerUnit: 0,
+      flaggedDud: true,
+      marketCheckFailed: false,
+    };
+  }
+  // Manifest retail is per piece; the cap is per box.
+  const price =
+    group.retailPrice > 0
+      ? Math.min(rawPrice, group.retailPrice * (group.piecesPerBox ?? 1) * UNVERIFIED_RETAIL_MULTIPLE_CAP)
+      : rawPrice;
+  const fees = price * FALLBACK_FEE_RATE + FALLBACK_FEE_FIXED;
+  const net = price - fees - FALLBACK_SHIPPING_COST;
+  const flaggedDud = net <= 0 || comps.length >= compSaturationThreshold || base.postHolidayFiller;
+  return {
+    ...base,
+    estimatedUnitSalePrice: price,
+    estimatedUnitFees: fees,
+    estimatedUnitShipping: FALLBACK_SHIPPING_COST,
+    estimatedNetPerUnit: flaggedDud ? 0 : net,
+    flaggedDud,
+    marketCheckFailed: false,
+  };
+}
 
 async function estimateLine(
   group: LineGroup,
@@ -821,6 +922,8 @@ async function estimateLine(
       monthsToSellThrough: null,
     };
   }
+
+  if (group.strictPricing) return estimateOtherSupplierLine(group, receiveRate, compSaturationThreshold);
 
   // Own-history: exact UPC, across every manifest ever sold, not just this one.
   let ownSalesCount = 0;
@@ -1443,6 +1546,10 @@ export async function evaluateManifestChunk(
     if (existing) {
       existing.expectedQuantity += line.expectedQuantity;
       existing.extendedRetail += Number(line.extendedRetail);
+      // Boxes per line, then summed: the same UPC can come in different
+      // case packs on different lines.
+      existing.boxes += boxesFor(line.expectedQuantity, line.piecesPerBox);
+      existing.piecesPerBox ??= line.piecesPerBox;
     } else {
       groups.set(key, {
         groupKey: key,
@@ -1452,6 +1559,10 @@ export async function evaluateManifestChunk(
         expectedQuantity: line.expectedQuantity,
         extendedRetail: Number(line.extendedRetail),
         retailPrice: Number(line.retailPrice),
+        strictPricing: manifest.supplier === "unknown",
+        supplierSku: line.supplierSku,
+        piecesPerBox: line.piecesPerBox,
+        boxes: boxesFor(line.expectedQuantity, line.piecesPerBox),
       });
     }
   }

@@ -105,6 +105,7 @@ export async function POST(request: NextRequest) {
           condition: l.condition,
           category: l.category,
           subcategory: l.subcategory,
+          piecesPerBox: l.piecesPerBox,
           sortOrder: index,
         })),
       },
@@ -127,6 +128,7 @@ function sanitizeLine(raw: unknown): ParsedManifestLine | null {
   };
   const description = text(l.description, 500);
   const expectedQuantity = Math.round(Number(l.expectedQuantity));
+  const piecesPerBox = Math.round(Number(l.piecesPerBox));
   if (!description || !Number.isFinite(expectedQuantity) || expectedQuantity <= 0 || expectedQuantity > 1_000_000) return null;
   return {
     supplierSku: text(l.supplierSku, 100),
@@ -138,5 +140,6 @@ function sanitizeLine(raw: unknown): ParsedManifestLine | null {
     condition: text(l.condition, 100),
     category: text(l.category, 200),
     subcategory: text(l.subcategory, 200),
+    piecesPerBox: Number.isInteger(piecesPerBox) && piecesPerBox > 1 && piecesPerBox <= 100_000 ? piecesPerBox : null,
   };
 }

@@ -116,10 +116,12 @@ export function ManifestUpload({
       const headerRow = guessHeaderRow(grid.rows);
       const signature = headerSignature(grid.rows, headerRow);
       const saved = loadSavedMapping(signature);
+      const guess = guessMapping(grid.rows, headerRow, grid.hiddenColumns);
       setMapper({
         ...grid,
         fileName: file.name,
-        mapping: saved ?? guessMapping(grid.rows, headerRow, grid.hiddenColumns),
+        // A layout saved before a field existed gets that field's guess.
+        mapping: saved ? { ...guess, ...saved } : guess,
         remembered: saved != null,
         reason: otherSupplier
           ? ""
@@ -195,6 +197,11 @@ const FIELDS: { key: MappableField; label: string; hint?: string; required?: boo
     key: "packSize",
     label: "Units per case",
     hint: "Only if Quantity counts cases: units = Quantity × this.",
+  },
+  {
+    key: "piecesPerBox",
+    label: "Pieces per sellable box",
+    hint: "eBay sells these by the box. Usually Case/Pack, so the analyzer prices boxes, not loose pieces.",
   },
   { key: "upc", label: "UPC" },
   { key: "sku", label: "Item # / SKU" },
@@ -346,6 +353,7 @@ function ColumnMapper({
                   <th className="px-3 py-2 font-medium">Description</th>
                   <th className="px-3 py-2 font-medium">UPC</th>
                   <th className="px-3 py-2 text-right font-medium">Units</th>
+                  <th className="px-3 py-2 text-right font-medium">Per box</th>
                   <th className="px-3 py-2 text-right font-medium">Retail ea.</th>
                 </tr>
               </thead>
@@ -355,6 +363,7 @@ function ColumnMapper({
                     <td className="min-w-48 px-3 py-2">{l.description}</td>
                     <td className="px-3 py-2 tabular-nums">{l.upc ?? "—"}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{l.expectedQuantity}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{l.piecesPerBox ?? 1}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{l.retailPrice > 0 ? `$${l.retailPrice.toFixed(2)}` : "—"}</td>
                   </tr>
                 ))}
