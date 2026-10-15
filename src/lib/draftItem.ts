@@ -2,7 +2,8 @@ import { prisma } from "@/lib/prisma";
 import { lookupUpc } from "@/lib/upcLookup";
 import { anthropic, fetchImageAsBase64 } from "@/lib/anthropic";
 import { logAiUsage } from "@/lib/aiUsage";
-import { removeBlockedPhrases, truncateTitle } from "@/lib/ebayTitle";
+import { truncateTitle } from "@/lib/ebayTitle";
+import { getBlockedPhrases, removeBlockedPhrases } from "@/lib/blockedWords";
 import { formatExpiration } from "@/lib/formatExpiration";
 import type { Item, Prisma } from "@/generated/prisma/client";
 import type Anthropic from "@anthropic-ai/sdk";
@@ -77,8 +78,9 @@ async function applyDraft(item: Item, draft: Draft, extra: Prisma.ItemUpdateInpu
   // it here rather than trust the model.
   // Words eBay's filter blocks come out of the draft before anyone sees it,
   // since the listing can't go live with them anyway.
-  const draftTitle = draft.title ? truncateTitle(removeBlockedPhrases(draft.title)) : draft.title;
-  if (draft.description) draft = { ...draft, description: removeBlockedPhrases(draft.description) };
+  const blocked = await getBlockedPhrases();
+  const draftTitle = draft.title ? truncateTitle(removeBlockedPhrases(draft.title, blocked)) : draft.title;
+  if (draft.description) draft = { ...draft, description: removeBlockedPhrases(draft.description, blocked) };
 
   const titleUnedited = !item.finalTitle || item.finalTitle === item.aiTitle;
   const descriptionUnedited =

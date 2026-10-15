@@ -1545,6 +1545,74 @@ async function tradingApiFetch(callName: string, bodyXml: string): Promise<strin
   return text;
 }
 
+// eBay's listing filter error, from both the Inventory API and Trading:
+// "The item cannot be listed or modified. The title and/or description may
+// contain improper words, or the listing or seller may be in violation of
+// eBay policy."
+export const BLOCKED_WORDS_ERROR = /improper\s+words/i;
+
+const TRADING_CONDITION_ID: Record<ItemForEbayPublish["condition"], string> = {
+  new: "1000",
+  new_other: "1500",
+  used: "3000",
+  for_parts: "7000",
+};
+
+function cdata(value: string): string {
+  return `<![CDATA[${value.replace(/]]>/g, "]]]]><![CDATA[>")}]]>`;
+}
+
+// Asks eBay whether this listing, with the given title and description,
+// trips the improper-words filter: VerifyAddFixedPriceItem runs every
+// listing check without creating anything or charging fees. Any OTHER
+// error in the response (condition, shipping, a missing specific) is
+// ignored here, since only the words filter matters to the caller.
+export async function isBlockedByWordFilter(
+  item: ItemForEbayPublish,
+  title: string,
+  description: string
+): Promise<boolean> {
+  const config = getEbayConfig();
+  const [token, policies] = await Promise.all([getValidAccessToken(), policiesFor(item, config)]);
+  const totalOz = Math.max(1, Math.round((item.weightLbs ?? 0) * 16 + (item.weightOz ?? 0)));
+  const specifics = Object.entries(buildAspects(item.itemSpecifics, item.expirationDate))
+    .map(([name, values]) => `<NameValueList><Name>${xmlEscape(name)}</Name>${values.map((v) => `<Value>${xmlEscape(v)}</Value>`).join("")}</NameValueList>`)
+    .join("");
+  const xml = `<VerifyAddFixedPriceItemRequest xmlns="urn:ebay:apis:eBLBaseComponents"><Item>
+<Title>${xmlEscape(title)}</Title>
+<Description>${cdata(description || "See photos for details.")}</Description>
+<PrimaryCategory><CategoryID>${xmlEscape(item.categoryId)}</CategoryID></PrimaryCategory>
+<StartPrice>${item.price.toFixed(2)}</StartPrice>
+<ConditionID>${TRADING_CONDITION_ID[item.condition]}</ConditionID>
+<Country>US</Country><Currency>USD</Currency>
+<PostalCode>${xmlEscape(process.env.EBAY_LISTING_ZIP ?? "60620")}</PostalCode>
+<ListingDuration>GTC</ListingDuration><ListingType>FixedPriceItem</ListingType>
+<Quantity>1</Quantity>
+${item.photoUrls[0] ? `<PictureDetails><PictureURL>${xmlEscape(item.photoUrls[0])}</PictureURL></PictureDetails>` : ""}
+${specifics ? `<ItemSpecifics>${specifics}</ItemSpecifics>` : ""}
+<ShippingPackageDetails><WeightMajor unit="lbs">${Math.floor(totalOz / 16)}</WeightMajor><WeightMinor unit="oz">${totalOz % 16}</WeightMinor></ShippingPackageDetails>
+<SellerProfiles>
+<SellerShippingProfile><ShippingProfileID>${policies.fulfillmentPolicyId}</ShippingProfileID></SellerShippingProfile>
+<SellerPaymentProfile><PaymentProfileID>${policies.paymentPolicyId}</PaymentProfileID></SellerPaymentProfile>
+<SellerReturnProfile><ReturnProfileID>${config.returnPolicyId}</ReturnProfileID></SellerReturnProfile>
+</SellerProfiles>
+</Item></VerifyAddFixedPriceItemRequest>`;
+  const res = await fetch(`${config.apiBase}/ws/api.dll`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "text/xml",
+      "X-EBAY-API-COMPATIBILITY-LEVEL": "1439",
+      "X-EBAY-API-CALL-NAME": "VerifyAddFixedPriceItem",
+      "X-EBAY-API-SITEID": "0",
+      "X-EBAY-API-IAF-TOKEN": token,
+    },
+    body: `<?xml version="1.0" encoding="utf-8"?>${xml}`,
+  });
+  const text = await res.text();
+  if (!res.ok) throw new EbayApiError(`Trading API VerifyAddFixedPriceItem failed (${res.status})`, res.status, text);
+  return BLOCKED_WORDS_ERROR.test(text);
+}
+
 function xmlEscape(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }

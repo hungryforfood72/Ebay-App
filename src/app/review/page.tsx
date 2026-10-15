@@ -82,6 +82,10 @@ export default function ReviewPage() {
   const [boxSizes, setBoxSizes] = useState<BoxSize[]>([]);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // What the publish route fixed on its own (a blocked word, a missing or
+  // rejected item specific) on items that then went live, so nothing
+  // changes on a listing without Cristian seeing it.
+  const [autoFixNotes, setAutoFixNotes] = useState<string[]>([]);
   const [draftingId, setDraftingId] = useState<string | null>(null);
   const [publishingId, setPublishingId] = useState<string | null>(null);
   const [bulkPublishing, setBulkPublishing] = useState(false);
@@ -254,7 +258,11 @@ export default function ReviewPage() {
       if (!res.ok) {
         throw new Error(result.error ?? "Publish failed.");
       }
-      setItems((prev) => prev?.map((i) => (i.id === item.id ? result : i)) ?? prev);
+      const { autoFixes, ...updated } = result as Item & { autoFixes?: string[] };
+      if (autoFixes?.length) {
+        setAutoFixNotes((prev) => [...prev, `${updated.finalTitle ?? item.finalTitle}: ${autoFixes.join(" ")}`]);
+      }
+      setItems((prev) => prev?.map((i) => (i.id === item.id ? updated : i)) ?? prev);
       return true;
     } catch (e) {
       await load();
@@ -358,6 +366,19 @@ export default function ReviewPage() {
     >
       <div className="flex flex-col gap-8">
         {error && <Alert tone="danger">{error}</Alert>}
+        {autoFixNotes.length > 0 && (
+          <Alert tone="info">
+            <p className="font-medium">Fixed automatically, then published:</p>
+            <ul className="mt-1 list-disc space-y-1 pl-5">
+              {autoFixNotes.map((note, i) => (
+                <li key={i}>{note}</li>
+              ))}
+            </ul>
+            <button type="button" className="mt-2 text-sm underline" onClick={() => setAutoFixNotes([])}>
+              Dismiss
+            </button>
+          </Alert>
+        )}
 
         <section>
           <SectionHeader

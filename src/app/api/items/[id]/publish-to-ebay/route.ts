@@ -1,6 +1,7 @@
 import {
   createOffer,
   createOrReplaceInventoryItem,
+  BLOCKED_WORDS_ERROR,
   EbayApiError,
   getEbayEnvironment,
   publishOffer,
@@ -8,17 +9,20 @@ import {
   toEbaySku,
   toItemForEbayPublish,
 } from "@/lib/ebay";
-import { tryFixMissingAspect } from "@/lib/publishRemediation";
-import { hasBlockedPhrase } from "@/lib/ebayTitle";
+import { stripKnownBlockedWords, tryAutoFix } from "@/lib/publishRemediation";
 import { prisma } from "@/lib/prisma";
 import { queueShopifyPublish } from "@/lib/shopifySync";
 import { NextRequest, NextResponse } from "next/server";
 import type { Item } from "@/generated/prisma/client";
 
-// Auto-remediation (tryFixMissingAspect) needs its own web-search call on
-// top of the real eBay round-trips below — 60s was already tight for just
-// those.
-export const maxDuration = 90;
+// Auto-fixes (tryAutoFix) can each add a web-search call or a round of
+// eBay verify calls on top of the real publish round-trips, up to
+// MAX_AUTO_FIXES times.
+export const maxDuration = 300;
+
+// One error at a time is all eBay reports, so an item missing a specific
+// AND carrying a blocked word takes two rounds.
+const MAX_AUTO_FIXES = 3;
 
 async function attemptPublish(id: string, item: Item): Promise<{ listingId: string }> {
   const publishData = toItemForEbayPublish(item);
@@ -82,20 +86,28 @@ export async function POST(
     );
   }
 
+  const autoFixes: string[] = [];
   try {
+    const preCleaned = await stripKnownBlockedWords(item);
+    if (preCleaned) autoFixes.push(preCleaned);
+    let current = preCleaned ? await prisma.item.findUniqueOrThrow({ where: { id } }) : item;
     let result;
-    try {
-      result = await attemptPublish(id, item);
-    } catch (e) {
-      const message = e instanceof EbayApiError || e instanceof Error ? e.message : "Publish failed.";
-      // eBay rejected over a missing required item specific (e.g. "Dosage")
-      // — look up the real value and retry exactly once. Any other failure
-      // (or a remediation attempt that couldn't find a confident value)
-      // falls straight through to the outer catch, unchanged from before.
-      const fixed = await tryFixMissingAspect(id, message);
-      if (!fixed) throw e;
-      const refreshedItem = await prisma.item.findUniqueOrThrow({ where: { id } });
-      result = await attemptPublish(id, refreshedItem);
+    for (let round = 0; ; round++) {
+      try {
+        result = await attemptPublish(id, current);
+        break;
+      } catch (e) {
+        // Fix what can be fixed without a person (a missing or rejected
+        // item specific, a blocked word) and publish again. Anything else,
+        // or a fix that can't find a confident answer, falls through to the
+        // outer catch unchanged.
+        if (round >= MAX_AUTO_FIXES) throw e;
+        const message = e instanceof EbayApiError || e instanceof Error ? e.message : "Publish failed.";
+        const note = await tryAutoFix(id, message);
+        if (!note) throw e;
+        autoFixes.push(note);
+        current = await prisma.item.findUniqueOrThrow({ where: { id } });
+      }
     }
     const updated = await prisma.item.update({
       where: { id },
@@ -111,18 +123,17 @@ export async function POST(
     // response is out. A failure there is saved on the item and retried by
     // the cron; it never undoes the eBay listing.
     queueShopifyPublish(id);
-    return NextResponse.json(updated);
+    return NextResponse.json({ ...updated, autoFixes });
   } catch (e) {
     const raw = e instanceof EbayApiError || e instanceof Error ? e.message : "Publish failed.";
     // Errors only a person can fix: say how, in plain words.
     let message = raw;
     if (/item\s+specific\s+Expiration\s+Date\s+is\s+missing/i.test(raw)) {
       message = "eBay needs the expiration date for this category. Send it back to review, add the date printed on the package, and publish again.";
-    } else if (/improper\s+words/i.test(raw) && hasBlockedPhrase(`${item.finalTitle ?? ""} ${item.finalDescription ?? ""}`)) {
-      message = `eBay blocks "Ultra Sheer" on Neutrogena listings (recall filter). Send it back to review, take those words out of the title and description, and publish again.`;
-    } else if (/Brand\s+has\s+an\s+invalid\s+value/i.test(raw)) {
-      message = `${raw} For a mixed-brand lot, use the main brand in the lot instead.`;
+    } else if (BLOCKED_WORDS_ERROR.test(raw)) {
+      message = "eBay's word filter blocked this, and the app couldn't find the word in the title, so it's probably in the description. Send it back to review, look for brand claims, recalled product names or medical claims in the description, and publish again.";
     }
+    if (autoFixes.length > 0) message += ` (Already auto-fixed: ${autoFixes.join(" ")})`;
     await prisma.item.update({ where: { id }, data: { ebayPublishError: message } });
     return NextResponse.json({ error: message }, { status: 502 });
   }

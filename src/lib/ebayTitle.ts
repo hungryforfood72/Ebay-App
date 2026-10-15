@@ -18,26 +18,3 @@ export function truncateTitle(title: string, max = 80): string {
   }
   return result.replace(DANGLING_DATE_MARKER, "");
 }
-
-// Phrases eBay's listing filter blocks outright ("The item cannot be listed
-// or modified. The title and/or description may contain improper words").
-// "Ultra Sheer" next to Neutrogena trips the recall filter for the 2021
-// benzene aerosol recall, even on lotions and serums that were never
-// recalled (confirmed 2026-10-08 with VerifyAddFixedPriceItem: the same
-// listing goes through without those two words). Cristian's call: list the
-// non-recalled ones without the words.
-const BLOCKED_PHRASES: { when: RegExp; phrase: RegExp }[] = [
-  { when: /neutrogena/i, phrase: /\bUltra[\s-]+Sheer\b\s*/gi },
-];
-
-export function removeBlockedPhrases(text: string): string {
-  let result = text;
-  for (const { when, phrase } of BLOCKED_PHRASES) {
-    if (when.test(result)) result = result.replace(phrase, "");
-  }
-  return result;
-}
-
-export function hasBlockedPhrase(text: string): boolean {
-  return removeBlockedPhrases(text) !== text;
-}
