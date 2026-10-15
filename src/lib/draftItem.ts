@@ -129,6 +129,12 @@ async function imageContentBlock(url: string): Promise<Anthropic.Messages.Conten
 }
 
 const MAX_DRAFT_PHOTOS = 8;
+// Per bundle component, each in its own request (see nameComponent).
+const MAX_COMPONENT_PHOTOS = 4;
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
 
 // Looks up the item's UPC (caching the result) and asks Claude to draft an
 // eBay title + description from that data plus the item's photos.
@@ -251,6 +257,9 @@ type BundleComponent = {
   name?: string | null;
   upcLookupData?: unknown;
   expirationDate?: string | null;
+  // A flaw this component's photos show ("box corner crushed"), written
+  // onto its line in the description. null when none is visible.
+  conditionNote?: string | null;
 };
 
 const COMPONENT_NAME_SCHEMA = {
@@ -258,10 +267,14 @@ const COMPONENT_NAME_SCHEMA = {
   properties: {
     name: {
       type: "string",
-      description: "A short, clear, buyer-facing product name for this item (e.g. 'Silicone Whisk', 'Vanilla Bean Candle 8oz'), based on its photo and UPC lookup data. Never a generic placeholder like 'Item 1'.",
+      description: "A short, clear, buyer-facing product name for this item (e.g. 'Silicone Whisk', 'Vanilla Bean Candle 8oz'), based on its photos and UPC lookup data. Never a generic placeholder like 'Item 1'.",
+    },
+    conditionNote: {
+      type: ["string", "null"],
+      description: "A short, plain note of any flaw the photos clearly show on this item or its packaging (e.g. 'Box corner crushed', 'Outer seal torn, inner seal intact', 'Scuffs on the lid'). Stated as fact, no 'appears' or 'seems'. null if the photos show no flaw.",
     },
   },
-  required: ["name"],
+  required: ["name", "conditionNote"],
   additionalProperties: false,
 } as const;
 
@@ -286,22 +299,22 @@ const BUNDLE_SUMMARY_SCHEMA = {
 // photos — keeps every request small and safe no matter how many items are
 // in the bundle (a real upload hit Anthropic's 413 request_too_large trying
 // to send every component's photo in one request).
-async function nameComponent(c: BundleComponent): Promise<string> {
-  const fallback = `item (UPC ${c.upc})`;
+async function nameComponent(c: BundleComponent): Promise<{ name: string; conditionNote: string | null }> {
+  const fallback = { name: `item (UPC ${c.upc})`, conditionNote: null };
+  const photos = (c.photoUrls ?? []).slice(0, MAX_COMPONENT_PHOTOS);
   const content: Anthropic.Messages.ContentBlockParam[] = [
     {
       type: "text",
       text: `What is this product? UPC: ${c.upc}. UPC lookup data (may be incomplete or missing): ${JSON.stringify(c.upcLookupData)}
 
-Give a short, clear, buyer-facing product name.`,
+Give a short, clear, buyer-facing product name.${photos.length > 1 ? ` There are ${photos.length} photos of this one item: other sides of the package, or close-ups taken to show its condition. Use all of them, and note any flaw they show.` : ""}`,
     },
   ];
-  // Multiple photos per component just show different sides for the
-  // listing — one photo is plenty for naming what the product is.
-  if (c.photoUrls?.[0]) {
-    const block = await imageContentBlock(c.photoUrls[0]);
-    if (block) content.unshift(block);
-  }
+  // Every photo of this component, not just the first: extra ones are
+  // often condition shots (Cristian, 2026-10-15). Still one component per
+  // request, so a big bundle can't hit the 413 above.
+  const photoBlocks = await Promise.all(photos.map(imageContentBlock));
+  content.unshift(...photoBlocks.filter((b): b is Anthropic.Messages.ContentBlockParam => b != null));
 
   try {
     const response = await anthropic.messages.create(
@@ -320,8 +333,8 @@ Give a short, clear, buyer-facing product name.`,
     const textBlock = response.content.find((b) => b.type === "text");
     const parsed = JSON.parse(
       textBlock && "text" in textBlock ? textBlock.text : "{}"
-    ) as { name?: string };
-    return parsed.name || fallback;
+    ) as { name?: string; conditionNote?: string | null };
+    return { name: parsed.name || fallback.name, conditionNote: parsed.conditionNote?.trim() || null };
   } catch (e) {
     console.error(`[draftBundleItem] naming component UPC ${c.upc} failed`, e);
     return fallback;
@@ -354,14 +367,17 @@ async function draftBundleItem(item: Item) {
 
   await Promise.all(
     components.map(async (c) => {
-      c.name = await nameComponent(c);
+      const named = await nameComponent(c);
+      c.name = named.name;
+      c.conditionNote = named.conditionNote;
     })
   );
 
   const manifestForPrompt = components
-    .map((c, i) => `${i + 1}. ${c.quantity}x ${c.name}${c.expirationDate ? ` (expires ${formatExpiration(c.expirationDate)})` : ""}`)
+    .map((c, i) => `${i + 1}. ${c.quantity}x ${c.name}${c.expirationDate ? ` (expires ${formatExpiration(c.expirationDate)})` : ""}${c.conditionNote ? ` [condition: ${c.conditionNote}]` : ""}`)
     .join("\n");
   const anyExpiring = components.some((c) => c.expirationDate);
+  const anyFlawed = components.some((c) => c.conditionNote);
 
   const content: Anthropic.Messages.ContentBlockParam[] = [
     {
@@ -369,7 +385,7 @@ async function draftBundleItem(item: Item) {
       text: `Write an eBay listing title and short intro description for a BUNDLE of ${components.length} different items sold together as one lot.
 
 ${item.quantity} bundle(s) available for sale (each identical, containing all the items below).
-${anyExpiring ? "Note: one or more items in this bundle have an expiration date (shown below) — mention plainly in the intro that some contents have expiration dates, without needing to restate each one (the exact dates are listed automatically per item afterward)." : ""}
+${anyFlawed ? "Note: some items have a condition note (shown below). Mention briefly in the intro that condition details are listed per item, without restating them (they're added to the item list automatically).\n" : ""}${anyExpiring ? "Note: one or more items in this bundle have an expiration date (shown below) — mention plainly in the intro that some contents have expiration dates, without needing to restate each one (the exact dates are listed automatically per item afterward)." : ""}
 
 Contents:
 ${manifestForPrompt}
@@ -410,7 +426,7 @@ Write a title (80 characters max) and a short intro paragraph (2-4 sentences) de
   const manifestListHtml = components
     .map(
       (c) =>
-        `<li>${c.quantity}x ${c.name} (UPC ${c.upc})${c.expirationDate ? ` — Best by ${formatExpiration(c.expirationDate)}` : ""}</li>`
+        `<li>${c.quantity}x ${c.name} (UPC ${c.upc})${c.expirationDate ? ` — Best by ${formatExpiration(c.expirationDate)}` : ""}${c.conditionNote ? `. Condition: ${escapeHtml(c.conditionNote)}` : ""}</li>`
     )
     .join("");
   const description = `<p>${parsed.introDescription ?? ""}</p><p>This bundle includes:</p><ul>${manifestListHtml}</ul>`;
