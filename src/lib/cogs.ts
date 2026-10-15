@@ -1,6 +1,15 @@
 import { parseBundleComponentUnits, unitsFor } from "./itemUnits";
 import { prisma } from "./prisma";
 
+// Each manifest line's weight in the landed-cost split: its declared retail
+// value. A manifest with no retail prices at all (some other-supplier
+// files list none) splits by unit count instead, so every unit carries an
+// equal share rather than the whole load coming out $0.
+export function landedCostWeights(lines: { extendedRetail: unknown; expectedQuantity: number }[]): number[] {
+  const byRetail = lines.map((l) => Number(l.extendedRetail));
+  return byRetail.some((r) => r > 0) ? byRetail : lines.map((l) => l.expectedQuantity);
+}
+
 // Simplified per-UPC weighted COGS — same underlying formula as the
 // manifest dashboard's per-line weightedCogsPerUnit (value share of the
 // load's declared value × landed cost, divided by units actually
@@ -18,7 +27,7 @@ export async function cogsPerUnitByManifest(manifestId: string): Promise<Map<str
     where: { id: manifestId },
     select: {
       totalLandedCost: true,
-      lines: { select: { upc: true, extendedRetail: true } },
+      lines: { select: { upc: true, extendedRetail: true, expectedQuantity: true } },
       items: {
         select: {
           upc: true,
@@ -35,8 +44,9 @@ export async function cogsPerUnitByManifest(manifestId: string): Promise<Map<str
   const result = new Map<string, number>();
   if (!manifest || manifest.totalLandedCost == null) return result;
 
-  const totalManifestExtendedRetail = manifest.lines.reduce((sum, l) => sum + Number(l.extendedRetail), 0);
-  if (totalManifestExtendedRetail === 0) return result;
+  const weights = landedCostWeights(manifest.lines);
+  const totalWeight = weights.reduce((sum, w) => sum + w, 0);
+  if (totalWeight === 0) return result;
 
   const receivedByUpc = new Map<string, number>();
   const add = (upc: string, units: number) => receivedByUpc.set(upc, (receivedByUpc.get(upc) ?? 0) + units);
@@ -51,12 +61,10 @@ export async function cogsPerUnitByManifest(manifestId: string): Promise<Map<str
 
   const upcs = new Set(manifest.lines.map((l) => l.upc).filter((u): u is string => Boolean(u)));
   for (const upc of upcs) {
-    const upcExtendedRetail = manifest.lines
-      .filter((l) => l.upc === upc)
-      .reduce((sum, l) => sum + Number(l.extendedRetail), 0);
+    const upcWeight = manifest.lines.reduce((sum, l, i) => (l.upc === upc ? sum + weights[i] : sum), 0);
     const upcReceivedUnits = receivedByUpc.get(upc) ?? 0;
     if (upcReceivedUnits === 0) continue;
-    const valueShare = upcExtendedRetail / totalManifestExtendedRetail;
+    const valueShare = upcWeight / totalWeight;
     result.set(upc, (valueShare * Number(manifest.totalLandedCost)) / upcReceivedUnits);
   }
   return result;
@@ -117,10 +125,10 @@ export async function unitCostForScan(manifestId: string, upc: string): Promise<
     select: { totalLandedCost: true, lines: { select: { upc: true, extendedRetail: true, expectedQuantity: true } } },
   });
   if (!manifest || manifest.totalLandedCost == null) return null;
-  const total = manifest.lines.reduce((sum, l) => sum + Number(l.extendedRetail), 0);
-  const mine = manifest.lines.filter((l) => l.upc === upc);
-  const expected = mine.reduce((sum, l) => sum + l.expectedQuantity, 0);
+  const weights = landedCostWeights(manifest.lines);
+  const total = weights.reduce((sum, w) => sum + w, 0);
+  const expected = manifest.lines.reduce((sum, l) => (l.upc === upc ? sum + l.expectedQuantity : sum), 0);
   if (total === 0 || expected === 0) return null;
-  const share = mine.reduce((sum, l) => sum + Number(l.extendedRetail), 0) / total;
+  const share = manifest.lines.reduce((sum, l, i) => (l.upc === upc ? sum + weights[i] : sum), 0) / total;
   return (share * Number(manifest.totalLandedCost)) / expected;
 }

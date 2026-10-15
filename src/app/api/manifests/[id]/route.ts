@@ -4,6 +4,7 @@ import { getTargetMarginPct, MIN_BID_FLOOR } from "@/lib/sourcingAgent";
 import { getRequestUser, ownerOnly } from "@/lib/auth";
 import type { Prisma } from "@/generated/prisma/client";
 import { parseBundleComponentUnits, soldUnitsFor, unitsFor } from "@/lib/itemUnits";
+import { landedCostWeights } from "@/lib/cogs";
 
 // Fills each line's expected quantity in order before spilling into the
 // next — a UPC can legitimately appear on more than one manifest line (e.g.
@@ -170,10 +171,11 @@ export async function GET(
     soldRevenueByUpc.set(w.upc, (soldRevenueByUpc.get(w.upc) ?? 0) + w.quantity * Number(w.pricePerUnit));
   }
 
-  const totalManifestExtendedRetail = manifest.lines.reduce(
-    (sum, l) => sum + Number(l.extendedRetail),
-    0
-  );
+  const totalManifestExtendedRetail = manifest.lines.reduce((sum, l) => sum + Number(l.extendedRetail), 0);
+  // Retail value per line, or unit count when the manifest lists no retail
+  // (see landedCostWeights).
+  const costWeights = landedCostWeights(manifest.lines);
+  const totalCostWeight = costWeights.reduce((sum, w) => sum + w, 0);
   const totalLandedCost = manifest.totalLandedCost != null ? Number(manifest.totalLandedCost) : null;
 
   // Group lines by UPC (in manifest order) so received/damaged pools can be
@@ -229,7 +231,7 @@ export async function GET(
     // not damaged/expired ones) — if fewer good units came in than
     // expected, the same dollar share spreads over fewer units, correctly
     // raising the cost per unit rather than understating it.
-    const valueShare = totalManifestExtendedRetail > 0 ? Number(line.extendedRetail) / totalManifestExtendedRetail : 0;
+    const valueShare = totalCostWeight > 0 ? costWeights[index] / totalCostWeight : 0;
     const weightedCogsPerUnit =
       totalLandedCost != null && receivedUnits > 0
         ? (valueShare * totalLandedCost) / receivedUnits

@@ -2,13 +2,12 @@
 
 import { AppShell } from "@/components/ui/AppShell";
 import { Badge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
 import { Card, SectionHeader } from "@/components/ui/Card";
-import { Field, Input } from "@/components/ui/Input";
 import { cn } from "@/components/ui/cn";
-import { ChartColumn, ChevronDown, ChevronRight, Gavel, Upload } from "lucide-react";
+import { ManifestUpload } from "@/components/ManifestUpload";
+import { ChartColumn, ChevronDown, ChevronRight, Gavel } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 type Candidate = {
   id: string;
@@ -29,7 +28,7 @@ type Candidate = {
 const SUPPLIER_LABELS: Record<string, string> = {
   bstock: "BStock",
   liquidation_com: "Liquidation.com",
-  unknown: "Unknown",
+  unknown: "Other supplier",
 };
 
 // Separate from /manifests on purpose — that page is for loads Cristian has
@@ -40,11 +39,7 @@ const SUPPLIER_LABELS: Record<string, string> = {
 // prisma/schema.prisma).
 export default function AnalyzerPage() {
   const [candidates, setCandidates] = useState<Candidate[] | null>(null);
-  const [title, setTitle] = useState("");
-  const [uploading, setUploading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [showLost, setShowLost] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   function load() {
     fetch("/api/manifests?purchased=false")
@@ -54,68 +49,18 @@ export default function AnalyzerPage() {
 
   useEffect(load, []);
 
-  async function handleFile(file: File) {
-    setError(null);
-    const csvContent = await file.text();
-
-    let prefill = title.trim();
-    if (!prefill) {
-      const supplierGuess = /Pallet ID/.test(csvContent) ? "BStock" : /Total Retail Price/.test(csvContent) ? "Liquidation.com" : null;
-      prefill = supplierGuess ? `${supplierGuess} — ${new Date().toLocaleDateString()}` : file.name.replace(/\.csv$/i, "");
-    }
-
-    setUploading(true);
-    try {
-      const res = await fetch("/api/manifests", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: prefill, csvContent, purchased: false }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Upload failed.");
-      setTitle("");
-      if (fileInputRef.current) fileInputRef.current.value = "";
-      load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Something went wrong.");
-    } finally {
-      setUploading(false);
-    }
-  }
-
   return (
     <AppShell
       title="Analyzer"
       subtitle="Get a Buy / Don't-Buy call and a max bid on a manifest before you commit. Loads you've already bought live under Manifests."
     >
       <div className="flex flex-col gap-6">
-        <Card>
-          <SectionHeader
-            title="Upload a manifest to evaluate"
-            description="BStock and Liquidation.com CSV exports — the format is detected automatically."
-          />
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-            <Field label="Title" hint="Optional — auto-filled from the file if left blank." className="flex-1">
-              <Input type="text" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g. BStock lot 4471" />
-            </Field>
-            <Button size="lg" onClick={() => fileInputRef.current?.click()} disabled={uploading} className="sm:mb-6">
-              <Upload className="size-5" aria-hidden />
-              {uploading ? "Parsing…" : "Choose CSV file"}
-            </Button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".csv,text/csv"
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                if (file) handleFile(file);
-              }}
-              disabled={uploading}
-              className="hidden"
-            />
-          </div>
-          {error && <p className="mt-3 text-sm font-medium text-danger">{error}</p>}
-        </Card>
+        <ManifestUpload
+          purchased={false}
+          title="Upload a manifest to evaluate"
+          titlePlaceholder="e.g. BStock lot 4471"
+          onUploaded={load}
+        />
 
         {candidates === null && <p className="text-sm text-muted-foreground">Loading…</p>}
 

@@ -1429,7 +1429,11 @@ export async function evaluateManifestChunk(
   // Deep-research the top N by value; everything past that still counts
   // toward the total (via a cheap category/market-only pass, no per-line
   // trend check) so a huge manifest's economics aren't silently dropped.
-  const sortedGroups = [...groups.values()].sort((a, b) => b.extendedRetail - a.extendedRetail);
+  // Ties (every line, on a manifest with no retail prices) go to the
+  // bigger quantity, so the cap drops the smallest lines, not arbitrary ones.
+  const sortedGroups = [...groups.values()].sort(
+    (a, b) => b.extendedRetail - a.extendedRetail || b.expectedQuantity - a.expectedQuantity
+  );
   const deepGroups = sortedGroups.slice(0, MAX_DEEP_RESEARCH_LINES);
   const shallowGroups = sortedGroups.slice(MAX_DEEP_RESEARCH_LINES);
   const deepIndexByKey = new Map(deepGroups.map((g, i) => [g.groupKey, i]));

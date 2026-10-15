@@ -25,7 +25,7 @@ export type ParsedManifest = {
 
 // Minimal RFC4180-ish line splitter: quoted fields, embedded commas inside
 // quotes, and "" as an escaped quote — all these two supplier formats use.
-function parseCsvLine(line: string): string[] {
+export function parseCsvLine(line: string): string[] {
   const fields: string[] = [];
   let cur = "";
   let inQuotes = false;
@@ -60,7 +60,7 @@ function parseCsvLine(line: string): string[] {
 // "$1,234.56" or "1,234" -> 1234.56 / 1234. Both suppliers use thousands
 // separators on their totals rows, and Liquidation.com prefixes money with
 // "$".
-function parseNumber(raw: string): number {
+export function parseNumber(raw: string): number {
   const cleaned = raw.replace(/[$,]/g, "").trim();
   const n = Number(cleaned);
   return Number.isFinite(n) ? n : 0;

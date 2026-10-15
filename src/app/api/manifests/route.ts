@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { parseManifestCsv } from "@/lib/manifestParsers";
+import { parseManifestCsv, type ParsedManifest, type ParsedManifestLine } from "@/lib/manifestParsers";
 import { getRequestUser, ownerOnly } from "@/lib/auth";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -62,16 +62,27 @@ export async function POST(request: NextRequest) {
   if (!title) {
     return NextResponse.json({ error: "Title is required." }, { status: 400 });
   }
-  if (!csvContent.trim()) {
-    return NextResponse.json({ error: "CSV content is required." }, { status: 400 });
-  }
 
-  const parsed = parseManifestCsv(csvContent);
-  if (parsed.supplier === "unknown") {
-    return NextResponse.json(
-      { error: "Unrecognized manifest format — this isn't a BStock or Liquidation.com export we know how to read." },
-      { status: 400 }
-    );
+  let parsed: ParsedManifest;
+  if (Array.isArray(body.lines)) {
+    // Another supplier's file, already mapped column-by-column in the
+    // upload UI (see lib/customManifest.ts). Stored as supplier "unknown",
+    // labeled "Other supplier".
+    if (body.lines.length > 20000) {
+      return NextResponse.json({ error: "That manifest is too big (over 20,000 lines)." }, { status: 400 });
+    }
+    parsed = { supplier: "unknown", lines: body.lines.map(sanitizeLine).filter((l: ParsedManifestLine | null): l is ParsedManifestLine => l != null) };
+  } else {
+    if (!csvContent.trim()) {
+      return NextResponse.json({ error: "CSV content is required." }, { status: 400 });
+    }
+    parsed = parseManifestCsv(csvContent);
+    if (parsed.supplier === "unknown") {
+      return NextResponse.json(
+        { error: "Unrecognized manifest format — this isn't a BStock or Liquidation.com export we know how to read." },
+        { status: 400 }
+      );
+    }
   }
   if (parsed.lines.length === 0) {
     return NextResponse.json({ error: "No line items found in that file." }, { status: 400 });
@@ -101,4 +112,31 @@ export async function POST(request: NextRequest) {
   });
 
   return NextResponse.json(manifest, { status: 201 });
+}
+
+// Client-mapped lines arrive as plain JSON — coerce every field to the
+// shape and limits ManifestLine expects rather than trusting it.
+function sanitizeLine(raw: unknown): ParsedManifestLine | null {
+  if (!raw || typeof raw !== "object") return null;
+  const l = raw as Record<string, unknown>;
+  const text = (v: unknown, max: number) => (typeof v === "string" && v.trim() ? v.trim().slice(0, max) : null);
+  const money = (v: unknown) => {
+    const n = Number(v);
+    // Decimal(10, 2) tops out just under $100M.
+    return Number.isFinite(n) && n >= 0 && n < 1e8 ? Math.round(n * 100) / 100 : 0;
+  };
+  const description = text(l.description, 500);
+  const expectedQuantity = Math.round(Number(l.expectedQuantity));
+  if (!description || !Number.isFinite(expectedQuantity) || expectedQuantity <= 0 || expectedQuantity > 1_000_000) return null;
+  return {
+    supplierSku: text(l.supplierSku, 100),
+    upc: text(l.upc, 50),
+    description,
+    expectedQuantity,
+    retailPrice: money(l.retailPrice),
+    extendedRetail: money(l.extendedRetail),
+    condition: text(l.condition, 100),
+    category: text(l.category, 200),
+    subcategory: text(l.subcategory, 200),
+  };
 }
