@@ -530,11 +530,20 @@ function Thumb({ src, size = "md" }: { src: string | undefined; size?: "sm" | "m
   );
 }
 
+type ProfitBasis = {
+  unitCost: number | null;
+  typicalLabel: number;
+  promotedPercent: number | null;
+  targetReturnPct: number;
+};
+
 // Profit on one sale at the price in the box: eBay's fees (plus the
 // Promoted Listings rate if it's promoted), a label for the weight entered
 // (free shipping, so the label is ours), and what the item cost off its
 // manifest. Same math as the offer tools (priceOutcome). An estimate: the
-// real label depends on the buyer's zone.
+// real label depends on the buyer's zone. Red = loses money, yellow = makes
+// money but under his target return on item cost (35%, the bar he lists
+// at), green = clears it.
 function ProfitEstimate({
   price,
   basis,
@@ -542,7 +551,7 @@ function ProfitEstimate({
   weightLbs,
 }: {
   price: number;
-  basis: { unitCost: number | null; typicalLabel: number; promotedPercent: number | null };
+  basis: ProfitBasis;
   localPickupOnly: boolean;
   weightLbs: number | null;
 }) {
@@ -554,6 +563,8 @@ function ProfitEstimate({
     { listPrice: price, unitCost: basis.unitCost, labelCost: label, promotedPercent: basis.promotedPercent },
     price
   );
+  const returnPct = basis.unitCost != null && basis.unitCost > 0 ? (profit / basis.unitCost) * 100 : null;
+  const underTarget = profit >= 0 && returnPct != null && returnPct < basis.targetReturnPct;
   const parts = [
     `$${fees.toFixed(2)} fees${basis.promotedPercent ? ` (incl. ${basis.promotedPercent}% promo)` : ""}`,
     localPickupOnly ? "no label (pickup)" : `~$${label.toFixed(2)} label${weightLbs == null ? " (no weight yet)" : ""}`,
@@ -562,10 +573,14 @@ function ProfitEstimate({
   return (
     <span className="text-foreground">
       Est. profit at ${price.toFixed(2)}:{" "}
-      <strong className={profit >= 0 ? "text-success" : "text-danger"}>
+      <strong className={profit < 0 ? "text-danger" : underTarget ? "text-warning" : "text-success"}>
         {profit < 0 ? "-" : ""}${Math.abs(profit).toFixed(2)}
+        {returnPct != null && ` (${Math.round(returnPct)}% ROI)`}
       </strong>
       <span className="text-muted-foreground"> after {parts.join(", ")}</span>
+      {underTarget && (
+        <span className="block text-warning">Under your {basis.targetReturnPct}% target, consider a higher price.</span>
+      )}
     </span>
   );
 }
@@ -664,7 +679,7 @@ function ItemCard({
     unitRetail?: number | null;
     // Owner only (null for employees): what a sale costs besides eBay's
     // fees, for the profit line under the comps.
-    profitBasis?: { unitCost: number | null; typicalLabel: number; promotedPercent: number | null } | null;
+    profitBasis?: ProfitBasis | null;
   } | null>(null);
   // What's in the price box right now, so profit follows the typing instead
   // of waiting for the blur that saves it. null = the saved price.

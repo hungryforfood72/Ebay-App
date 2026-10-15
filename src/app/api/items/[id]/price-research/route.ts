@@ -4,6 +4,7 @@ import { EbayApiError, searchActiveListings } from "@/lib/ebay";
 import { detectPackSize, isResellerLot, summarizeComps } from "@/lib/packSize";
 import { prisma } from "@/lib/prisma";
 import { typicalSingleLabelCost } from "@/lib/shippingCost";
+import { getTargetMarginPct } from "@/lib/sourcingAgent";
 import { NextResponse } from "next/server";
 
 export const maxDuration = 30;
@@ -41,7 +42,12 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   // (fees, label and item cost are worked out there, live, with the same
   // priceOutcome the offer tools use). Owner only: employees never see
   // cost or profit.
-  let profitBasis: { unitCost: number | null; typicalLabel: number; promotedPercent: number | null } | null = null;
+  let profitBasis: {
+    unitCost: number | null;
+    typicalLabel: number;
+    promotedPercent: number | null;
+    targetReturnPct: number;
+  } | null = null;
   if (getRequestUser(request)?.role === "owner") {
     const { cost, costed } = costPerListingUnit(item, await cogsMapsFor([item.manifestId]));
     let unitCost: number | null = costed ? cost : null;
@@ -54,6 +60,8 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       unitCost,
       typicalLabel: await typicalSingleLabelCost(),
       promotedPercent: item.promotedBidPercentage,
+      // Cristian's bar for listing (Settings, 35%): return on item cost.
+      targetReturnPct: await getTargetMarginPct(),
     };
   }
 
