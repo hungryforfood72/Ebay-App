@@ -191,6 +191,14 @@ export async function GET(request: NextRequest) {
     const called = recommendation.packSize;
     const calledWorth = worthAt(called);
     let notWorthOnEbay = false;
+    // What everything on hand makes, split into packs of `size` (one pack
+    // off a manifest, where there's no count). Only packs that clear the
+    // bar count.
+    const totalProfit = (size: number) =>
+      (available != null ? splitIntoPacks(available, size) : [{ packSize: size, listings: 1 }]).reduce((sum, g) => {
+        const w = worthAt(g.packSize);
+        return sum + (w?.worthIt ? w.profit * g.listings : 0);
+      }, 0);
     // Only for a multi-pack call. A "singles" call means it sells alone
     // (collectibles, hype items), and a single that can't make the bar was
     // already set aside by the leftover rule below, never bundled.
@@ -207,11 +215,6 @@ export async function GET(request: NextRequest) {
           : null;
       // Bigger packs vs one lot: whichever makes more for everything on
       // hand (a lot is also one listing and one label).
-      const totalProfit = (size: number) =>
-        (available != null ? splitIntoPacks(available, size) : [{ packSize: size, listings: 1 }]).reduce((sum, g) => {
-          const w = worthAt(g.packSize);
-          return sum + (w?.worthIt ? w.profit * g.listings : 0);
-        }, 0);
       const lotWorks = lot != null && Boolean(worthAt(lot)?.worthIt);
       if (bigger && (!lotWorks || totalProfit(bigger) > totalProfit(lot!))) {
         recommendation = { ...recommendation, packSize: bigger };
@@ -221,6 +224,22 @@ export async function GET(request: NextRequest) {
         reason = `Sell it as a lot of ${lot}. Smaller packs wouldn't make enough profit after shipping and fees, and ${lot} of these ship for about what one does.`;
       } else {
         notWorthOnEbay = true;
+      }
+    } else if (called > 1 && calledWorth?.worthIt && available != null && available > called) {
+      // The call works, but a bigger pack can make a lot more for what's on
+      // hand: small items ship for one label either way. Cristian,
+      // 2026-10-15: 6 Vaseline tins as two 3-packs make $6.33, as one
+      // 6-pack $13.38. Only a clear win counts (UPGRADE_MIN_GAIN), since
+      // smaller packs still sell faster.
+      const base = totalProfit(called);
+      let best = called;
+      for (let n = called + 1; n <= Math.min(MAX_RECOMMENDED_PACK, available); n++) {
+        if (totalProfit(n) >= totalProfit(best)) best = n;
+      }
+      const gain = totalProfit(best) - base;
+      if (best !== called && gain >= UPGRADE_MIN_GAIN.dollars && totalProfit(best) >= base * UPGRADE_MIN_GAIN.ratio) {
+        recommendation = { ...recommendation, packSize: best };
+        reason = `${reason ? `${reason} ` : ""}Bumped up to ${best}-packs: for the ${available} you have, that makes a lot more after fees and shipping than ${called}-packs, since they ship for about the same label.`;
       }
     }
 
@@ -349,6 +368,10 @@ export async function POST(request: NextRequest) {
   if (body?.count != null) await prisma.handCount.create({ data: { upc, manifestId, count } });
   return NextResponse.json({ ok: true });
 }
+
+// A bigger pack replaces a call that already works only when it makes at
+// least this much more in total for the units on hand.
+const UPGRADE_MIN_GAIN = { dollars: 2, ratio: 1.25 };
 
 // A typed count older than this is from another day's work, not the
 // product in hand now.
