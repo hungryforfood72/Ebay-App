@@ -47,6 +47,31 @@ function isDimensionAspect(aspectName: string): boolean {
   return DIMENSION_ASPECTS.some((d) => d.toLowerCase() === aspectName.toLowerCase());
 }
 
+// The UPCitemdb result saved at draft time often has the box size
+// ("11.3 X 3.1 X 2.6 inches") even when no web page gives all three sides
+// (confirmed live 2026-10-15 on that same Ziploc box). Sides already filled
+// in keep their value; the rest of the numbers go to the missing ones in
+// order. Inches only, and null unless every missing side gets a number.
+function dimensionsFromUpcData(item: Item, missing: string[]): Record<string, string> | null {
+  const data = item.upcLookupData as { items?: Array<{ dimension?: string }> } | null;
+  const dimension = data?.items?.find((i) => i.dimension)?.dimension;
+  const match = dimension?.match(/([\d.]+)\s*x\s*([\d.]+)\s*x\s*([\d.]+)\s*(?:inches|inch|in\b|")/i);
+  if (!match) return null;
+  const specifics = specificsOf(item);
+  const taken = DIMENSION_ASPECTS.filter((n) => !missing.includes(n)).map((n) =>
+    parseFloat(specifics[ebayAspectNameToSpecificsKey(n)] ?? "")
+  );
+  const sides = match.slice(1, 4).map(Number).filter((v) => v > 0);
+  for (const t of taken) {
+    const i = sides.findIndex((v) => Math.abs(v - t) < 0.05);
+    // A filled-in side the UPC data doesn't have: probably not the same box.
+    if (i < 0) return null;
+    sides.splice(i, 1);
+  }
+  if (sides.length < missing.length) return null;
+  return Object.fromEntries(missing.map((n, i) => [n, `${sides[i]} in`]));
+}
+
 function valueSchemaHint(aspectNames: string[]): string {
   if (aspectNames.length === 1) {
     return `Once you've found it, respond with exactly one JSON object as your final line, no other text after it:
@@ -199,7 +224,9 @@ async function fixMissingAspect(item: Item, errorMessage: string): Promise<strin
   const names = isDimensionAspect(aspectName)
     ? DIMENSION_ASPECTS.filter((n) => !specifics[ebayAspectNameToSpecificsKey(n)])
     : [aspectName];
-  const found = await lookUpAspectValues(item, names);
+  const found =
+    (isDimensionAspect(aspectName) && dimensionsFromUpcData(item, names)) ||
+    (await lookUpAspectValues(item, names));
   // The one eBay actually asked for has to come back, or the next publish
   // fails the same way.
   const asked = names.find((n) => n.toLowerCase() === aspectName.toLowerCase()) ?? aspectName;
