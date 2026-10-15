@@ -128,8 +128,17 @@ export async function POST(
     const raw = e instanceof EbayApiError || e instanceof Error ? e.message : "Publish failed.";
     // Errors only a person can fix: say how, in plain words.
     let message = raw;
+    let missingAspect: RegExpMatchArray | null;
     if (/item\s+specific\s+Expiration\s+Date\s+is\s+missing/i.test(raw)) {
       message = "eBay needs the expiration date for this category. Send it back to review, add the date printed on the package, and publish again.";
+    } else if ((missingAspect = raw.match(/item\s+specific\s+([A-Za-z0-9\s/&'-]+?)\s+is\s+missing/i))) {
+      const name = missingAspect[1].replace(/\s+/g, " ").trim();
+      // Online listings often give only two of a box's three sides
+      // (confirmed live 2026-10-15: a Ziploc box is listed everywhere as
+      // just 11.3"W x 2.6"H), so the last one has to come off a tape measure.
+      message = /^item\s+(length|width|height)$/i.test(name)
+        ? `eBay needs "${name}" for this category, and it isn't listed anywhere online. Measure the box, add a "${name}" item specific in review (exact name, like "5.5 in"), and publish again.`
+        : `eBay needs "${name}" for this category, and the app couldn't find it automatically. Send it back to review, add a "${name}" item specific (exact name) with the real value, and publish again.`;
     } else if (BLOCKED_WORDS_ERROR.test(raw)) {
       message = "eBay's word filter blocked this, and the app couldn't find the word in the title, so it's probably in the description. Send it back to review, look for brand claims, recalled product names or medical claims in the description, and publish again.";
     }

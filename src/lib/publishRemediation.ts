@@ -23,17 +23,44 @@ const MISSING_ASPECT_PATTERN = /item\s+specific\s+([A-Za-z0-9\s/&'-]+?)\s+is\s+m
 // Enter a valid value and try again.' (confirmed live 2026-10-15).
 const INVALID_VALUE_PATTERN = /([A-Za-z0-9][A-Za-z0-9\s/&'-]*?)\s+has\s+an\s+invalid\s+value\s+of\s+"([^"]*)"/i;
 
+// The captured name keeps eBay's non-breaking space ("Item Length"),
+// which then misses every name lookup and gets saved as a specifics key
+// that only looks like "Item Length" (caught 2026-10-15).
+function cleanAspectName(captured: string): string {
+  return captured.replace(/\s+/g, " ").trim();
+}
+
 // eBay aspect name (lowercase) -> the specifics key that already holds the
 // same fact.
 const ASPECT_EQUIVALENTS: Record<string, string> = {
   shade: "color",
 };
 
-const VALUE_SCHEMA_HINT = `Once you've found it, respond with exactly one JSON object as your final line, no other text after it:
+// eBay asks for these one per failed publish (confirmed live 2026-10-15:
+// a Ziploc lot in 20653 needed Item Width, then Item Length, and Height
+// would have been next), so a lookup for one fills in all of them at once.
+// One at a time cost a web search and an auto-fix round each, and the
+// second search timed out.
+const DIMENSION_ASPECTS = ["Item Length", "Item Width", "Item Height"];
+
+function isDimensionAspect(aspectName: string): boolean {
+  return DIMENSION_ASPECTS.some((d) => d.toLowerCase() === aspectName.toLowerCase());
+}
+
+function valueSchemaHint(aspectNames: string[]): string {
+  if (aspectNames.length === 1) {
+    return `Once you've found it, respond with exactly one JSON object as your final line, no other text after it:
 {"value": "the real value"}
 
 If you can't find or confirm a genuinely accurate value for this exact product, respond with:
 {"value": null}`;
+  }
+  const example = Object.fromEntries(aspectNames.map((n) => [n, "the real value"]));
+  return `Once you've found them, respond with exactly one JSON object as your final line, no other text after it:
+${JSON.stringify(example)}
+
+Use null for any one you can't find or confirm a genuinely accurate value for.`;
+}
 
 // A web-search-enabled response splits its answer across multiple "text"
 // blocks whenever it cites a source — concatenate all of them, not just the
@@ -58,22 +85,34 @@ async function saveSpecifics(itemId: string, specifics: Record<string, string>) 
   });
 }
 
-// Looks up the REAL value of one item specific for this exact product (web
-// search, not a guess). Mirrors draftItem.ts's own "never guess" policy for
-// anything medical-adjacent (dosage, strength): null whenever a genuinely
-// confident value can't be found, rather than an invented one.
-async function lookUpAspectValue(item: Item, aspectName: string, rejectedValue?: string): Promise<string | null> {
+// Looks up the REAL value of one or more item specifics for this exact
+// product (web search, not a guess). Mirrors draftItem.ts's own "never
+// guess" policy for anything medical-adjacent (dosage, strength): null
+// whenever a genuinely confident value can't be found, rather than an
+// invented one.
+async function lookUpAspectValues(
+  item: Item,
+  aspectNames: string[],
+  rejectedValue?: string
+): Promise<Record<string, string | null>> {
+  const result: Record<string, string | null> = Object.fromEntries(aspectNames.map((n) => [n, null]));
   const specifics = specificsOf(item);
   const productDescription = item.finalTitle ?? item.aiTitle ?? `item ${item.sku}`;
   const specificsLine = Object.entries(specifics)
     .filter(([, v]) => v)
     .map(([k, v]) => `${k}: ${v}`)
     .join(", ");
+  const quoted = aspectNames.map((n) => `"${n}"`).join(", ");
   const problem = rejectedValue
-    ? `eBay rejected "${rejectedValue}" as the item specific "${aspectName}" for this product`
-    : `eBay requires the item specific "${aspectName}" to list this product, but it's currently missing`;
-  const lotNote = /brand/i.test(aspectName)
+    ? `eBay rejected "${rejectedValue}" as the item specific ${quoted} for this product`
+    : aspectNames.length === 1
+      ? `eBay requires the item specific ${quoted} to list this product, but it's currently missing`
+      : `eBay requires the item specifics ${quoted} to list this product, but they're currently missing`;
+  const lotNote = aspectNames.some((n) => /brand/i.test(n))
     ? `\nIf this is a lot of several brands, give the main brand in the lot (the first one, if tied). Never "Various", "Assorted", "Mixed" or "Multiple".`
+    : "";
+  const dimensionNote = aspectNames.some(isDimensionAspect)
+    ? `\nFor dimensions: one unit of the product as sold (its retail box or package, if it comes in one), in inches, like "11.3 in". Not the whole lot stacked together. All of them describe the same box, one side each. A side already in "Already known specifics" is taken: give the other sides, never that same measurement again under a new name.`
     : "";
 
   let response;
@@ -92,23 +131,26 @@ async function lookUpAspectValue(item: Item, aspectName: string, rejectedValue?:
             role: "user",
             content: `${problem}: "${productDescription}"${item.upc ? ` (UPC ${item.upc})` : ""}.${specificsLine ? `\nAlready known specifics: ${specificsLine}` : ""}
 ${item.finalDescription ? `\nListing description: ${item.finalDescription.slice(0, 1500)}\n` : ""}
-Find the real, accurate "${aspectName}" for this exact real product — check its actual packaging, drug facts/label, or product listing if that's what it would take. Only return a value you are genuinely confident is correct for this specific product. Do not invent or estimate a plausible-sounding value just to fill the field.${lotNote}
+Find the real, accurate ${quoted} for this exact real product — check its actual packaging, drug facts/label, or product listing if that's what it would take. Only return a value you are genuinely confident is correct for this specific product. Do not invent or estimate a plausible-sounding value just to fill the field.${lotNote}${dimensionNote}
 
-${VALUE_SCHEMA_HINT}`,
+${valueSchemaHint(aspectNames)}`,
           },
         ],
       },
-      { timeout: 30_000, maxRetries: 0 }
+      // 30s wasn't enough for two web searches (confirmed live 2026-10-15:
+      // the Item Length lookup on a Ziploc lot timed out at exactly 30s).
+      // MAX_AUTO_FIXES rounds of this still fit the route's 300s budget.
+      { timeout: 60_000, maxRetries: 0 }
     );
     await logAiUsage("publish.fix_missing_aspect", response, { itemId: item.id });
   } catch (e) {
-    console.error(`[publishRemediation] ${item.id}: lookup for "${aspectName}" failed`, e);
-    return null;
+    console.error(`[publishRemediation] ${item.id}: lookup for ${quoted} failed`, e);
+    return result;
   }
 
   const fullText = extractText(response.content);
   const jsonMatch = fullText.match(/\{[\s\S]*\}\s*$/);
-  let parsed: { value?: string | null } = {};
+  let parsed: Record<string, unknown> = {};
   if (jsonMatch) {
     try {
       parsed = JSON.parse(jsonMatch[0]);
@@ -116,9 +158,17 @@ ${VALUE_SCHEMA_HINT}`,
       // Fall through with the empty default — treated as "no confident value".
     }
   }
-  const value = parsed.value?.trim();
-  if (!value || (rejectedValue && value.toLowerCase() === rejectedValue.toLowerCase())) return null;
-  return value;
+  for (const name of aspectNames) {
+    const raw = aspectNames.length === 1 ? parsed.value : parsed[name];
+    const value = typeof raw === "string" ? raw.trim() : "";
+    if (!value || (rejectedValue && value.toLowerCase() === rejectedValue.toLowerCase())) continue;
+    result[name] = value;
+  }
+  return result;
+}
+
+async function lookUpAspectValue(item: Item, aspectName: string, rejectedValue?: string): Promise<string | null> {
+  return (await lookUpAspectValues(item, [aspectName], rejectedValue))[aspectName];
 }
 
 // eBay rejected a publish over a missing required item specific (aspect) —
@@ -127,7 +177,7 @@ ${VALUE_SCHEMA_HINT}`,
 async function fixMissingAspect(item: Item, errorMessage: string): Promise<string | null> {
   const match = errorMessage.match(MISSING_ASPECT_PATTERN);
   if (!match) return null;
-  const aspectName = match[1].trim();
+  const aspectName = cleanAspectName(match[1]);
   // Printed on this particular unit, not a fact about the product a search
   // could find — and a made-up date on a health product is worse than a
   // failed publish. Left for a person to read off the package.
@@ -141,13 +191,28 @@ async function fixMissingAspect(item: Item, errorMessage: string): Promise<strin
   // "The item specific Shade is missing" while its color sat right there,
   // and the web search came back empty.
   const sameAs = ASPECT_EQUIVALENTS[aspectName.toLowerCase()];
-  const value = (sameAs && specifics[sameAs]) || (await lookUpAspectValue(item, aspectName));
-  if (!value) {
+  if (sameAs && specifics[sameAs]) {
+    await saveSpecifics(item.id, { ...specifics, [key]: specifics[sameAs] });
+    return `Added ${aspectName}: "${specifics[sameAs]}" (eBay required it).`;
+  }
+
+  const names = isDimensionAspect(aspectName)
+    ? DIMENSION_ASPECTS.filter((n) => !specifics[ebayAspectNameToSpecificsKey(n)])
+    : [aspectName];
+  const found = await lookUpAspectValues(item, names);
+  // The one eBay actually asked for has to come back, or the next publish
+  // fails the same way.
+  const asked = names.find((n) => n.toLowerCase() === aspectName.toLowerCase()) ?? aspectName;
+  if (!found[asked]) {
     console.log(`[publishRemediation] ${item.id}: no confident value found for "${aspectName}"`);
     return null;
   }
-  await saveSpecifics(item.id, { ...specifics, [key]: value });
-  return `Added ${aspectName}: "${value}" (eBay required it).`;
+  const added = Object.entries(found).filter((e): e is [string, string] => !!e[1]);
+  await saveSpecifics(item.id, {
+    ...specifics,
+    ...Object.fromEntries(added.map(([n, v]) => [ebayAspectNameToSpecificsKey(n), v])),
+  });
+  return `Added ${added.map(([n, v]) => `${n}: "${v}"`).join(", ")} (eBay required ${added.length === 1 ? "it" : "them"}).`;
 }
 
 // eBay rejected a value it doesn't accept, e.g. Brand "Various" on a
@@ -157,7 +222,7 @@ async function fixMissingAspect(item: Item, errorMessage: string): Promise<strin
 async function fixInvalidAspectValue(item: Item, errorMessage: string): Promise<string | null> {
   const match = errorMessage.match(INVALID_VALUE_PATTERN);
   if (!match) return null;
-  const aspectName = match[1].trim();
+  const aspectName = cleanAspectName(match[1]);
   const rejected = match[2];
   const key = ebayAspectNameToSpecificsKey(aspectName);
   const specifics = { ...specificsOf(item) };
