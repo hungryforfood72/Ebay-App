@@ -73,8 +73,23 @@ export function priceFromExactComps(prices: number[]): { price: number | null; b
   return { price: sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2, basis: "median" };
 }
 
+// The description already names a pack count ("100-ct", "10-pk", "Box of
+// 50", "30/box"). Not "pcs": Hollister's "2 pcs" means a two-piece system.
+const STATED_PACK_COUNT = /\b\d+\s*-?\s*(ct|count|pk|pack|bx)\b|\b(box|pack|case|bag|bottle)\s+of\s+\d+|\b\d+\s*\/\s*(box|bx|pk|pack|case|bag)\b/i;
+
+// Pieces in one sellable box. Cristian's rule (2026-10-15): when the
+// description already states a count, each piece IS a sellable pack and
+// Case/Pack is just packs per case: "BD Oral Syringe 100-ct", 12 cases x 5
+// = 60 packs of 100, not 12. With no count stated, pieces are loose and
+// Case/Pack is the box: Hollister 14204, 30 barriers = 6 boxes of 5.
+export function sellableBoxSize(description: string, piecesPerBox: number | null): number {
+  if (!piecesPerBox || piecesPerBox <= 1 || STATED_PACK_COUNT.test(description)) return 1;
+  return piecesPerBox;
+}
+
 // Boxes as eBay sells them, from the manifest's piece count.
-export function boxesFor(expectedQuantity: number, piecesPerBox: number | null): number {
-  if (!piecesPerBox || piecesPerBox <= 1) return expectedQuantity;
-  return expectedQuantity > 0 ? Math.max(1, Math.round(expectedQuantity / piecesPerBox)) : 0;
+export function boxesFor(expectedQuantity: number, piecesPerBox: number | null, description: string): number {
+  const boxSize = sellableBoxSize(description, piecesPerBox);
+  if (boxSize <= 1) return expectedQuantity;
+  return expectedQuantity > 0 ? Math.max(1, Math.round(expectedQuantity / boxSize)) : 0;
 }

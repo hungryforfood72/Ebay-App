@@ -16,6 +16,7 @@ import {
   type ColumnMapping,
   type MappableField,
 } from "@/lib/customManifest";
+import { sellableBoxSize } from "@/lib/exactComps";
 import { detectSupplier } from "@/lib/manifestParsers";
 import { readSpreadsheet, type SheetGrid } from "@/lib/spreadsheetRows";
 import { Upload } from "lucide-react";
@@ -201,7 +202,7 @@ const FIELDS: { key: MappableField; label: string; hint?: string; required?: boo
   {
     key: "piecesPerBox",
     label: "Pieces per sellable box",
-    hint: "eBay sells these by the box. Usually Case/Pack, so the analyzer prices boxes, not loose pieces.",
+    hint: "eBay sells these by the box. Usually Case/Pack. Lines whose description already says a count (100-ct, 10-pk) are counted as packs as-is.",
   },
   { key: "upc", label: "UPC" },
   { key: "sku", label: "Item # / SKU" },
@@ -363,7 +364,7 @@ function ColumnMapper({
                     <td className="min-w-48 px-3 py-2">{l.description}</td>
                     <td className="px-3 py-2 tabular-nums">{l.upc ?? "—"}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{l.expectedQuantity}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{l.piecesPerBox ?? 1}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">{sellableBoxSize(l.description, l.piecesPerBox)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">{l.retailPrice > 0 ? `$${l.retailPrice.toFixed(2)}` : "—"}</td>
                   </tr>
                 ))}

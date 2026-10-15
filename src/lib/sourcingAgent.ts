@@ -795,7 +795,8 @@ type LineEstimateResult = {
 // Other-supplier manifests (supplier "unknown", uploaded through the
 // column mapper). Cristian's call 2026-10-15: these three fixes apply ONLY
 // here — BStock / Liquidation.com keep estimateLine's blend below.
-//   1. Priced by the box eBay sells (group.boxes), not by loose pieces.
+//   1. Priced by the box eBay sells (group.boxes, see sellableBoxSize),
+//      not by loose pieces.
 //   2. Only exact comps: under the UPC, or titled with the item's own
 //      number; lots skipped (see exactComps.ts). No exact listing = no
 //      price, never a borrowed one.
@@ -1548,7 +1549,7 @@ export async function evaluateManifestChunk(
       existing.extendedRetail += Number(line.extendedRetail);
       // Boxes per line, then summed: the same UPC can come in different
       // case packs on different lines.
-      existing.boxes += boxesFor(line.expectedQuantity, line.piecesPerBox);
+      existing.boxes += boxesFor(line.expectedQuantity, line.piecesPerBox, line.description);
       existing.piecesPerBox ??= line.piecesPerBox;
     } else {
       groups.set(key, {
@@ -1562,7 +1563,7 @@ export async function evaluateManifestChunk(
         strictPricing: manifest.supplier === "unknown",
         supplierSku: line.supplierSku,
         piecesPerBox: line.piecesPerBox,
-        boxes: boxesFor(line.expectedQuantity, line.piecesPerBox),
+        boxes: boxesFor(line.expectedQuantity, line.piecesPerBox, line.description),
       });
     }
   }
