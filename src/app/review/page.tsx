@@ -21,6 +21,8 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
+import { priceOutcome } from "@/lib/offerMath";
+import { labelForWeight } from "@/lib/shippingZone";
 import Link from "next/link";
 import { useEffect, useRef, useState, type ComponentProps } from "react";
 
@@ -528,6 +530,46 @@ function Thumb({ src, size = "md" }: { src: string | undefined; size?: "sm" | "m
   );
 }
 
+// Profit on one sale at the price in the box: eBay's fees (plus the
+// Promoted Listings rate if it's promoted), a label for the weight entered
+// (free shipping, so the label is ours), and what the item cost off its
+// manifest. Same math as the offer tools (priceOutcome). An estimate: the
+// real label depends on the buyer's zone.
+function ProfitEstimate({
+  price,
+  basis,
+  localPickupOnly,
+  weightLbs,
+}: {
+  price: number;
+  basis: { unitCost: number | null; typicalLabel: number; promotedPercent: number | null };
+  localPickupOnly: boolean;
+  weightLbs: number | null;
+}) {
+  if (!(price > 0)) {
+    return <span className="text-muted-foreground">Enter a price to see estimated profit.</span>;
+  }
+  const label = localPickupOnly ? 0 : weightLbs != null ? labelForWeight(basis.typicalLabel, weightLbs) : basis.typicalLabel;
+  const { fees, profit } = priceOutcome(
+    { listPrice: price, unitCost: basis.unitCost, labelCost: label, promotedPercent: basis.promotedPercent },
+    price
+  );
+  const parts = [
+    `$${fees.toFixed(2)} fees${basis.promotedPercent ? ` (incl. ${basis.promotedPercent}% promo)` : ""}`,
+    localPickupOnly ? "no label (pickup)" : `~$${label.toFixed(2)} label${weightLbs == null ? " (no weight yet)" : ""}`,
+    basis.unitCost != null ? `$${basis.unitCost.toFixed(2)} item cost` : "no item cost on file",
+  ];
+  return (
+    <span className="text-foreground">
+      Est. profit at ${price.toFixed(2)}:{" "}
+      <strong className={profit >= 0 ? "text-success" : "text-danger"}>
+        {profit < 0 ? "-" : ""}${Math.abs(profit).toFixed(2)}
+      </strong>
+      <span className="text-muted-foreground"> after {parts.join(", ")}</span>
+    </span>
+  );
+}
+
 function ItemCard({
   item,
   rules,
@@ -620,7 +662,13 @@ function ItemCard({
     // For the whole listing (unitRetail x packSize).
     retailPrice: number | null;
     unitRetail?: number | null;
+    // Owner only (null for employees): what a sale costs besides eBay's
+    // fees, for the profit line under the comps.
+    profitBasis?: { unitCost: number | null; typicalLabel: number; promotedPercent: number | null } | null;
   } | null>(null);
+  // What's in the price box right now, so profit follows the typing instead
+  // of waiting for the blur that saves it. null = the saved price.
+  const [typedPrice, setTypedPrice] = useState<string | null>(null);
   const [priceResearchError, setPriceResearchError] = useState<string | null>(null);
   const priceResearchedFor = useRef<string | null>(null);
 
@@ -649,6 +697,7 @@ function ItemCard({
             packSize: result.packSize,
             retailPrice: result.retailPrice,
             unitRetail: result.unitRetail,
+            profitBasis: result.profitBasis,
           });
         }
         throw new Error(result.error ?? "Price research failed.");
@@ -871,7 +920,9 @@ function ItemCard({
                     step="0.01"
                     placeholder="0.00"
                     defaultValue={item.price ?? ""}
+                    onChange={(e) => setTypedPrice(e.target.value)}
                     onBlur={(e) => {
+                      setTypedPrice(null);
                       if (e.target.value === (item.price ?? "")) return;
                       if (e.target.value && item.price != null && Number(e.target.value) === Number(item.price)) return;
                       onChange({ price: e.target.value });
@@ -929,6 +980,16 @@ function ItemCard({
                       </span>
                     )}
                   </span>
+                )}
+                {priceResearchResult?.profitBasis && !item.shopifyOnly && (
+                  <ProfitEstimate
+                    price={Number(typedPrice ?? item.price ?? "")}
+                    basis={priceResearchResult.profitBasis}
+                    localPickupOnly={item.localPickupOnly}
+                    weightLbs={
+                      item.weightLbs || item.weightOz ? (item.weightLbs ?? 0) + (item.weightOz ?? 0) / 16 : null
+                    }
+                  />
                 )}
               </div>
             </div>

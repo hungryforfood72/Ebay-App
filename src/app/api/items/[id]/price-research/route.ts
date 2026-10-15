@@ -1,6 +1,9 @@
+import { getRequestUser } from "@/lib/auth";
+import { cogsMapsFor, costPerListingUnit, unitCostForScan } from "@/lib/cogs";
 import { EbayApiError, searchActiveListings } from "@/lib/ebay";
 import { detectPackSize, isResellerLot, summarizeComps } from "@/lib/packSize";
 import { prisma } from "@/lib/prisma";
+import { typicalSingleLabelCost } from "@/lib/shippingCost";
 import { NextResponse } from "next/server";
 
 export const maxDuration = 30;
@@ -34,6 +37,26 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   const unitRetail = retailLine ? Number(retailLine.retailPrice) : null;
   const retailPrice = unitRetail != null ? unitRetail * packSize : null;
 
+  // What the review page needs to show profit at whatever price gets typed
+  // (fees, label and item cost are worked out there, live, with the same
+  // priceOutcome the offer tools use). Owner only: employees never see
+  // cost or profit.
+  let profitBasis: { unitCost: number | null; typicalLabel: number; promotedPercent: number | null } | null = null;
+  if (getRequestUser(request)?.role === "owner") {
+    const { cost, costed } = costPerListingUnit(item, await cogsMapsFor([item.manifestId]));
+    let unitCost: number | null = costed ? cost : null;
+    // Nothing received under this UPC yet: same fallback the scan page uses.
+    if (unitCost == null && !item.isBundle && item.manifestId && item.upc) {
+      const perUnit = await unitCostForScan(item.manifestId, item.upc);
+      if (perUnit != null) unitCost = perUnit * packSize;
+    }
+    profitBasis = {
+      unitCost,
+      typicalLabel: await typicalSingleLabelCost(),
+      promotedPercent: item.promotedBidPercentage,
+    };
+  }
+
   try {
     const comps = await searchActiveListings({
       upc: item.upc,
@@ -59,6 +82,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
         packSize,
         retailPrice,
         unitRetail,
+        profitBasis,
       });
     }
 
@@ -75,9 +99,10 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       packSize,
       retailPrice,
       unitRetail,
+      profitBasis,
     });
   } catch (e) {
     const message = e instanceof EbayApiError || e instanceof Error ? e.message : "Price research failed.";
-    return NextResponse.json({ error: message, retailPrice, unitRetail, packSize }, { status: 502 });
+    return NextResponse.json({ error: message, retailPrice, unitRetail, packSize, profitBasis }, { status: 502 });
   }
 }
