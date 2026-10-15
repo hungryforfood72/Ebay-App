@@ -44,15 +44,39 @@ export function exactSearchKeywords(description: string, sku: string | null): st
   return usableItemNumber(sku) && sku ? `${brand} ${sku.trim()}` : description;
 }
 
+// Part-number-like chunks of a title ("150832", "150832-632", "#14204" ->
+// "14204"), each squashed to letters/digits. The item number has to BE one
+// of them: "Bard 150832" is Bard's leg bag, but "150832-632" and
+// "P150832-455" are Steris table parts (seen live 2026-10-15). A word glued
+// on after a dash still counts ("14204-Box" -> "14204"); a number doesn't.
+function titleCodes(title: string): Set<string> {
+  const codes = new Set<string>();
+  for (const chunk of title.match(/[A-Za-z0-9]+(?:[-/.][A-Za-z0-9]+)*/g) ?? []) {
+    codes.add(alnum(chunk));
+    const [first, second] = chunk.split(/[-/.]/);
+    if (second && /^[A-Za-z]/.test(second)) codes.add(alnum(first));
+  }
+  return codes;
+}
+
 export function isExactTitleMatch(title: string, description: string, sku: string | null): boolean {
   const t = alnum(title);
   const code = usableItemNumber(sku);
   if (code) {
-    if (!t.includes(code)) return false;
-    // A short number like "8235" turns up in unrelated titles too, so
-    // it also needs the brand.
     const brand = alnum(description.trim().split(/\s+/)[0] ?? "");
-    return code.length > 5 || brand.length < 3 || t.includes(brand);
+    const hasBrand = brand.length >= 3 && t.includes(brand);
+    if (titleCodes(title).has(code)) {
+      // A short number like "8235" turns up in unrelated titles too, so
+      // it also needs the brand.
+      return code.length > 5 || brand.length < 3 || hasBrand;
+    }
+    // Number glued to other characters ("529968R", "pouches18104",
+    // "HUD1642"): real listings do this, but so do unrelated parts
+    // ("ESP33891" on a Lexus duct, "12076W" Fiat Brava wheel spacers). Only
+    // trusted with the brand AND another of the description's own words.
+    if (!t.includes(code) || !hasBrand) return false;
+    const titleLower = title.toLowerCase();
+    return significantWords(description).some((w) => alnum(w) !== brand && titleLower.includes(w));
   }
   // No item number: nearly every identifying word has to be in the title.
   const words = significantWords(description);
