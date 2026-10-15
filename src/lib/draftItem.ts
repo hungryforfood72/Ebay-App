@@ -58,7 +58,7 @@ const DRAFT_SCHEMA = {
     countPerPackage: {
       type: ["integer", "null"],
       description:
-        "How many pieces are inside ONE unit of this listing, as printed on the package in the photo: 30 for a box of 30 bandages ('30 ct'), 60 for a bottle of 60 tablets, 10 for a box of 10 drink-mix sticks, 1 for something sold as one piece (an individually wrapped beef stick, a single tube of lotion). If this is a multi-pack or lot, count inside one of its units, not the whole lot. Null if the photo and UPC data don't make it clear.",
+        "How many pieces are inside ONE unit of this listing, as printed on the package in the photos: 30 for a box of 30 bandages ('30 ct'), 60 for a bottle of 60 tablets, 10 for a box of 10 drink-mix sticks, 1 for something sold as one piece (an individually wrapped beef stick, a single tube of lotion). If this is a multi-pack or lot, count inside one of its units, not the whole lot. Null if the photo and UPC data don't make it clear.",
     },
   },
   required: ["title", "description", "specifics", "countPerPackage"],
@@ -128,8 +128,10 @@ async function imageContentBlock(url: string): Promise<Anthropic.Messages.Conten
   }
 }
 
+const MAX_DRAFT_PHOTOS = 8;
+
 // Looks up the item's UPC (caching the result) and asks Claude to draft an
-// eBay title + description from that data plus the first product photo.
+// eBay title + description from that data plus the item's photos.
 export async function draftItem(itemId: string) {
   const item = await prisma.item.findUniqueOrThrow({ where: { id: itemId } });
 
@@ -177,6 +179,10 @@ export async function draftItem(itemId: string) {
     ? `UPC: ${item.upc}\nUPC lookup data (may be incomplete or missing): ${JSON.stringify(upcLookupData)}`
     : "No UPC — this is a custom/handmade item with no barcode. Draft from the photo and the details below.";
 
+  // Each is resized to 1568px before sending (src/lib/anthropic.ts), so 8
+  // stays well under the request size limit.
+  const photos = item.photoUrls.slice(0, MAX_DRAFT_PHOTOS);
+
   const promptText = `Draft an eBay listing title and description for this product.
 
 ${upcNote}
@@ -185,19 +191,19 @@ ${packNote}
 Condition: ${item.condition ?? "not specified yet (set by hand in review)"}
 ${expirationNote}
 
-Write a clear, keyword-appropriate eBay title (80 characters max) and a short, honest description a buyer would find helpful. Do not invent specifics (model numbers, exact materials) that aren't supported by the UPC data or the photo.
+${photos.length > 1 ? `\nThere are ${photos.length} photos of this exact item. The first is the main shot; the others are usually taken to show condition (a dented box, a torn seal, scuffs, wear) or other sides of the package (ingredients, count, size). Use details from all of them, and if any shows a flaw, say so plainly in the description so the buyer isn't surprised.\n` : ""}
+Write a clear, keyword-appropriate eBay title (80 characters max) and a short, honest description a buyer would find helpful. Do not invent specifics (model numbers, exact materials) that aren't supported by the UPC data or the photos.
 
-Describe the item's state the way a seller who has it in hand would: state what the photo clearly shows as plain fact ("The caps are still shrink-wrapped."), and leave out anything the photo can't confirm. Never hedge with "appears", "seems" or "looks like": it reads as if the seller never checked their own item.`;
+Describe the item's state the way a seller who has it in hand would: state what the photos clearly show as plain fact ("The caps are still shrink-wrapped."), and leave out anything the photos can't confirm. Never hedge with "appears", "seems" or "looks like": it reads as if the seller never checked their own item.`;
 
+  // Every photo, not just the first: the extra ones are usually condition
+  // shots (Cristian, 2026-10-15), and a dent or torn seal belongs in the
+  // description. Images go first, in order, then the prompt.
+  const photoBlocks = await Promise.all(photos.map(imageContentBlock));
   const content: Anthropic.Messages.ContentBlockParam[] = [
+    ...photoBlocks.filter((b): b is Anthropic.Messages.ContentBlockParam => b != null),
     { type: "text", text: promptText },
   ];
-
-  const firstPhoto = item.photoUrls[0];
-  if (firstPhoto) {
-    const block = await imageContentBlock(firstPhoto);
-    if (block) content.unshift(block);
-  }
 
   // No web search here (just vision + structured output), so this should be
   // fast — but bound it anyway so a hung request can't eat the whole
