@@ -139,8 +139,13 @@ export async function GET(request: NextRequest) {
 
   // Everything the manifest listed is already scanned in, but someone's
   // holding one: plan for that one, and say it looks extra.
-  const alreadyScannedIn = unitsLeft === 0;
-  const available = unitsLeft == null ? null : Math.max(unitsLeft, 1);
+  // How many Lizvet says she actually has, typed on the card when it doesn't
+  // match the manifest (Cristian, 2026-10-15: 5 Hawaiian Tropic in hand,
+  // manifest said 3 left). Plans for that count instead.
+  const haveParam = Number(request.nextUrl.searchParams.get("have"));
+  const have = Number.isInteger(haveParam) && haveParam > 0 && haveParam <= 1000 ? haveParam : null;
+  const alreadyScannedIn = have == null && unitsLeft === 0;
+  const available = have ?? (unitsLeft == null ? null : Math.max(unitsLeft, 1));
 
   // Units that shouldn't be listed at the size they'd have to go in. They
   // come out of the plan and Lizvet sets them aside for Cristian to decide
@@ -280,6 +285,10 @@ export async function GET(request: NextRequest) {
     // How many come in each unit the manifest counts (2 for a twin pack).
     manifestPackSize,
     available,
+    // available is the count typed on the card, not the manifest's.
+    countedByHand: have != null,
+    // What the manifest says is left, for "the manifest says 3".
+    manifestLeft: unitsLeft,
     // Counted against a load other than the one being scanned into (or none
     // was picked) — its title, so the card can say where the count's from.
     manifestTitle: inferredManifestTitle,

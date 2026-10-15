@@ -13,6 +13,10 @@ type PackSuggestion = {
   alreadyMultipack: boolean;
   manifestPackSize: number;
   available: number | null;
+  // available came from a count typed on the card; manifestLeft is what
+  // the manifest said (null off a manifest).
+  countedByHand?: boolean;
+  manifestLeft?: number | null;
   // Set when the count came from a load other than the one being scanned
   // into (or none was picked): that load's title.
   manifestTitle: string | null;
@@ -72,6 +76,11 @@ const listingsOf = (g: PackPlanGroup) =>
 const money = (n: number) => `$${n.toFixed(2)}`;
 const manifestLabel = (d: { manifestTitle: string | null }) =>
   d.manifestTitle ? `the "${d.manifestTitle}" manifest` : "this manifest";
+// "5 on hand:" for a typed count, "3 left on this manifest:" otherwise.
+const countLabel = (d: PackSuggestion) =>
+  d.countedByHand
+    ? `You have ${d.available}${d.manifestLeft != null ? ` (the manifest said ${d.manifestLeft} left)` : ""}`
+    : `${d.available} left on ${manifestLabel(d)}`;
 
 // On the scan page's quantity step: what pack size this UPC sells best in
 // (from live eBay listings, see /api/pack-suggestion) and, on a manifest,
@@ -93,13 +102,20 @@ export function PackSuggestionCard({
   // Keep scanning it in, but for Shopify & Whatnot only (no eBay listing).
   onShopifyOnly: (packSize: number, listings: number | null) => void;
 }) {
-  const key = `${upc}|${manifestId ?? ""}`;
+  const baseKey = `${upc}|${manifestId ?? ""}`;
+  // A count Lizvet typed in, for this UPC only: a new scan starts over
+  // from the manifest's count.
+  const [have, setHave] = useState<{ key: string; count: number } | null>(null);
+  const haveCount = have?.key === baseKey ? have.count : null;
+  const key = `${baseKey}|${haveCount ?? ""}`;
   const [result, setResult] = useState<{ key: string; data: PackSuggestion | null } | null>(null);
   const loading = result?.key !== key;
+  const changeCount = (count: number | null) => setHave(count == null ? null : { key: baseKey, count });
 
   useEffect(() => {
     const params = new URLSearchParams({ upc });
     if (manifestId) params.set("manifestId", manifestId);
+    if (haveCount != null) params.set("have", String(haveCount));
     let cancelled = false;
     fetch(`/api/pack-suggestion?${params}`)
       .then((r) => (r.ok ? r.json() : null))
@@ -108,7 +124,7 @@ export function PackSuggestionCard({
     return () => {
       cancelled = true;
     };
-  }, [upc, manifestId, key]);
+  }, [upc, manifestId, key, haveCount]);
 
   if (loading) {
     return (
@@ -121,7 +137,7 @@ export function PackSuggestionCard({
 
   const data = result?.data;
   const rec = data?.recommendation;
-  if (data?.alreadyMultipack) return <AlreadyMultipackCard data={data} onApply={onApply} />;
+  if (data?.alreadyMultipack) return <AlreadyMultipackCard data={data} onApply={onApply} onChangeCount={changeCount} />;
   if (!data || !rec) return null;
 
   const first = data.plan?.[0] ?? null;
@@ -168,7 +184,7 @@ export function PackSuggestionCard({
               <span className="font-medium">
                 {data.alreadyScannedIn
                   ? `All ${data.expected ?? ""} on ${manifestLabel(data)} ${data.expected === 1 ? "is" : "are"} already scanned in, so this one looks extra. For this one:`
-                  : `${data.available} left on ${manifestLabel(data)}:`}
+                  : `${countLabel(data)}:`}
               </span>{" "}
               {[
                 ...data.plan.map(listingsOf),
@@ -223,6 +239,8 @@ export function PackSuggestionCard({
             )}
           </div>
 
+          <CountOverride key={key} data={data} onChange={changeCount} />
+
           {data.isOwner && (
             <TeachAgent
               key={key}
@@ -247,9 +265,11 @@ export function PackSuggestionCard({
 function AlreadyMultipackCard({
   data,
   onApply,
+  onChangeCount,
 }: {
   data: PackSuggestion;
   onApply: (packSize: number, listings: number | null) => void;
+  onChangeCount: (count: number | null) => void;
 }) {
   const n = data.manifestPackSize;
   const left = data.available;
@@ -268,7 +288,9 @@ function AlreadyMultipackCard({
               <span className="font-medium">
                 {data.alreadyScannedIn
                   ? `All ${data.expected ?? ""} on ${manifestLabel(data)} ${data.expected === 1 ? "is" : "are"} already scanned in, so this one looks extra.`
-                  : `${left} ${n}-pack${left === 1 ? "" : "s"} left on ${manifestLabel(data)}.`}
+                  : data.countedByHand
+                    ? `You have ${left} ${n}-pack${left === 1 ? "" : "s"}${data.manifestLeft != null ? ` (the manifest said ${data.manifestLeft} left)` : ""}.`
+                    : `${left} ${n}-pack${left === 1 ? "" : "s"} left on ${manifestLabel(data)}.`}
               </span>
             </p>
           )}
@@ -277,9 +299,64 @@ function AlreadyMultipackCard({
               Fill in {left != null && left > 1 ? `quantity ${left}, ` : ""}one {n}-pack each
             </Button>
           </div>
+          <CountOverride data={data} onChange={onChangeCount} />
         </div>
       </div>
     </div>
+  );
+}
+
+// The manifest's count is often off (extras, shortages, a case split
+// across boxes). Lizvet types how many she's actually holding and the plan
+// is worked out again for that number.
+function CountOverride({ data, onChange }: { data: PackSuggestion; onChange: (count: number | null) => void }) {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState(data.available != null ? String(data.available) : "");
+  const count = Number(value);
+  const valid = Number.isInteger(count) && count > 0 && count <= 1000;
+
+  if (!open) {
+    return (
+      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+        <button type="button" className="font-medium text-primary underline" onClick={() => setOpen(true)}>
+          Have a different amount?
+        </button>
+        {data.countedByHand && (
+          <button type="button" className="text-blue-900/80 underline" onClick={() => onChange(null)}>
+            Use the manifest&apos;s count
+          </button>
+        )}
+      </div>
+    );
+  }
+  return (
+    <form
+      className="mt-3 flex flex-wrap items-end gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (valid) onChange(count);
+      }}
+    >
+      <label className="flex flex-col gap-1 text-xs font-medium">
+        How many do you have?
+        <input
+          type="number"
+          inputMode="numeric"
+          min={1}
+          max={1000}
+          autoFocus
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          className="h-10 w-24 rounded-lg border border-border bg-background px-3 text-base text-foreground"
+        />
+      </label>
+      <Button size="sm" type="submit" disabled={!valid}>
+        Update
+      </Button>
+      <Button size="sm" variant="outline" type="button" onClick={() => setOpen(false)}>
+        Cancel
+      </Button>
+    </form>
   );
 }
 
