@@ -68,7 +68,8 @@ export async function GET(request: NextRequest) {
 
   // A manifest unit that's itself a multi-pack ("... x 2 pack") gets listed
   // as-is — no suggestion to re-split it.
-  const alreadyMultipack = description != null && detectPackSize(description) > 1;
+  const manifestPackSize = description != null ? detectPackSize(description) : 1;
+  const alreadyMultipack = manifestPackSize > 1;
 
   let recommendation = null;
   let reason: string | null = null;
@@ -211,6 +212,8 @@ export async function GET(request: NextRequest) {
     upc,
     isOwner,
     alreadyMultipack,
+    // How many come in each unit the manifest counts (2 for a twin pack).
+    manifestPackSize,
     available,
     // Counted against a load other than the one being scanned into (or none
     // was picked) — its title, so the card can say where the count's from.

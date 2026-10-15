@@ -44,7 +44,10 @@ export function detectPackSize(title: string): number {
   const patterns = [
     /\bpack\s*of\s*(\d{1,3})\b/i,
     /\b(\d{1,3})\s*-?\s*pack\b/i,
-    /\b(\d{1,3})\s*pk\b/i,
+    // "2-pk." is how Liquidation.com writes it; missed until 2026-10-15,
+    // when a Neutrogena twin pack was read as one tube and the scan card
+    // said to bundle 3 of them.
+    /\b(\d{1,3})\s*-?\s*pk\b/i,
     /\bset\s*of\s*(\d{1,3})\b/i,
     /\bbundle\s*of\s*(\d{1,3})\b/i,
     /\blot\s*of\s*(\d{1,3})\b/i,
@@ -62,6 +65,8 @@ export function detectPackSize(title: string): number {
       if (n >= 2 && n <= 48) return n; // sanity bounds — outside this range is more likely a false match (a model number, a size, etc.)
     }
   }
+  if (/\btwin\s*-?\s*pack\b/i.test(title)) return 2;
+  if (/\btriple\s*-?\s*pack\b/i.test(title)) return 3;
   // "3 Cans", "2 Bottles". Capped low on purpose: "12 cans" or "24
   // bottles" is usually one retail case (soda, water), the same trap as
   // "30 ct" above. Found live 2026-09-27: "LOT(2)", "3 Cans" and "3X ..."

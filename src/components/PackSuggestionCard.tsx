@@ -11,6 +11,7 @@ type PackPlanGroup = { packSize: number; listings: number };
 type PackSuggestion = {
   isOwner: boolean;
   alreadyMultipack: boolean;
+  manifestPackSize: number;
   available: number | null;
   // Set when the count came from a load other than the one being scanned
   // into (or none was picked): that load's title.
@@ -115,7 +116,8 @@ export function PackSuggestionCard({
 
   const data = result?.data;
   const rec = data?.recommendation;
-  if (!data || data.alreadyMultipack || !rec) return null;
+  if (data?.alreadyMultipack) return <AlreadyMultipackCard data={data} onApply={onApply} />;
+  if (!data || !rec) return null;
 
   const first = data.plan?.[0] ?? null;
   const rest = data.plan?.slice(1) ?? [];
@@ -214,6 +216,48 @@ export function PackSuggestionCard({
               }}
             />
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// The manifest's unit is already a store multi-pack (a "2-pk." twin pack):
+// each one is listed as it came, never split up or bundled with others,
+// so Lizvet doesn't mistake the manifest count for loose singles.
+function AlreadyMultipackCard({
+  data,
+  onApply,
+}: {
+  data: PackSuggestion;
+  onApply: (packSize: number, listings: number | null) => void;
+}) {
+  const n = data.manifestPackSize;
+  const left = data.available;
+  return (
+    <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-950">
+      <div className="flex gap-2">
+        <Boxes className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden />
+        <div className="min-w-0">
+          <p className="font-semibold">Already a {n}-pack from the store: list it as is</p>
+          <p className="mt-0.5 text-blue-900/80">
+            Each one you&apos;re holding is a sealed {n}-pack. Don&apos;t split it up or bundle several together, one
+            {" "}{n}-pack per sale.
+          </p>
+          {left != null && (
+            <p className="mt-2">
+              <span className="font-medium">
+                {data.alreadyScannedIn
+                  ? `All ${data.expected ?? ""} on ${manifestLabel(data)} ${data.expected === 1 ? "is" : "are"} already scanned in, so this one looks extra.`
+                  : `${left} ${n}-pack${left === 1 ? "" : "s"} left on ${manifestLabel(data)}.`}
+              </span>
+            </p>
+          )}
+          <div className="mt-3">
+            <Button size="sm" onClick={() => onApply(1, left)}>
+              Fill in {left != null && left > 1 ? `quantity ${left}, ` : ""}one {n}-pack each
+            </Button>
+          </div>
         </div>
       </div>
     </div>
