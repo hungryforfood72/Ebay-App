@@ -18,6 +18,12 @@ import type { Prisma } from "@/generated/prisma/client";
 // other whitespace variant eBay's text might use elsewhere in the string.
 const MISSING_ASPECT_PATTERN = /item\s+specific\s+([A-Za-z0-9\s/&'-]+?)\s+is\s+missing/i;
 
+// eBay aspect name (lowercase) -> the specifics key that already holds the
+// same fact.
+const ASPECT_EQUIVALENTS: Record<string, string> = {
+  shade: "color",
+};
+
 const VALUE_SCHEMA_HINT = `Once you've found it, respond with exactly one JSON object as your final line, no other text after it:
 {"value": "the real value"}
 
@@ -61,6 +67,21 @@ export async function tryFixMissingAspect(itemId: string, errorMessage: string):
   const item = await prisma.item.findUniqueOrThrow({ where: { id: itemId } });
   const specifics = (item.itemSpecifics as Record<string, string> | null) ?? {};
   if (specifics[key]) return false; // already has a value — not this gap, don't loop on it
+
+  // Some aspects are just another name for one the draft already filled in.
+  // Confirmed live 2026-10-15: a Hempz lip gloss (31802) was rejected with
+  // "The item specific Shade is missing" while its color sat right there,
+  // and the web search came back empty.
+  const sameAs = ASPECT_EQUIVALENTS[aspectName.toLowerCase()];
+  const known = sameAs && specifics[sameAs];
+  if (known) {
+    await prisma.item.update({
+      where: { id: itemId },
+      data: { itemSpecifics: { ...specifics, [key]: known } as Prisma.InputJsonValue },
+    });
+    console.log(`[publishRemediation] ${itemId}: filled "${aspectName}" from ${sameAs} = "${known}"`);
+    return true;
+  }
 
   const productDescription = item.finalTitle ?? item.aiTitle ?? `item ${item.sku}`;
   const specificsLine = Object.entries(specifics)

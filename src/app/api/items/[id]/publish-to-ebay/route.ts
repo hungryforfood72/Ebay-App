@@ -9,6 +9,7 @@ import {
   toItemForEbayPublish,
 } from "@/lib/ebay";
 import { tryFixMissingAspect } from "@/lib/publishRemediation";
+import { hasBlockedPhrase } from "@/lib/ebayTitle";
 import { prisma } from "@/lib/prisma";
 import { queueShopifyPublish } from "@/lib/shopifySync";
 import { NextRequest, NextResponse } from "next/server";
@@ -113,10 +114,15 @@ export async function POST(
     return NextResponse.json(updated);
   } catch (e) {
     const raw = e instanceof EbayApiError || e instanceof Error ? e.message : "Publish failed.";
-    // The one missing specific only a person can fill: say how, in plain words.
-    const message = /item\s+specific\s+Expiration\s+Date\s+is\s+missing/i.test(raw)
-      ? "eBay needs the expiration date for this category. Send it back to review, add the date printed on the package, and publish again."
-      : raw;
+    // Errors only a person can fix: say how, in plain words.
+    let message = raw;
+    if (/item\s+specific\s+Expiration\s+Date\s+is\s+missing/i.test(raw)) {
+      message = "eBay needs the expiration date for this category. Send it back to review, add the date printed on the package, and publish again.";
+    } else if (/improper\s+words/i.test(raw) && hasBlockedPhrase(`${item.finalTitle ?? ""} ${item.finalDescription ?? ""}`)) {
+      message = `eBay blocks "Ultra Sheer" on Neutrogena listings (recall filter). Send it back to review, take those words out of the title and description, and publish again.`;
+    } else if (/Brand\s+has\s+an\s+invalid\s+value/i.test(raw)) {
+      message = `${raw} For a mixed-brand lot, use the main brand in the lot instead.`;
+    }
     await prisma.item.update({ where: { id }, data: { ebayPublishError: message } });
     return NextResponse.json({ error: message }, { status: 502 });
   }

@@ -2,7 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { lookupUpc } from "@/lib/upcLookup";
 import { anthropic, fetchImageAsBase64 } from "@/lib/anthropic";
 import { logAiUsage } from "@/lib/aiUsage";
-import { truncateTitle } from "@/lib/ebayTitle";
+import { removeBlockedPhrases, truncateTitle } from "@/lib/ebayTitle";
 import { formatExpiration } from "@/lib/formatExpiration";
 import type { Item, Prisma } from "@/generated/prisma/client";
 import type Anthropic from "@anthropic-ai/sdk";
@@ -11,7 +11,7 @@ const SPECIFICS_SCHEMA = {
   type: "object",
   description: "eBay item specifics. Use null for anything not confidently known from the photo or UPC data — never guess.",
   properties: {
-    brand: { type: ["string", "null"], description: "Brand name, or null if not identifiable. For a bundle of different brands, use 'Various' or the dominant brand." },
+    brand: { type: ["string", "null"], description: "Brand name, or null if not identifiable. For a bundle of different brands, use the dominant brand (the first one, if tied). Never 'Various', 'Assorted', 'Mixed' or 'Multiple': eBay rejects those as a Brand." },
     type: { type: ["string", "null"], description: "Product type, e.g. 'Sticker', 'Hair Dye', 'Action Figure'. For a bundle, something like 'Bundle' or 'Lot'." },
     product: {
       type: ["string", "null"],
@@ -75,7 +75,10 @@ async function applyDraft(item: Item, draft: Draft, extra: Prisma.ItemUpdateInpu
   // 80 or fewer, but that's a hint, not a guarantee — Claude has gone over
   // (especially when working an expiration date into the title), so enforce
   // it here rather than trust the model.
-  const draftTitle = draft.title ? truncateTitle(draft.title) : draft.title;
+  // Words eBay's filter blocks come out of the draft before anyone sees it,
+  // since the listing can't go live with them anyway.
+  const draftTitle = draft.title ? truncateTitle(removeBlockedPhrases(draft.title)) : draft.title;
+  if (draft.description) draft = { ...draft, description: removeBlockedPhrases(draft.description) };
 
   const titleUnedited = !item.finalTitle || item.finalTitle === item.aiTitle;
   const descriptionUnedited =
