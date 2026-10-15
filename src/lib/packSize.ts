@@ -87,12 +87,21 @@ export function detectPackSize(title: string): number {
 // close to our own pack size (half to double) is read as the pack size.
 // Found live 2026-10-15: 20/22/24-count comps at $18-28 were read as single
 // sticks and scaled to "$780 for 28".
-export function detectPackSizeNear(title: string, listingPackSize: number): number {
+//
+// `countPerPackage` (Item.countPerPackage, read off our own photo by the AI
+// draft) settles it when known: a box of 30 bandages makes "30 ct" one box
+// and "60 ct" two; an individually wrapped stick (1) makes "24 count" 24.
+export function detectPackSizeNear(title: string, listingPackSize: number, countPerPackage?: number | null): number {
   const size = detectPackSize(title);
-  if (size > 1 || listingPackSize < 2) return size;
+  if (size > 1) return size;
   const count = title.match(/\b(\d{1,3})\s*-?\s*(?:count|ct|pcs|pieces|sticks|bars|packets|pouches)\b/i);
   if (!count) return size;
   const n = parseInt(count[1], 10);
+  if (countPerPackage != null && countPerPackage >= 1) {
+    if (countPerPackage === 1) return n >= 2 && n <= 100 ? n : size;
+    return n % countPerPackage === 0 && n / countPerPackage <= 48 ? n / countPerPackage : size;
+  }
+  if (listingPackSize < 2) return size;
   return n >= listingPackSize / 2 && n <= listingPackSize * 2 ? n : size;
 }
 
@@ -132,15 +141,19 @@ export type CompSummary = {
   packStats: PackStat[];
 };
 
-// `listingPackSize`: the size of what's being priced, when known (see
-// detectPackSizeNear and isResellerLot).
-export function summarizeComps(comps: { title: string; totalPrice: number }[], listingPackSize = 1): CompSummary {
+// `listingPackSize` / `countPerPackage`: the size of what's being priced and
+// pieces per unit, when known (see detectPackSizeNear and isResellerLot).
+export function summarizeComps(
+  comps: { title: string; totalPrice: number }[],
+  listingPackSize = 1,
+  countPerPackage: number | null = null
+): CompSummary {
   const perUnit: number[] = [];
   const packSizes: number[] = [];
   const totalsByPack = new Map<number, number[]>();
   const cheapestByPack = new Map<number, { title: string; totalPrice: number }>();
   for (const c of comps) {
-    const packSize = detectPackSizeNear(c.title, listingPackSize);
+    const packSize = detectPackSizeNear(c.title, listingPackSize, countPerPackage);
     if (isResellerLot(c.title, packSize, listingPackSize)) continue;
     packSizes.push(packSize);
     perUnit.push(c.totalPrice / packSize);

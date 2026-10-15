@@ -55,8 +55,13 @@ const DRAFT_SCHEMA = {
       description: "eBay listing description, a few sentences",
     },
     specifics: SPECIFICS_SCHEMA,
+    countPerPackage: {
+      type: ["integer", "null"],
+      description:
+        "How many pieces are inside ONE unit of this listing, as printed on the package in the photo: 30 for a box of 30 bandages ('30 ct'), 60 for a bottle of 60 tablets, 10 for a box of 10 drink-mix sticks, 1 for something sold as one piece (an individually wrapped beef stick, a single tube of lotion). If this is a multi-pack or lot, count inside one of its units, not the whole lot. Null if the photo and UPC data don't make it clear.",
+    },
   },
-  required: ["title", "description", "specifics"],
+  required: ["title", "description", "specifics", "countPerPackage"],
   additionalProperties: false,
 } as const;
 
@@ -64,6 +69,7 @@ type Draft = {
   title?: string;
   description?: string;
   specifics?: Record<string, string | null>;
+  countPerPackage?: number | null;
 };
 
 // Shared by draftItem and draftBundleItem: truncates the title, respects
@@ -227,7 +233,9 @@ Describe the item's state the way a seller who has it in hand would: state what 
     draft.description = text + breakdownDescriptionHtml(breakdown);
   }
 
-  return applyDraft(item, draft, upcLookupData ? { upcLookupData } : {});
+  const countPerPackage =
+    Number.isInteger(draft.countPerPackage) && draft.countPerPackage! >= 1 ? draft.countPerPackage! : null;
+  return applyDraft(item, draft, { ...(upcLookupData ? { upcLookupData } : {}), countPerPackage });
 }
 
 type BundleComponent = {

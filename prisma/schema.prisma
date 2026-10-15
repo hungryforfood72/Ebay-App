@@ -124,6 +124,12 @@ model Item {
 
   // Review step
   upcLookupData    Json?
+  // Pieces inside one unit of this listing, read off the photo by the AI
+  // draft: 30 for a box of 30 bandages, 1 for an individually wrapped beef
+  // stick. Tells the comp reader whether "30 ct" in a title is one box or
+  // 30 of something (src/lib/packSize.ts detectPackSizeNear). null = not
+  // drafted yet or not legible.
+  countPerPackage  Int?
   aiTitle          String?
   aiDescription    String?
   finalTitle       String?

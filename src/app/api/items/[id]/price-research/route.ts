@@ -72,7 +72,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       excludeListingId: item.ebayListingId,
     });
     const samePack = comps.filter((c) => {
-      const size = detectPackSizeNear(c.title, packSize);
+      const size = detectPackSizeNear(c.title, packSize, item.countPerPackage);
       return size === packSize && !isResellerLot(c.title, size, packSize);
     });
 
@@ -88,6 +88,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
         high: totals[totals.length - 1],
         basis: "same_pack",
         packSize,
+        countPerPackage: item.countPerPackage,
         retailPrice,
         unitRetail,
         profitBasis,
@@ -99,14 +100,14 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     // basis when there are any: a single's price carries a whole shipping
     // charge, so 28 x a single stick's price is far more than a 28-stick lot
     // goes for.
-    const summary = summarizeComps(comps, packSize);
+    const summary = summarizeComps(comps, packSize, item.countPerPackage);
     const isNear = (size: number) => size > 1 && size >= packSize / 2 && size <= packSize * 2;
     const nearStats = packSize > 1 ? summary.packStats.filter((s) => isNear(s.packSize)) : [];
     let scaledPerUnit = summary.medianPerUnit;
     let scaledCount = summary.activeCompCount;
     if (nearStats.length > 0) {
       const perUnit = comps
-        .map((c) => ({ c, size: detectPackSizeNear(c.title, packSize) }))
+        .map((c) => ({ c, size: detectPackSizeNear(c.title, packSize, item.countPerPackage) }))
         .filter(({ c, size }) => isNear(size) && !isResellerLot(c.title, size, packSize))
         .map(({ c, size }) => c.totalPrice / size)
         .sort((a, b) => a - b);
@@ -123,6 +124,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       basis: "scaled",
       nearPacks: nearStats.map((s) => ({ packSize: s.packSize, count: s.count, medianTotal: s.medianTotal })),
       packSize,
+      countPerPackage: item.countPerPackage,
       retailPrice,
       unitRetail,
       profitBasis,

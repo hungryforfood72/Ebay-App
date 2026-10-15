@@ -679,6 +679,8 @@ function ItemCard({
     packSize?: number;
     // Scaled only: the pack sizes near this one the estimate came from.
     nearPacks?: { packSize: number; count: number; medianTotal: number }[];
+    // Pieces in one unit, read off the photo by the AI draft.
+    countPerPackage?: number | null;
     // For the whole listing (unitRetail x packSize).
     retailPrice: number | null;
     unitRetail?: number | null;
@@ -995,6 +997,12 @@ function ItemCard({
                           .join(" · ")}
                       </span>
                     )}
+                  </span>
+                )}
+                {priceResearchResult?.countPerPackage != null && priceResearchResult.countPerPackage > 1 && (
+                  <span className="text-muted-foreground">
+                    Photo shows {priceResearchResult.countPerPackage} per package, so &ldquo;{priceResearchResult.countPerPackage} ct&rdquo; in a comp
+                    title counts as 1 package.
                   </span>
                 )}
                 {priceResearchResult?.retailPrice != null && (
