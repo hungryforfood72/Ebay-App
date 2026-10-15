@@ -4,7 +4,7 @@ import { getTargetMarginPct } from "@/lib/sourcingAgent";
 import { typicalSingleLabelCost } from "@/lib/shippingCost";
 import { EbayApiError, searchActiveListings } from "@/lib/ebay";
 import { parseBundleComponentUnits, unitsFor } from "@/lib/itemUnits";
-import { advisePackSize, savedPackDecision } from "@/lib/packAdvisor";
+import { advisePackSize, readableProductName, savedPackDecision } from "@/lib/packAdvisor";
 import {
   detectPackSize,
   listingWorth,
@@ -91,12 +91,18 @@ export async function GET(request: NextRequest) {
       where: { upc, capturedAt: { gte: since }, packStats: { not: Prisma.DbNull } },
       orderBy: { capturedAt: "desc" },
     });
-    let packStats = snapshot ? parsePackStats(snapshot.packStats) : null;
+    // A cached "no listings" isn't trusted: it may just be a search on
+    // manifest shorthand that a real product name would fix.
+    let packStats = snapshot && snapshot.activeCompCount > 0 ? parsePackStats(snapshot.packStats) : null;
+    let productName: string | null = null;
     if (!packStats) {
       try {
-        const summary = summarizeComps(
-          await searchActiveListings({ upc, keywords: description ?? upc, excludeListingId: null })
-        );
+        let comps = await searchActiveListings({ upc, keywords: description ?? upc, excludeListingId: null });
+        if (comps.length === 0) {
+          productName = await readableProductName(upc, description);
+          if (productName) comps = await searchActiveListings({ upc, keywords: productName, excludeListingId: null });
+        }
+        const summary = summarizeComps(comps);
         packStats = summary.packStats;
         await prisma.marketCompSnapshot.create({
           data: {
@@ -117,10 +123,11 @@ export async function GET(request: NextRequest) {
     // cheapest listing's title tells the agent what the product is.
     const advice = await advisePackSize({
       upc,
-      description: description ?? packStats.find((s) => s.cheapestTitle)?.cheapestTitle ?? `UPC ${upc}`,
+      description: productName ?? description ?? packStats.find((s) => s.cheapestTitle)?.cheapestTitle ?? `UPC ${upc}`,
       retailPrice: lines[0] ? Number(lines[0].retailPrice) : null,
       category: lines[0]?.category ?? null,
       packStats,
+      allowNoListings: true,
     });
     recommendation = advice;
     reason = advice?.reason ?? null;

@@ -57,10 +57,15 @@ export async function advisePackSize(input: {
   category: string | null;
   packStats: PackStat[];
   evaluationId?: string;
+  // The scan page passes true: with no eBay listings at all the agent still
+  // decides from the product, its retail price and the label cost, since
+  // Lizvet is holding the item and needs a call. Seen 2026-10-15: 171 UPCs
+  // on four bought pallets (store brands like Festive Voice, and products
+  // only found under Liquidation.com shorthand) showed no card at all. The
+  // Analyzer leaves it off, keeping its "no listings, no call" behavior.
+  allowNoListings?: boolean;
 }): Promise<PackAdvice | null> {
-  // No live listings at all: nothing for the agent (or the formula) to
-  // weigh. Same "no suggestion" as before.
-  if (input.packStats.length === 0) return null;
+  if (input.packStats.length === 0 && !input.allowNoListings) return null;
 
   if (input.upc) {
     const saved = await savedPackDecision(input.upc);
@@ -136,6 +141,49 @@ export async function advisePackSize(input: {
   }
 }
 
+// Liquidation.com manifests describe products in register shorthand
+// ("HMPZ DK RD CH TNT LP BM BTR" = Hempz Dark Red Cherries Tinted Lip
+// Balm), which finds nothing on eBay, and the free UPC database often
+// doesn't know the product either. Looks up the real name from the UPC and
+// the shorthand. Only called when a search came back empty. Null when it
+// can't confidently tell.
+export async function readableProductName(upc: string, description: string | null): Promise<string | null> {
+  try {
+    const response = await anthropic.messages.create(
+      {
+        model: "claude-sonnet-5",
+        max_tokens: 1024,
+        output_config: { effort: "low" },
+        tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 2 }],
+        messages: [
+          {
+            role: "user",
+            content: `A liquidation manifest lists a product as UPC ${upc}${description ? `, described in store-register shorthand as "${description}"` : ""}. What is the real product, the way a seller would title it on eBay (brand, product name, variant/scent/shade, size)? Search the UPC if you need to. Only answer if you're confident it's this exact product.
+
+Respond with exactly one JSON object as your final line, no other text after it:
+{"name": "Brand Product Variant Size"}
+or, if you can't tell:
+{"name": null}`,
+          },
+        ],
+      },
+      { timeout: 30_000, maxRetries: 0 }
+    );
+    await logAiUsage("pack.product_name", response);
+    // A web-search answer is split across several text blocks.
+    const text = response.content
+      .filter((b) => b.type === "text")
+      .map((b) => ("text" in b ? b.text : ""))
+      .join("");
+    const json = text.match(/\{[^{}]*\}\s*$/)?.[0];
+    const name = json ? (JSON.parse(json) as { name?: string | null }).name?.trim() : null;
+    return name || null;
+  } catch (e) {
+    console.error(`[packAdvisor] product name lookup failed for UPC ${upc}`, e);
+    return null;
+  }
+}
+
 // A still-valid earlier call for this UPC, from the Analyzer or an earlier
 // scan. Any correction from Cristian made since (for any product) retires
 // it, because a correction is a lesson that can change other calls too.
@@ -191,7 +239,7 @@ Store retail per unit (from the liquidation manifest): ${input.retailPrice != nu
 Category: ${input.category ?? "unknown"}
 
 Live eBay listings by pack size:
-${market}
+${market || "None. Nobody has this exact product listed on eBay right now (searched by UPC and by name), so there's nothing to compare against. Decide from what the product is, its store retail price and the costs below, and say in the reason that there were no eBay listings to go by."}
 
 Cost assumptions behind "keep about": eBay fees ~${(FALLBACK_FEE_RATE * 100).toFixed(2)}% + ${money(FALLBACK_FEE_FIXED)}, shipping label ~${money(FALLBACK_SHIPPING_COST)} plus ~${money(SHIPPING_PER_EXTRA_UNIT)} per extra unit in the box. You can pick a pack size nobody lists yet if your reasoning supports it.
 
