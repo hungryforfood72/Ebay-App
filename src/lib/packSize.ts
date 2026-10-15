@@ -1,3 +1,4 @@
+import { labelForWeight } from "./shippingZone";
 // Pack sizes: reading them out of eBay listing titles, and deciding what
 // pack size a product is best sold in. Shared by the sourcing agent (per
 // manifest line, in the Analyzer) and the scan page's pack suggestion.
@@ -284,6 +285,16 @@ export type ListingWorth = {
   requiredProfit: number;
 };
 
+// The mailer or box itself, on top of the items in it.
+const PACKAGING_OZ = 2;
+// A lot bigger than any pack size eBay lists has no price of its own; it's
+// priced off the cheapest per-unit rate, less this much, since buyers expect
+// a bulk lot to come cheaper per unit than a small pack.
+const LOT_PRICE_FACTOR = 0.8;
+// The largest whole-lot listing the scan card suggests; more units than
+// this split into even lots.
+export const MAX_LOT_SIZE = 25;
+
 // Whether a listing of `packSize` units is worth making — for the leftover
 // that can't fill the recommended pack. Cristian's rule (2026-09-28): each
 // sale should make his target profit (the Analyzer's target margin, 35%)
@@ -298,16 +309,26 @@ export function listingWorth(input: {
   unitCost: number | null;
   labelCost: number;
   targetReturnPct: number;
+  // Shipping weight of one unit. With it, the label follows USPS's weight
+  // tiers (anything under 1 lb ships for the same price, so 20 ChapSticks
+  // cost what one does); without it, SHIPPING_PER_EXTRA_UNIT per extra unit.
+  unitWeightOz?: number | null;
 }): ListingWorth | null {
   const usable = input.stats.filter((s) => s.count > 0 && s.medianTotal > 0);
   if (usable.length === 0) return null;
   const exact = usable.find((s) => s.packSize === input.packSize);
   const cheapestPerUnit = Math.min(...usable.map((s) => s.medianTotal / s.packSize));
-  let price = exact ? exact.medianTotal : cheapestPerUnit * input.packSize;
+  const largestListed = Math.max(...usable.map((s) => s.packSize));
+  let price = exact
+    ? exact.medianTotal
+    : cheapestPerUnit * input.packSize * (input.packSize > largestListed ? LOT_PRICE_FACTOR : 1);
   if (input.retailPrice != null && input.retailPrice > 0) {
     price = Math.min(price, input.retailPrice * 1.5 * input.packSize);
   }
-  const label = input.labelCost + SHIPPING_PER_EXTRA_UNIT * (input.packSize - 1);
+  const label =
+    input.unitWeightOz != null && input.unitWeightOz > 0
+      ? labelForWeight(input.labelCost, (input.unitWeightOz * input.packSize + PACKAGING_OZ) / 16)
+      : input.labelCost + SHIPPING_PER_EXTRA_UNIT * (input.packSize - 1);
   const itemCost = input.unitCost != null && input.unitCost > 0 ? input.unitCost * input.packSize : null;
   const profit = price * (1 - FALLBACK_FEE_RATE) - FALLBACK_FEE_FIXED - label - (itemCost ?? 0);
   const returnPct = itemCost != null ? (profit / itemCost) * 100 : null;

@@ -184,6 +184,67 @@ or, if you can't tell:
   }
 }
 
+// Shipping weight of one unit, in ounces, for pricing labels by weight on
+// the scan card (Cristian, 2026-10-15: 20 ChapSticks ship for the price of
+// one, so a lot of 20 beats the flat per-unit shipping guess that said
+// nothing was worth listing). Real weights from earlier scans of this UPC
+// win; otherwise a one-time estimate, saved on the newest PackDecision.
+export async function unitShippingWeightOz(upc: string, description: string): Promise<number | null> {
+  const scanned = await prisma.item.findMany({
+    where: { upc, isBundle: false, OR: [{ weightLbs: { gt: 0 } }, { weightOz: { gt: 0 } }] },
+    select: { weightLbs: true, weightOz: true, isMultipack: true, packSize: true },
+    orderBy: { createdAt: "desc" },
+    take: 10,
+  });
+  const perUnit = scanned
+    .map((i) => ((i.weightLbs ?? 0) * 16 + (i.weightOz ?? 0)) / (i.isMultipack && i.packSize ? i.packSize : 1))
+    .filter((w) => w > 0)
+    .sort((a, b) => a - b);
+  if (perUnit.length > 0) return perUnit[Math.floor(perUnit.length / 2)];
+
+  const decision = await prisma.packDecision.findFirst({ where: { upc }, orderBy: { createdAt: "desc" } });
+  if (decision?.unitWeightOz) return decision.unitWeightOz;
+
+  try {
+    const response = await anthropic.messages.create(
+      {
+        model: "claude-sonnet-5",
+        max_tokens: 300,
+        output_config: {
+          effort: "low",
+          format: {
+            type: "json_schema",
+            schema: {
+              type: "object",
+              properties: { ounces: { type: "number" } },
+              required: ["ounces"],
+              additionalProperties: false,
+            },
+          },
+        },
+        messages: [
+          {
+            role: "user",
+            content: `About how much does ONE unit of this product weigh for shipping, in ounces, including its own retail packaging (box, blister card, cap) but not a shipping box? Give a realistic typical weight, not a padded one: the shipping box is added separately. For reference, a lip balm tube is about 0.3 oz.
+
+Product: "${description}" (UPC ${upc})`,
+          },
+        ],
+      },
+      { timeout: 20_000, maxRetries: 0 }
+    );
+    await logAiUsage("pack.unit_weight", response);
+    const text = response.content.find((b) => b.type === "text");
+    const ounces = Number((JSON.parse(text && "text" in text ? text.text : "{}") as { ounces?: number }).ounces);
+    if (!Number.isFinite(ounces) || ounces <= 0 || ounces > 800) return null;
+    if (decision) await prisma.packDecision.update({ where: { id: decision.id }, data: { unitWeightOz: ounces } });
+    return ounces;
+  } catch (e) {
+    console.error(`[packAdvisor] weight estimate failed for UPC ${upc}`, e);
+    return null;
+  }
+}
+
 // A still-valid earlier call for this UPC, from the Analyzer or an earlier
 // scan. Any correction from Cristian made since (for any product) retires
 // it, because a correction is a lesson that can change other calls too.

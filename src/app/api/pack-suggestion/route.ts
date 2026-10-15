@@ -4,8 +4,9 @@ import { getTargetMarginPct } from "@/lib/sourcingAgent";
 import { typicalSingleLabelCost } from "@/lib/shippingCost";
 import { EbayApiError, searchActiveListings } from "@/lib/ebay";
 import { parseBundleComponentUnits, unitsFor } from "@/lib/itemUnits";
-import { advisePackSize, readableProductName, savedPackDecision } from "@/lib/packAdvisor";
+import { advisePackSize, readableProductName, savedPackDecision, unitShippingWeightOz } from "@/lib/packAdvisor";
 import {
+  MAX_LOT_SIZE,
   MAX_RECOMMENDED_PACK,
   detectPackSize,
   listingWorth,
@@ -74,6 +75,8 @@ export async function GET(request: NextRequest) {
 
   let recommendation = null;
   let reason: string | null = null;
+  // The real name looked up for manifest shorthand, when one was needed.
+  let productName: string | null = null;
   let stats: PackStat[] = [];
   // The Analyzer (or an earlier scan) already decided this UPC: use that
   // with no eBay lookup at all, so the card shows instantly. The owner's
@@ -96,7 +99,6 @@ export async function GET(request: NextRequest) {
     // A cached "no listings" isn't trusted: it may just be a search on
     // manifest shorthand that a real product name would fix.
     let packStats = snapshot && snapshot.activeCompCount > 0 ? parsePackStats(snapshot.packStats) : null;
-    let productName: string | null = null;
     if (!packStats) {
       try {
         let comps = await searchActiveListings({ upc, keywords: description ?? upc, excludeListingId: null });
@@ -171,15 +173,16 @@ export async function GET(request: NextRequest) {
   let targetReturnPct: number | null = null;
   let plan: { packSize: number; listings: number }[] | null = null;
   if (recommendation) {
-    const [labelCost, unitCost, target] = await Promise.all([
+    const [labelCost, unitCost, target, unitWeightOz] = await Promise.all([
       typicalSingleLabelCost(),
       countManifestId ? unitCostForScan(countManifestId, upc) : Promise.resolve(null),
       getTargetMarginPct(),
+      unitShippingWeightOz(upc, productName ?? description ?? stats.find((s) => s.cheapestTitle)?.cheapestTitle ?? `UPC ${upc}`),
     ]);
     targetReturnPct = target;
     const retailPrice = lines[0] ? Number(lines[0].retailPrice) : null;
     const worthAt = (packSize: number) =>
-      listingWorth({ packSize, stats, retailPrice, unitCost, labelCost, targetReturnPct: target });
+      listingWorth({ packSize, stats, retailPrice, unitCost, labelCost, targetReturnPct: target, unitWeightOz });
 
     const called = recommendation.packSize;
     const calledWorth = worthAt(called);
@@ -191,9 +194,27 @@ export async function GET(request: NextRequest) {
       const bigger = Array.from({ length: Math.max(0, MAX_RECOMMENDED_PACK - called) }, (_, i) => called + 1 + i).find(
         (n) => worthAt(n)?.worthIt
       );
-      if (bigger) {
+      // Nothing up to 6 works: one lot of everything on hand (even lots
+      // past MAX_LOT_SIZE), since small items ship together for about the
+      // price of one.
+      const lot =
+        available != null && available > MAX_RECOMMENDED_PACK
+          ? Math.ceil(available / Math.ceil(available / MAX_LOT_SIZE))
+          : null;
+      // Bigger packs vs one lot: whichever makes more for everything on
+      // hand (a lot is also one listing and one label).
+      const totalProfit = (size: number) =>
+        (available != null ? splitIntoPacks(available, size) : [{ packSize: size, listings: 1 }]).reduce((sum, g) => {
+          const w = worthAt(g.packSize);
+          return sum + (w?.worthIt ? w.profit * g.listings : 0);
+        }, 0);
+      const lotWorks = lot != null && Boolean(worthAt(lot)?.worthIt);
+      if (bigger && (!lotWorks || totalProfit(bigger) > totalProfit(lot!))) {
         recommendation = { ...recommendation, packSize: bigger };
         reason = `${reason ? `${reason} ` : ""}Bumped up to ${bigger}-packs: as ${called > 1 ? `${called}-packs` : "singles"} it wouldn't make enough profit after shipping and fees.`;
+      } else if (lotWorks) {
+        recommendation = { ...recommendation, packSize: lot! };
+        reason = `Sell it as a lot of ${lot}. Smaller packs wouldn't make enough profit after shipping and fees, and ${lot} of these ship for about what one does.`;
       } else {
         notWorthOnEbay = true;
       }

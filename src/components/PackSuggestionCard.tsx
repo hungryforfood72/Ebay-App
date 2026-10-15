@@ -147,7 +147,7 @@ export function PackSuggestionCard({
           </p>
           <p className="mt-0.5 text-blue-900/80">
             {notForEbay
-              ? `Shipping eats the whole sale: even bundled up to ${MAX_RECOMMENDED_PACK}-packs it wouldn't make enough profit on eBay after fees and a label.`
+              ? `Shipping eats the whole sale: even bundled up to ${MAX_RECOMMENDED_PACK}-packs, or as one lot, it wouldn't make enough profit on eBay after fees and a label.`
               : rec.reason
               ? rec.reason
               : rec.basis === "estimate"

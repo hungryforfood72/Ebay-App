@@ -1035,6 +1035,10 @@ model PackDecision {
   upc       String
   packSize  Int
   reason    String
+  // Shipping weight of one unit with its own packaging, estimated once per
+  // UPC (see unitShippingWeightOz) so the scan card can price a label by
+  // weight instead of a flat amount per extra unit.
+  unitWeightOz Float?
   createdAt DateTime @default(now())
 
   @@index([upc, createdAt])

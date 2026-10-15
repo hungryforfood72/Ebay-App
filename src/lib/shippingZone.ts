@@ -65,6 +65,13 @@ function commercialRate(weightLbs: number, zone: number): number {
 // weightLbs null = no weight on the item; it's then priced as a typical
 // (under 1 lb) parcel. Returns the typical label unchanged when the zone is
 // unknown (no ZIP, or outside the US).
+// A label for a package of this weight to an average buyer (zone 5, the
+// zone the typical label is calibrated at). Under 1 lb it's the typical
+// label no matter how many small items are in the box.
+export function labelForWeight(typicalLabel: number, weightLbs: number): number {
+  return estimateLabelCost({ typicalLabel, weightLbs, zone: CALIBRATION_ZONE });
+}
+
 export function estimateLabelCost(input: { typicalLabel: number; weightLbs: number | null; zone: number | null }): number {
   if (input.zone == null) return input.typicalLabel;
   const scale = input.typicalLabel / GROUND_ADVANTAGE_COMMERCIAL[0][CALIBRATION_ZONE - 1];
