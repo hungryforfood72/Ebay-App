@@ -103,6 +103,12 @@ model Item {
   isMultipack    Boolean   @default(false)
   packSize       Int?
   expirationDate DateTime?
+  // When the units in this listing don't all share one date (e.g. a 3-pack
+  // with 2 tubes dated 03/2027 and 1 dated 06/2027): [{ date: "YYYY-MM-DD",
+  // units }], oldest first, units = physical units. expirationDate is then
+  // the oldest of them. null when there's one date (or none). See
+  // src/lib/expirationBreakdown.ts.
+  expirationBreakdown Json?
   shelfLocation  String
   photoUrls      String[]  @default([]) // photoUrls[0] is the bundle's "everything together" hero photo when isBundle
   scannedBy      String?
@@ -277,6 +283,13 @@ model Item {
   // formula. shopifyPastDateAppliedAt: the Shopify side (tags, disclosure,
   // channels) has been switched over.
   pastDateAt               DateTime?
+  // Set by the expiration sweep on a multi-date listing (expirationBreakdown)
+  // whose oldest units hit the removal window while others are still good:
+  // { pastDate: [...], stillGood: [...] } (same shape as the breakdown).
+  // The whole listing came down, because its photos show every unit;
+  // the dashboard tells staff to re-scan the good units as a new listing
+  // and the past-date ones as Shopify & Whatnot only.
+  expirySplit              Json?
   shopifyPastDateAppliedAt DateTime?
 
   shopifySales ShopifySale[]

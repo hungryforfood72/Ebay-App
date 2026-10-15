@@ -1,4 +1,5 @@
 import { EbayApiError, endFixedPriceItem, withdrawOffer } from "./ebay";
+import { splitAtCutoff } from "./expirationBreakdown";
 import { parseBundleComponentUnits } from "./itemUnits";
 import { prisma } from "./prisma";
 import { getShopifyConfig } from "./shopify";
@@ -99,6 +100,34 @@ export async function expireDueListings(now: Date = new Date()): Promise<ExpireL
         await withdrawOffer(item.ebayOfferId);
       } else if (item.ebayListingId) {
         await endFixedPriceItem(item.ebayListingId);
+      }
+
+      // Units with different dates, only some of them due: the whole
+      // listing comes down (its photos show every unit, Cristian
+      // 2026-10-15) and staff split it by re-scanning, the good units as a
+      // new listing and the rest as Shopify & Whatnot only. Its remaining
+      // units stop counting as received (quantity drops to what sold), so
+      // those re-scans count them again instead of twice, and none are
+      // written off as expired on the manifest.
+      const split = splitAtCutoff(item.expirationBreakdown, cutoff);
+      if (split) {
+        await prisma.item.update({
+          where: { id: item.id },
+          data: {
+            status: "expired",
+            expiredAt: now,
+            expirySplit: {
+              ...split,
+              pastDateLane: Boolean(getShopifyConfig()) && !PAST_DATE_EXCLUDED.test(paths.get(item.categoryId ?? "") ?? ""),
+            },
+            quantity: item.soldQuantity,
+            listingEndedAt: item.ebayOfferId || item.ebayListingId ? now : null,
+            ebayEndError: null,
+          },
+        });
+        result.expired++;
+        result.changedItemIds.push(item.id);
+        continue;
       }
 
       if (canGoPastDate(item, paths.get(item.categoryId ?? "") ?? "")) {

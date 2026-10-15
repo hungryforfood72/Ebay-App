@@ -298,7 +298,11 @@ function shopifyDescription(item: Item): string {
         .join("");
   const facts: string[] = [];
   if (item.condition) facts.push(`<li><strong>Condition:</strong> ${CONDITION_LABEL[item.condition] ?? item.condition}</li>`);
-  if (item.expirationDate) facts.push(`<li><strong>Expiration date:</strong> ${formatExpiration(item.expirationDate)}</li>`);
+  if (item.expirationDate) {
+    // Several dates: the description already lists each one.
+    const label = item.expirationBreakdown ? "Earliest expiration date" : "Expiration date";
+    facts.push(`<li><strong>${label}:</strong> ${formatExpiration(item.expirationDate)}</li>`);
+  }
   return facts.length ? `${body}<ul>${facts.join("")}</ul>` : body;
 }
 

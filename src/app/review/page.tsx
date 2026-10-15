@@ -21,6 +21,7 @@ import {
   TriangleAlert,
   X,
 } from "lucide-react";
+import { describeBreakdown, type ExpirationBatch } from "@/lib/expirationBreakdown";
 import { priceOutcome } from "@/lib/offerMath";
 import { labelForWeight } from "@/lib/shippingZone";
 import Link from "next/link";
@@ -50,6 +51,8 @@ type Item = {
   isMultipack: boolean;
   packSize: number | null;
   expirationDate: string | null;
+  // Units with different dates (oldest first); expirationDate is the oldest.
+  expirationBreakdown: ExpirationBatch[] | null;
   shelfLocation: string;
   photoUrls: string[];
   isBundle: boolean;
@@ -834,8 +837,12 @@ function ItemCard({
           </Badge>
           {item.isMultipack && <Badge tone="primary">Pack of {item.packSize}</Badge>}
           <Badge>Shelf {item.shelfLocation}</Badge>
-          {item.expirationDate && (
-            <Badge tone="warning">Exp {new Date(item.expirationDate).toLocaleDateString()}</Badge>
+          {item.expirationBreakdown ? (
+            <Badge tone="warning">Exp {describeBreakdown(item.expirationBreakdown)}</Badge>
+          ) : (
+            item.expirationDate && (
+              <Badge tone="warning">Exp {new Date(item.expirationDate).toLocaleDateString()}</Badge>
+            )
           )}
         </div>
 
@@ -1023,12 +1030,26 @@ function ItemCard({
               </Select>
             </Field>
 
-            <Field label="Expiration date" hint="Some categories (lots of health & beauty) require it on eBay.">
+            <Field
+              label={item.expirationBreakdown ? "Earliest expiration date" : "Expiration date"}
+              hint={
+                item.expirationBreakdown
+                  ? `Units have different dates: ${describeBreakdown(item.expirationBreakdown)}. Changing this replaces them with one date.`
+                  : "Some categories (lots of health & beauty) require it on eBay."
+              }
+            >
               <Input
                 key={`exp-${item.id}-${item.expirationDate ?? ""}`}
                 type="date"
                 defaultValue={item.expirationDate ? item.expirationDate.slice(0, 10) : ""}
-                onChange={(e) => onChange({ expirationDate: e.target.value || null })}
+                onChange={(e) =>
+                  onChange({
+                    expirationDate: e.target.value || null,
+                    ...(item.expirationBreakdown && item.expirationBreakdown[0].date !== e.target.value
+                      ? { expirationBreakdown: null }
+                      : {}),
+                  })
+                }
               />
             </Field>
           </div>

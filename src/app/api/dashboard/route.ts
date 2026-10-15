@@ -84,7 +84,7 @@ export async function GET(request: Request) {
     prisma.item.findMany({
       where: { status: "expired", shelfPullAcknowledgedAt: null },
       orderBy: { expiredAt: "asc" },
-      select: { id: true, finalTitle: true, sku: true, shelfLocation: true, expirationDate: true, expiredAt: true },
+      select: { id: true, finalTitle: true, sku: true, shelfLocation: true, expirationDate: true, expiredAt: true, expirySplit: true },
     }),
     // Owner-only operational alert: the sweep tried and failed to end
     // these on eBay (still genuinely live, past their date) — needs

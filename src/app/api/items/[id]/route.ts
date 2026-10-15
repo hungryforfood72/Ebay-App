@@ -1,3 +1,5 @@
+import { Prisma } from "@/generated/prisma/client";
+import { normalizeBreakdown } from "@/lib/expirationBreakdown";
 import { prisma } from "@/lib/prisma";
 import { AuthError, requireOwner } from "@/lib/auth";
 import { NextRequest, NextResponse } from "next/server";
@@ -40,6 +42,13 @@ export async function PATCH(
       return NextResponse.json({ error: "That expiration date isn't a real date." }, { status: 400 });
     }
     data.expirationDate = date;
+    // A date typed on the review page replaces a multi-date breakdown from
+    // the scan, unless it's just the breakdown's own earliest date again.
+    const current = await prisma.item.findUnique({ where: { id }, select: { expirationBreakdown: true } });
+    const breakdown = current ? normalizeBreakdown(current.expirationBreakdown) : null;
+    if (breakdown && breakdown[0].date !== date?.toISOString().slice(0, 10)) {
+      data.expirationBreakdown = Prisma.DbNull;
+    }
   }
   // Switching stores is only for items not live anywhere yet: an eBay
   // listing can't become Shopify-only (or the other way) after the fact.

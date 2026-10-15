@@ -242,6 +242,12 @@ function ScanPageInner() {
   const [shopifyOnly, setShopifyOnly] = useState(false);
   const [packSize, setPackSize] = useState("");
   const [expirationDate, setExpirationDate] = useState("");
+  // Units that came in with a different date than the first one (a 3-pack
+  // with 2 tubes dated one month and 1 another). Empty = one date for all.
+  // Lizvet used to make these bundles; now it's one listing whose
+  // description lists each date.
+  const [extraDates, setExtraDates] = useState<{ date: string; units: string }[]>([]);
+  const [firstDateUnits, setFirstDateUnits] = useState("");
 
   // Bundle mode — expiration is asked per item added to the bundle, not
   // once for the whole listing, since different items in the same bundle
@@ -624,6 +630,8 @@ function ScanPageInner() {
     setComponentExpirationDate("");
     setQuantity("1");
     setExpirationDate("");
+    setExtraDates([]);
+    setFirstDateUnits("");
     if (fileInputRef.current) fileInputRef.current.value = "";
     if (heroFileInputRef.current) heroFileInputRef.current.value = "";
     if (componentFileInputRef.current) componentFileInputRef.current.value = "";
@@ -643,8 +651,27 @@ function ScanPageInner() {
     if (stepIndex > 0) setStep(steps[stepIndex - 1]);
   }
 
+  // Physical units in this scan, what the dated units have to add up to.
+  const totalUnits = (Number(quantity) || 1) * (isMultipack ? Number(packSize) || 1 : 1);
+  const dateRows = [{ date: expirationDate, units: firstDateUnits }, ...extraDates];
+  const datedUnits = dateRows.reduce((sum, r) => sum + (Number(r.units) || 0), 0);
+
+  function datesProblem(): string | null {
+    if (extraDates.length === 0) return null;
+    if (dateRows.some((r) => !r.date)) return "Every row needs a date.";
+    if (dateRows.some((r) => !(Number(r.units) >= 1))) return "Enter how many units have each date.";
+    if (datedUnits !== totalUnits) {
+      return `Those add up to ${datedUnits} unit${datedUnits === 1 ? "" : "s"}, but this scan is ${totalUnits}.`;
+    }
+    return null;
+  }
+
   function goNext() {
     setMessage(null);
+    if (step === "expiration" && datesProblem()) {
+      setMessage(datesProblem());
+      return;
+    }
     if (step === "quantity" && isMultipack && !packSize) {
       setMessage("Enter a pack size.");
       return;
@@ -677,6 +704,8 @@ function ScanPageInner() {
       // no barcode. Left blank, it exports as "Does Not Apply", eBay's own
       // recognized value for "no identifier applies here."
       if (isMultipack && !packSize) return setMessage("Enter a pack size.");
+      const problem = datesProblem();
+      if (problem) return setMessage(problem);
       if (photos.some((p) => p.status === "uploading")) {
         return setMessage("Photos are still uploading, hang on a sec.");
       }
@@ -694,6 +723,10 @@ function ScanPageInner() {
           isMultipack: isBundle ? false : isMultipack,
           packSize: !isBundle && isMultipack ? Number(packSize) : null,
           expirationDate: isBundle ? null : expirationDate || null,
+          expirationBreakdown:
+            !isBundle && extraDates.length > 0
+              ? dateRows.map((r) => ({ date: r.date, units: Number(r.units) }))
+              : undefined,
           shelfLocation: shelfLocation.trim(),
           boxSize: boxSize || null,
           weightLbs: weightLbs ? Number(weightLbs) : null,
@@ -1329,9 +1362,77 @@ function ScanPageInner() {
 
         {step === "expiration" && (
           <Card>
-            <Field label="Expiration date" hint="Optional — leave blank if it doesn't expire.">
-              <Input size="lg" type="date" value={expirationDate} onChange={(e) => setExpirationDate(e.target.value)} />
-            </Field>
+            {extraDates.length === 0 ? (
+              <Field label="Expiration date" hint="Optional — leave blank if it doesn't expire.">
+                <Input size="lg" type="date" value={expirationDate} onChange={(e) => setExpirationDate(e.target.value)} />
+              </Field>
+            ) : (
+              <div className="flex flex-col gap-3">
+                <p className="text-sm text-muted-foreground">
+                  Enter each date and how many units have it. The listing uses the earliest date, and the description lists
+                  them all.
+                </p>
+                {dateRows.map((row, i) => (
+                  <div key={i} className="rounded-lg border border-border p-3">
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-sm font-medium text-foreground">Date {i + 1}</span>
+                      {i > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setExtraDates((prev) => prev.filter((_, j) => j !== i - 1));
+                            if (extraDates.length === 1) setFirstDateUnits("");
+                          }}
+                          className="inline-flex items-center gap-1 text-sm font-medium text-danger hover:underline"
+                        >
+                          <X className="size-4" aria-hidden />
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-[1fr_6.5rem] gap-2">
+                      <Input
+                        size="lg"
+                        type="date"
+                        aria-label={`Date ${i + 1}`}
+                        value={row.date}
+                        onChange={(e) =>
+                          i === 0
+                            ? setExpirationDate(e.target.value)
+                            : setExtraDates((prev) => prev.map((r, j) => (j === i - 1 ? { ...r, date: e.target.value } : r)))
+                        }
+                      />
+                      <Input
+                        size="lg"
+                        type="number"
+                        min={1}
+                        inputMode="numeric"
+                        aria-label={`Units with date ${i + 1}`}
+                        placeholder="Units"
+                        value={row.units}
+                        onChange={(e) =>
+                          i === 0
+                            ? setFirstDateUnits(e.target.value)
+                            : setExtraDates((prev) => prev.map((r, j) => (j === i - 1 ? { ...r, units: e.target.value } : r)))
+                        }
+                        onWheel={(e) => e.currentTarget.blur()}
+                      />
+                    </div>
+                  </div>
+                ))}
+                <p className={cn("text-sm tabular-nums", datedUnits === totalUnits ? "text-muted-foreground" : "text-warning")}>
+                  {datedUnits} of {totalUnits} unit{totalUnits === 1 ? "" : "s"} dated
+                </p>
+              </div>
+            )}
+            <button
+              type="button"
+              onClick={() => setExtraDates((prev) => [...prev, { date: "", units: "" }])}
+              className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+            >
+              <Plus className="size-4" aria-hidden />
+              {extraDates.length === 0 ? "Some units have a different date" : "Add another date"}
+            </button>
           </Card>
         )}
 

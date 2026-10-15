@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { draftItem } from "@/lib/draftItem";
 import { lookupCategoryForItem } from "@/lib/categoryLookup";
 import { earliestBundleExpiration } from "@/lib/csv";
+import { normalizeBreakdown } from "@/lib/expirationBreakdown";
 
 // Draft (up to 45s for a single item, or up to ~90s for a bundle — parallel
 // per-component naming calls plus one final synthesis call) + category
@@ -81,7 +82,15 @@ export async function POST(request: NextRequest) {
   // read the item's own date, so without this a bundle never expired: a
   // Mucinex lot with two bottles dated 9/30/2026 stayed live (2026-10-05).
   const bundleExpiration = isBundle ? earliestBundleExpiration(body.bundleComponents) : null;
-  const expirationDate = body.expirationDate ?? bundleExpiration;
+  // Units with different dates in one listing: the listing goes by the
+  // oldest, whatever single date the client sent.
+  let expirationBreakdown: ReturnType<typeof normalizeBreakdown> = null;
+  try {
+    expirationBreakdown = isBundle ? null : normalizeBreakdown(body.expirationBreakdown);
+  } catch (e) {
+    return NextResponse.json({ error: (e as Error).message }, { status: 400 });
+  }
+  const expirationDate = expirationBreakdown?.[0].date ?? body.expirationDate ?? bundleExpiration;
 
   const item = await prisma.item.create({
     data: {
@@ -91,6 +100,7 @@ export async function POST(request: NextRequest) {
       isMultipack: Boolean(body.isMultipack),
       packSize: body.isMultipack ? Number(body.packSize) : null,
       expirationDate: expirationDate ? new Date(expirationDate) : null,
+      expirationBreakdown: expirationBreakdown ?? undefined,
       shelfLocation: body.shelfLocation,
       boxSize: body.boxSize ?? null,
       weightLbs: body.weightLbs != null ? Number(body.weightLbs) : null,

@@ -4,6 +4,7 @@ import { anthropic, fetchImageAsBase64 } from "@/lib/anthropic";
 import { logAiUsage } from "@/lib/aiUsage";
 import { truncateTitle } from "@/lib/ebayTitle";
 import { getBlockedPhrases, removeBlockedPhrases } from "@/lib/blockedWords";
+import { breakdownDescriptionHtml, describeBreakdown, normalizeBreakdown } from "@/lib/expirationBreakdown";
 import { formatExpiration } from "@/lib/formatExpiration";
 import type { Item, Prisma } from "@/generated/prisma/client";
 import type Anthropic from "@anthropic-ai/sdk";
@@ -159,7 +160,10 @@ export async function draftItem(itemId: string) {
       ? `Quantity available: ${item.quantity} (this many separate units are in stock; each purchase is for exactly 1). This number is for your context only — do NOT write a raw "Quantity available: N" line in the description, since eBay already shows the stock count separately and restating it reads ambiguously next to a "you get 1" clarifier. If the description needs to say anything about this at all, phrase it so a skimming buyer can't possibly read it as getting more than 1 (e.g. "each purchase is for one figure") — otherwise just leave stock count out of the description entirely.`
       : `Quantity available: ${item.quantity}`;
 
-  const expirationNote = item.expirationDate
+  const breakdown = normalizeBreakdown(item.expirationBreakdown);
+  const expirationNote = breakdown
+    ? `Expiration dates: the units in this listing don't all share one date (${describeBreakdown(breakdown)}). The full list of dates with unit counts is added to the end of the description automatically, so don't list them yourself; just say plainly that the units have different expiration dates and the earliest is ${formatExpiration(breakdown[0].date)}. If there's room in the title, use that earliest date there, as the full MM/DD/YYYY.`
+    : item.expirationDate
     ? `Expiration date: ${item.expirationDate.toISOString().slice(0, 10)} — state this plainly in the description so the buyer knows exactly what they're getting (e.g. "Best by MM/DD/YYYY"). Work it into the title too if there's room within the character limit — use the same full MM/DD/YYYY date there too, not just the month and year (eBay pulled a real listing over the title/specifics only showing month/year while the description had the full date).`
     : "";
 
@@ -210,6 +214,18 @@ Describe the item's state the way a seller who has it in hand would: state what 
   const draft = JSON.parse(
     textBlock && "text" in textBlock ? textBlock.text : "{}"
   ) as Draft;
+
+  // The drafted text is plain; once HTML follows it, eBay (and the Shopify
+  // copy) read the whole thing as HTML, so its paragraphs get <p> tags too.
+  if (breakdown && draft.description) {
+    const text = /<[a-z][^>]*>/i.test(draft.description)
+      ? draft.description
+      : draft.description
+          .split(/\n{2,}/)
+          .map((p) => `<p>${p.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>")}</p>`)
+          .join("");
+    draft.description = text + breakdownDescriptionHtml(breakdown);
+  }
 
   return applyDraft(item, draft, upcLookupData ? { upcLookupData } : {});
 }

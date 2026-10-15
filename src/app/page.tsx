@@ -11,6 +11,7 @@ import { Card, SectionHeader } from "@/components/ui/Card";
 import { cn } from "@/components/ui/cn";
 import { Input, Select } from "@/components/ui/Input";
 import { ClipboardCheck, ExternalLink, RefreshCw, ScanBarcode } from "lucide-react";
+import { describeBreakdown, type ExpirySplit } from "@/lib/expirationBreakdown";
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 
@@ -59,6 +60,8 @@ type ExpiredNeedingPullItem = {
   shelfLocation: string;
   expirationDate: string | null;
   expiredAt: string;
+  // A multi-date listing pulled because only some units hit their date.
+  expirySplit: ExpirySplit | null;
 };
 
 type ExpiredEndFailedItem = {
@@ -438,6 +441,23 @@ function ShelfPullRow({
             ? new Date(item.expirationDate).toLocaleDateString()
             : new Date(item.expiredAt).toLocaleDateString()}
         </p>
+        {item.expirySplit && (
+          <div className="mt-2 text-xs text-foreground">
+            <p className="font-medium">Units have different dates. Split it up:</p>
+            <ul className="mt-1 list-disc pl-4">
+              <li>
+                Still good ({describeBreakdown(item.expirySplit.stillGood)}): re-scan as a new eBay listing with new
+                photos.
+              </li>
+              <li>
+                Past date ({describeBreakdown(item.expirySplit.pastDate)}):{" "}
+                {item.expirySplit.pastDateLane === false
+                  ? "can't be resold (medicine, sunscreen or baby food), log it as Damaged / expired."
+                  : "scan it and list it Shopify & Whatnot only. It goes on the past-date deals page."}
+              </li>
+            </ul>
+          </div>
+        )}
         {error && <p className="mt-1 text-xs text-danger">{error}</p>}
       </div>
       <Button size="sm" onClick={acknowledge} disabled={saving} className="shrink-0">
