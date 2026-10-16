@@ -296,15 +296,7 @@ export async function sendOfferToInterestedBuyers(input: {
 // — those comps get shippingCost 0, same as genuinely free shipping,
 // since there's no other number to use). totalPrice is what a buyer
 // actually pays, and is what comps should be compared/sorted on.
-// categoryId: the listing's eBay leaf category, as its seller picked it.
-export type ActiveListingComp = {
-  itemId: string;
-  price: number;
-  shippingCost: number;
-  totalPrice: number;
-  title: string;
-  categoryId: string | null;
-};
+export type ActiveListingComp = { itemId: string; price: number; shippingCost: number; totalPrice: number; title: string };
 
 async function fetchActiveListingComps(
   params: URLSearchParams,
@@ -334,7 +326,6 @@ async function fetchActiveListingComps(
       itemId: string;
       title: string;
       price?: { value: string };
-      leafCategoryIds?: string[];
       shippingOptions?: { shippingCostType: string; shippingCost?: { value: string } }[];
     }[];
   };
@@ -350,15 +341,31 @@ async function fetchActiveListingComps(
         shippingOption?.shippingCostType === "FIXED" && shippingOption.shippingCost
           ? Number(shippingOption.shippingCost.value)
           : 0;
-      return {
-        itemId: i.itemId,
-        price,
-        shippingCost,
-        totalPrice: price + shippingCost,
-        title: i.title,
-        categoryId: i.leafCategoryIds?.[0] ?? null,
-      };
+      return { itemId: i.itemId, price, shippingCost, totalPrice: price + shippingCost, title: i.title };
     });
+}
+
+// How many units one live listing has sold since it went up (Browse
+// getItem estimatedAvailabilities). The only real "does it sell" signal
+// eBay gives us: sold-item history (Marketplace Insights) is closed, and
+// the bulk get_items endpoint 403s ("Insufficient permissions") for this
+// app, confirmed 2026-10-16. null when eBay doesn't answer for that listing.
+export type ListingSales = { itemId: string; soldQuantity: number; createdAt: Date };
+
+export async function getListingSales(itemId: string): Promise<ListingSales | null> {
+  const config = getEbayConfig();
+  const token = await getAppAccessToken();
+  const res = await fetch(`${config.apiBase}/buy/browse/v1/item/${encodeURIComponent(itemId)}`, {
+    headers: { Authorization: `Bearer ${token}`, "X-EBAY-C-MARKETPLACE-ID": "EBAY_US" },
+  });
+  if (!res.ok) return null;
+  const item = (await res.json()) as {
+    itemCreationDate?: string;
+    estimatedAvailabilities?: { estimatedSoldQuantity?: number }[];
+  };
+  const sold = item.estimatedAvailabilities?.[0]?.estimatedSoldQuantity;
+  if (sold == null || !item.itemCreationDate) return null;
+  return { itemId, soldQuantity: sold, createdAt: new Date(item.itemCreationDate) };
 }
 
 // GET /buy/browse/v1/item_summary/search — active (not sold) listings, the

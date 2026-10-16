@@ -38,8 +38,7 @@ type SourcingLineEstimate = {
   flaggedDud: boolean;
   slowMover: boolean;
   monthsToSellThrough: number | null;
-  crowdedMarket: boolean;
-  categoryWeeksOnHand: number | null;
+  sellRateSource: "own" | "ebay_listings" | "category" | null;
 };
 
 type SourcingEvaluation = {
@@ -914,17 +913,16 @@ function EstimateTags({ estimate: e, showConfidence = true }: { estimate: Sourci
     <div className="mt-1.5 flex flex-wrap gap-1.5">
       {showConfidence && <ConfidenceBadge confidence={e.dataConfidence} />}
       {banned ? <Badge tone="danger">{banned}</Badge> : e.flaggedDud && <Badge tone="warning">dud</Badge>}
-      {e.crowdedMarket && (
-        <Badge tone="warning">
-          crowded, no sales yet
-          {e.categoryWeeksOnHand != null ? ` · ~${Math.round(e.categoryWeeksOnHand)}wk of this kind on hand` : ""}
-        </Badge>
-      )}
       {e.slowMover && (
         <Badge tone="purple">
           slow mover
           {e.monthsToSellThrough != null && e.monthsToSellThrough < 60
             ? ` · ~${e.monthsToSellThrough.toFixed(1)}mo to sell through`
+            : e.sellRateSource === "ebay_listings"
+              ? " · eBay listings show almost no sales"
+              : ""}
+          {e.sellRateSource === "ebay_listings" && e.monthsToSellThrough != null && e.monthsToSellThrough < 60
+            ? " (from other sellers' listings)"
             : ""}
         </Badge>
       )}

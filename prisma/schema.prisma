@@ -653,18 +653,16 @@ model SourcingEvaluation {
   // inconsistent across its own lines.
   targetMarginPct            Float?
   receiveRate                Float?
-  // Evaluations before 2026-10-16 only: one crowded-market threshold for
-  // the whole manifest, from overall stock. Infinity isn't a safe
-  // round-trip value through Prisma's Postgres Float mapping, so the
-  // "essentially uncapped" case was stored as a large finite sentinel.
+  // Evaluations before 2026-10-16 only: the old crowded-market dud rule,
+  // tuned by how much stock was on hand. Removed (Cristian: stock on hand
+  // shouldn't decide a buy); sell speed now comes from listings' sold counts.
   compSaturationThreshold    Float?
-  // Overall stock, now only background for the reasoning text.
   inventoryWeeksOnHand       Float?
   inventoryActiveListedUnits Int?
   inventoryRecentSoldPerWeek Float?
-  // Stock per eBay category ({ [categoryId]: { listedUnits, soldPerWeek } }),
-  // which sets each line's crowded-market threshold since 2026-10-16
-  // (see categoryInventoryLoad in sourcingAgent.ts).
+  // Unused: from a per-category version of that rule that lived a few
+  // hours on 2026-10-16 before it was removed too. Kept, not dropped, so
+  // db push never has to delete data.
   categoryInventoryLoad      Json?
   // How many months of expected inventory at a line's recent sell rate
   // counts as "too slow" (see MAX_MONTHS_TO_SELL_THROUGH_KEY / the
@@ -749,9 +747,12 @@ model SourcingLineEstimate {
   // when the recent rate is exactly zero despite having real history.
   slowMover              Boolean            @default(false)
   monthsToSellThrough    Float?
-  // eBay category this line was judged as (own listings of the UPC first,
-  // else the most common one among live comps), weeks of stock already on
-  // hand in it, and whether the crowded-market rule made it a dud.
+  // What monthsToSellThrough is based on: "own" (our recent sales),
+  // "ebay_listings" (live listings' sold counts, see marketSellRate) or
+  // "category". listingUnitsPerMonth = the measured market rate per listing.
+  sellRateSource         String?
+  listingUnitsPerMonth   Float?
+  // Unused since 2026-10-16 (see categoryInventoryLoad on SourcingEvaluation).
   ebayCategoryId         String?
   categoryWeeksOnHand    Float?
   crowdedMarket          Boolean            @default(false)
@@ -886,8 +887,12 @@ model MarketCompSnapshot {
   // the pack-size recommendation reads, so the scan page can suggest one
   // without a fresh eBay search. null on snapshots from before this existed.
   packStats       Json?
-  // Most common eBay leaf category among the comps. null on snapshots from
-  // before 2026-10-16, which the Analyzer then searches fresh.
+  // Units a typical live listing sells per month (sold count / time up,
+  // averaged over salesSampled listings). null when too few to say.
+  // salesSampled null = snapshot from before 2026-10-16.
+  listingUnitsPerMonth Float?
+  salesSampled    Int?
+  // Unused since 2026-10-16: most common eBay leaf category among the comps.
   categoryId      String?
   capturedAt      DateTime @default(now())
 

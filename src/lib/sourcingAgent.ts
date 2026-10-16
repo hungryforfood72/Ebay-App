@@ -4,6 +4,7 @@ import {
   FALLBACK_FEE_FIXED,
   FALLBACK_FEE_RATE,
   FALLBACK_SHIPPING_COST,
+  isResellerLot,
   parsePackStats,
   recommendPackSize,
   summarizeComps,
@@ -12,7 +13,7 @@ import {
 import { anthropic } from "./anthropic";
 import { logAiUsage } from "./aiUsage";
 import { advisePackSize } from "./packAdvisor";
-import { EbayApiError, searchActiveListings, searchActiveListingsBy, type ActiveListingComp } from "./ebay";
+import { EbayApiError, getListingSales, searchActiveListings, searchActiveListingsBy, type ActiveListingComp } from "./ebay";
 import { ebayBanReason } from "./ebayBanned";
 import { boxesFor, exactSearchKeywords, isExactTitleMatch, LOT_TITLE, priceFromExactComps } from "./exactComps";
 import type { ManifestSupplier } from "@/generated/prisma/client";
@@ -76,143 +77,6 @@ function soldPhysicalUnits(item: { soldQuantity: number; isMultipack: boolean; p
   return item.soldQuantity * (item.isMultipack && item.packSize ? item.packSize : 1);
 }
 
-function remainingPhysicalUnits(item: { quantity: number; soldQuantity: number; isMultipack: boolean; packSize: number | null }): number {
-  const remainingListingUnits = Math.max(0, item.quantity - item.soldQuantity);
-  return remainingListingUnits * (item.isMultipack && item.packSize ? item.packSize : 1);
-}
-
-// ---------------------------------------------------------------------------
-// Inventory load — a portfolio-wide capacity signal, computed once per
-// evaluation, not per line. Cristian's own framing: a saturated market with
-// no track record is a real caution (see the saturation dud rule below),
-// but how much that caution should weigh depends on whether there's
-// actually room to sit on more stock right now. Non-perishable liquidation
-// goods (his example: hair color cartridges that don't expire) can sit on
-// a shelf indefinitely — the real cost of being wrong isn't spoilage, it's
-// tying up cash and shelf space that could've gone to something that
-// clears faster. Measured as weeks of inventory on hand (currently listed,
-// unsold physical units ÷ recent weekly sell-through rate) rather than a
-// raw unit count, since a lot of listed inventory isn't a problem if it's
-// also moving fast — only when it's piling up relative to how quickly
-// things actually sell.
-// ---------------------------------------------------------------------------
-
-const INVENTORY_LOOKBACK_DAYS = 30;
-
-async function getWeeksOfInventoryOnHand(): Promise<{ weeksOnHand: number; activeListedUnits: number; recentSoldUnitsPerWeek: number }> {
-  const [listedItems, recentSales] = await Promise.all([
-    prisma.item.findMany({
-      where: { status: "listed" },
-      select: { quantity: true, soldQuantity: true, isMultipack: true, packSize: true },
-    }),
-    prisma.ebayItemSale.findMany({
-      where: { soldAt: { gte: new Date(Date.now() - INVENTORY_LOOKBACK_DAYS * 24 * 60 * 60 * 1000) } },
-      select: { quantity: true, item: { select: { isMultipack: true, packSize: true } } },
-    }),
-  ]);
-
-  const activeListedUnits = listedItems.reduce((sum, i) => sum + remainingPhysicalUnits(i), 0);
-  const recentSoldUnits = recentSales.reduce(
-    (sum, s) => sum + soldPhysicalUnits({ soldQuantity: s.quantity, isMultipack: s.item.isMultipack, packSize: s.item.packSize }),
-    0
-  );
-  const recentSoldUnitsPerWeek = recentSoldUnits / (INVENTORY_LOOKBACK_DAYS / 7);
-  // Floored at 1/week rather than a bare divide-by-zero guard — with
-  // genuinely no recent sales, treat velocity as "very slow" (a large but
-  // finite weeksOnHand), not an undefined/infinite one.
-  const weeksOnHand = activeListedUnits / Math.max(1, recentSoldUnitsPerWeek);
-
-  return { weeksOnHand, activeListedUnits, recentSoldUnitsPerWeek };
-}
-
-// The same stock-vs-sell-rate measure, but per eBay category. Since
-// 2026-10-16 this, not the overall number above, sets the crowded-market
-// threshold. Cristian's reasoning: total stock keeps growing as the
-// business grows and he's going after more variety, so a pile of sunscreen
-// and hair dye shouldn't make a trimmer look like a dud. Only more of what
-// he's already sitting on gets the stricter bar.
-export type CategoryInventoryLoad = Record<string, { listedUnits: number; soldPerWeek: number }>;
-
-async function getCategoryInventoryLoad(): Promise<CategoryInventoryLoad> {
-  const [listedItems, recentSales] = await Promise.all([
-    prisma.item.findMany({
-      where: { status: "listed", categoryId: { not: null } },
-      select: { categoryId: true, quantity: true, soldQuantity: true, isMultipack: true, packSize: true },
-    }),
-    prisma.ebayItemSale.findMany({
-      where: {
-        soldAt: { gte: new Date(Date.now() - INVENTORY_LOOKBACK_DAYS * 24 * 60 * 60 * 1000) },
-        item: { categoryId: { not: null } },
-      },
-      select: { quantity: true, item: { select: { categoryId: true, isMultipack: true, packSize: true } } },
-    }),
-  ]);
-  const load: CategoryInventoryLoad = {};
-  const entry = (categoryId: string) => (load[categoryId] ??= { listedUnits: 0, soldPerWeek: 0 });
-  for (const i of listedItems) entry(i.categoryId!).listedUnits += remainingPhysicalUnits(i);
-  for (const s of recentSales) {
-    const units = soldPhysicalUnits({ soldQuantity: s.quantity, isMultipack: s.item.isMultipack, packSize: s.item.packSize });
-    entry(s.item.categoryId!).soldPerWeek += units / (INVENTORY_LOOKBACK_DAYS / 7);
-  }
-  return load;
-}
-
-// Weeks of stock already on hand in one category (same 1/week floor as the
-// overall number). null = nothing listed there, so no caution at all.
-function categoryWeeksOnHand(load: CategoryInventoryLoad, categoryId: string | null): number | null {
-  const c = categoryId ? load[categoryId] : undefined;
-  if (!c || c.listedUnits <= 0) return null;
-  return c.listedUnits / Math.max(1, c.soldPerWeek);
-}
-
-function crowdedThreshold(weeksOnHand: number | null): number {
-  return weeksOnHand == null ? Infinity : saturationThreshold(weeksOnHand);
-}
-
-// Sellers don't all pick the same leaf category, so take the most common.
-export function mostCommonCategory(comps: { categoryId: string | null }[]): string | null {
-  const counts = new Map<string, number>();
-  for (const c of comps) if (c.categoryId) counts.set(c.categoryId, (counts.get(c.categoryId) ?? 0) + 1);
-  let best: string | null = null;
-  for (const [id, n] of counts) if (best == null || n > counts.get(best)!) best = id;
-  return best;
-}
-
-// The category we list this UPC in ourselves beats a guess from comps.
-async function ownCategoryForUpc(upc: string | null): Promise<string | null> {
-  if (!upc) return null;
-  const item = await prisma.item.findFirst({
-    where: { upc, categoryId: { not: null } },
-    orderBy: { createdAt: "desc" },
-    select: { categoryId: true },
-  });
-  return item?.categoryId ?? null;
-}
-
-// How many active comps at once counts as "saturated" for the no-track-
-// record dud rule (see estimateLine) — not a fixed number anymore. Fed
-// weeks on hand for the line's own eBay category (categoryWeeksOnHand),
-// not the whole inventory, since 2026-10-16. Lean
-// inventory (plenty of sell-through room) gets more benefit of the doubt
-// in a crowded market; a shelf already full of slow-moving stock gets the
-// original, stricter read. Four tiers for explainability, not a smooth
-// formula — matches how every other threshold in this file is expressed.
-// Calibrated against a real case (Infinity, not just "generous" — the
-// initial 40-cap version was tested live against Cristian's actual
-// account state at the time (~0.05 weeks on hand, essentially sold
-// through) and STILL would have blocked a 51-comp line he specifically
-// said should get the benefit of the doubt given how little he had
-// tied up — near-zero inventory risk means the saturation caution
-// shouldn't second-guess an otherwise-positive price at all; rawNet <= 0
-// still zeroes a line regardless of this threshold, so this only ever
-// removes the "no track record" caution on top of real positive math).
-function saturationThreshold(weeksOnHand: number): number {
-  if (weeksOnHand < 2) return Infinity; // essentially nothing tied up — let the price math decide
-  if (weeksOnHand < 6) return 60;
-  if (weeksOnHand > 12) return 15; // already sitting on a lot — stay cautious
-  return 30; // middle ground
-}
-
 // A sale from last week should count more toward the estimated price than
 // one from 11 months ago — prices drift, and a stale average understates
 // what something actually sells for right now (Cristian's own example: sold
@@ -265,6 +129,47 @@ function recentUnitsSold(sales: { quantity: number; soldAt: Date; item: { isMult
 function computeMonthsToSellThrough(recentUnits: number, effectiveUnits: number): number {
   const unitsPerMonth = recentUnits / (VELOCITY_LOOKBACK_DAYS / 30);
   return unitsPerMonth > 0 ? effectiveUnits / unitsPerMonth : STALLED_MONTHS_SENTINEL;
+}
+
+// Market sell speed, for products we've never sold: how many units a
+// typical live listing of it sells per month (its sold count over how long
+// it's been up, averaged across a sample). Cristian's rule 2026-10-16: what
+// he already has on hand must not decide a buy; the Analyzer's job is to
+// tell whether the item itself sells, and his own sales take over once he
+// has them. Replaced the old crowded-market rule, which dudded anything with
+// lots of listings (popular items) and leaned on overall stock on hand.
+// Being one more listing among N already splits demand N+1 ways, so the
+// per-listing rate prices in competition.
+// Leans low on purpose: a one-unit listing that sold is gone from search,
+// so the survivors over-represent listings with 0 sold.
+const SALES_SAMPLE_SIZE = 8;
+// Brand-new listings haven't had time to sell.
+const MIN_LISTING_AGE_DAYS = 7;
+const MIN_LISTINGS_FOR_RATE = 3;
+// "Nobody sells any" needs a bigger sample than a positive rate does.
+const MIN_LISTINGS_FOR_STALLED = 5;
+
+type MarketSellRate = { unitsPerMonth: number | null; sampled: number };
+
+async function marketSellRate(comps: ActiveListingComp[]): Promise<MarketSellRate> {
+  const sample = comps.filter((c) => !isResellerLot(c.title, detectPackSize(c.title))).slice(0, SALES_SAMPLE_SIZE);
+  const sales = await Promise.all(sample.map((c) => getListingSales(c.itemId).catch(() => null)));
+  const rates: number[] = [];
+  sample.forEach((c, i) => {
+    const s = sales[i];
+    if (!s) return;
+    const ageDays = (Date.now() - s.createdAt.getTime()) / (1000 * 60 * 60 * 24);
+    if (ageDays < MIN_LISTING_AGE_DAYS) return;
+    rates.push((s.soldQuantity * detectPackSize(c.title)) / (ageDays / 30));
+  });
+  const average = rates.length > 0 ? rates.reduce((a, b) => a + b, 0) / rates.length : 0;
+  const enough = rates.length >= MIN_LISTINGS_FOR_RATE && (average > 0 || rates.length >= MIN_LISTINGS_FOR_STALLED);
+  return { unitsPerMonth: enough ? average : null, sampled: rates.length };
+}
+
+function monthsAtMarketRate(rate: MarketSellRate | null, physicalUnits: number): number | null {
+  if (rate?.unitsPerMonth == null) return null;
+  return rate.unitsPerMonth > 0 ? physicalUnits / rate.unitsPerMonth : STALLED_MONTHS_SENTINEL;
 }
 
 // Selling-cost fallbacks and pack-size reading live in ./packSize, shared
@@ -856,10 +761,9 @@ type LineEstimateResult = {
   seasonal: string | null;
   slowMover: boolean;
   monthsToSellThrough: number | null;
-  // See the matching SourcingLineEstimate columns. Left out = unknown/false.
-  ebayCategoryId?: string | null;
-  categoryWeeksOnHand?: number | null;
-  crowdedMarket?: boolean;
+  // Where monthsToSellThrough came from, and the market rate when measured.
+  sellRateSource?: "own" | "ebay_listings" | "category" | null;
+  listingUnitsPerMonth?: number | null;
 };
 
 // Other-supplier manifests (supplier "unknown", uploaded through the
@@ -873,11 +777,11 @@ type LineEstimateResult = {
 //   3. Stand-in for the retail cap (most of these manifests list no
 //      retail): 1–2 exact listings use the lowest price, not the median.
 //      When retail is given, the usual cap applies per box.
-// The crowded-market dud rule is kept as-is, counted over exact listings.
+// Sell speed comes from the exact listings' own sold counts (marketSellRate).
 async function estimateOtherSupplierLine(
   group: LineGroup,
   receiveRate: number,
-  categoryLoad: CategoryInventoryLoad
+  maxMonthsToSellThrough: number
 ): Promise<LineEstimateResult> {
   const effectiveUnits = Math.round(group.boxes * receiveRate);
   const base = {
@@ -944,21 +848,23 @@ async function estimateOtherSupplierLine(
       : rawPrice;
   const fees = price * FALLBACK_FEE_RATE + FALLBACK_FEE_FIXED;
   const net = price - fees - FALLBACK_SHIPPING_COST;
-  const ebayCategoryId = (await ownCategoryForUpc(group.upc)) ?? mostCommonCategory(comps);
-  const weeksOnHand = categoryWeeksOnHand(categoryLoad, ebayCategoryId);
-  const crowdedMarket = comps.length >= crowdedThreshold(weeksOnHand);
-  const flaggedDud = net <= 0 || crowdedMarket || base.postHolidayFiller;
+  // Comps here are priced per box, so the rate is boxes per month.
+  const sellRate = await marketSellRate(comps);
+  const monthsToSellThrough = monthsAtMarketRate(sellRate, effectiveUnits);
+  const slowMover = monthsToSellThrough != null && monthsToSellThrough > maxMonthsToSellThrough;
+  const flaggedDud = net <= 0 || slowMover || base.postHolidayFiller;
   return {
     ...base,
+    slowMover,
+    monthsToSellThrough,
+    sellRateSource: monthsToSellThrough != null ? "ebay_listings" : null,
+    listingUnitsPerMonth: sellRate.unitsPerMonth,
     estimatedUnitSalePrice: price,
     estimatedUnitFees: fees,
     estimatedUnitShipping: FALLBACK_SHIPPING_COST,
     estimatedNetPerUnit: flaggedDud ? 0 : net,
     flaggedDud,
     marketCheckFailed: false,
-    ebayCategoryId,
-    categoryWeeksOnHand: weeksOnHand,
-    crowdedMarket: crowdedMarket && net > 0,
   };
 }
 
@@ -968,7 +874,6 @@ async function estimateLine(
   receiveRate: number,
   runTrendCheck: boolean,
   eventCheckBudget: EventCheckBudget,
-  categoryLoad: CategoryInventoryLoad,
   maxMonthsToSellThrough: number
 ): Promise<LineEstimateResult> {
   // Can't be listed on eBay at all (needles, Rx devices — see ebayBanned),
@@ -1000,7 +905,7 @@ async function estimateLine(
     };
   }
 
-  if (group.strictPricing) return estimateOtherSupplierLine(group, receiveRate, categoryLoad);
+  if (group.strictPricing) return estimateOtherSupplierLine(group, receiveRate, maxMonthsToSellThrough);
 
   // Own-history: exact UPC, across every manifest ever sold, not just this one.
   let ownSalesCount = 0;
@@ -1182,7 +1087,6 @@ async function estimateLine(
   // realistic retail per-unit number.
   let marketMedian = 0;
   let activeCompCount = 0;
-  let compCategoryId: string | null = null;
   const marketPackSizes: number[] = [];
   // Distinguishes "we asked eBay and it genuinely has nothing listed" from
   // "we never got an answer" — confirmed live as a real, not theoretical,
@@ -1202,18 +1106,19 @@ async function estimateLine(
   // when there's no prior snapshot to compare against, or when reusing a
   // fresh-enough snapshot below means nothing new was measured this run.
   let marketTrend: string | null = null;
+  let sellRate: MarketSellRate | null = null;
 
   const latestSnapshot = group.upc
     ? await prisma.marketCompSnapshot.findFirst({ where: { upc: group.upc }, orderBy: { capturedAt: "desc" } })
     : null;
   const snapshotAgeHours = latestSnapshot ? (Date.now() - latestSnapshot.capturedAt.getTime()) / (1000 * 60 * 60) : Infinity;
 
-  // Snapshots from before categories were saved can't say what kind of
-  // item this is, so they're searched fresh (a no-comps one has nothing to say).
+  // Snapshots from before sell speed was saved get searched fresh (one
+  // with no comps has nothing to measure anyway).
   if (
     latestSnapshot &&
     snapshotAgeHours < MARKET_SNAPSHOT_FRESHNESS_HOURS &&
-    (latestSnapshot.categoryId != null || latestSnapshot.activeCompCount === 0)
+    (latestSnapshot.salesSampled != null || latestSnapshot.activeCompCount === 0)
   ) {
     // Reuse rather than re-ask eBay — this is what was actually burning
     // through the daily Browse API limit: the same UPC getting re-searched
@@ -1222,7 +1127,7 @@ async function estimateLine(
     // marketPackSizes stays empty for a reused hit — typicalPackSize still
     // falls back to own/historical pack data when there is any.
     activeCompCount = latestSnapshot.activeCompCount;
-    compCategoryId = latestSnapshot.categoryId;
+    sellRate = { unitsPerMonth: latestSnapshot.listingUnitsPerMonth, sampled: latestSnapshot.salesSampled ?? 0 };
     marketMedian = latestSnapshot.medianPrice != null ? Number(latestSnapshot.medianPrice) : 0;
     packStats = parsePackStats(latestSnapshot.packStats);
   } else {
@@ -1230,7 +1135,7 @@ async function estimateLine(
       const comps = await searchActiveListings({ upc: group.upc, keywords: group.description, excludeListingId: null });
       const summary = summarizeComps(comps);
       activeCompCount = summary.activeCompCount;
-      compCategoryId = mostCommonCategory(comps);
+      sellRate = await marketSellRate(comps);
       marketMedian = summary.medianPerUnit;
       marketPackSizes.push(...summary.packSizes);
       packStats = summary.packStats;
@@ -1252,7 +1157,8 @@ async function estimateLine(
             activeCompCount,
             medianPrice: marketMedian > 0 ? marketMedian : null,
             packStats,
-            categoryId: compCategoryId,
+            listingUnitsPerMonth: sellRate.unitsPerMonth,
+            salesSampled: sellRate.sampled,
           },
         });
       }
@@ -1289,14 +1195,24 @@ async function estimateLine(
 
   const effectiveUnits = Math.round(group.expectedQuantity * receiveRate);
 
-  // Sell-through velocity: own UPC's recent rate if it has any real sales
-  // of its own, else its category's as a proxy — same own-beats-category
-  // priority as the pricing blend below. null (genuinely unknown, not
-  // flagged) only when NEITHER has ever sold at all; a real history with
-  // zero recent sales is a legitimate "stalled" signal, not an unknown one.
-  const recentUnitsForVelocity = ownSalesCount > 0 ? ownRecentUnits : categorySalesCount > 0 ? categoryRecentUnits : null;
-  const monthsToSellThroughEstimate =
-    recentUnitsForVelocity != null ? computeMonthsToSellThrough(recentUnitsForVelocity, effectiveUnits) : null;
+  // Sell-through velocity, best evidence first: our own recent sales of
+  // this UPC (the learning part: once we've sold it, our real speed wins),
+  // else how fast live eBay listings of it sell (marketSellRate), else the
+  // category's own sales as a rough proxy. null = genuinely unknown, not
+  // flagged; a real history with zero recent sales is a "stalled" signal.
+  let sellRateSource: "own" | "ebay_listings" | "category" | null = null;
+  let monthsToSellThroughEstimate: number | null = null;
+  const marketMonths = monthsAtMarketRate(sellRate, effectiveUnits * manifestUnitPackSize);
+  if (ownSalesCount > 0) {
+    sellRateSource = "own";
+    monthsToSellThroughEstimate = computeMonthsToSellThrough(ownRecentUnits, effectiveUnits);
+  } else if (marketMonths != null) {
+    sellRateSource = "ebay_listings";
+    monthsToSellThroughEstimate = marketMonths;
+  } else if (categorySalesCount > 0) {
+    sellRateSource = "category";
+    monthsToSellThroughEstimate = computeMonthsToSellThrough(categoryRecentUnits, effectiveUnits);
+  }
   const slowMover = monthsToSellThroughEstimate != null && monthsToSellThroughEstimate > maxMonthsToSellThrough;
 
   // Confidence-weighted blend — more real samples (capped) = more trust,
@@ -1428,35 +1344,16 @@ async function estimateLine(
   const estimatedUnitFees = estimatedUnitSalePrice * feeRate + fallbackFeeFixedPerUnit;
   const rawNet = estimatedUnitSalePrice - estimatedUnitFees - estimatedUnitShipping;
 
-  // Dud: heavily saturated market (lots of active comps) with no real sales
-  // history — own OR historical — to back up that it actually moves, or the
-  // math is just negative. The saturation threshold itself flexes with
-  // current inventory load (see saturationThreshold) — confirmed live this
-  // was overriding a genuinely healthy price ($15.27/unit, ~$7.95 net)
-  // purely because 51 other sellers had the same SKU listed and Cristian
-  // had never sold it before; his own read was that's just everyone
-  // getting the same liquidation load right now, not proof it doesn't
-  // move, and it's non-perishable so sitting on it a while isn't costly —
-  // exactly the case this threshold now leans more permissive for.
-  // Since 2026-10-16 the threshold comes from stock of the same kind of item
-  // (this line's eBay category), not the whole inventory: Manscaped trimmers
-  // were dudded at 15 comps because overall stock was ~15 weeks, mostly
-  // sunscreen and hair dye.
-  const ebayCategoryId = (await ownCategoryForUpc(group.upc)) ?? compCategoryId;
-  const weeksOnHandInCategory = categoryWeeksOnHand(categoryLoad, ebayCategoryId);
-  const crowdedMarket =
-    rawNet > 0 &&
-    ownSalesCount === 0 &&
-    historicalSalesCount === 0 &&
-    categorySalesCount === 0 &&
-    activeCompCount >= crowdedThreshold(weeksOnHandInCategory);
-  let flaggedDud = rawNet <= 0 || crowdedMarket;
+  // Dud: the math is negative. Whether it sells fast enough is the
+  // slowMover check below. The old crowded-market rule (lots of listings +
+  // no track record = dud, stricter the more stock was on hand) is gone as
+  // of 2026-10-16: it dudded popular items like a Manscaped trimmer at
+  // ~$47 net/unit, and stock on hand isn't a reason to pass on a product.
+  let flaggedDud = rawNet <= 0;
 
   // A good per-unit price doesn't mean much if the expected quantity would
   // sit on the shelf for a year or more — see the "Sell-through velocity"
-  // section above. Distinct from the saturation rule above: that one is
-  // about no track record in a crowded market, this one is about a real,
-  // known-slow track record regardless of how crowded the market is.
+  // section above (our own sales, else live listings' sold counts).
   if (slowMover) flaggedDud = true;
 
   // Recurring-holiday filler (see POST_HOLIDAY_DUD_RULES above) — cheap,
@@ -1504,9 +1401,6 @@ async function estimateLine(
     estimatedUnitFees,
     estimatedUnitShipping,
     estimatedNetPerUnit: flaggedDud ? 0 : rawNet,
-    ebayCategoryId,
-    categoryWeeksOnHand: weeksOnHandInCategory,
-    crowdedMarket,
     effectiveUnits,
     typicalPackSize,
     recommendedPackSize: packAdvice?.packSize ?? null,
@@ -1515,6 +1409,8 @@ async function estimateLine(
     flaggedDud,
     slowMover,
     monthsToSellThrough: monthsToSellThroughEstimate,
+    sellRateSource,
+    listingUnitsPerMonth: sellRate?.unitsPerMonth ?? null,
     marketCheckFailed,
     marketTrend,
     eventEnded,
@@ -1591,39 +1487,25 @@ export async function evaluateManifestChunk(
   // evaluation (see the SourcingEvaluation schema comment) — computed once,
   // on whichever call happens to be first, then reused by every later one
   // instead of re-reading live state that may have drifted since (a sale
-  // landing between chunks, say, would otherwise shift a line's crowded-market threshold
+  // landing between chunks, say, would otherwise shift a line's sell speed
   // partway through the same evaluation).
   let targetMarginPct: number;
   let receiveRate: number;
-  let categoryLoad: CategoryInventoryLoad;
   let maxMonthsToSellThrough: number;
-  let inventoryLoad: { weeksOnHand: number; activeListedUnits: number; recentSoldUnitsPerWeek: number };
   if (evaluation.targetMarginPct != null) {
     targetMarginPct = evaluation.targetMarginPct;
     receiveRate = evaluation.receiveRate!;
-    categoryLoad = (evaluation.categoryInventoryLoad as CategoryInventoryLoad | null) ?? {};
     maxMonthsToSellThrough = evaluation.maxMonthsToSellThrough!;
-    inventoryLoad = {
-      weeksOnHand: evaluation.inventoryWeeksOnHand!,
-      activeListedUnits: evaluation.inventoryActiveListedUnits!,
-      recentSoldUnitsPerWeek: evaluation.inventoryRecentSoldPerWeek!,
-    };
   } else {
     targetMarginPct = await getTargetMarginPct();
     receiveRate = await getSupplierReceiveRate(manifest.supplier);
     maxMonthsToSellThrough = await getMaxMonthsToSellThrough();
-    inventoryLoad = await getWeeksOfInventoryOnHand();
-    categoryLoad = await getCategoryInventoryLoad();
     await prisma.sourcingEvaluation.update({
       where: { id: evaluationId },
       data: {
         targetMarginPct,
         receiveRate,
-        categoryInventoryLoad: categoryLoad,
         maxMonthsToSellThrough,
-        inventoryWeeksOnHand: inventoryLoad.weeksOnHand,
-        inventoryActiveListedUnits: inventoryLoad.activeListedUnits,
-        inventoryRecentSoldPerWeek: inventoryLoad.recentSoldUnitsPerWeek,
       },
     });
   }
@@ -1702,7 +1584,6 @@ export async function evaluateManifestChunk(
       receiveRate,
       runTrendCheck,
       eventCheckBudget,
-      categoryLoad,
       maxMonthsToSellThrough
     );
     await prisma.sourcingLineEstimate.create({
@@ -1724,15 +1605,14 @@ export async function evaluateManifestChunk(
         flaggedDud: result.flaggedDud,
         slowMover: result.slowMover,
         monthsToSellThrough: result.monthsToSellThrough,
+        sellRateSource: result.sellRateSource ?? null,
+        listingUnitsPerMonth: result.listingUnitsPerMonth ?? null,
         marketCheckFailed: result.marketCheckFailed,
         marketTrend: result.marketTrend,
         eventEnded: result.eventEnded,
         postHolidayFiller: result.postHolidayFiller,
         trendNudge: result.trendNudge,
         seasonal: result.seasonal,
-        ebayCategoryId: result.ebayCategoryId ?? null,
-        categoryWeeksOnHand: result.categoryWeeksOnHand ?? null,
-        crowdedMarket: result.crowdedMarket ?? false,
       },
     });
     locallyDone.add(group.groupKey);
@@ -1787,15 +1667,14 @@ export async function evaluateManifestChunk(
       flaggedDud: row.flaggedDud,
       slowMover: row.slowMover,
       monthsToSellThrough: row.monthsToSellThrough,
+      sellRateSource: row.sellRateSource as LineEstimateResult["sellRateSource"],
+      listingUnitsPerMonth: row.listingUnitsPerMonth,
       marketCheckFailed: row.marketCheckFailed,
       marketTrend: row.marketTrend,
       eventEnded: row.eventEnded,
       postHolidayFiller: row.postHolidayFiller,
       trendNudge: row.trendNudge,
       seasonal: row.seasonal,
-      ebayCategoryId: row.ebayCategoryId,
-      categoryWeeksOnHand: row.categoryWeeksOnHand,
-      crowdedMarket: row.crowdedMarket,
     };
   });
 
@@ -1839,7 +1718,6 @@ export async function evaluateManifestChunk(
     recommendation,
     dudShare,
     concentrationRisk,
-    inventoryLoad,
     topLines: lineEstimates
       .slice()
       .sort((a, b) => (b.estimatedNetPerUnit ?? 0) * b.effectiveUnits - (a.estimatedNetPerUnit ?? 0) * a.effectiveUnits)
@@ -1866,8 +1744,10 @@ export async function evaluateManifestChunk(
           `- ${e.description}: ${e.effectiveUnits} units expected, recent sell rate implies ${
             e.monthsToSellThrough != null && e.monthsToSellThrough < STALLED_MONTHS_SENTINEL
               ? `~${e.monthsToSellThrough.toFixed(1)} months to sell through`
-              : "no recent sales at all despite real history — effectively stalled"
-          }`
+              : e.sellRateSource === "ebay_listings"
+                ? "live eBay listings of it show essentially no sales"
+                : "no recent sales at all despite real history — effectively stalled"
+          } (${SELL_RATE_SOURCE_LABELS[e.sellRateSource ?? "own"]})`
       )
       .slice(0, 10),
     knowledgeNotes: knowledgeNotes.map((n) => `[${n.scope}] ${n.notes}`),
@@ -1919,6 +1799,12 @@ async function mapWithConcurrency<T>(
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
 }
 
+const SELL_RATE_SOURCE_LABELS = {
+  own: "based on our own recent sales",
+  ebay_listings: "based on how fast other sellers' live listings of it sell",
+  category: "based on our sales of similar items",
+} as const;
+
 async function writeReasoning(input: {
   evaluationId: string;
   manifestTitle: string;
@@ -1930,7 +1816,6 @@ async function writeReasoning(input: {
   recommendation: "buy" | "dont_buy";
   dudShare: number;
   concentrationRisk: boolean;
-  inventoryLoad: { weeksOnHand: number; activeListedUnits: number; recentSoldUnitsPerWeek: number };
   topLines: LineEstimateResult[];
   dudLines: LineEstimateResult[];
   bannedLines: string[];
@@ -1954,13 +1839,12 @@ Target margin used: ${input.targetMarginPct}%
 Supplier's real historical receive rate (after damage/expired): ${(input.receiveRate * 100).toFixed(0)}%
 Share of lines flagged as likely duds: ${(input.dudShare * 100).toFixed(0)}%
 Concentration risk flagged: ${input.concentrationRisk ? "yes — one item dominates the manifest's value and looks weak" : "no"}
-Overall inventory: ~${Math.round(input.inventoryLoad.weeksOnHand)} weeks of unsold stock on hand at the recent sell-through pace (${input.inventoryLoad.activeListedUnits} units currently listed, ~${input.inventoryLoad.recentSoldUnitsPerWeek.toFixed(1)}/week selling). Background only: the crowded-market caution is judged per kind of item (eBay category), so only items like ones already piling up on the shelf get the stricter bar. New kinds of items are judged on price, since the owner is deliberately adding variety. Don't present overall stock as a reason to pass.
 
 Top contributing lines:
 ${input.topLines.map((l) => `- ${l.description} (UPC ${l.upc ?? "n/a"}): est. $${l.estimatedNetPerUnit?.toFixed(2) ?? "?"} net/unit × ${l.effectiveUnits} units, confidence: ${l.dataConfidence}`).join("\n") || "none"}
 
 Lines flagged as likely duds:
-${input.dudLines.map((l) => `- ${l.description} (UPC ${l.upc ?? "n/a"})${l.crowdedMarket ? `: crowded market with no sales track record, and ~${Math.round(l.categoryWeeksOnHand ?? 0)} weeks of the same kind of item already on hand` : ""}`).join("\n") || "none"}
+${input.dudLines.map((l) => `- ${l.description} (UPC ${l.upc ?? "n/a"})`).join("\n") || "none"}
 
 Lines eBay doesn't allow listing at all (needles, prescription devices, COVID tests), valued at $0 and counted as duds (${input.bannedLineCount} total${input.bannedLineCount > 10 ? ", first 10 shown" : ""}):
 ${input.bannedLines.join("\n") || "none"}
@@ -1988,7 +1872,7 @@ ${input.trendNudges.join("\n") || "none notable"}
 Real measured market movement since we last checked these UPCs ourselves (our own repeated live comp checks over time — more reliable than the web-search signal above, since it's an actual price change we observed, not an LLM's read of outside chatter):
 ${input.marketTrends.join("\n") || "none notable — either no prior check to compare against yet, or nothing moved enough to be worth mentioning"}
 
-Write 3-6 sentences: which items drove the call, any supplier/category patterns applied, seasonal timing if relevant, any trend signal factored in (the measured market movement above and the web-search trend signal are different kinds of evidence — don't conflate them if both are mentioned), and if the inventory load meaningfully affected how a crowded-market line was judged, say so plainly. If any lines are ones eBay doesn't allow, say so plainly as its own reason (they can't be sold on eBay at any price, which is different from a weak market). If any slow movers were flagged, mention that plainly too — it's a different kind of caution from a plain margin/dud problem (a genuinely slow seller, not necessarily an unprofitable one) and worth calling out as its own reason, not lumped in with the other dud reasons. Plain language, no bullet points, no restating the raw numbers verbatim.`;
+Write 3-6 sentences: which items drove the call, any supplier/category patterns applied, seasonal timing if relevant, any trend signal factored in (the measured market movement above and the web-search trend signal are different kinds of evidence — don't conflate them if both are mentioned). Never cite how much stock we already have on hand as a reason; the call is about whether these items sell. If any lines are ones eBay doesn't allow, say so plainly as its own reason (they can't be sold on eBay at any price, which is different from a weak market). If any slow movers were flagged, mention that plainly too — it's a different kind of caution from a plain margin/dud problem (a genuinely slow seller, not necessarily an unprofitable one) and worth calling out as its own reason, not lumped in with the other dud reasons. Plain language, no bullet points, no restating the raw numbers verbatim.`;
 
   try {
     const response = await anthropic.messages.create(
