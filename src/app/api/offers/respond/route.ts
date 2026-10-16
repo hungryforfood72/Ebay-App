@@ -1,5 +1,5 @@
 import { ownerOnly } from "@/lib/auth";
-import { EbayApiError, SELLER_RESPONSE_MAX, respondToBestOffer } from "@/lib/ebay";
+import { EbayApiError, SELLER_RESPONSE_MAX, getListingStatus, respondToBestOffer } from "@/lib/ebay";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -25,26 +25,26 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: `eBay caps the note at ${SELLER_RESPONSE_MAX} characters.` }, { status: 400 });
   }
 
-  // Same scope as the list: only listings this app tracks.
+  // Any listing on the account. A listing made before the app has no Item
+  // row, so its price and stock come from eBay instead.
   const item = await prisma.item.findFirst({ where: { ebayListingId: listingId, status: { in: ["listed", "exported"] } } });
-  if (!item) {
-    return NextResponse.json({ error: "That listing isn't one this app tracks, or it isn't live." }, { status: 400 });
-  }
 
   let counterPrice: number | undefined;
   let counterQuantity: number | undefined;
   if (action === "Counter") {
     counterPrice = Math.round(Number(body.counterPrice) * 100) / 100;
     counterQuantity = Math.max(1, Math.floor(Number(body.counterQuantity) || 1));
-    const listPrice = item.price != null ? Number(item.price) : null;
+    const live = item ? null : await getListingStatus(listingId).catch(() => null);
+    const listPrice = item ? (item.price != null ? Number(item.price) : null) : (live?.price ?? null);
     if (!Number.isFinite(counterPrice) || counterPrice <= 0) {
       return NextResponse.json({ error: "Enter a counter price." }, { status: 400 });
     }
     if (listPrice != null && counterPrice >= listPrice) {
       return NextResponse.json({ error: `A counter has to be under the $${listPrice.toFixed(2)} list price.` }, { status: 400 });
     }
-    const available = item.quantity - item.soldQuantity;
-    if (counterQuantity > available) {
+    // Unknown if GetItem failed; eBay still checks it.
+    const available = item ? item.quantity - item.soldQuantity : (live?.available ?? null);
+    if (available != null && counterQuantity > available) {
       return NextResponse.json({ error: `Only ${available} left on this listing.` }, { status: 400 });
     }
   }

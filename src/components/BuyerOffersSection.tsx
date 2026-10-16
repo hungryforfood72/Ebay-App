@@ -11,7 +11,7 @@ import { FALLBACK_FEE_FIXED, FALLBACK_FEE_RATE, MIN_PROFIT_PER_SALE } from "@/li
 import { ExternalLink, MapPin, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
-type OffersData = { offers: BuyerOfferRow[]; otherListingOffers: number; typicalLabel: number; targetMarginPct: number };
+type OffersData = { offers: BuyerOfferRow[]; typicalLabel: number; targetMarginPct: number };
 type Action = "Accept" | "Decline" | "Counter";
 type RespondState =
   | { status: "sending"; action: Action }
@@ -76,8 +76,9 @@ function priceForProfit(o: BuyerOfferRow, quantity: number, profit: number): num
   return Math.ceil(needed * 100) / 100;
 }
 
-// Owner only (both API routes are too): Best Offers buyers sent on app
-// listings, answered here instead of in Seller Hub so the profit is in view.
+// Owner only (both API routes are too): every Best Offer buyers sent,
+// answered here instead of in Seller Hub so the profit is in view. Listings
+// made before the app show too, just without an item cost.
 export function BuyerOffersSection() {
   const [data, setData] = useState<OffersData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -110,7 +111,7 @@ export function BuyerOffersSection() {
     <section>
       <SectionHeader
         title="Buyer offers"
-        description="Best Offers buyers sent on app listings. Accept, counter or decline with the profit in view."
+        description="Best Offers buyers sent on any of your listings. Accept, counter or decline with the profit in view."
         action={
           <div className="flex items-center gap-2">
             {data && <Badge tone={offers.length > 0 ? "warning" : "neutral"}>{offers.length}</Badge>}
@@ -132,15 +133,10 @@ export function BuyerOffersSection() {
         <div className="flex flex-col gap-3">
           {offers.length === 0 ? (
             <Card>
-              <p className="text-sm text-muted-foreground">No offers waiting on app listings.</p>
+              <p className="text-sm text-muted-foreground">No offers waiting.</p>
             </Card>
           ) : (
             offers.map((o) => <OfferCard key={o.bestOfferId} offer={o} targetMarginPct={data.targetMarginPct} />)
-          )}
-          {data.otherListingOffers > 0 && (
-            <p className="text-xs text-muted-foreground">
-              {data.otherListingOffers} more pending on listings made outside the app. Answer those in Seller Hub.
-            </p>
           )}
           {offers.length > 0 && (
             <p className="text-xs text-muted-foreground">
@@ -227,6 +223,7 @@ function OfferCard({ offer: o, targetMarginPct }: { offer: BuyerOfferRow; target
             {o.quantity > 1 && ` x${o.quantity}`} on {money(o.listPrice)} ({percentOff}% off)
           </span>
           {o.kind === "BuyerCounterOffer" && <Badge tone="purple">their counter</Badge>}
+          {o.itemId == null && <Badge tone="neutral">listed before the app</Badge>}
           <span>{timeLeft(o.expiresAt)}</span>
         </div>
         <p className="text-sm text-muted-foreground">
@@ -236,6 +233,8 @@ function OfferCard({ offer: o, targetMarginPct }: { offer: BuyerOfferRow; target
               {o.packSize > 1 && ` (${o.packSize} x ${money(o.retailPrice / o.packSize)})`} on the manifest. Offer is{" "}
               {vsRetail(o.price, o.retailPrice)}, your list price is {vsRetail(o.listPrice, o.retailPrice)}.
             </>
+          ) : o.itemId == null ? (
+            "No manifest retail for this one."
           ) : (
             "No retail price on the manifest for this one."
           )}
@@ -292,7 +291,9 @@ function OfferCard({ offer: o, targetMarginPct }: { offer: BuyerOfferRow; target
           ·{" "}
           {o.unitCost != null
             ? `${money(o.unitCost * o.quantity)} item cost`
-            : o.noCostReason === "no_manifest"
+            : o.noCostReason === "not_in_app"
+              ? "no item cost or promotion on file"
+              : o.noCostReason === "no_manifest"
               ? "no manifest, item cost not counted"
               : "manifest has no cost yet, item cost not counted"}
         </p>

@@ -5,7 +5,7 @@ import { NextResponse } from "next/server";
 
 export const maxDuration = 30;
 
-// Owner only: pending Best Offers buyers sent on app listings, with what
+// Owner only: every pending Best Offer buyers sent, with what
 // each would leave after fees, a label to the buyer's zone and item cost.
 export async function GET(request: Request) {
   const denied = ownerOnly(request);

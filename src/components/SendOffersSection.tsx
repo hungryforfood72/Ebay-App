@@ -10,14 +10,15 @@ import { MIN_PROFIT_PER_SALE } from "@/lib/packSize";
 import { ExternalLink, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
-type OffersData = { listings: EligibleOfferListing[]; eligibleOnAccount: number; targetMarginPct: number };
+type OffersData = { listings: EligibleOfferListing[]; targetMarginPct: number };
 type SendState = { status: "sending" } | { status: "sent"; buyerCount: number; offerPrice: number } | { status: "error"; message: string };
 
 const DEFAULT_MESSAGE = "Thanks for your interest! Here's a special price just for you. This offer is good for 48 hours.";
 const money = (n: number) => `$${n.toFixed(2)}`;
 
 // Owner only (both API routes are too): Seller Hub's "Eligible to send
-// offers", limited to listings this app tracks. Render it only for the
+// offers", every listing on the account. App-tracked ones show profit
+// after item cost; ones made before the app have no cost on file. Render it only for the
 // owner, so an employee's browser never even asks.
 export function SendOffersSection() {
   const [data, setData] = useState<OffersData | null>(null);
@@ -57,22 +58,22 @@ export function SendOffersSection() {
     const losesMoney = outcome != null && l.costKnown && outcome.profit < 0;
     return { l, outcome, losesMoney };
   });
-  const sendable = rows.filter((r) => !r.losesMoney && sends[r.l.itemId]?.status !== "sent");
+  const sendable = rows.filter((r) => !r.losesMoney && sends[r.l.listingId]?.status !== "sent");
 
-  async function send(itemId: string): Promise<boolean> {
-    setSends((s) => ({ ...s, [itemId]: { status: "sending" } }));
+  async function send(listingId: string): Promise<boolean> {
+    setSends((s) => ({ ...s, [listingId]: { status: "sending" } }));
     try {
       const res = await fetch("/api/offers/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ itemId, discountPercent: pct, message: message.trim() || null }),
+        body: JSON.stringify({ listingId, discountPercent: pct, message: message.trim() || null }),
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? "Sending the offer failed.");
-      setSends((s) => ({ ...s, [itemId]: { status: "sent", buyerCount: body.buyerCount, offerPrice: body.offerPrice } }));
+      setSends((s) => ({ ...s, [listingId]: { status: "sent", buyerCount: body.buyerCount, offerPrice: body.offerPrice } }));
       return true;
     } catch (e) {
-      setSends((s) => ({ ...s, [itemId]: { status: "error", message: e instanceof Error ? e.message : "Sending failed." } }));
+      setSends((s) => ({ ...s, [listingId]: { status: "error", message: e instanceof Error ? e.message : "Sending failed." } }));
       return false;
     }
   }
@@ -80,7 +81,7 @@ export function SendOffersSection() {
   async function sendOne(row: (typeof rows)[number]) {
     if (!row.outcome) return;
     if (!confirm(`Send ${pct}% off "${row.l.title}" (${money(row.outcome.offerPrice)}) to everyone interested in it? The offer lasts 2 days.`)) return;
-    await send(row.l.itemId);
+    await send(row.l.listingId);
   }
 
   async function sendAll() {
@@ -97,7 +98,7 @@ export function SendOffersSection() {
     setBulkSending(true);
     // One at a time: eBay takes one listing per request, and it keeps any
     // failure tied to its own row.
-    for (const row of sendable) await send(row.l.itemId);
+    for (const row of sendable) await send(row.l.listingId);
     setBulkSending(false);
   }
 
@@ -105,7 +106,7 @@ export function SendOffersSection() {
     <section>
       <SectionHeader
         title="Send offers"
-        description="App listings with buyers watching or holding them in a cart. Offers go to all of them at once."
+        description="Listings with buyers watching or holding them in a cart. Offers go to all of them at once."
         action={
           <div className="flex items-center gap-2">
             {data && <Badge tone={listings.length > 0 ? "primary" : "neutral"}>{listings.length}</Badge>}
@@ -126,9 +127,7 @@ export function SendOffersSection() {
       ) : listings.length === 0 ? (
         <Card>
           <p className="text-sm text-muted-foreground">
-            No app listings are eligible right now.
-            {data.eligibleOnAccount > 0 &&
-              ` eBay shows ${data.eligibleOnAccount} eligible on the account, all of them listed outside the app.`}
+            No listings are eligible right now.
           </p>
         </Card>
       ) : (
@@ -157,7 +156,7 @@ export function SendOffersSection() {
 
           <ul className="flex flex-col divide-y divide-border">
             {rows.map(({ l, outcome, losesMoney }) => {
-              const state = sends[l.itemId];
+              const state = sends[l.listingId];
               const target = l.unitCost != null ? Math.max(l.unitCost * (data.targetMarginPct / 100), MIN_PROFIT_PER_SALE) : null;
               const tone: BadgeTone = !outcome
                 ? "neutral"
@@ -169,7 +168,7 @@ export function SendOffersSection() {
                       ? "success"
                       : "neutral";
               return (
-                <li key={l.itemId} className="flex flex-col gap-2 py-3 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between">
+                <li key={l.listingId} className="flex flex-col gap-2 py-3 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between">
                   <div className="min-w-0">
                     <a
                       href={`https://www.ebay.com/itm/${l.listingId}`}
@@ -198,6 +197,8 @@ export function SendOffersSection() {
                       )}
                       {l.costKnown && l.unitCost != null ? (
                         <span>after {money(l.unitCost)} item cost</span>
+                      ) : l.noCostReason === "not_in_app" ? (
+                        <span>listed before the app, item cost and any promotion not counted</span>
                       ) : l.noCostReason === "no_manifest" ? (
                         <span>no manifest, item cost not counted</span>
                       ) : (

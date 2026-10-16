@@ -5,7 +5,7 @@ import { NextResponse } from "next/server";
 
 export const maxDuration = 30;
 
-// Owner only: app-tracked listings eBay says can get an offer to interested
+// Owner only: every listing eBay says can get an offer to interested
 // buyers right now, with what each one cost (see src/lib/offers.ts).
 export async function GET(request: Request) {
   const denied = ownerOnly(request);

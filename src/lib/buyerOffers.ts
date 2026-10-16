@@ -1,5 +1,5 @@
 import { cogsMapsFor, costPerListingUnit } from "./cogs";
-import { getBestOfferHistory, getPendingBestOffers, type BestOfferStep, type ReceivedBestOffer } from "./ebay";
+import { getBestOfferHistory, getListingStatus, getPendingBestOffers, type BestOfferStep, type ReceivedBestOffer } from "./ebay";
 import type { OfferEconomics } from "./offerMath";
 import { prisma } from "./prisma";
 import { typicalSingleLabelCost } from "./shippingCost";
@@ -9,9 +9,11 @@ import { getTargetMarginPct } from "./sourcingAgent";
 
 export type BuyerOfferRow = ReceivedBestOffer &
   OfferEconomics & {
-    itemId: string;
+    // null for a listing made before the app: no Item row, so no item
+    // cost, weight, promotion or retail on file.
+    itemId: string | null;
     costKnown: boolean;
-    noCostReason: "no_manifest" | "manifest_uncosted" | null;
+    noCostReason: "no_manifest" | "manifest_uncosted" | "not_in_app" | null;
     // How many are left on the listing, the most a counter can ask for.
     available: number;
     zone: number | null;
@@ -27,12 +29,13 @@ export type BuyerOfferRow = ReceivedBestOffer &
     history: BestOfferStep[];
   };
 
-// Pending Best Offers buyers sent, kept to listings this app tracks (same
-// line as SendOffersSection: the VA's listings and pre-app ones never show).
-// labelCost is for this buyer's zone and the offer's quantity.
+// Every pending Best Offer buyers sent. App-tracked listings come with
+// item cost, weight and retail; ones from before the app only have what
+// eBay says (stock left from GetItem). The VA's listings were all ended
+// 2026-10-15, so nothing on the account needs hiding anymore. labelCost is
+// for this buyer's zone and the offer's quantity.
 export async function pendingBuyerOffers(): Promise<{
   offers: BuyerOfferRow[];
-  otherListingOffers: number;
   typicalLabel: number;
   targetMarginPct: number;
 }> {
@@ -45,22 +48,49 @@ export async function pendingBuyerOffers(): Promise<{
     getTargetMarginPct(),
   ]);
   const byListing = new Map(items.map((i) => [i.ebayListingId!, i]));
-  // One history call per listing with a pending offer; there are only ever
-  // a handful at once.
-  const historyListings = [...byListing.keys()].filter((id) => pending.some((o) => o.listingId === id));
-  const [cogsMaps, retail, histories] = await Promise.all([
+  // One history call per listing with a pending offer (and a GetItem for
+  // stock on pre-app ones); there are only ever a handful at once.
+  const pendingListings = [...new Set(pending.map((o) => o.listingId))];
+  const untracked = pendingListings.filter((id) => !byListing.has(id));
+  const [cogsMaps, retail, histories, untrackedAvailable] = await Promise.all([
     cogsMapsFor(items.map((i) => i.manifestId)),
     retailPrices(items),
-    Promise.all(historyListings.map(async (id) => [id, await getBestOfferHistory(id)] as const)).then((h) => new Map(h)),
+    Promise.all(pendingListings.map(async (id) => [id, await getBestOfferHistory(id)] as const)).then((h) => new Map(h)),
+    Promise.all(untracked.map(async (id) => [id, (await getListingStatus(id).catch(() => null))?.available] as const)).then(
+      (a) => new Map(a)
+    ),
   ]);
 
   const offers: BuyerOfferRow[] = [];
   for (const o of pending) {
+    const history = (histories.get(o.listingId) ?? []).filter(
+      (h) => h.userId === o.buyer.userId && h.bestOfferId !== o.bestOfferId
+    );
+    const zone = o.buyer.country === "US" || o.buyer.country == null ? zoneForZip3(o.buyer.zip3) : null;
     const item = byListing.get(o.listingId);
-    if (!item) continue;
+    if (!item) {
+      offers.push({
+        ...o,
+        itemId: null,
+        listPrice: o.buyItNowPrice ?? o.price,
+        unitCost: null,
+        costKnown: false,
+        noCostReason: "not_in_app",
+        labelCost: estimateLabelCost({ typicalLabel, weightLbs: null, zone }),
+        promotedPercent: null,
+        // Unknown if GetItem failed; eBay still checks a counter's quantity.
+        available: untrackedAvailable.get(o.listingId) ?? o.quantity,
+        zone,
+        weightLbs: null,
+        localPickupOnly: false,
+        retailPrice: null,
+        packSize: 1,
+        history,
+      });
+      continue;
+    }
     const { cost, costed } = costPerListingUnit(item, cogsMaps);
     const weight = item.weightLbs != null || item.weightOz != null ? (item.weightLbs ?? 0) + (item.weightOz ?? 0) / 16 : null;
-    const zone = o.buyer.country === "US" || o.buyer.country == null ? zoneForZip3(o.buyer.zip3) : null;
     offers.push({
       ...o,
       itemId: item.id,
@@ -78,12 +108,10 @@ export async function pendingBuyerOffers(): Promise<{
       localPickupOnly: item.localPickupOnly,
       retailPrice: retail.get(item.id) ?? null,
       packSize: item.isMultipack && item.packSize ? item.packSize : 1,
-      history: (histories.get(o.listingId) ?? []).filter(
-        (h) => h.userId === o.buyer.userId && h.bestOfferId !== o.bestOfferId
-      ),
+      history,
     });
   }
   offers.sort((a, b) => a.expiresAt.localeCompare(b.expiresAt));
 
-  return { offers, otherListingOffers: pending.length - offers.length, typicalLabel, targetMarginPct };
+  return { offers, typicalLabel, targetMarginPct };
 }

@@ -254,8 +254,7 @@ export async function getCategorySuggestions(query: string): Promise<string[]> {
 // ---------------------------------------------------------------------------
 const NEGOTIATION_HEADERS = { "X-EBAY-C-MARKETPLACE-ID": "EBAY_US" };
 
-// Every eligible listing on the account, the VA's and pre-app ones included;
-// callers keep only the ones this app tracks.
+// Every eligible listing on the account, app and pre-app ones alike.
 export async function getOfferEligibleListingIds(): Promise<string[]> {
   const ids: string[] = [];
   const limit = 200;
@@ -1055,6 +1054,22 @@ export async function getOrderIdsCreatedBetween(from: Date, to: Date): Promise<s
   }
 }
 
+// Paid orders that still need a label/shipment (fulfillment NOT_STARTED or
+// IN_PROGRESS). Raw eBay order objects, for showing what's waiting to ship.
+export async function getOrdersAwaitingShipment(): Promise<Record<string, unknown>[]> {
+  const out: Record<string, unknown>[] = [];
+  const limit = 50;
+  const filter = "orderfulfillmentstatus:{NOT_STARTED|IN_PROGRESS}";
+  for (let offset = 0; ; offset += limit) {
+    const page = (await ebayFetch(
+      `/sell/fulfillment/v1/order?filter=${encodeURIComponent(filter)}&limit=${limit}&offset=${offset}`
+    )) as { orders?: Record<string, unknown>[] };
+    const orders = page.orders ?? [];
+    out.push(...orders);
+    if (orders.length < limit) return out;
+  }
+}
+
 export async function getRecentOrders(from: Date, to: Date): Promise<EbayOrder[]> {
   const orders: EbayOrder[] = [];
   const limit = 50;
@@ -1701,11 +1716,54 @@ export async function endFixedPriceItem(itemId: string): Promise<void> {
   );
 }
 
+export type ActiveListing = {
+  itemId: string;
+  sku: string;
+  title: string;
+  available: number;
+  sold: number;
+  price: number;
+  startTime: string;
+};
+
+// Every active listing on the account (app, CSV and VA alike), via Trading
+// GetMyeBaySelling ActiveList, 200 per page.
+export async function getAllActiveListings(): Promise<ActiveListing[]> {
+  const listings: ActiveListing[] = [];
+  for (let page = 1; ; page++) {
+    const xml = await tradingApiFetch(
+      "GetMyeBaySelling",
+      `<GetMyeBaySellingRequest xmlns="urn:ebay:apis:eBLBaseComponents"><ActiveList><Include>true</Include><Pagination><EntriesPerPage>200</EntriesPerPage><PageNumber>${page}</PageNumber></Pagination></ActiveList><DetailLevel>ReturnAll</DetailLevel></GetMyeBaySellingRequest>`
+    );
+    const activeList = xml.match(/<ActiveList>([\s\S]*?)<\/ActiveList>/)?.[1] ?? "";
+    for (const block of activeList.match(/<Item>[\s\S]*?<\/Item>/g) ?? []) {
+      const tag = (name: string) => block.match(new RegExp(`<${name}[^>]*>([\\s\\S]*?)</${name}>`))?.[1] ?? "";
+      const quantity = Number(tag("Quantity")) || 0;
+      const available = Number(block.match(/<QuantityAvailable>(\d+)<\/QuantityAvailable>/)?.[1] ?? quantity);
+      listings.push({
+        itemId: tag("ItemID"),
+        sku: tag("SKU"),
+        title: tag("Title").replace(/<!\[CDATA\[|\]\]>/g, ""),
+        available,
+        sold: Math.max(0, quantity - available),
+        price: Number(block.match(/<CurrentPrice[^>]*>([\d.]+)<\/CurrentPrice>/)?.[1] ?? 0),
+        startTime: tag("StartTime"),
+      });
+    }
+    const totalPages = Number(activeList.match(/<TotalNumberOfPages>(\d+)<\/TotalNumberOfPages>/)?.[1] ?? 1);
+    if (page >= totalPages) break;
+  }
+  return listings;
+}
+
 // Live state of a classic listing straight from eBay: how many are left
 // (Quantity − QuantitySold) and whether it's still up. ListingStatus is
 // "Active" for a live listing (including one sold out but kept alive by
-// Out-of-stock control) and "Completed"/"Ended" once it's over.
-export async function getListingStatus(itemId: string): Promise<{ available: number; active: boolean }> {
+// Out-of-stock control) and "Completed"/"Ended" once it's over. Title and
+// price are there for listings made outside the app, which have no Item row.
+export async function getListingStatus(
+  itemId: string
+): Promise<{ available: number; active: boolean; title: string | null; price: number | null }> {
   const xml = await tradingApiFetch(
     "GetItem",
     `<GetItemRequest xmlns="urn:ebay:apis:eBLBaseComponents"><ItemID>${xmlEscape(itemId)}</ItemID></GetItemRequest>`
@@ -1716,7 +1774,13 @@ export async function getListingStatus(itemId: string): Promise<{ available: num
   if (!Number.isFinite(quantity) || !listingStatus) {
     throw new EbayApiError(`GetItem for ${itemId} came back without a quantity or status.`, 200, xml.slice(0, 500));
   }
-  return { available: Math.max(0, quantity - quantitySold), active: listingStatus === "Active" };
+  const price = xml.match(/<CurrentPrice[^>]*>([\d.]+)<\/CurrentPrice>/)?.[1];
+  return {
+    available: Math.max(0, quantity - quantitySold),
+    active: listingStatus === "Active",
+    title: xmlField(xml, "Title"),
+    price: price != null ? Number(price) : null,
+  };
 }
 
 // Best Offers buyers sent us. Unlike sendOfferToInterestedBuyers (we offer,

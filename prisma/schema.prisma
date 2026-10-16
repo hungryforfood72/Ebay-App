@@ -389,10 +389,12 @@ model SyncLock {
 // it in their cart, all at once; buyerCount is how many it reached. Offers
 // last 2 days (eBay's fixed duration). Kept so the dashboard can show what
 // was last offered on a listing.
+// itemId is null for a listing made before the app (no Item row); those
+// are looked up by listingId.
 model SentOffer {
   id              String   @id @default(uuid())
-  item            Item     @relation(fields: [itemId], references: [id], onDelete: Cascade)
-  itemId          String
+  item            Item?    @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  itemId          String?
   listingId       String
   discountPercent Decimal  @db.Decimal(5, 2)
   listPrice       Decimal  @db.Decimal(10, 2)
@@ -402,6 +404,7 @@ model SentOffer {
   sentAt          DateTime @default(now())
 
   @@index([itemId])
+  @@index([listingId])
 }
 
 // How many orders one SHIPPING_LABEL charge really covers. Buying labels in

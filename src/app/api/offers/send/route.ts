@@ -1,6 +1,6 @@
 import { ownerOnly } from "@/lib/auth";
 import { cogsMapsFor, costPerListingUnit } from "@/lib/cogs";
-import { EbayApiError, sendOfferToInterestedBuyers } from "@/lib/ebay";
+import { EbayApiError, getListingStatus, sendOfferToInterestedBuyers } from "@/lib/ebay";
 import { MAX_OFFER_PERCENT, MIN_OFFER_PERCENT, offerOutcome } from "@/lib/offerMath";
 import { prisma } from "@/lib/prisma";
 import { typicalSingleLabelCost } from "@/lib/shippingCost";
@@ -24,26 +24,41 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const item = await prisma.item.findUnique({ where: { id: String(body.itemId ?? "") } });
-  // Same scope as the list: only listings this app tracks.
-  if (!item || !item.ebayListingId || !["listed", "exported"].includes(item.status) || item.price == null) {
-    return NextResponse.json({ error: "That listing isn't one this app tracks, or it isn't live." }, { status: 400 });
+  const listingId = String(body.listingId ?? "");
+  if (!listingId) return NextResponse.json({ error: "Missing the listing." }, { status: 400 });
+
+  // App-tracked listing: its price and cost come from the app. A listing
+  // made before the app has no Item row, so eBay supplies the price and
+  // there's no item cost to guard against.
+  const item = await prisma.item.findFirst({ where: { ebayListingId: listingId, status: { in: ["listed", "exported"] } } });
+  let listPrice: number;
+  let unitCost: number | null = null;
+  if (item) {
+    if (item.price == null) return NextResponse.json({ error: "That listing has no price in the app." }, { status: 400 });
+    listPrice = Number(item.price);
+    const cogsMaps = await cogsMapsFor([item.manifestId]);
+    const { cost, costed } = costPerListingUnit(item, cogsMaps);
+    unitCost = costed ? cost : null;
+  } else {
+    const live = await getListingStatus(listingId).catch(() => null);
+    if (!live?.active || live.price == null) {
+      return NextResponse.json({ error: "eBay says that listing isn't live." }, { status: 400 });
+    }
+    listPrice = live.price;
   }
 
   // Never send an offer that loses money on a costed item, even if the
   // page was stale or the request came from somewhere else.
-  const cogsMaps = await cogsMapsFor([item.manifestId]);
-  const { cost, costed } = costPerListingUnit(item, cogsMaps);
   const { offerPrice, profit } = offerOutcome(
     {
-      listPrice: Number(item.price),
-      unitCost: costed ? cost : null,
-      labelCost: item.localPickupOnly ? 0 : await typicalSingleLabelCost(),
-      promotedPercent: item.ebayAdId ? item.promotedBidPercentage : null,
+      listPrice,
+      unitCost,
+      labelCost: item?.localPickupOnly ? 0 : await typicalSingleLabelCost(),
+      promotedPercent: item?.ebayAdId ? item.promotedBidPercentage : null,
     },
     discountPercent
   );
-  if (costed && profit < 0) {
+  if (unitCost != null && profit < 0) {
     return NextResponse.json(
       { error: `At ${discountPercent}% off ($${offerPrice.toFixed(2)}) this would lose $${(-profit).toFixed(2)} a sale.` },
       { status: 400 }
@@ -51,13 +66,13 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const buyerCount = await sendOfferToInterestedBuyers({ listingId: item.ebayListingId, discountPercent, message });
+    const buyerCount = await sendOfferToInterestedBuyers({ listingId, discountPercent, message });
     const sent = await prisma.sentOffer.create({
       data: {
-        itemId: item.id,
-        listingId: item.ebayListingId,
+        itemId: item?.id ?? null,
+        listingId,
         discountPercent,
-        listPrice: item.price,
+        listPrice,
         offerPrice,
         buyerCount,
         message,
