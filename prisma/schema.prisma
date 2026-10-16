@@ -653,14 +653,19 @@ model SourcingEvaluation {
   // inconsistent across its own lines.
   targetMarginPct            Float?
   receiveRate                Float?
-  // Infinity isn't a safe round-trip value through Prisma's Postgres Float
-  // mapping, so the "essentially uncapped" case (see saturationThreshold in
-  // sourcingAgent.ts) is encoded as this large-but-finite sentinel instead —
-  // no real activeCompCount will ever approach it.
+  // Evaluations before 2026-10-16 only: one crowded-market threshold for
+  // the whole manifest, from overall stock. Infinity isn't a safe
+  // round-trip value through Prisma's Postgres Float mapping, so the
+  // "essentially uncapped" case was stored as a large finite sentinel.
   compSaturationThreshold    Float?
+  // Overall stock, now only background for the reasoning text.
   inventoryWeeksOnHand       Float?
   inventoryActiveListedUnits Int?
   inventoryRecentSoldPerWeek Float?
+  // Stock per eBay category ({ [categoryId]: { listedUnits, soldPerWeek } }),
+  // which sets each line's crowded-market threshold since 2026-10-16
+  // (see categoryInventoryLoad in sourcingAgent.ts).
+  categoryInventoryLoad      Json?
   // How many months of expected inventory at a line's recent sell rate
   // counts as "too slow" (see MAX_MONTHS_TO_SELL_THROUGH_KEY / the
   // slowMover flag on SourcingLineEstimate) — a Cristian-tunable setting
@@ -744,6 +749,12 @@ model SourcingLineEstimate {
   // when the recent rate is exactly zero despite having real history.
   slowMover              Boolean            @default(false)
   monthsToSellThrough    Float?
+  // eBay category this line was judged as (own listings of the UPC first,
+  // else the most common one among live comps), weeks of stock already on
+  // hand in it, and whether the crowded-market rule made it a dud.
+  ebayCategoryId         String?
+  categoryWeeksOnHand    Float?
+  crowdedMarket          Boolean            @default(false)
 
   @@unique([evaluationId, groupKey])
 }
@@ -875,6 +886,9 @@ model MarketCompSnapshot {
   // the pack-size recommendation reads, so the scan page can suggest one
   // without a fresh eBay search. null on snapshots from before this existed.
   packStats       Json?
+  // Most common eBay leaf category among the comps. null on snapshots from
+  // before 2026-10-16, which the Analyzer then searches fresh.
+  categoryId      String?
   capturedAt      DateTime @default(now())
 
   @@index([upc, capturedAt])

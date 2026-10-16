@@ -38,6 +38,8 @@ type SourcingLineEstimate = {
   flaggedDud: boolean;
   slowMover: boolean;
   monthsToSellThrough: number | null;
+  crowdedMarket: boolean;
+  categoryWeeksOnHand: number | null;
 };
 
 type SourcingEvaluation = {
@@ -912,6 +914,12 @@ function EstimateTags({ estimate: e, showConfidence = true }: { estimate: Sourci
     <div className="mt-1.5 flex flex-wrap gap-1.5">
       {showConfidence && <ConfidenceBadge confidence={e.dataConfidence} />}
       {banned ? <Badge tone="danger">{banned}</Badge> : e.flaggedDud && <Badge tone="warning">dud</Badge>}
+      {e.crowdedMarket && (
+        <Badge tone="warning">
+          crowded, no sales yet
+          {e.categoryWeeksOnHand != null ? ` · ~${Math.round(e.categoryWeeksOnHand)}wk of this kind on hand` : ""}
+        </Badge>
+      )}
       {e.slowMover && (
         <Badge tone="purple">
           slow mover

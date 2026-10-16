@@ -296,7 +296,15 @@ export async function sendOfferToInterestedBuyers(input: {
 // — those comps get shippingCost 0, same as genuinely free shipping,
 // since there's no other number to use). totalPrice is what a buyer
 // actually pays, and is what comps should be compared/sorted on.
-export type ActiveListingComp = { itemId: string; price: number; shippingCost: number; totalPrice: number; title: string };
+// categoryId: the listing's eBay leaf category, as its seller picked it.
+export type ActiveListingComp = {
+  itemId: string;
+  price: number;
+  shippingCost: number;
+  totalPrice: number;
+  title: string;
+  categoryId: string | null;
+};
 
 async function fetchActiveListingComps(
   params: URLSearchParams,
@@ -326,6 +334,7 @@ async function fetchActiveListingComps(
       itemId: string;
       title: string;
       price?: { value: string };
+      leafCategoryIds?: string[];
       shippingOptions?: { shippingCostType: string; shippingCost?: { value: string } }[];
     }[];
   };
@@ -341,7 +350,14 @@ async function fetchActiveListingComps(
         shippingOption?.shippingCostType === "FIXED" && shippingOption.shippingCost
           ? Number(shippingOption.shippingCost.value)
           : 0;
-      return { itemId: i.itemId, price, shippingCost, totalPrice: price + shippingCost, title: i.title };
+      return {
+        itemId: i.itemId,
+        price,
+        shippingCost,
+        totalPrice: price + shippingCost,
+        title: i.title,
+        categoryId: i.leafCategoryIds?.[0] ?? null,
+      };
     });
 }
 

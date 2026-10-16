@@ -125,8 +125,74 @@ async function getWeeksOfInventoryOnHand(): Promise<{ weeksOnHand: number; activ
   return { weeksOnHand, activeListedUnits, recentSoldUnitsPerWeek };
 }
 
+// The same stock-vs-sell-rate measure, but per eBay category. Since
+// 2026-10-16 this, not the overall number above, sets the crowded-market
+// threshold. Cristian's reasoning: total stock keeps growing as the
+// business grows and he's going after more variety, so a pile of sunscreen
+// and hair dye shouldn't make a trimmer look like a dud. Only more of what
+// he's already sitting on gets the stricter bar.
+export type CategoryInventoryLoad = Record<string, { listedUnits: number; soldPerWeek: number }>;
+
+async function getCategoryInventoryLoad(): Promise<CategoryInventoryLoad> {
+  const [listedItems, recentSales] = await Promise.all([
+    prisma.item.findMany({
+      where: { status: "listed", categoryId: { not: null } },
+      select: { categoryId: true, quantity: true, soldQuantity: true, isMultipack: true, packSize: true },
+    }),
+    prisma.ebayItemSale.findMany({
+      where: {
+        soldAt: { gte: new Date(Date.now() - INVENTORY_LOOKBACK_DAYS * 24 * 60 * 60 * 1000) },
+        item: { categoryId: { not: null } },
+      },
+      select: { quantity: true, item: { select: { categoryId: true, isMultipack: true, packSize: true } } },
+    }),
+  ]);
+  const load: CategoryInventoryLoad = {};
+  const entry = (categoryId: string) => (load[categoryId] ??= { listedUnits: 0, soldPerWeek: 0 });
+  for (const i of listedItems) entry(i.categoryId!).listedUnits += remainingPhysicalUnits(i);
+  for (const s of recentSales) {
+    const units = soldPhysicalUnits({ soldQuantity: s.quantity, isMultipack: s.item.isMultipack, packSize: s.item.packSize });
+    entry(s.item.categoryId!).soldPerWeek += units / (INVENTORY_LOOKBACK_DAYS / 7);
+  }
+  return load;
+}
+
+// Weeks of stock already on hand in one category (same 1/week floor as the
+// overall number). null = nothing listed there, so no caution at all.
+function categoryWeeksOnHand(load: CategoryInventoryLoad, categoryId: string | null): number | null {
+  const c = categoryId ? load[categoryId] : undefined;
+  if (!c || c.listedUnits <= 0) return null;
+  return c.listedUnits / Math.max(1, c.soldPerWeek);
+}
+
+function crowdedThreshold(weeksOnHand: number | null): number {
+  return weeksOnHand == null ? Infinity : saturationThreshold(weeksOnHand);
+}
+
+// Sellers don't all pick the same leaf category, so take the most common.
+export function mostCommonCategory(comps: { categoryId: string | null }[]): string | null {
+  const counts = new Map<string, number>();
+  for (const c of comps) if (c.categoryId) counts.set(c.categoryId, (counts.get(c.categoryId) ?? 0) + 1);
+  let best: string | null = null;
+  for (const [id, n] of counts) if (best == null || n > counts.get(best)!) best = id;
+  return best;
+}
+
+// The category we list this UPC in ourselves beats a guess from comps.
+async function ownCategoryForUpc(upc: string | null): Promise<string | null> {
+  if (!upc) return null;
+  const item = await prisma.item.findFirst({
+    where: { upc, categoryId: { not: null } },
+    orderBy: { createdAt: "desc" },
+    select: { categoryId: true },
+  });
+  return item?.categoryId ?? null;
+}
+
 // How many active comps at once counts as "saturated" for the no-track-
-// record dud rule (see estimateLine) — not a fixed number anymore. Lean
+// record dud rule (see estimateLine) — not a fixed number anymore. Fed
+// weeks on hand for the line's own eBay category (categoryWeeksOnHand),
+// not the whole inventory, since 2026-10-16. Lean
 // inventory (plenty of sell-through room) gets more benefit of the doubt
 // in a crowded market; a shelf already full of slow-moving stock gets the
 // original, stricter read. Four tiers for explainability, not a smooth
@@ -178,7 +244,7 @@ function recencyWeight(soldAt: Date): number {
 // ---------------------------------------------------------------------------
 const VELOCITY_LOOKBACK_DAYS = 90;
 // Infinity isn't a safe round-trip value through Prisma's Postgres Float
-// mapping (same reasoning as UNCAPPED_SATURATION_SENTINEL below) — used
+// mapping — used
 // when a UPC/category has real sales history but literally zero of it
 // happened within the recent window (selling has effectively stalled).
 const STALLED_MONTHS_SENTINEL = 9999;
@@ -790,6 +856,10 @@ type LineEstimateResult = {
   seasonal: string | null;
   slowMover: boolean;
   monthsToSellThrough: number | null;
+  // See the matching SourcingLineEstimate columns. Left out = unknown/false.
+  ebayCategoryId?: string | null;
+  categoryWeeksOnHand?: number | null;
+  crowdedMarket?: boolean;
 };
 
 // Other-supplier manifests (supplier "unknown", uploaded through the
@@ -807,7 +877,7 @@ type LineEstimateResult = {
 async function estimateOtherSupplierLine(
   group: LineGroup,
   receiveRate: number,
-  compSaturationThreshold: number
+  categoryLoad: CategoryInventoryLoad
 ): Promise<LineEstimateResult> {
   const effectiveUnits = Math.round(group.boxes * receiveRate);
   const base = {
@@ -874,7 +944,10 @@ async function estimateOtherSupplierLine(
       : rawPrice;
   const fees = price * FALLBACK_FEE_RATE + FALLBACK_FEE_FIXED;
   const net = price - fees - FALLBACK_SHIPPING_COST;
-  const flaggedDud = net <= 0 || comps.length >= compSaturationThreshold || base.postHolidayFiller;
+  const ebayCategoryId = (await ownCategoryForUpc(group.upc)) ?? mostCommonCategory(comps);
+  const weeksOnHand = categoryWeeksOnHand(categoryLoad, ebayCategoryId);
+  const crowdedMarket = comps.length >= crowdedThreshold(weeksOnHand);
+  const flaggedDud = net <= 0 || crowdedMarket || base.postHolidayFiller;
   return {
     ...base,
     estimatedUnitSalePrice: price,
@@ -883,6 +956,9 @@ async function estimateOtherSupplierLine(
     estimatedNetPerUnit: flaggedDud ? 0 : net,
     flaggedDud,
     marketCheckFailed: false,
+    ebayCategoryId,
+    categoryWeeksOnHand: weeksOnHand,
+    crowdedMarket: crowdedMarket && net > 0,
   };
 }
 
@@ -892,7 +968,7 @@ async function estimateLine(
   receiveRate: number,
   runTrendCheck: boolean,
   eventCheckBudget: EventCheckBudget,
-  compSaturationThreshold: number,
+  categoryLoad: CategoryInventoryLoad,
   maxMonthsToSellThrough: number
 ): Promise<LineEstimateResult> {
   // Can't be listed on eBay at all (needles, Rx devices — see ebayBanned),
@@ -924,7 +1000,7 @@ async function estimateLine(
     };
   }
 
-  if (group.strictPricing) return estimateOtherSupplierLine(group, receiveRate, compSaturationThreshold);
+  if (group.strictPricing) return estimateOtherSupplierLine(group, receiveRate, categoryLoad);
 
   // Own-history: exact UPC, across every manifest ever sold, not just this one.
   let ownSalesCount = 0;
@@ -1106,6 +1182,7 @@ async function estimateLine(
   // realistic retail per-unit number.
   let marketMedian = 0;
   let activeCompCount = 0;
+  let compCategoryId: string | null = null;
   const marketPackSizes: number[] = [];
   // Distinguishes "we asked eBay and it genuinely has nothing listed" from
   // "we never got an answer" — confirmed live as a real, not theoretical,
@@ -1131,7 +1208,13 @@ async function estimateLine(
     : null;
   const snapshotAgeHours = latestSnapshot ? (Date.now() - latestSnapshot.capturedAt.getTime()) / (1000 * 60 * 60) : Infinity;
 
-  if (latestSnapshot && snapshotAgeHours < MARKET_SNAPSHOT_FRESHNESS_HOURS) {
+  // Snapshots from before categories were saved can't say what kind of
+  // item this is, so they're searched fresh (a no-comps one has nothing to say).
+  if (
+    latestSnapshot &&
+    snapshotAgeHours < MARKET_SNAPSHOT_FRESHNESS_HOURS &&
+    (latestSnapshot.categoryId != null || latestSnapshot.activeCompCount === 0)
+  ) {
     // Reuse rather than re-ask eBay — this is what was actually burning
     // through the daily Browse API limit: the same UPC getting re-searched
     // from scratch on every evaluation, even re-running the same manifest
@@ -1139,6 +1222,7 @@ async function estimateLine(
     // marketPackSizes stays empty for a reused hit — typicalPackSize still
     // falls back to own/historical pack data when there is any.
     activeCompCount = latestSnapshot.activeCompCount;
+    compCategoryId = latestSnapshot.categoryId;
     marketMedian = latestSnapshot.medianPrice != null ? Number(latestSnapshot.medianPrice) : 0;
     packStats = parsePackStats(latestSnapshot.packStats);
   } else {
@@ -1146,6 +1230,7 @@ async function estimateLine(
       const comps = await searchActiveListings({ upc: group.upc, keywords: group.description, excludeListingId: null });
       const summary = summarizeComps(comps);
       activeCompCount = summary.activeCompCount;
+      compCategoryId = mostCommonCategory(comps);
       marketMedian = summary.medianPerUnit;
       marketPackSizes.push(...summary.packSizes);
       packStats = summary.packStats;
@@ -1167,6 +1252,7 @@ async function estimateLine(
             activeCompCount,
             medianPrice: marketMedian > 0 ? marketMedian : null,
             packStats,
+            categoryId: compCategoryId,
           },
         });
       }
@@ -1352,12 +1438,19 @@ async function estimateLine(
   // getting the same liquidation load right now, not proof it doesn't
   // move, and it's non-perishable so sitting on it a while isn't costly —
   // exactly the case this threshold now leans more permissive for.
-  let flaggedDud =
-    rawNet <= 0 ||
-    (ownSalesCount === 0 &&
-      historicalSalesCount === 0 &&
-      categorySalesCount === 0 &&
-      activeCompCount >= compSaturationThreshold);
+  // Since 2026-10-16 the threshold comes from stock of the same kind of item
+  // (this line's eBay category), not the whole inventory: Manscaped trimmers
+  // were dudded at 15 comps because overall stock was ~15 weeks, mostly
+  // sunscreen and hair dye.
+  const ebayCategoryId = (await ownCategoryForUpc(group.upc)) ?? compCategoryId;
+  const weeksOnHandInCategory = categoryWeeksOnHand(categoryLoad, ebayCategoryId);
+  const crowdedMarket =
+    rawNet > 0 &&
+    ownSalesCount === 0 &&
+    historicalSalesCount === 0 &&
+    categorySalesCount === 0 &&
+    activeCompCount >= crowdedThreshold(weeksOnHandInCategory);
+  let flaggedDud = rawNet <= 0 || crowdedMarket;
 
   // A good per-unit price doesn't mean much if the expected quantity would
   // sit on the shelf for a year or more — see the "Sell-through velocity"
@@ -1411,6 +1504,9 @@ async function estimateLine(
     estimatedUnitFees,
     estimatedUnitShipping,
     estimatedNetPerUnit: flaggedDud ? 0 : rawNet,
+    ebayCategoryId,
+    categoryWeeksOnHand: weeksOnHandInCategory,
+    crowdedMarket,
     effectiveUnits,
     typicalPackSize,
     recommendedPackSize: packAdvice?.packSize ?? null,
@@ -1466,11 +1562,6 @@ async function getSupplierReceiveRate(supplier: ManifestSupplier): Promise<numbe
 
 const MAX_DEEP_RESEARCH_LINES = 150;
 const MAX_TREND_CHECKS = 10;
-// Infinity isn't a safe round-trip value through Prisma's Postgres Float
-// column — this large-but-finite stand-in is used instead when persisting
-// the "essentially uncapped" saturation threshold (see saturationThreshold).
-// No real activeCompCount will ever approach it, so it behaves identically.
-const UNCAPPED_SATURATION_SENTINEL = 1e9;
 
 export type EvaluationChunkResult =
   | {
@@ -1500,17 +1591,17 @@ export async function evaluateManifestChunk(
   // evaluation (see the SourcingEvaluation schema comment) — computed once,
   // on whichever call happens to be first, then reused by every later one
   // instead of re-reading live state that may have drifted since (a sale
-  // landing between chunks, say, would otherwise shift compSaturationThreshold
+  // landing between chunks, say, would otherwise shift a line's crowded-market threshold
   // partway through the same evaluation).
   let targetMarginPct: number;
   let receiveRate: number;
-  let compSaturationThreshold: number;
+  let categoryLoad: CategoryInventoryLoad;
   let maxMonthsToSellThrough: number;
   let inventoryLoad: { weeksOnHand: number; activeListedUnits: number; recentSoldUnitsPerWeek: number };
   if (evaluation.targetMarginPct != null) {
     targetMarginPct = evaluation.targetMarginPct;
     receiveRate = evaluation.receiveRate!;
-    compSaturationThreshold = evaluation.compSaturationThreshold!;
+    categoryLoad = (evaluation.categoryInventoryLoad as CategoryInventoryLoad | null) ?? {};
     maxMonthsToSellThrough = evaluation.maxMonthsToSellThrough!;
     inventoryLoad = {
       weeksOnHand: evaluation.inventoryWeeksOnHand!,
@@ -1522,14 +1613,13 @@ export async function evaluateManifestChunk(
     receiveRate = await getSupplierReceiveRate(manifest.supplier);
     maxMonthsToSellThrough = await getMaxMonthsToSellThrough();
     inventoryLoad = await getWeeksOfInventoryOnHand();
-    const rawThreshold = saturationThreshold(inventoryLoad.weeksOnHand);
-    compSaturationThreshold = Number.isFinite(rawThreshold) ? rawThreshold : UNCAPPED_SATURATION_SENTINEL;
+    categoryLoad = await getCategoryInventoryLoad();
     await prisma.sourcingEvaluation.update({
       where: { id: evaluationId },
       data: {
         targetMarginPct,
         receiveRate,
-        compSaturationThreshold,
+        categoryInventoryLoad: categoryLoad,
         maxMonthsToSellThrough,
         inventoryWeeksOnHand: inventoryLoad.weeksOnHand,
         inventoryActiveListedUnits: inventoryLoad.activeListedUnits,
@@ -1612,7 +1702,7 @@ export async function evaluateManifestChunk(
       receiveRate,
       runTrendCheck,
       eventCheckBudget,
-      compSaturationThreshold,
+      categoryLoad,
       maxMonthsToSellThrough
     );
     await prisma.sourcingLineEstimate.create({
@@ -1640,6 +1730,9 @@ export async function evaluateManifestChunk(
         postHolidayFiller: result.postHolidayFiller,
         trendNudge: result.trendNudge,
         seasonal: result.seasonal,
+        ebayCategoryId: result.ebayCategoryId ?? null,
+        categoryWeeksOnHand: result.categoryWeeksOnHand ?? null,
+        crowdedMarket: result.crowdedMarket ?? false,
       },
     });
     locallyDone.add(group.groupKey);
@@ -1700,6 +1793,9 @@ export async function evaluateManifestChunk(
       postHolidayFiller: row.postHolidayFiller,
       trendNudge: row.trendNudge,
       seasonal: row.seasonal,
+      ebayCategoryId: row.ebayCategoryId,
+      categoryWeeksOnHand: row.categoryWeeksOnHand,
+      crowdedMarket: row.crowdedMarket,
     };
   });
 
@@ -1858,13 +1954,13 @@ Target margin used: ${input.targetMarginPct}%
 Supplier's real historical receive rate (after damage/expired): ${(input.receiveRate * 100).toFixed(0)}%
 Share of lines flagged as likely duds: ${(input.dudShare * 100).toFixed(0)}%
 Concentration risk flagged: ${input.concentrationRisk ? "yes — one item dominates the manifest's value and looks weak" : "no"}
-Current inventory load: ~${Math.round(input.inventoryLoad.weeksOnHand)} weeks of unsold stock on hand at the recent sell-through pace (${input.inventoryLoad.activeListedUnits} units currently listed, ~${input.inventoryLoad.recentSoldUnitsPerWeek.toFixed(1)}/week selling) — ${input.inventoryLoad.weeksOnHand < 4 ? "lean, so crowded-market lines were given more benefit of the doubt than usual" : input.inventoryLoad.weeksOnHand > 12 ? "already sitting on a lot, so crowded-market lines were held to a stricter bar than usual" : "moderate, normal caution applied"}
+Overall inventory: ~${Math.round(input.inventoryLoad.weeksOnHand)} weeks of unsold stock on hand at the recent sell-through pace (${input.inventoryLoad.activeListedUnits} units currently listed, ~${input.inventoryLoad.recentSoldUnitsPerWeek.toFixed(1)}/week selling). Background only: the crowded-market caution is judged per kind of item (eBay category), so only items like ones already piling up on the shelf get the stricter bar. New kinds of items are judged on price, since the owner is deliberately adding variety. Don't present overall stock as a reason to pass.
 
 Top contributing lines:
 ${input.topLines.map((l) => `- ${l.description} (UPC ${l.upc ?? "n/a"}): est. $${l.estimatedNetPerUnit?.toFixed(2) ?? "?"} net/unit × ${l.effectiveUnits} units, confidence: ${l.dataConfidence}`).join("\n") || "none"}
 
 Lines flagged as likely duds:
-${input.dudLines.map((l) => `- ${l.description} (UPC ${l.upc ?? "n/a"})`).join("\n") || "none"}
+${input.dudLines.map((l) => `- ${l.description} (UPC ${l.upc ?? "n/a"})${l.crowdedMarket ? `: crowded market with no sales track record, and ~${Math.round(l.categoryWeeksOnHand ?? 0)} weeks of the same kind of item already on hand` : ""}`).join("\n") || "none"}
 
 Lines eBay doesn't allow listing at all (needles, prescription devices, COVID tests), valued at $0 and counted as duds (${input.bannedLineCount} total${input.bannedLineCount > 10 ? ", first 10 shown" : ""}):
 ${input.bannedLines.join("\n") || "none"}

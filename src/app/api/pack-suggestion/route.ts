@@ -1,6 +1,6 @@
 import { getRequestUser } from "@/lib/auth";
 import { unitCostForScan } from "@/lib/cogs";
-import { getTargetMarginPct } from "@/lib/sourcingAgent";
+import { getTargetMarginPct, mostCommonCategory } from "@/lib/sourcingAgent";
 import { typicalSingleLabelCost } from "@/lib/shippingCost";
 import { EbayApiError, searchActiveListings } from "@/lib/ebay";
 import { parseBundleComponentUnits, unitsFor } from "@/lib/itemUnits";
@@ -114,6 +114,7 @@ export async function GET(request: NextRequest) {
             activeCompCount: summary.activeCompCount,
             medianPrice: summary.medianPerUnit > 0 ? summary.medianPerUnit : null,
             packStats,
+            categoryId: mostCommonCategory(comps),
           },
         });
       } catch (e) {
