@@ -53,6 +53,25 @@ export async function runSourcingChunk(evaluationId: string, manifestId: string,
   try {
     const result = await evaluateManifestChunk(evaluationId, manifestId, deadline, reportProgress);
 
+    if (!result.done && result.budgetResetsAt) {
+      // Continuing would only hit the same wall. Everything finished so far
+      // is saved, and Re-run resumes a failed evaluation where it stopped.
+      const resets = result.budgetResetsAt.toLocaleTimeString("en-US", {
+        timeZone: "America/Chicago",
+        hour: "numeric",
+        minute: "2-digit",
+      });
+      await prisma.sourcingEvaluation.update({
+        where: { id: evaluationId },
+        data: {
+          status: "failed",
+          error: `Paused at ${result.processedSteps} of ${result.totalSteps}: eBay's daily lookup limit is almost used up. It resets at ${resets} Chicago time. Progress is saved, so hit Re-run after that to finish.`,
+          completedAt: new Date(),
+        },
+      });
+      return;
+    }
+
     if (!result.done) {
       const updated = await prisma.sourcingEvaluation.update({
         where: { id: evaluationId },

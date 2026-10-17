@@ -368,6 +368,27 @@ export async function getListingSales(itemId: string): Promise<ListingSales | nu
   return { itemId, soldQuantity: sold, createdAt: new Date(item.itemCreationDate) };
 }
 
+// How many Browse API calls are left today (searches and getItem share
+// one 5,000/day pool, resetting at midnight Pacific). Read from the
+// Developer Analytics API, which doesn't count against it. null if eBay
+// doesn't answer.
+export async function getBrowseCallsRemaining(): Promise<{ remaining: number; resetsAt: Date } | null> {
+  const config = getEbayConfig();
+  const token = await getAppAccessToken();
+  const res = await fetch(`${config.apiBase}/developer/analytics/v1_beta/rate_limit/?api_name=Browse`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return null;
+  const body = (await res.json()) as {
+    rateLimits?: { resources?: { name: string; rates?: { remaining: number; reset: string }[] }[] }[];
+  };
+  const rate = body.rateLimits
+    ?.flatMap((l) => l.resources ?? [])
+    .find((r) => r.name === "buy.browse")
+    ?.rates?.[0];
+  return rate ? { remaining: rate.remaining, resetsAt: new Date(rate.reset) } : null;
+}
+
 // GET /buy/browse/v1/item_summary/search — active (not sold) listings, the
 // only comp data actually available via API (see EbayApiError's callers
 // for the sold-comps research that confirmed Marketplace Insights is

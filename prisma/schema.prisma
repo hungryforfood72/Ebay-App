@@ -897,7 +897,8 @@ model MarketCompSnapshot {
   packStats       Json?
   // Units a typical live listing sells per month (sold count / time up,
   // averaged over salesSampled listings). null when too few to say.
-  // salesSampled null = snapshot from before 2026-10-16.
+  // salesSampled null = not measured (only lines that need it are, and
+  // snapshots from before 2026-10-16).
   listingUnitsPerMonth Float?
   salesSampled    Int?
   // Unused since 2026-10-16: most common eBay leaf category among the comps.

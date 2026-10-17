@@ -13,7 +13,7 @@ import {
 import { anthropic } from "./anthropic";
 import { logAiUsage } from "./aiUsage";
 import { advisePackSize } from "./packAdvisor";
-import { EbayApiError, getListingSales, searchActiveListings, searchActiveListingsBy, type ActiveListingComp } from "./ebay";
+import { EbayApiError, getBrowseCallsRemaining, getListingSales, searchActiveListings, searchActiveListingsBy, type ActiveListingComp } from "./ebay";
 import { ebayBanReason } from "./ebayBanned";
 import { ACCURACY_KNOWLEDGE_SCOPE, getCalibration } from "./predictionTracker";
 import { boxesFor, exactSearchKeywords, isExactTitleMatch, LOT_TITLE, priceFromExactComps } from "./exactComps";
@@ -165,7 +165,11 @@ function computeMonthsToSellThrough(recentUnits: number, effectiveUnits: number)
 // per-listing rate prices in competition.
 // Leans low on purpose: a one-unit listing that sold is gone from search,
 // so the survivors over-represent listings with 0 sold.
+// Listings are checked SALES_BATCH_SIZE at a time, up to SALES_SAMPLE_SIZE:
+// a second batch only when the first can't settle it (too few, or none
+// sold). Each listing is one Browse call against a 5,000/day limit.
 const SALES_SAMPLE_SIZE = 8;
+const SALES_BATCH_SIZE = 4;
 // Brand-new listings haven't had time to sell.
 const MIN_LISTING_AGE_DAYS = 7;
 const MIN_LISTINGS_FOR_RATE = 3;
@@ -180,18 +184,23 @@ type Calibration = { price: number; speed: number };
 
 async function marketSellRate(comps: ActiveListingComp[]): Promise<MarketSellRate> {
   const sample = comps.filter((c) => !isResellerLot(c.title, detectPackSize(c.title))).slice(0, SALES_SAMPLE_SIZE);
-  const sales = await Promise.all(sample.map((c) => getListingSales(c.itemId).catch(() => null)));
   const rates: number[] = [];
-  sample.forEach((c, i) => {
-    const s = sales[i];
-    if (!s) return;
-    const ageDays = (Date.now() - s.createdAt.getTime()) / (1000 * 60 * 60 * 24);
-    if (ageDays < MIN_LISTING_AGE_DAYS) return;
-    rates.push((s.soldQuantity * detectPackSize(c.title)) / (ageDays / 30));
-  });
-  const average = rates.length > 0 ? rates.reduce((a, b) => a + b, 0) / rates.length : 0;
-  const enough = rates.length >= MIN_LISTINGS_FOR_RATE && (average > 0 || rates.length >= MIN_LISTINGS_FOR_STALLED);
-  return { unitsPerMonth: enough ? average : null, sampled: rates.length };
+  const average = () => (rates.length > 0 ? rates.reduce((a, b) => a + b, 0) / rates.length : 0);
+  const enough = () =>
+    rates.length >= MIN_LISTINGS_FOR_RATE && (average() > 0 || rates.length >= MIN_LISTINGS_FOR_STALLED);
+  for (let start = 0; start < sample.length; start += SALES_BATCH_SIZE) {
+    const batch = sample.slice(start, start + SALES_BATCH_SIZE);
+    const sales = await Promise.all(batch.map((c) => getListingSales(c.itemId).catch(() => null)));
+    batch.forEach((c, i) => {
+      const s = sales[i];
+      if (!s) return;
+      const ageDays = (Date.now() - s.createdAt.getTime()) / (1000 * 60 * 60 * 24);
+      if (ageDays < MIN_LISTING_AGE_DAYS) return;
+      rates.push((s.soldQuantity * detectPackSize(c.title)) / (ageDays / 30));
+    });
+    if (enough() && average() > 0) break;
+  }
+  return { unitsPerMonth: enough() ? average() : null, sampled: rates.length };
 }
 
 function monthsAtMarketRate(rate: MarketSellRate | null, physicalUnits: number, speedCalibration: number): number | null {
@@ -877,8 +886,9 @@ async function estimateOtherSupplierLine(
       : rawPrice;
   const fees = price * FALLBACK_FEE_RATE + FALLBACK_FEE_FIXED;
   const net = price - fees - FALLBACK_SHIPPING_COST;
-  // Comps here are priced per box, so the rate is boxes per month.
-  const sellRate = await marketSellRate(comps);
+  // Comps here are priced per box, so the rate is boxes per month. Only
+  // measured when the price math works, to save eBay calls.
+  const sellRate: MarketSellRate | null = net > 0 ? await marketSellRate(comps) : null;
   const monthsToSellThrough = monthsAtMarketRate(sellRate, effectiveUnits, calibration.speed);
   const slowMover = monthsToSellThrough != null && monthsToSellThrough > maxMonthsToSellThrough;
   const flaggedDud = net <= 0 || slowMover || base.postHolidayFiller;
@@ -887,7 +897,7 @@ async function estimateOtherSupplierLine(
     slowMover,
     monthsToSellThrough,
     sellRateSource: monthsToSellThrough != null ? "ebay_listings" : null,
-    listingUnitsPerMonth: sellRate.unitsPerMonth,
+    listingUnitsPerMonth: sellRate?.unitsPerMonth ?? null,
     estimatedUnitSalePrice: price,
     estimatedUnitFees: fees,
     estimatedUnitShipping: FALLBACK_SHIPPING_COST,
@@ -1136,20 +1146,17 @@ async function estimateLine(
   // when there's no prior snapshot to compare against, or when reusing a
   // fresh-enough snapshot below means nothing new was measured this run.
   let marketTrend: string | null = null;
+  // Measured later, only for lines that need it (see measureMarketSpeed).
   let sellRate: MarketSellRate | null = null;
+  let freshComps: ActiveListingComp[] | null = null;
+  let snapshotId: string | null = null;
 
   const latestSnapshot = group.upc
     ? await prisma.marketCompSnapshot.findFirst({ where: { upc: group.upc }, orderBy: { capturedAt: "desc" } })
     : null;
   const snapshotAgeHours = latestSnapshot ? (Date.now() - latestSnapshot.capturedAt.getTime()) / (1000 * 60 * 60) : Infinity;
 
-  // Snapshots from before sell speed was saved get searched fresh (one
-  // with no comps has nothing to measure anyway).
-  if (
-    latestSnapshot &&
-    snapshotAgeHours < MARKET_SNAPSHOT_FRESHNESS_HOURS &&
-    (latestSnapshot.salesSampled != null || latestSnapshot.activeCompCount === 0)
-  ) {
+  if (latestSnapshot && snapshotAgeHours < MARKET_SNAPSHOT_FRESHNESS_HOURS) {
     // Reuse rather than re-ask eBay — this is what was actually burning
     // through the daily Browse API limit: the same UPC getting re-searched
     // from scratch on every evaluation, even re-running the same manifest
@@ -1157,7 +1164,10 @@ async function estimateLine(
     // marketPackSizes stays empty for a reused hit — typicalPackSize still
     // falls back to own/historical pack data when there is any.
     activeCompCount = latestSnapshot.activeCompCount;
-    sellRate = { unitsPerMonth: latestSnapshot.listingUnitsPerMonth, sampled: latestSnapshot.salesSampled ?? 0 };
+    snapshotId = latestSnapshot.id;
+    if (latestSnapshot.salesSampled != null) {
+      sellRate = { unitsPerMonth: latestSnapshot.listingUnitsPerMonth, sampled: latestSnapshot.salesSampled };
+    }
     marketMedian = latestSnapshot.medianPrice != null ? Number(latestSnapshot.medianPrice) : 0;
     packStats = parsePackStats(latestSnapshot.packStats);
   } else {
@@ -1165,7 +1175,7 @@ async function estimateLine(
       const comps = await searchActiveListings({ upc: group.upc, keywords: group.description, excludeListingId: null });
       const summary = summarizeComps(comps);
       activeCompCount = summary.activeCompCount;
-      sellRate = await marketSellRate(comps);
+      freshComps = comps;
       marketMedian = summary.medianPerUnit;
       marketPackSizes.push(...summary.packSizes);
       packStats = summary.packStats;
@@ -1181,21 +1191,42 @@ async function estimateLine(
         // Every genuinely fresh check is its own permanent row, never
         // overwritten — that's what turns this into a real time series
         // instead of just a cache (see MarketCompSnapshot).
-        await prisma.marketCompSnapshot.create({
+        const snapshot = await prisma.marketCompSnapshot.create({
           data: {
             upc: group.upc,
             activeCompCount,
             medianPrice: marketMedian > 0 ? marketMedian : null,
             packStats,
-            listingUnitsPerMonth: sellRate.unitsPerMonth,
-            salesSampled: sellRate.sampled,
           },
         });
+        snapshotId = snapshot.id;
       }
     } catch (e) {
       if (!(e instanceof EbayApiError)) throw e;
       console.error(`[sourcingAgent] comp search failed for UPC ${group.upc}`, e);
       marketCheckFailed = true;
+    }
+  }
+
+  // Live listings' sell speed for this line, saved on its snapshot so a
+  // re-run within MARKET_SNAPSHOT_FRESHNESS_HOURS reuses it. A reused
+  // snapshot keeps no listing IDs, so that case searches again.
+  async function measureMarketSpeed(): Promise<MarketSellRate | null> {
+    try {
+      const comps =
+        freshComps ?? (await searchActiveListings({ upc: group.upc, keywords: group.description, excludeListingId: null }));
+      const rate = await marketSellRate(comps);
+      if (snapshotId) {
+        await prisma.marketCompSnapshot.update({
+          where: { id: snapshotId },
+          data: { listingUnitsPerMonth: rate.unitsPerMonth, salesSampled: rate.sampled },
+        });
+      }
+      return rate;
+    } catch (e) {
+      if (!(e instanceof EbayApiError)) throw e;
+      console.error(`[sourcingAgent] sell-speed check failed for UPC ${group.upc}`, e);
+      return null;
     }
   }
 
@@ -1224,26 +1255,6 @@ async function estimateLine(
         : modePackSize(marketPackSizes);
 
   const effectiveUnits = Math.round(group.expectedQuantity * receiveRate);
-
-  // Sell-through velocity, best evidence first: our own recent sales of
-  // this UPC (the learning part: once we've sold it, our real speed wins),
-  // else how fast live eBay listings of it sell (marketSellRate), else the
-  // category's own sales as a rough proxy. null = genuinely unknown, not
-  // flagged; a real history with zero recent sales is a "stalled" signal.
-  let sellRateSource: "own" | "ebay_listings" | "category" | null = null;
-  let monthsToSellThroughEstimate: number | null = null;
-  const marketMonths = monthsAtMarketRate(sellRate, effectiveUnits * manifestUnitPackSize, calibration.speed);
-  if (ownSalesCount > 0) {
-    sellRateSource = "own";
-    monthsToSellThroughEstimate = computeMonthsToSellThrough(ownRecentUnits, effectiveUnits);
-  } else if (marketMonths != null) {
-    sellRateSource = "ebay_listings";
-    monthsToSellThroughEstimate = marketMonths;
-  } else if (categorySalesCount > 0) {
-    sellRateSource = "category";
-    monthsToSellThroughEstimate = computeMonthsToSellThrough(categoryRecentUnits, effectiveUnits);
-  }
-  const slowMover = monthsToSellThroughEstimate != null && monthsToSellThroughEstimate > maxMonthsToSellThrough;
 
   // Confidence-weighted blend — more real samples (capped) = more trust,
   // market signal always contributes some weight since it's always at least
@@ -1385,6 +1396,32 @@ async function estimateLine(
   // ~$47 net/unit, and stock on hand isn't a reason to pass on a product.
   let flaggedDud = rawNet <= 0;
 
+  // Sell-through velocity, best evidence first: our own recent sales of
+  // this UPC (the learning part: once we've sold it, our real speed wins),
+  // else how fast live eBay listings of it sell (marketSellRate), else the
+  // category's own sales as a rough proxy. null = genuinely unknown, not
+  // flagged; a real history with zero recent sales is a "stalled" signal.
+  // Listings are only checked for a line whose price math already works
+  // and that we've never sold ourselves: each listing is an eBay call, and
+  // an 855-line manifest checking everything blew the 5,000/day limit.
+  let sellRateSource: "own" | "ebay_listings" | "category" | null = null;
+  let monthsToSellThroughEstimate: number | null = null;
+  if (ownSalesCount === 0 && rawNet > 0 && activeCompCount > 0) {
+    sellRate ??= await measureMarketSpeed();
+  }
+  const marketMonths = monthsAtMarketRate(sellRate, effectiveUnits * manifestUnitPackSize, calibration.speed);
+  if (ownSalesCount > 0) {
+    sellRateSource = "own";
+    monthsToSellThroughEstimate = computeMonthsToSellThrough(ownRecentUnits, effectiveUnits);
+  } else if (marketMonths != null) {
+    sellRateSource = "ebay_listings";
+    monthsToSellThroughEstimate = marketMonths;
+  } else if (categorySalesCount > 0) {
+    sellRateSource = "category";
+    monthsToSellThroughEstimate = computeMonthsToSellThrough(categoryRecentUnits, effectiveUnits);
+  }
+  const slowMover = monthsToSellThroughEstimate != null && monthsToSellThroughEstimate > maxMonthsToSellThrough;
+
   // A good per-unit price doesn't mean much if the expected quantity would
   // sit on the shelf for a year or more — see the "Sell-through velocity"
   // section above (our own sales, else live listings' sold counts).
@@ -1503,7 +1540,18 @@ export type EvaluationChunkResult =
       concentrationRisk: boolean;
       reasoning: string;
     }
-  | { done: false; processedSteps: number; totalSteps: number };
+  // budgetResetsAt: stopped because eBay's daily Browse limit is nearly
+  // used up (see BROWSE_CALLS_RESERVE); finish after it resets.
+  | { done: false; processedSteps: number; totalSteps: number; budgetResetsAt?: Date };
+
+// Browse calls (searches + listing lookups, 5,000/day) left alone for the
+// scan page's pack card and the review page's price research. A big
+// manifest stops at this point instead of running eBay dry, and failed
+// lookups would otherwise get saved as real "no data" answers.
+const BROWSE_CALLS_RESERVE = 400;
+// Re-check the remaining count after this many lines (a line uses up to
+// ~11 calls, 5 run at once).
+const BUDGET_CHECK_EVERY_LINES = 10;
 
 export async function evaluateManifestChunk(
   evaluationId: string,
@@ -1612,7 +1660,14 @@ export async function evaluateManifestChunk(
 
   const remainingDeep = deepGroups.filter((g) => !doneKeys.has(g.groupKey));
   const remainingShallow = shallowGroups.filter((g) => !doneKeys.has(g.groupKey));
-  const pastDeadline = () => Date.now() > deadline;
+  let budgetResetsAt: Date | null = null;
+  async function checkBrowseBudget() {
+    const budget = await getBrowseCallsRemaining().catch(() => null);
+    if (budget && budget.remaining < BROWSE_CALLS_RESERVE) budgetResetsAt = budget.resetsAt;
+  }
+  await checkBrowseBudget();
+  let linesSinceBudgetCheck = 0;
+  const pastDeadline = () => Date.now() > deadline || budgetResetsAt != null;
 
   const eventCheckBudget: EventCheckBudget = {
     remaining: Math.max(0, MAX_EVENT_CHECKS - evaluation.eventChecksUsed),
@@ -1663,6 +1718,10 @@ export async function evaluateManifestChunk(
     locallyDone.add(group.groupKey);
     processedSteps++;
     reportProgress();
+    if (++linesSinceBudgetCheck >= BUDGET_CHECK_EVERY_LINES) {
+      linesSinceBudgetCheck = 0;
+      await checkBrowseBudget();
+    }
   }
 
   await mapWithConcurrency(remainingDeep, 5, runAndPersist, pastDeadline);
@@ -1683,7 +1742,7 @@ export async function evaluateManifestChunk(
 
   const allDone = sortedGroups.every((g) => doneKeys.has(g.groupKey) || locallyDone.has(g.groupKey));
   if (!allDone) {
-    return { done: false, processedSteps, totalSteps };
+    return { done: false, processedSteps, totalSteps, budgetResetsAt: budgetResetsAt ?? undefined };
   }
 
   // ---------------------------------------------------------------------
