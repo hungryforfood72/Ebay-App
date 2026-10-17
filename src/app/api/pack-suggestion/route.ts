@@ -21,6 +21,7 @@ import {
 import { prisma } from "@/lib/prisma";
 import { getShopifyConfig } from "@/lib/shopify";
 import { getShopifyDiscountPct } from "@/lib/shopifySync";
+import { NOT_RETURN_ENTRY, returnedUnitsByUpc } from "@/lib/warehouse/returnReconcile";
 import { Prisma } from "@/generated/prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -369,12 +370,21 @@ async function handCountLeft(upc: string, manifestId: string | null): Promise<{ 
   if (!hc) return null;
   const since = { gte: hc.createdAt };
   const none = Promise.resolve({ _sum: { quantity: 0 as number | null } });
+  const noneDud = Promise.resolve({ _sum: { quantity: 0 as number | null, listedUnits: 0 as number | null } });
   const [items, bundles, walkups, damaged, duds] = await Promise.all([
     prisma.item.findMany({ where: { manifestId, upc, isBundle: false, createdAt: since }, select: { quantity: true, isMultipack: true, packSize: true } }),
     prisma.item.findMany({ where: { manifestId, isBundle: true, createdAt: since }, select: { quantity: true, bundleComponents: true } }),
     manifestId ? prisma.manifestWalkupSale.aggregate({ where: { manifestId, upc, createdAt: since }, _sum: { quantity: true } }) : none,
-    manifestId ? prisma.manifestDamagedEntry.aggregate({ where: { manifestId, upc, createdAt: since }, _sum: { quantity: true } }) : none,
-    manifestId ? prisma.manifestDudEntry.aggregate({ where: { manifestId, upc, createdAt: since }, _sum: { quantity: true } }) : none,
+    // Units a customer return wrote off never were in the counted pile.
+    manifestId
+      ? prisma.manifestDamagedEntry.aggregate({ where: { manifestId, upc, createdAt: since, ...NOT_RETURN_ENTRY }, _sum: { quantity: true } })
+      : none,
+    manifestId
+      ? prisma.manifestDudEntry.aggregate({
+          where: { manifestId, upc, createdAt: since, ...NOT_RETURN_ENTRY },
+          _sum: { quantity: true, listedUnits: true },
+        })
+      : noneDud,
   ]);
   const used =
     items.reduce((sum, i) => sum + unitsFor(i), 0) +
@@ -388,7 +398,9 @@ async function handCountLeft(upc: string, manifestId: string | null): Promise<{ 
     ) +
     (walkups._sum.quantity ?? 0) +
     (damaged._sum.quantity ?? 0) +
-    (duds._sum.quantity ?? 0);
+    // Units since listed from a dud box are Items now, counted above.
+    (duds._sum.quantity ?? 0) -
+    (duds._sum.listedUnits ?? 0);
   const left = hc.count - used;
   if (left <= 0) {
     await prisma.handCount.delete({ where: { id: hc.id } }).catch(() => {});
@@ -433,12 +445,13 @@ async function unitsLeftOnManifest(
   upc: string,
   lines: { expectedQuantity: number }[]
 ): Promise<number> {
-  const [items, bundles, walkups, damaged, duds] = await Promise.all([
+  const [items, bundles, walkups, damaged, duds, returned] = await Promise.all([
     prisma.item.findMany({ where: { manifestId, upc, isBundle: false }, select: { quantity: true, isMultipack: true, packSize: true } }),
     prisma.item.findMany({ where: { manifestId, isBundle: true }, select: { quantity: true, bundleComponents: true } }),
     prisma.manifestWalkupSale.aggregate({ where: { manifestId, upc }, _sum: { quantity: true } }),
     prisma.manifestDamagedEntry.aggregate({ where: { manifestId, upc }, _sum: { quantity: true } }),
-    prisma.manifestDudEntry.aggregate({ where: { manifestId, upc }, _sum: { quantity: true } }),
+    prisma.manifestDudEntry.aggregate({ where: { manifestId, upc }, _sum: { quantity: true, listedUnits: true } }),
+    returnedUnitsByUpc(manifestId),
   ]);
   const expected = lines.reduce((sum, l) => sum + l.expectedQuantity, 0);
   const scanned = items.reduce((sum, i) => sum + unitsFor(i), 0);
@@ -450,7 +463,12 @@ async function unitsLeftOnManifest(
         .reduce((s, c) => s + c.unitsPerBundle * b.quantity, 0),
     0
   );
+  // Dud units since listed from a dud box are Items now (in scanned), so
+  // only what's still a dud counts.
+  const stillDud = (duds._sum.quantity ?? 0) - (duds._sum.listedUnits ?? 0);
+  // Customer returns relisted or added back are Items again but were
+  // already counted once (see returnReconcile.ts).
   const accounted =
-    scanned + inBundles + (walkups._sum.quantity ?? 0) + (damaged._sum.quantity ?? 0) + (duds._sum.quantity ?? 0);
+    scanned + inBundles - (returned.get(upc) ?? 0) + (walkups._sum.quantity ?? 0) + (damaged._sum.quantity ?? 0) + stillDud;
   return Math.max(0, expected - accounted);
 }

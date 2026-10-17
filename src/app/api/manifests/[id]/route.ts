@@ -6,6 +6,7 @@ import type { Prisma } from "@/generated/prisma/client";
 import { parseBundleComponentUnits, soldUnitsFor, unitsFor } from "@/lib/itemUnits";
 import { landedCostWeights } from "@/lib/cogs";
 import { buildConsignmentPickList, DEFAULT_CONSIGNMENT_SUPPLIER_PCT } from "@/lib/consignment";
+import { returnedUnitsByUpc } from "@/lib/warehouse/returnReconcile";
 
 // Fills each line's expected quantity in order before spilling into the
 // next — a UPC can legitimately appear on more than one manifest line (e.g.
@@ -112,15 +113,29 @@ export async function GET(
   for (const w of manifest.walkupSales) {
     receivedByUpc.set(w.upc, (receivedByUpc.get(w.upc) ?? 0) + w.quantity);
   }
+  // Customer returns put units back onto this manifest's Items (added back
+  // to the original, or a new listing on the same manifest), so the Items
+  // above count those units a second time: they were received once, sold,
+  // and came back. Taken back off here so received stays what physically
+  // arrived with the load (see returnReconcile.ts). Sold counts below are
+  // left alone: the relisted unit's sale is a real, separate sale.
+  for (const [upc, units] of await returnedUnitsByUpc(id)) {
+    const current = receivedByUpc.get(upc);
+    if (current != null) receivedByUpc.set(upc, Math.max(0, current - units));
+  }
 
   const damagedByUpc = new Map<string, number>();
   for (const d of manifest.damaged) {
     damagedByUpc.set(d.upc, (damagedByUpc.get(d.upc) ?? 0) + d.quantity);
   }
 
+  // Units listed from a dud box (ManifestDudEntry.listedUnits) are real
+  // Items on this manifest now, already counted as received above, so
+  // only what's still a dud counts here.
   const dudByUpc = new Map<string, number>();
   for (const d of manifest.duds) {
-    dudByUpc.set(d.upc, (dudByUpc.get(d.upc) ?? 0) + d.quantity);
+    const stillDud = d.quantity - d.listedUnits;
+    if (stillDud > 0) dudByUpc.set(d.upc, (dudByUpc.get(d.upc) ?? 0) + stillDud);
   }
 
   // Sold units/revenue/fees/shipping/refunds, by UPC — summed regardless of

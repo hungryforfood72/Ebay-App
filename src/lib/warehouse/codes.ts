@@ -3,6 +3,7 @@
 //   ES000123  item label (= the item's sku and eBay custom label)
 //   BN0001    bin
 //   BX001     box size
+//   DB0001    dud box (one manifest's duds, from the sort station)
 // Shelves keep whatever labels they already have in ShelfLocation ("A5").
 // UPCs are all digits, so they never collide with these.
 //
@@ -14,13 +15,15 @@
 export const ITEM_CODE_PREFIX = "ES";
 export const BIN_CODE_PREFIX = "BN";
 export const BOX_CODE_PREFIX = "BX";
+export const DUD_BOX_CODE_PREFIX = "DB";
 
 const ITEM_RE = /^ES\d{6,}$/;
 const BIN_RE = /^BN\d{4,}$/;
 const BOX_RE = /^BX\d{3,}$/;
+const DUD_BOX_RE = /^DB\d{4,}$/;
 const UPC_RE = /^\d{8,14}$/;
 
-export type ScanKind = "item" | "bin" | "box" | "upc" | "other";
+export type ScanKind = "item" | "bin" | "box" | "dudbox" | "upc" | "other";
 
 // Scanners sometimes add whitespace or send lowercase; normalize first.
 export function normalizeCode(raw: string): string {
@@ -33,6 +36,7 @@ export function classifyScan(raw: string): ScanKind {
   if (ITEM_RE.test(code)) return "item";
   if (BIN_RE.test(code)) return "bin";
   if (BOX_RE.test(code)) return "box";
+  if (DUD_BOX_RE.test(code)) return "dudbox";
   if (UPC_RE.test(code)) return "upc";
   return "other";
 }
@@ -43,6 +47,10 @@ export function formatItemCode(n: number): string {
 
 export function formatBinCode(n: number): string {
   return `${BIN_CODE_PREFIX}${String(n).padStart(4, "0")}`;
+}
+
+export function formatDudBoxCode(n: number): string {
+  return `${DUD_BOX_CODE_PREFIX}${String(n).padStart(4, "0")}`;
 }
 
 export function formatBoxCode(n: number): string {

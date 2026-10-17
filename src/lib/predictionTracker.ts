@@ -1,6 +1,7 @@
 import { anthropic } from "./anthropic";
 import { logAiUsage } from "./aiUsage";
 import { prisma } from "./prisma";
+import { NOT_RETURN_ENTRY } from "./warehouse/returnReconcile";
 
 // ---------------------------------------------------------------------------
 // Prediction tracker: the Analyzer's report card. Cristian's ask 2026-10-17:
@@ -87,8 +88,9 @@ export async function refreshPredictionOutcomes(): Promise<{ manifests: number; 
       }),
       prisma.manifestDudEntry.groupBy({
         by: ["upc"],
-        where: { manifestId: manifest.id, upc: { in: upcs } },
-        _sum: { quantity: true },
+        // A customer return's donated units aren't the Analyzer's duds.
+        where: { manifestId: manifest.id, upc: { in: upcs }, ...NOT_RETURN_ENTRY },
+        _sum: { quantity: true, listedUnits: true },
       }),
       prisma.manifestWalkupSale.groupBy({
         by: ["upc"],
@@ -101,7 +103,9 @@ export async function refreshPredictionOutcomes(): Promise<{ manifests: number; 
       prisma.shopifySale.findMany({ where: { itemId: { in: itemIds } }, select: { itemId: true, quantity: true, soldAt: true } }),
       prisma.inPersonSale.findMany({ where: { itemId: { in: itemIds } }, select: { itemId: true, quantity: true, soldAt: true } }),
     ]);
-    const dudByUpc = new Map(duds.map((d) => [d.upc, d._sum.quantity ?? 0]));
+    // Dud units since listed from a dud box are Items now (in listedUnits
+    // below), so only what's still a dud counts.
+    const dudByUpc = new Map(duds.map((d) => [d.upc, (d._sum.quantity ?? 0) - (d._sum.listedUnits ?? 0)]));
     const walkupByUpc = new Map(walkups.map((w) => [w.upc, w._sum.quantity ?? 0]));
 
     for (const est of estimates) {

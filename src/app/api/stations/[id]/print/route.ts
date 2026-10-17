@@ -6,7 +6,10 @@ import { NextRequest, NextResponse } from "next/server";
 
 // Queue labels to print at a station: bin and shelf labels from the Bins
 // page, box barcodes from Settings, the station page's own test print.
-// Body: { kind: "item" | "bin" | "shelf" | "box", payload, copies? }.
+// Body: { kind: "item" | "bin" | "shelf" | "box" | "dud", payload, copies? }.
+// Dud box labels from the sort station go through /api/dud-boxes, which
+// builds the caption from the manifest; "dud" is accepted here too so a
+// reprint from the print log works.
 // Item labels from a save on the scan page are queued by the items API
 // itself (inside its transaction), not through here.
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -15,7 +18,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const { id } = await params;
     const body = await request.json().catch(() => ({}));
     if (!isLabelKind(body.kind)) {
-      return NextResponse.json({ error: 'kind must be "item", "bin", "shelf" or "box".' }, { status: 400 });
+      return NextResponse.json({ error: 'kind must be "item", "bin", "shelf", "box" or "dud".' }, { status: 400 });
     }
     const cleaned = cleanLabelPayload(body.kind, body.payload);
     if ("error" in cleaned) return NextResponse.json({ error: cleaned.error }, { status: 400 });

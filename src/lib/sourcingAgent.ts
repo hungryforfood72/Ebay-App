@@ -18,6 +18,7 @@ import { ebayBanReason } from "./ebayBanned";
 import { ACCURACY_KNOWLEDGE_SCOPE, getCalibration } from "./predictionTracker";
 import { boxesFor, exactSearchKeywords, isExactTitleMatch, LOT_TITLE, priceFromExactComps } from "./exactComps";
 import type { ManifestSupplier } from "@/generated/prisma/client";
+import { NOT_RETURN_ENTRY } from "./warehouse/returnReconcile";
 
 // ---------------------------------------------------------------------------
 // Settings (AppSetting key/value store)
@@ -1561,7 +1562,9 @@ async function estimateLine(
 // ---------------------------------------------------------------------------
 async function getSupplierReceiveRate(supplier: ManifestSupplier): Promise<number> {
   const [damaged, expected] = await Promise.all([
-    prisma.manifestDamagedEntry.aggregate({ _sum: { quantity: true }, where: { manifest: { supplier } } }),
+    // Arrival damage only: units a customer return wrote off weren't the
+    // supplier's doing.
+    prisma.manifestDamagedEntry.aggregate({ _sum: { quantity: true }, where: { manifest: { supplier }, ...NOT_RETURN_ENTRY } }),
     prisma.manifestLine.aggregate({ _sum: { expectedQuantity: true }, where: { manifest: { supplier } } }),
   ]);
   const damagedSum = damaged._sum.quantity ?? 0;

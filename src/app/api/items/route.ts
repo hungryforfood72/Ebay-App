@@ -10,6 +10,9 @@ import { earliestBundleExpiration } from "@/lib/csv";
 import { normalizeBreakdown } from "@/lib/expirationBreakdown";
 import { inheritedFields, recordRelistPart, relistPlan, type RelistPart } from "@/lib/relist";
 import { findBin, nextItemCode, placeInBin, WarehouseError } from "@/lib/warehouse/bins";
+import { claimDudUnits, findDudBox, physicalUnits } from "@/lib/warehouse/dudBoxes";
+import { settleDudBox } from "@/lib/warehouse/dudBoxReview";
+import type { StoredReturnReport } from "@/lib/warehouse/returns";
 import { classifyScan, normalizeCode } from "@/lib/warehouse/codes";
 import { buildItemLabel, queueItemLabels } from "@/lib/warehouse/itemLabel";
 import { isWarehouseMode } from "@/lib/warehouse/settings";
@@ -115,6 +118,51 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // Returns mode (src/lib/warehouse/returns.ts): a return that wasn't in
+  // the same condition, listed again in its real condition. Like a relist,
+  // the UPC, manifest, category and specifics come from the original, and
+  // the condition from the return; the new item is linked to the return in
+  // the same transaction, so two saves can't both list it.
+  const returnOf = typeof body.returnOf === "string" && body.returnOf ? body.returnOf : null;
+  const returnRow = returnOf
+    ? await prisma.itemReturn.findUnique({ where: { id: returnOf }, include: { item: true } })
+    : null;
+  if (returnOf) {
+    if (!returnRow || (returnRow.decision !== "relist_new" && returnRow.decision !== "shopify_only") || isBundle || relistOf) {
+      return NextResponse.json({ error: "That return isn't waiting to be listed." }, { status: 400 });
+    }
+    if (returnRow.newItemId) {
+      return NextResponse.json({ error: "That return was already listed." }, { status: 400 });
+    }
+  }
+  const returnOriginal = returnRow?.item ?? null;
+  const returnReport = (returnRow?.report ?? null) as StoredReturnReport | null;
+
+  // Listing from a dud box (src/lib/warehouse/dudBoxes.ts): units the dud
+  // processor marked "shopify". The manifest is the box's and the item is
+  // Shopify & Whatnot only whatever the page sent; the units come off the
+  // box's entries in the same transaction as the item.
+  const dudBoxCode = has(body.dudBoxCode) ? normalizeCode(String(body.dudBoxCode)) : "";
+  let dudBox: Awaited<ReturnType<typeof findDudBox>> | null = null;
+  if (dudBoxCode) {
+    if (isBundle || relistOf || returnOf) {
+      return NextResponse.json({ error: "Bundles, relists and returns can't be listed from a dud box." }, { status: 400 });
+    }
+    if (!has(body.upc)) {
+      return NextResponse.json({ error: "Scan the product's UPC to list it from the dud box." }, { status: 400 });
+    }
+    const q = Number(body.quantity);
+    if (!Number.isInteger(q) || q < 1) {
+      return NextResponse.json({ error: "Quantity has to be a whole number, at least 1." }, { status: 400 });
+    }
+    try {
+      dudBox = await findDudBox(prisma, dudBoxCode);
+    } catch (e) {
+      if (e instanceof WarehouseError) return NextResponse.json({ error: e.message }, { status: e.status });
+      throw e;
+    }
+  }
+
   // Warehouse mode checks, all before anything is written: a wrong bin or a
   // deleted station should leave nothing behind (not even a used-up item
   // code), so the lister can just fix it and save again. binCode is
@@ -150,8 +198,10 @@ export async function POST(request: NextRequest) {
   // Prefix the SKU with the shelf location (e.g. "(Location - A6)-<uuid>")
   // so it's recognizable at a glance on eBay's side, not just a bare UUID.
   // Warehouse mode: the printed item code instead, which is also what
-  // staff scan to pick it (the location lives in the bin now).
-  const sku = warehouse ? await nextItemCode() : `(Location - ${String(body.shelfLocation).trim()})-${randomUUID()}`;
+  // staff scan to pick it (the location lives in the bin now). That one is
+  // taken inside the transaction below, so a save that fails there (a dud
+  // box with nothing left, a return listed twice) doesn't use one up.
+  const sku = warehouse ? "" : `(Location - ${String(body.shelfLocation).trim()})-${randomUUID()}`;
 
   // A bundle's dates are scanned per piece; the bundle itself takes the
   // earliest. The dashboard's expiring list and the hourly auto-end only
@@ -170,7 +220,7 @@ export async function POST(request: NextRequest) {
 
   const data: Prisma.ItemUncheckedCreateInput = {
     sku,
-    upc: original ? original.upc : isBundle ? null : body.upc || null,
+    upc: original ? original.upc : returnOriginal ? returnOriginal.upc : isBundle ? null : body.upc || null,
     quantity: Number(body.quantity),
     isMultipack: Boolean(body.isMultipack),
     packSize: body.isMultipack ? Number(body.packSize) : null,
@@ -186,19 +236,41 @@ export async function POST(request: NextRequest) {
     // Who's signed in, not anything the client sends — this is what the
     // scan-speed report (/reports/scan-speed) attributes the scan to.
     scannedBy: username,
-    manifestId: original ? original.manifestId : body.manifestId ?? null,
+    manifestId: original
+      ? original.manifestId
+      : returnOriginal
+        ? returnOriginal.manifestId
+        : dudBox
+          ? dudBox.manifestId
+          : body.manifestId ?? null,
     isBundle,
     bundleComponents: isBundle ? body.bundleComponents : undefined,
-    shopifyOnly: !isBundle && (body.shopifyOnly === true || (original != null && relistPart === "past")),
+    shopifyOnly:
+      !isBundle &&
+      (body.shopifyOnly === true ||
+        (original != null && relistPart === "past") ||
+        returnRow?.decision === "shopify_only" ||
+        dudBox != null),
     ...(original ? inheritedFields(original) : {}),
+    ...(returnOriginal
+      ? {
+          ...inheritedFields(returnOriginal),
+          // Its real condition now, not the original's.
+          condition: (returnReport?.listCondition ?? "used") as Item["condition"],
+          // Same product: skips a UPC lookup, and the draft starts from it.
+          upcLookupData: (returnOriginal.upcLookupData ?? undefined) as Prisma.InputJsonValue | undefined,
+        }
+      : {}),
   };
 
   let item: Item;
   let labelsQueued = 0;
-  if (warehouse) {
+  if (warehouse || returnRow || dudBox) {
     // The label's name and date are looked up before the transaction so it
     // only holds a connection for the writes themselves.
-    const payload = await buildItemLabel(
+    const payload = !warehouse
+      ? null
+      : await buildItemLabel(
       prisma,
       {
         sku,
@@ -212,16 +284,44 @@ export async function POST(request: NextRequest) {
       },
       typeof body.productName === "string" ? body.productName : null
     );
-    // Item, labels (and bin contents, when a bin was sent) land together or
-    // not at all: no labels for an item that didn't save.
+    // Item, labels, bin contents (when a bin was sent), dud box units and
+    // the return link land together or not at all: no labels for an item
+    // that didn't save, no dud units claimed for nothing.
     try {
       ({ item, labelsQueued } = await prisma.$transaction(
         async (tx) => {
-          const created = await tx.item.create({ data });
+          // Dud units first: a box with too few left fails before an item
+          // code is even taken.
+          if (dudBox) {
+            await claimDudUnits(tx, {
+              dudBoxCode: dudBox.code,
+              upc: String(data.upc),
+              units: physicalUnits({
+                quantity: units,
+                isMultipack: Boolean(data.isMultipack),
+                packSize: (data.packSize as number | null) ?? null,
+              }),
+            });
+            // The last Shopify unit listed out of a fully decided box
+            // finishes it right away, instead of on the next box view.
+            await settleDudBox(tx, dudBox.id);
+          }
+          const code = warehouse ? await nextItemCode(tx) : sku;
+          const created = await tx.item.create({ data: { ...data, sku: code } });
+          if (returnRow) {
+            const linked = await tx.itemReturn.updateMany({
+              where: { id: returnRow.id, newItemId: null },
+              data: { newItemId: created.id },
+            });
+            if (linked.count === 0) throw new WarehouseError("That return was already listed.");
+          }
           // A bundle's units are whole bundles (its quantity), same as a
           // multi-pack's are whole packs: one bag, one label each.
-          if (binCode) await placeInBin(tx, { itemId: created.id, binCode, units, by: username });
-          const queued = await queueItemLabels(tx, { stationId, payload, copies: units, by: username });
+          if (warehouse && binCode) await placeInBin(tx, { itemId: created.id, binCode, units, by: username });
+          const queued =
+            warehouse && payload
+              ? await queueItemLabels(tx, { stationId, payload: { ...payload, code }, copies: units, by: username })
+              : 0;
           return { item: created, labelsQueued: queued };
         },
         { maxWait: 10_000, timeout: 20_000 }
@@ -235,7 +335,8 @@ export async function POST(request: NextRequest) {
   }
 
   const relistNext = original ? await recordRelistPart(original.id, relistPart, item.id) : undefined;
-  const keepCategory = Boolean(original?.categoryId);
+  // A return keeps its original's category too.
+  const keepCategory = Boolean(original?.categoryId ?? returnOriginal?.categoryId);
 
   // Run drafting + category lookup here, after responding, so it's fully
   // server-side and doesn't depend on the phone's browser tab staying in the

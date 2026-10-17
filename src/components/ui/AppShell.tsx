@@ -12,11 +12,13 @@ import {
   Monitor,
   Package,
   PackageCheck,
+  PackageX,
   ScanBarcode,
   Settings,
   SplitSquareHorizontal,
   Target,
   Timer,
+  Undo2,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -40,7 +42,9 @@ const NAV: NavItem[] = [
   // Warehouse mode pages (src/lib/warehouse), hidden until it's turned on
   // in Settings.
   { href: "/sort", label: "Sort", icon: SplitSquareHorizontal, warehouseOnly: true },
+  { href: "/duds", label: "Duds", icon: PackageX, warehouseOnly: true },
   { href: "/bins", label: "Bins", icon: Archive, warehouseOnly: true },
+  { href: "/returns", label: "Returns", icon: Undo2, warehouseOnly: true },
   { href: "/ship", label: "Pick orders", icon: PackageCheck, warehouseOnly: true },
   { href: "/station", label: "Station", icon: Monitor, warehouseOnly: true },
   // Owner-only, same as proxy.ts's ownerOnlyPrefixes — employees get

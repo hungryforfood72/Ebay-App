@@ -42,7 +42,9 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { describeBreakdown } from "@/lib/expirationBreakdown";
 import type { RelistPart, RelistPlan } from "@/lib/relist";
+import { upcMatchKeys } from "@/lib/upcMatch";
 import { classifyScan, normalizeCode } from "@/lib/warehouse/codes";
+import type { ReturnListingPlan } from "@/lib/warehouse/returns";
 import { Suspense, useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
 
 type Photo = {
@@ -63,6 +65,24 @@ type BoxSizeEntry = LabeledEntry & {
   code?: string | null;
   tareOz?: number | string | null;
 };
+
+// GET /api/dud-boxes/{code}: a dud box and what's in it. decision
+// "shopify" entries are the ones listed from here.
+type DudBoxInfo = {
+  code: string;
+  manifestId: string;
+  manifestTitle: string | null;
+  entries: { id: string; upc: string; description: string; quantity: number; listedUnits: number; decision: string | null }[];
+};
+
+// Why a UPC can't be listed from this dud box, or null when it can.
+function dudBoxRefusal(box: DudBoxInfo, upc: string): string | null {
+  const keys = new Set(upcMatchKeys(upc));
+  const shopify = box.entries.filter((e) => e.decision === "shopify" && upcMatchKeys(e.upc).some((k) => keys.has(k)));
+  if (shopify.length === 0) return `Not marked for Shopify in dud box ${box.code} yet.`;
+  if (shopify.every((e) => e.quantity - e.listedUnits <= 0)) return `All of this product in dud box ${box.code} is already listed.`;
+  return null;
+}
 
 function boxTareOz(box: BoxSizeEntry | undefined): number | null {
   if (box?.tareOz == null || box.tareOz === "") return null;
@@ -283,6 +303,16 @@ function ScanPageInner() {
   // The manifest being scanned before the relist switched to the
   // original's, put back when it's over so the next scans land right.
   const preRelistManifest = useRef<string | null | undefined>(undefined);
+  // Listing a customer return in its real condition (/scan?return={id},
+  // sent from the Returns page): prefilled like a relist, straight to
+  // photos. Uses the same manifest put-back as the relist when it's over.
+  const [returnPlan, setReturnPlan] = useState<ReturnListingPlan | null>(null);
+  // Warehouse mode: listing the Shopify-marked units of a dud box (scan its
+  // DB label). Every item saved this way is Shopify & Whatnot only and on
+  // the box's manifest; the lister isn't asked about channels.
+  const [dudBox, setDudBox] = useState<DudBoxInfo | null>(null);
+  const [dudBoxScan, setDudBoxScan] = useState("");
+  const preDudManifest = useRef<string | null | undefined>(undefined);
 
   // Bundle mode — expiration is asked per item added to the bundle, not
   // once for the whole listing, since different items in the same bundle
@@ -365,6 +395,20 @@ function ScanPageInner() {
         })
         .catch((e) => setMessage(e instanceof Error ? e.message : "Couldn't load that relist."));
     }
+    const returnId = searchParams.get("return");
+    if (returnId) {
+      fetch(`/api/returns/${returnId}`)
+        .then(async (r) => {
+          const data = await r.json().catch(() => ({}));
+          if (!r.ok) throw new Error(data.error ?? "Couldn't load that return.");
+          return data as ReturnListingPlan;
+        })
+        .then((plan) => {
+          startScanning();
+          applyReturnPlan(plan);
+        })
+        .catch((e) => setMessage(e instanceof Error ? e.message : "Couldn't load that return."));
+    }
     fetch("/api/shelf-locations")
       .then((r) => r.json())
       .then(setShelfLocations);
@@ -426,6 +470,8 @@ function ScanPageInner() {
     setSavedThisSession(0);
     setLastSaved(null);
     setReprintMessage(null);
+    setDudBox(null);
+    preDudManifest.current = undefined;
   }
 
   async function saveDamagedEntry() {
@@ -783,8 +829,37 @@ function ScanPageInner() {
     setStep("photos");
   }
 
+  // A return listed again in its real condition: the original's UPC,
+  // manifest, pack shape and date, the units the return report says to
+  // list, Shopify & Whatnot only when that was the call. The condition is
+  // set server-side from the return. Straight to new photos.
+  function applyReturnPlan(plan: ReturnListingPlan) {
+    setIsBundle(false);
+    setUpc(plan.upc ?? "");
+    if (preRelistManifest.current === undefined) preRelistManifest.current = activeManifestId;
+    if (plan.manifestId) setActiveManifestId(plan.manifestId);
+    setIsMultipack(plan.isMultipack);
+    setPackSize(plan.packSize ? String(plan.packSize) : "");
+    setQuantity(String(plan.quantity));
+    setExpirationDate(plan.expirationDate ?? "");
+    setFirstDateUnits("");
+    setExtraDates([]);
+    setShopifyOnly(plan.decision === "shopify_only");
+    setBoxSize(plan.boxSize ?? "");
+    setWeightLbs("");
+    setWeightOz("");
+    setScaleOz(null);
+    setTypedWeight(false);
+    setWeightIsFresh(false);
+    setPhotos([]);
+    setReturnPlan(plan);
+    setStep("photos");
+  }
+
+  // Ends a relist or a return listing (both are guided, one at a time).
   function endRelist() {
     setRelist(null);
+    setReturnPlan(null);
     const previous = preRelistManifest.current;
     preRelistManifest.current = undefined;
     if (previous !== undefined) {
@@ -800,6 +875,67 @@ function ScanPageInner() {
   function cancelRelist() {
     resetForm();
     endRelist();
+  }
+
+  // --- Warehouse mode: listing from a dud box -------------------------------
+
+  async function loadDudBox(code: string): Promise<DudBoxInfo> {
+    const r = await fetch(`/api/dud-boxes/${encodeURIComponent(code)}`, { cache: "no-store" });
+    const data = await r.json().catch(() => null);
+    if (!r.ok || !data?.box) {
+      throw new Error(r.status === 404 ? (data?.error ?? `No dud box with code ${code}.`) : (data?.error ?? `Couldn't load dud box ${code}.`));
+    }
+    return {
+      code: data.box.code,
+      manifestId: data.box.manifestId,
+      manifestTitle: data.box.manifestTitle ?? null,
+      entries: Array.isArray(data.entries) ? data.entries : [],
+    };
+  }
+
+  async function enterDudBox(raw: string) {
+    const code = normalizeCode(raw);
+    setDudBoxScan("");
+    setMessage(null);
+    if (relist || returnPlan) return setMessage("Finish or cancel this relist first.");
+    try {
+      const box = await loadDudBox(code);
+      if (preDudManifest.current === undefined) preDudManifest.current = activeManifestId;
+      setActiveManifestId(box.manifestId);
+      setDudBox(box);
+      setIsBundle(false);
+      setUpc("");
+      setStep("upc");
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : `Couldn't load dud box ${code}.`);
+    }
+  }
+
+  function leaveDudBox() {
+    setDudBox(null);
+    const previous = preDudManifest.current;
+    preDudManifest.current = undefined;
+    if (previous !== undefined) {
+      setActiveManifestId(previous);
+      if (previous === null) {
+        localStorage.removeItem(ACTIVE_MANIFEST_KEY);
+        setManifestTitle(null);
+      }
+    }
+    resetForm();
+    setMessage(null);
+  }
+
+  // UPC step scan: a dud box label switches into dud box mode instead of
+  // being taken as a UPC (warehouse mode only).
+  function handleUpcScan() {
+    if (warehouseMode && classifyScan(upc) === "dudbox") {
+      const code = upc;
+      setUpc("");
+      enterDudBox(code);
+      return;
+    }
+    goNext();
   }
 
   const steps = warehouseMode
@@ -955,6 +1091,16 @@ function ScanPageInner() {
       setMessage("Scan or enter a shelf location.");
       return;
     }
+    // Dud box mode: only what the dud processor marked for Shopify.
+    if (step === "upc" && dudBox) {
+      const refusal = upc.trim() ? dudBoxRefusal(dudBox, upc.trim()) : "Scan the product's UPC.";
+      if (refusal) {
+        setMessage(refusal);
+        setUpc("");
+        focusScanField("scan-upc");
+        return;
+      }
+    }
     if (stepIndex < steps.length - 1) setStep(steps[stepIndex + 1]);
   }
 
@@ -1037,9 +1183,13 @@ function ScanPageInner() {
               }))
             : undefined,
           manifestId: activeManifestId,
-          shopifyOnly: !isBundle && shopifyOnly,
+          // Dud box items are always Shopify & Whatnot only (the server
+          // forces it too).
+          shopifyOnly: !isBundle && (shopifyOnly || dudBox != null),
           relistOf: relist?.plan.id,
           relistPart: relist?.part,
+          returnOf: returnPlan?.id,
+          dudBoxCode: dudBox?.code,
         }),
       });
 
@@ -1078,8 +1228,19 @@ function ScanPageInner() {
               : "Relist done. The new listing is in Review, and the past-date units were logged as expired."
           );
         }
+      } else if (returnPlan) {
+        endRelist();
+        setMessage("Saved. The return's new listing is in Review.");
       } else {
         setMessage("Saved. Ready for the next item.");
+      }
+      // Dud box mode: refresh what's left to list in the box.
+      if (dudBox) {
+        loadDudBox(dudBox.code)
+          .then(setDudBox)
+          .catch(() => {
+            // Keeps the old counts; the server checks what's left anyway.
+          });
       }
     } catch (e) {
       setMessage(e instanceof Error ? e.message : "Something went wrong.");
@@ -1653,7 +1814,39 @@ function ScanPageInner() {
           </div>
         )}
 
-        {shopifyOnly && !relist && !isBundle && step !== "mode" && step !== "upc" && (
+        {returnPlan && (
+          <div className="rounded-xl border border-sky-200 bg-sky-50 px-3 py-2.5 text-sm text-sky-950">
+            <div className="flex items-start justify-between gap-2">
+              <p className="font-semibold">
+                Listing a return
+                {returnPlan.decision === "shopify_only" ? " · Shopify & Whatnot only" : ""}
+              </p>
+              <button type="button" className="shrink-0 text-xs font-medium underline" onClick={cancelRelist}>
+                Cancel
+              </button>
+            </div>
+            <p className="mt-0.5 text-sky-900">{returnPlan.title}</p>
+            <p className="mt-1.5">
+              <strong>{returnPlan.summary}.</strong> Take new photos of exactly what goes in this listing, show any damage.
+              It gets listed as {RETURN_CONDITION_TEXT[returnPlan.condition] ?? returnPlan.condition}.
+            </p>
+            {returnPlan.steps.length > 0 && <p className="mt-1 text-sky-900">{returnPlan.steps.join(" ")}</p>}
+          </div>
+        )}
+
+        {dudBox && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+            <span className="min-w-0">
+              Listing from dud box <span className="font-semibold">{dudBox.code}</span>
+              {dudBox.manifestTitle ? ` (${dudBox.manifestTitle})` : ""}
+            </span>
+            <button type="button" className="text-xs font-medium underline" onClick={leaveDudBox}>
+              Leave dud box
+            </button>
+          </div>
+        )}
+
+        {shopifyOnly && !relist && !returnPlan && !dudBox && !isBundle && step !== "mode" && step !== "upc" && (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm text-violet-950">
             <span>
               <span className="font-semibold">Shopify &amp; Whatnot only.</span> This one won&apos;t be listed on eBay.
@@ -1666,6 +1859,28 @@ function ScanPageInner() {
 
         {step === "mode" && (
           <section className="flex flex-col gap-3">
+            {warehouseMode && !relist && !returnPlan && !dudBox && (
+              <Card>
+                <ScanField
+                  id="scan-dud-box"
+                  label="Listing from a dud box?"
+                  prompt="Scan the dud box label (DB...)"
+                  autoFocus
+                  value={dudBoxScan}
+                  onChange={setDudBoxScan}
+                  onScan={() => {
+                    if (classifyScan(dudBoxScan) !== "dudbox") {
+                      setMessage(`${normalizeCode(dudBoxScan)} isn't a dud box label. Dud box labels start with DB.`);
+                      setDudBoxScan("");
+                      focusScanField("scan-dud-box");
+                      return;
+                    }
+                    enterDudBox(dudBoxScan);
+                  }}
+                  hint="Otherwise pick Single item or Bundle below."
+                />
+              </Card>
+            )}
             <p className="text-sm font-medium text-foreground">What are you scanning?</p>
             <OptionCard
               icon={Package}
@@ -1719,7 +1934,7 @@ function ScanPageInner() {
               autoFocus
               value={upc}
               onChange={setUpc}
-              onScan={goNext}
+              onScan={handleUpcScan}
               hint="Scanning moves on by itself. Optional — tap Next to skip for custom/handmade items."
               trailing={
                 <CameraButton
@@ -2431,6 +2646,13 @@ function OptionCard({
     </button>
   );
 }
+
+const RETURN_CONDITION_TEXT: Record<string, string> = {
+  new: "new",
+  new_other: "open box (new other)",
+  used: "used",
+  for_parts: "for parts",
+};
 
 const MODE_TILE_TONES = {
   danger: "text-red-600 bg-red-50",

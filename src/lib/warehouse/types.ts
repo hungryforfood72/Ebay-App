@@ -16,13 +16,15 @@ export type ItemLabelPayload = {
   condition: string | null;
 };
 
-// Bin, shelf and box labels: just the barcode and a big readable caption.
+// Bin, shelf, box and dud box labels: just the barcode and a big readable
+// caption.
 export type CodeLabelPayload = {
   code: string;
   caption?: string;
 };
 
-export type PrintJobKind = "item" | "bin" | "shelf" | "box";
+// dud = a dud box label (DB0001), caption = the manifest it belongs to.
+export type PrintJobKind = "item" | "bin" | "shelf" | "box" | "dud";
 
 export type PrintJobPayload = ItemLabelPayload | CodeLabelPayload;
 

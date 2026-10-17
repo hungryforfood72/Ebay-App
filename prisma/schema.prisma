@@ -304,6 +304,7 @@ model Item {
   // units right now, and each order-pick scan against it.
   binContents BinContent[]
   orderPicks  OrderPick[]
+  returns     ItemReturn[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -621,6 +622,7 @@ model Manifest {
   lines   ManifestLine[]
   damaged ManifestDamagedEntry[]
   duds    ManifestDudEntry[]
+  dudBoxes DudBox[]
   items   Item[]
 
   sourcingEvaluations SourcingEvaluation[]
@@ -1019,7 +1021,43 @@ model ManifestDudEntry {
   recordedBy String?
   createdAt  DateTime @default(now())
 
+  // Warehouse mode: the dud box these units went into at the sort station
+  // (null for duds logged before dud boxes, or with no box open). Later
+  // someone processes the box and decides each entry: "shopify" (list it,
+  // Shopify & Whatnot only), "not_worth", "toss" or "donate"; null = not
+  // decided yet. listedUnits = units of this entry since listed as Items
+  // from the box, so the manifest counts them as received, not dud.
+  dudBox     DudBox?   @relation(fields: [dudBoxId], references: [id], onDelete: SetNull)
+  dudBoxId   String?
+  decision   String?
+  decidedBy  String?
+  decidedAt  DateTime?
+  listedUnits Int      @default(0)
+
   @@index([manifestId, upc])
+  @@index([dudBoxId])
+}
+
+// A physical box the sorter puts duds in, with its own printed barcode
+// ("DB0001"), tied to one manifest so nobody has to track where the duds
+// came from. Scanned later to process them (decide each, then list the
+// Shopify ones from the box at the listing station).
+model DudBox {
+  id          String    @id @default(uuid())
+  code        String    @unique
+  manifest    Manifest  @relation(fields: [manifestId], references: [id], onDelete: Cascade)
+  manifestId  String
+  // open (sorter still filling it) | closed (full, waiting to be processed)
+  // | done (every entry decided and handled)
+  status      String    @default("open")
+  createdBy   String?
+  createdAt   DateTime  @default(now())
+  closedAt    DateTime?
+  doneAt      DateTime?
+
+  entries ManifestDudEntry[]
+
+  @@index([manifestId])
 }
 
 // An in-person, cash, no-fee/no-shipping sale — an employee or customer
@@ -1395,4 +1433,33 @@ model OrderPick {
   @@index([channel, orderId])
   @@index([lineItemId])
   @@index([itemId])
+}
+
+// A unit a buyer sent back, logged in Returns mode by scanning its label
+// (or UPC for old items). sameCondition = the employee said it's still
+// brand new, sealed, every unit there. decision: add_back (back on the
+// still-live listing), relist_same (sold-out listing: new listing copied
+// from the original, original photos), relist_new (new listing, new photos,
+// guided), shopify_only, dispose, donate. reason = the agent's plain
+// explanation shown to the employee (never money). newItemId = the new
+// listing, once made.
+model ItemReturn {
+  id            String   @id @default(uuid())
+  item          Item     @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  itemId        String
+  // ebay | shopify | in_person | unknown
+  channel       String?
+  orderId       String?
+  units         Int
+  sameCondition Boolean
+  // { missingUnits, opened, used, damaged, note, photoUrls }
+  report        Json?
+  decision      String
+  reason        String?
+  newItemId     String?
+  recordedBy    String?
+  createdAt     DateTime @default(now())
+
+  @@index([itemId])
+  @@index([createdAt])
 }

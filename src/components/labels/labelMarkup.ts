@@ -6,7 +6,7 @@ import { barcodeSvg } from "./barcode";
 // or React; LabelPreview renders the same strings on screen. Plain inline
 // CSS in inches and points only, black on white, no Tailwind.
 
-export const LABEL_KINDS: PrintJobKind[] = ["item", "bin", "shelf", "box"];
+export const LABEL_KINDS: PrintJobKind[] = ["item", "bin", "shelf", "box", "dud"];
 
 export function isLabelKind(v: unknown): v is PrintJobKind {
   return typeof v === "string" && (LABEL_KINDS as string[]).includes(v);
@@ -78,6 +78,19 @@ export const LABEL_CSS = `
   font-family: "Consolas", "Courier New", monospace;
   font-size: 7pt;
   line-height: 1;
+}
+.wl-dud-caption {
+  margin-top: 1pt;
+  width: 100%;
+  font-size: 7.5pt;
+  font-weight: 700;
+  line-height: 8.5pt;
+  max-height: 17pt;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
 }
 .wl-bad {
   font-size: 9pt;
@@ -177,9 +190,28 @@ function codeLabelHtml(kind: PrintJobKind, p: CodeLabelPayload): string {
   );
 }
 
+// Dud box label: read from across the floor, so the box code is the big
+// line (like a bin label) and the manifest it belongs to sits under it,
+// small, up to two lines ("DUDS · 10/14/26 Pallet 2 ...").
+function dudLabelHtml(p: CodeLabelPayload): string {
+  const caption = p.caption?.trim() || "DUDS";
+  // 0.32" of bars + 16pt code + two 8.5pt caption lines fits inside 1"
+  // with the padding (about 0.85").
+  const bars = barcodeSvg(p.code, 0.32);
+  if (!bars) return badLabel(p.code);
+  return (
+    `<div class="wl-label">` +
+    `<div class="wl-bars">${bars.svg}</div>` +
+    `<div class="wl-caption" style="font-size:16pt;max-height:18pt">${esc(p.code)}</div>` +
+    `<div class="wl-dud-caption">${esc(caption)}</div>` +
+    `</div>`
+  );
+}
+
 // One label's markup.
 export function labelHtml(kind: PrintJobKind, payload: PrintJobPayload): string {
   if (kind === "item") return itemLabelHtml(payload as ItemLabelPayload);
+  if (kind === "dud") return dudLabelHtml(payload as CodeLabelPayload);
   return codeLabelHtml(kind, payload as CodeLabelPayload);
 }
 

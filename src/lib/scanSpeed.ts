@@ -1,4 +1,5 @@
 import { AUTO_EXPIRED_NOTE } from "./expireListings";
+import { NOT_RETURN_ENTRY } from "./warehouse/returnReconcile";
 import { parseBundleComponentUnits, unitsFor } from "./itemUnits";
 import { prisma } from "./prisma";
 
@@ -143,11 +144,13 @@ export async function loadScanEvents(person: string, since: Date | null) {
         recordedBy: who,
         createdAt,
         OR: [{ note: null }, { note: { not: AUTO_EXPIRED_NOTE } }],
+        // Units a customer return wrote off aren't sort-station scans.
+        AND: [NOT_RETURN_ENTRY],
       },
       select: { createdAt: true, upc: true, quantity: true },
     }),
     prisma.manifestDudEntry.findMany({
-      where: { recordedBy: who, createdAt },
+      where: { recordedBy: who, createdAt, ...NOT_RETURN_ENTRY },
       select: { createdAt: true, upc: true, quantity: true },
     }),
     // A little before `since`, so a stretch that begins right at the edge

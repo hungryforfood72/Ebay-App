@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { returnDraftNote } from "@/lib/warehouse/returns";
 import { lookupUpc } from "@/lib/upcLookup";
 import { anthropic, fetchImageAsBase64 } from "@/lib/anthropic";
 import { logAiUsage } from "@/lib/aiUsage";
@@ -181,6 +182,11 @@ export async function draftItem(itemId: string) {
     ? `Expiration date: ${item.expirationDate.toISOString().slice(0, 10)} — state this plainly in the description so the buyer knows exactly what they're getting (e.g. "Best by MM/DD/YYYY"). Work it into the title too if there's room within the character limit — use the same full MM/DD/YYYY date there too, not just the month and year (eBay pulled a real listing over the title/specifics only showing month/year while the description had the full date).`
     : "";
 
+  // A customer return listed again in its real condition (Returns mode,
+  // src/lib/warehouse/returns.ts): what staff found wrong with it, so the
+  // description says so. null for everything else.
+  const returnNote = await returnDraftNote(item.id);
+
   const upcNote = item.upc
     ? `UPC: ${item.upc}\nUPC lookup data (may be incomplete or missing): ${JSON.stringify(upcLookupData)}`
     : "No UPC — this is a custom/handmade item with no barcode. Draft from the photo and the details below.";
@@ -196,7 +202,7 @@ ${quantityNote}
 ${packNote}
 Condition: ${item.condition ?? "not specified yet (set by hand in review)"}
 ${expirationNote}
-
+${returnNote ? `\n${returnNote}\n` : ""}
 ${photos.length > 1 ? `\nThere are ${photos.length} photos of this exact item. The first is the main shot; the others are usually taken to show condition (a dented box, a torn seal, scuffs, wear) or other sides of the package (ingredients, count, size). Use details from all of them, and if any shows a flaw, say so plainly in the description so the buyer isn't surprised.\n` : ""}
 Write a clear, keyword-appropriate eBay title (80 characters max) and a short, honest description a buyer would find helpful. Do not invent specifics (model numbers, exact materials) that aren't supported by the UPC data or the photos.
 
