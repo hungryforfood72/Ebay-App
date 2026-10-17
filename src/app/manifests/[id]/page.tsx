@@ -1,6 +1,7 @@
 "use client";
 
 import { ConsignmentLedgerCard } from "@/components/ConsignmentLedgerCard";
+import { SupplierShareCard } from "@/components/SupplierShareCard";
 import { Stat } from "@/components/Stat";
 import { Alert } from "@/components/ui/Alert";
 import { AppShell } from "@/components/ui/AppShell";
@@ -78,6 +79,7 @@ type ManifestDetail = {
   totalLandedCost?: number | null;
   // Owner only. A consignment load shows what's owed to the supplier.
   consignment?: boolean;
+  shareToken?: string | null;
   // Owner only. Set when this load was won through the Analyzer's bid
   // tracking — a starting point for the landed cost.
   bidStatus?: "active" | "lost" | "won" | null;
@@ -354,6 +356,9 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
           </div>
         )}
         {isOwner && manifest.consignment && <ConsignmentLedgerCard manifestId={manifest.id} />}
+        {isOwner && manifest.consignment && (
+          <SupplierShareCard manifestId={manifest.id} shareToken={manifest.shareToken ?? null} onChange={load} />
+        )}
 
         {isOwner && evaluation?.status === "complete" && (
           <Card>

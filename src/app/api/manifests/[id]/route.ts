@@ -366,6 +366,7 @@ export async function GET(
     ...(isOwner
       ? {
           consignment: manifest.consignment,
+          shareToken: manifest.consignment ? manifest.shareToken : null,
           consignmentSupplierPct: manifest.consignmentSupplierPct ?? DEFAULT_CONSIGNMENT_SUPPLIER_PCT,
           consignmentPickList:
             manifest.consignment && latestEvaluation?.status === "complete"

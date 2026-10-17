@@ -595,6 +595,9 @@ model Manifest {
   // the supplier's share of profit after eBay fees and the label.
   consignment            Boolean @default(false)
   consignmentSupplierPct Float?
+  // Read-only link for the consignment supplier (/s/{shareToken}, no login,
+  // see src/lib/supplierShare.ts). null = no link / turned off.
+  shareToken             String?
 
   lines   ManifestLine[]
   damaged ManifestDamagedEntry[]

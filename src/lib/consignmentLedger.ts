@@ -18,6 +18,9 @@ import { prisma } from "./prisma";
 
 export type ConsignmentSale = {
   id: string;
+  // Which product it was (the item's scanned UPC, or the walk-up's), for
+  // the supplier's per-product view.
+  upc: string | null;
   soldAt: Date;
   channel: string;
   title: string;
@@ -54,6 +57,7 @@ export async function getConsignmentLedger(manifestId: string): Promise<Consignm
       items: {
         select: {
           id: true,
+          upc: true,
           finalTitle: true,
           aiTitle: true,
           sales: { include: { refunds: true } },
@@ -76,6 +80,7 @@ export async function getConsignmentLedger(manifestId: string): Promise<Consignm
       const profit = Number(s.revenue) - costs;
       sales.push({
         id: s.id,
+        upc: item.upc,
         soldAt: s.soldAt,
         channel: "eBay",
         title,
@@ -93,6 +98,7 @@ export async function getConsignmentLedger(manifestId: string): Promise<Consignm
       const profit = Number(s.revenue) - costs;
       sales.push({
         id: s.id,
+        upc: item.upc,
         soldAt: s.soldAt,
         channel: s.channel === "whatnot" ? "Whatnot" : "Shopify",
         title,
@@ -107,6 +113,7 @@ export async function getConsignmentLedger(manifestId: string): Promise<Consignm
     for (const s of item.inPersonSales) {
       sales.push({
         id: s.id,
+        upc: item.upc,
         soldAt: s.soldAt,
         channel: "In person",
         title,
@@ -123,6 +130,7 @@ export async function getConsignmentLedger(manifestId: string): Promise<Consignm
     const revenue = w.quantity * Number(w.pricePerUnit);
     sales.push({
       id: w.id,
+      upc: w.upc,
       soldAt: w.createdAt,
       channel: "Walk-up",
       title: manifest.lines.find((l) => l.upc === w.upc)?.description ?? w.note ?? `UPC ${w.upc}`,

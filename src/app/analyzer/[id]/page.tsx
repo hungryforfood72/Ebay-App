@@ -1,6 +1,7 @@
 "use client";
 
 import { ConsignmentPickListView, ConsignmentTermsCard, type ConsignmentPickListData } from "@/components/ConsignmentPickList";
+import { SupplierShareCard } from "@/components/SupplierShareCard";
 import { Alert } from "@/components/ui/Alert";
 import { AppShell } from "@/components/ui/AppShell";
 import { Badge, type BadgeTone } from "@/components/ui/Badge";
@@ -77,6 +78,7 @@ type CandidateDetail = {
   summary: { totalManifestExtendedRetail: number };
   consignment: boolean;
   consignmentSupplierPct: number;
+  shareToken: string | null;
   consignmentPickList: ConsignmentPickListData | null;
 };
 
@@ -312,6 +314,9 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
           supplierPct={candidate.consignmentSupplierPct}
           onSaved={load}
         />
+        {candidate.consignment && (
+          <SupplierShareCard manifestId={candidate.id} shareToken={candidate.shareToken} onChange={load} />
+        )}
 
         {!candidate.consignment && (
           <BidCard

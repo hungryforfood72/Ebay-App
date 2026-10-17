@@ -14,6 +14,12 @@ export const USERNAME_HEADER = "x-username";
 
 const PUBLIC_WEBHOOK_PATHS = ["/api/shopify/webhook", "/api/ebay/notifications"];
 
+// A consignment supplier's read-only report (src/lib/supplierShare.ts):
+// exactly /s/{token} and /api/share/{token}, with a token shaped like
+// newShareToken's (32 URL-safe characters). Exact patterns, not prefixes,
+// so no other page or API can ever be reached signed-out through them.
+const SHARE_PATHS = [/^\/s\/[A-Za-z0-9_-]{32}$/, /^\/api\/share\/[A-Za-z0-9_-]{32}$/];
+
 // Per-user session gate for the whole site, since it holds inventory
 // photos, pricing, and (for the owner) financial data. Next.js 16 runs
 // proxy.ts on the Node.js runtime by default (confirmed against the
@@ -48,6 +54,17 @@ export async function proxy(request: NextRequest) {
     // route checks Shopify's signature on every request.
     if (pathname.startsWith("/api/shopify-proxy/")) {
       return NextResponse.next();
+    }
+    // The supplier's report: the random token in the URL is the only key,
+    // checked against the database by the route.
+    if (SHARE_PATHS.some((p) => p.test(pathname))) {
+      // Same rule as everywhere: identity headers are only ever set by
+      // this file, never passed through from the visitor.
+      const headers = new Headers(request.headers);
+      headers.delete(USER_ID_HEADER);
+      headers.delete(USER_ROLE_HEADER);
+      headers.delete(USERNAME_HEADER);
+      return NextResponse.next({ request: { headers } });
     }
     if (pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "Not signed in." }, { status: 401 });
