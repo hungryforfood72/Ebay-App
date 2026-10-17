@@ -904,11 +904,13 @@ function ShopifyConnection() {
 }
 
 // Epic Steals deal alerts (web push to shoppers who opted in on the store):
-// how many signed up, and a test alert to check it end to end.
+// how many signed up, a test alert to check it end to end, and a one-off
+// alert written here (it goes to every signed-up shopper).
 function DealAlertsCard() {
   const [subscribers, setSubscribers] = useState<number | null>(null);
   const [sending, setSending] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [draft, setDraft] = useState({ title: "", body: "", path: "/collections/all" });
 
   function load() {
     fetch("/api/deal-alerts")
@@ -919,17 +921,23 @@ function DealAlertsCard() {
 
   useEffect(load, []);
 
-  async function sendTest() {
+  async function send(custom: boolean) {
+    if (custom && !window.confirm(`Send "${draft.title}" to all ${subscribers} signed-up device(s)?`)) return;
     setSending(true);
     setMessage(null);
     try {
-      const res = await fetch("/api/deal-alerts", { method: "POST" });
+      const res = await fetch("/api/deal-alerts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(custom ? draft : {}),
+      });
       const d = await res.json();
       setMessage(
         res.ok
           ? `Sent to ${d.sent} device(s).${d.removed ? ` ${d.removed} had turned alerts off and were removed.` : ""}${d.failed ? ` ${d.failed} failed.` : ""}`
           : (d.error ?? "Couldn't send.")
       );
+      if (custom && res.ok) setDraft((d) => ({ ...d, title: "", body: "" }));
       load();
     } finally {
       setSending(false);
@@ -946,9 +954,35 @@ function DealAlertsCard() {
         <p className="text-sm text-foreground">
           {subscribers == null ? "Loading…" : `${subscribers} device${subscribers === 1 ? "" : "s"} signed up`}
         </p>
-        <Button size="sm" variant="outline" onClick={sendTest} disabled={sending || !subscribers}>
+        <Button size="sm" variant="outline" onClick={() => send(false)} disabled={sending || !subscribers}>
           {sending ? "Sending…" : "Send test alert"}
         </Button>
+      </div>
+      <div className="mt-3 flex flex-col gap-2">
+        <p className="text-sm font-medium text-foreground">Send an alert</p>
+        <Input
+          placeholder="Title"
+          maxLength={65}
+          value={draft.title}
+          onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))}
+        />
+        <Input
+          placeholder="Message"
+          maxLength={180}
+          value={draft.body}
+          onChange={(e) => setDraft((d) => ({ ...d, body: e.target.value }))}
+        />
+        <div className="flex flex-wrap items-center gap-3">
+          <Input
+            className="w-64"
+            placeholder="Link, like /collections/all"
+            value={draft.path}
+            onChange={(e) => setDraft((d) => ({ ...d, path: e.target.value }))}
+          />
+          <Button size="sm" onClick={() => send(true)} disabled={sending || !subscribers || draft.title.trim() === ""}>
+            {sending ? "Sending…" : "Send to everyone"}
+          </Button>
+        </div>
       </div>
       {message && <p className="mt-2 text-sm text-foreground">{message}</p>}
     </Card>
