@@ -589,6 +589,12 @@ model Manifest {
   bidAmount       Decimal?           @db.Decimal(10, 2)
   bidPlacedAt     DateTime?
   bidClosedAt     DateTime?
+  // Consignment load (pay the supplier only when something sells, pick and
+  // choose, return what doesn't sell): the Analyzer shows a pick list
+  // instead of a max bid (src/lib/consignment.ts). consignmentSupplierPct =
+  // the supplier's share of profit after eBay fees and the label.
+  consignment            Boolean @default(false)
+  consignmentSupplierPct Float?
 
   lines   ManifestLine[]
   damaged ManifestDamagedEntry[]

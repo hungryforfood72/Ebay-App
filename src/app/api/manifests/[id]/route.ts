@@ -5,6 +5,7 @@ import { getRequestUser, ownerOnly } from "@/lib/auth";
 import type { Prisma } from "@/generated/prisma/client";
 import { parseBundleComponentUnits, soldUnitsFor, unitsFor } from "@/lib/itemUnits";
 import { landedCostWeights } from "@/lib/cogs";
+import { buildConsignmentPickList, DEFAULT_CONSIGNMENT_SUPPLIER_PCT } from "@/lib/consignment";
 
 // Fills each line's expected quantity in order before spilling into the
 // next — a UPC can legitimately appear on more than one manifest line (e.g.
@@ -362,6 +363,19 @@ export async function GET(
         }
       : {}),
     ...(isOwner ? { totalLandedCost } : {}),
+    ...(isOwner
+      ? {
+          consignment: manifest.consignment,
+          consignmentSupplierPct: manifest.consignmentSupplierPct ?? DEFAULT_CONSIGNMENT_SUPPLIER_PCT,
+          consignmentPickList:
+            manifest.consignment && latestEvaluation?.status === "complete"
+              ? await buildConsignmentPickList(
+                  manifest.id,
+                  manifest.consignmentSupplierPct ?? DEFAULT_CONSIGNMENT_SUPPLIER_PCT
+                )
+              : null,
+        }
+      : {}),
     createdAt: manifest.createdAt,
     lines: lines.map((l) =>
       isOwner
@@ -424,6 +438,8 @@ export async function GET(
         flaggedDud: e.flaggedDud,
         slowMover: e.slowMover,
         monthsToSellThrough: e.monthsToSellThrough,
+        sellRateSource: e.sellRateSource,
+        longTail: e.longTail,
       })),
     },
     summary: {
@@ -460,7 +476,7 @@ export async function PATCH(
 
   // Landed cost, purchasing and bids are the owner's call. Renaming is the
   // only change an employee can make here.
-  if (["totalLandedCost", "purchased", "bidStatus", "bidAmount"].some((k) => k in body)) {
+  if (["totalLandedCost", "purchased", "bidStatus", "bidAmount", "consignment", "consignmentSupplierPct"].some((k) => k in body)) {
     const denied = ownerOnly(request);
     if (denied) return denied;
   }
@@ -477,6 +493,14 @@ export async function PATCH(
   // route (no un-marking), matching the Analyzer being a one-way decision
   // point, not a toggle.
   if ("purchased" in body) data.purchased = Boolean(body.purchased);
+  if ("consignment" in body) data.consignment = Boolean(body.consignment);
+  if ("consignmentSupplierPct" in body) {
+    const pct = Number(body.consignmentSupplierPct);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+      return NextResponse.json({ error: "The supplier's share must be 0-100%." }, { status: 400 });
+    }
+    data.consignmentSupplierPct = pct;
+  }
 
   // Bid tracking (Analyzer). { bidStatus: "active", bidAmount } places or
   // updates a bid; "lost" closes it; null clears it back to "under

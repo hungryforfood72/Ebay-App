@@ -1,5 +1,6 @@
 "use client";
 
+import { ConsignmentPickListView, ConsignmentTermsCard, type ConsignmentPickListData } from "@/components/ConsignmentPickList";
 import { Alert } from "@/components/ui/Alert";
 import { AppShell } from "@/components/ui/AppShell";
 import { Badge, type BadgeTone } from "@/components/ui/Badge";
@@ -74,6 +75,9 @@ type CandidateDetail = {
   lines: Line[];
   sourcingEvaluation: SourcingEvaluation | null;
   summary: { totalManifestExtendedRetail: number };
+  consignment: boolean;
+  consignmentSupplierPct: number;
+  consignmentPickList: ConsignmentPickListData | null;
 };
 
 // The Analyzer's detail view — deliberately much simpler than the real
@@ -291,7 +295,7 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
           {candidate.bidStatus !== "active" && (
             <Button onClick={markPurchased} disabled={markingPurchased}>
               <CircleCheck className="size-4" aria-hidden />
-              {markingPurchased ? "Marking…" : "Mark as purchased"}
+              {markingPurchased ? "Marking…" : candidate.consignment ? "Mark as taken" : "Mark as purchased"}
             </Button>
           )}
           <Link href="/analyzer" className={buttonClasses({ variant: "outline" })}>
@@ -302,17 +306,26 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
       }
     >
       <div className="flex flex-col gap-6">
-        <BidCard
-          bidStatus={candidate.bidStatus}
-          bidAmount={candidate.bidAmount}
-          bidPlacedAt={candidate.bidPlacedAt}
-          bidClosedAt={candidate.bidClosedAt}
-          maxBid={evaluation?.status === "complete" ? evaluation.maxBid : null}
-          saving={savingBid}
-          error={bidError}
-          onSave={saveBid}
-          onWon={markPurchased}
+        <ConsignmentTermsCard
+          manifestId={candidate.id}
+          consignment={candidate.consignment}
+          supplierPct={candidate.consignmentSupplierPct}
+          onSaved={load}
         />
+
+        {!candidate.consignment && (
+          <BidCard
+            bidStatus={candidate.bidStatus}
+            bidAmount={candidate.bidAmount}
+            bidPlacedAt={candidate.bidPlacedAt}
+            bidClosedAt={candidate.bidClosedAt}
+            maxBid={evaluation?.status === "complete" ? evaluation.maxBid : null}
+            saving={savingBid}
+            error={bidError}
+            onSave={saveBid}
+            onWon={markPurchased}
+          />
+        )}
 
         <Card>
           <SectionHeader
@@ -369,184 +382,192 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
 
           {evaluation?.status === "complete" && (
             <div className="flex flex-col gap-4">
-              <div className="flex flex-wrap items-center gap-3">
-                <Badge tone={evaluation.recommendation === "buy" ? "success" : "danger"} size="lg">
-                  {evaluation.recommendation === "buy" ? "Buy" : "Don't buy"}
-                </Badge>
-                <span className="text-xs text-muted-foreground">{new Date(evaluation.startedAt).toLocaleString()}</span>
-              </div>
-
-              <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                <Metric
-                  label="Max recommended bid"
-                  value={evaluation.maxBid != null ? `$${evaluation.maxBid.toFixed(2)}` : "—"}
-                  emphasis
-                />
-                {evaluation.maxBid != null && evaluation.expectedNetContribution != null && (
-                  <>
-                    <Metric
-                      label="Est. profit at that bid"
-                      value={`$${(evaluation.expectedNetContribution - evaluation.maxBid).toFixed(2)}`}
-                    />
-                    <Metric
-                      label="Est. ROI"
-                      value={
-                        evaluation.maxBid > 0
-                          ? `${(
-                              ((evaluation.expectedNetContribution - evaluation.maxBid) / evaluation.maxBid) *
-                              100
-                            ).toFixed(0)}%`
-                          : "—"
-                      }
-                    />
-                  </>
-                )}
-              </dl>
-              {evaluation.maxBid != null && (
-                <p className="text-xs text-muted-foreground">
-                  Profit/ROI shown are what to expect if you win at exactly the max bid — bid lower and both improve,
-                  since the max bid is calibrated to hit your target margin (Settings) at that exact price.
-                </p>
-              )}
-
-              {evaluation.expectedNetContribution != null && (
-                <div className="rounded-xl border border-border bg-background p-4">
-                  <div className="flex flex-wrap items-end gap-x-5 gap-y-3">
-                    <div className="w-40">
-                      <label htmlFor="try-bid" className="mb-1.5 block text-sm font-medium text-foreground">
-                        What if I bid…
-                      </label>
-                      <div className="relative">
-                        <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-muted-foreground">
-                          $
-                        </span>
-                        <Input
-                          id="try-bid"
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          value={customBid}
-                          onChange={(e) => setCustomBid(e.target.value)}
-                          placeholder="0.00"
-                          className="pl-7"
-                        />
-                      </div>
-                    </div>
-                    {(() => {
-                      const bid = parseFloat(customBid);
-                      const contribution = evaluation.expectedNetContribution!;
-                      if (!Number.isFinite(bid) || bid <= 0) return null;
-                      const profit = contribution - bid;
-                      const roi = (profit / bid) * 100;
-                      const targetMarginPct = evaluation.targetMarginPct;
-                      // Compare against the ROUNDED figure, same as what's shown
-                      // (roi.toFixed(0) below) — maxBid/expectedNetContribution
-                      // are themselves rounded-to-cents Decimals, so recomputing
-                      // ROI from them lands a hair off the exact target (e.g.
-                      // 34.97% instead of 35.00%). Comparing the raw float
-                      // against the integer target made bidding exactly at the
-                      // recommended max bid show "35%" right next to "Below
-                      // your 35% target" — a real contradiction, not just a
-                      // display quirk, since the max bid is defined as the
-                      // price that exactly clears the target.
-                      const clearsTarget = targetMarginPct != null ? Math.round(roi) >= targetMarginPct : null;
-                      return (
-                        <>
-                          <div>
-                            <p className="text-xs font-medium text-muted-foreground">Profit</p>
-                            <p
-                              className={cn(
-                                "text-lg font-semibold tabular-nums",
-                                profit >= 0 ? "text-success" : "text-danger"
-                              )}
-                            >
-                              ${profit.toFixed(2)}
-                            </p>
-                          </div>
-                          <div>
-                            <p className="text-xs font-medium text-muted-foreground">ROI</p>
-                            <p
-                              className={cn(
-                                "text-lg font-semibold tabular-nums",
-                                profit >= 0 ? "text-success" : "text-danger"
-                              )}
-                            >
-                              {roi.toFixed(0)}%
-                            </p>
-                          </div>
-                          {clearsTarget != null && (
-                            <Badge tone={clearsTarget ? "success" : "warning"} className="mb-1">
-                              {clearsTarget ? `Clears your ${targetMarginPct}% target` : `Below your ${targetMarginPct}% target`}
-                            </Badge>
-                          )}
-                          {evaluation.maxBid != null && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => setCustomBid(evaluation.maxBid!.toFixed(2))}
-                              className="mb-0.5"
-                            >
-                              Reset to max bid
-                            </Button>
-                          )}
-                        </>
-                      );
-                    })()}
+              {candidate.consignment ? (
+                candidate.consignmentPickList && (
+                  <ConsignmentPickListView list={candidate.consignmentPickList} title={candidate.title} />
+                )
+              ) : (
+                <>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Badge tone={evaluation.recommendation === "buy" ? "success" : "danger"} size="lg">
+                      {evaluation.recommendation === "buy" ? "Buy" : "Don't buy"}
+                    </Badge>
+                    <span className="text-xs text-muted-foreground">{new Date(evaluation.startedAt).toLocaleString()}</span>
                   </div>
-                  {(() => {
-                    const bid = parseFloat(customBid);
-                    if (!Number.isFinite(bid) || bid <= 0) return null;
-                    const { dudShare, concentrationRisk, targetMarginPct, minBidFloor, expectedNetContribution } =
-                      evaluation;
-                    if (expectedNetContribution == null) return null;
 
-                    // The original recommendation can land on "dont_buy" for
-                    // reasons that have nothing to do with the price paid —
-                    // too many duds, or one weak item dominating the manifest
-                    // (see evaluateManifest's recommendation logic). No bid,
-                    // however low, fixes those, so a hypothetical price never
-                    // gets to override them — Cristian's own instruction:
-                    // only let the price change the verdict when the original
-                    // "no" actually was about price.
-                    const structuralReasons: string[] = [];
-                    if (dudShare != null && dudShare >= 0.6) {
-                      structuralReasons.push(`${(dudShare * 100).toFixed(0)}% of lines are likely duds`);
-                    }
-                    if (concentrationRisk) {
-                      structuralReasons.push("one item dominates the manifest's value and looks weak");
-                    }
+                  <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                    <Metric
+                      label="Max recommended bid"
+                      value={evaluation.maxBid != null ? `$${evaluation.maxBid.toFixed(2)}` : "—"}
+                      emphasis
+                    />
+                    {evaluation.maxBid != null && evaluation.expectedNetContribution != null && (
+                      <>
+                        <Metric
+                          label="Est. profit at that bid"
+                          value={`$${(evaluation.expectedNetContribution - evaluation.maxBid).toFixed(2)}`}
+                        />
+                        <Metric
+                          label="Est. ROI"
+                          value={
+                            evaluation.maxBid > 0
+                              ? `${(
+                                  ((evaluation.expectedNetContribution - evaluation.maxBid) / evaluation.maxBid) *
+                                  100
+                                ).toFixed(0)}%`
+                              : "—"
+                          }
+                        />
+                      </>
+                    )}
+                  </dl>
+                  {evaluation.maxBid != null && (
+                    <p className="text-xs text-muted-foreground">
+                      Profit/ROI shown are what to expect if you win at exactly the max bid — bid lower and both improve,
+                      since the max bid is calibrated to hit your target margin (Settings) at that exact price.
+                    </p>
+                  )}
 
-                    let good: boolean;
-                    let label: string;
-                    if (structuralReasons.length > 0) {
-                      good = false;
-                      label = "Still don't buy";
-                    } else {
-                      const roi = ((expectedNetContribution - bid) / bid) * 100;
-                      const clearsFloor = minBidFloor == null || bid >= minBidFloor;
-                      // Same rounding-consistency fix as the ROI badge above —
-                      // compare the displayed whole-percent figure, not the
-                      // raw float, so this can't disagree with the number
-                      // shown right next to it.
-                      const clearsMargin = targetMarginPct == null || Math.round(roi) >= targetMarginPct;
-                      good = clearsFloor && clearsMargin;
-                      label = good ? "Buy at this price" : "Don't buy at this price";
-                    }
-
-                    return (
-                      <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-3">
-                        <Badge tone={good ? "success" : "danger"} size="lg">
-                          {label}
-                        </Badge>
-                        {structuralReasons.length > 0 && (
-                          <span className="text-sm text-muted-foreground">
-                            Not a price issue — {structuralReasons.join(" and ")}. No bid price fixes this.
-                          </span>
-                        )}
+                  {evaluation.expectedNetContribution != null && (
+                    <div className="rounded-xl border border-border bg-background p-4">
+                      <div className="flex flex-wrap items-end gap-x-5 gap-y-3">
+                        <div className="w-40">
+                          <label htmlFor="try-bid" className="mb-1.5 block text-sm font-medium text-foreground">
+                            What if I bid…
+                          </label>
+                          <div className="relative">
+                            <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-muted-foreground">
+                              $
+                            </span>
+                            <Input
+                              id="try-bid"
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              value={customBid}
+                              onChange={(e) => setCustomBid(e.target.value)}
+                              placeholder="0.00"
+                              className="pl-7"
+                            />
+                          </div>
+                        </div>
+                        {(() => {
+                          const bid = parseFloat(customBid);
+                          const contribution = evaluation.expectedNetContribution!;
+                          if (!Number.isFinite(bid) || bid <= 0) return null;
+                          const profit = contribution - bid;
+                          const roi = (profit / bid) * 100;
+                          const targetMarginPct = evaluation.targetMarginPct;
+                          // Compare against the ROUNDED figure, same as what's shown
+                          // (roi.toFixed(0) below) — maxBid/expectedNetContribution
+                          // are themselves rounded-to-cents Decimals, so recomputing
+                          // ROI from them lands a hair off the exact target (e.g.
+                          // 34.97% instead of 35.00%). Comparing the raw float
+                          // against the integer target made bidding exactly at the
+                          // recommended max bid show "35%" right next to "Below
+                          // your 35% target" — a real contradiction, not just a
+                          // display quirk, since the max bid is defined as the
+                          // price that exactly clears the target.
+                          const clearsTarget = targetMarginPct != null ? Math.round(roi) >= targetMarginPct : null;
+                          return (
+                            <>
+                              <div>
+                                <p className="text-xs font-medium text-muted-foreground">Profit</p>
+                                <p
+                                  className={cn(
+                                    "text-lg font-semibold tabular-nums",
+                                    profit >= 0 ? "text-success" : "text-danger"
+                                  )}
+                                >
+                                  ${profit.toFixed(2)}
+                                </p>
+                              </div>
+                              <div>
+                                <p className="text-xs font-medium text-muted-foreground">ROI</p>
+                                <p
+                                  className={cn(
+                                    "text-lg font-semibold tabular-nums",
+                                    profit >= 0 ? "text-success" : "text-danger"
+                                  )}
+                                >
+                                  {roi.toFixed(0)}%
+                                </p>
+                              </div>
+                              {clearsTarget != null && (
+                                <Badge tone={clearsTarget ? "success" : "warning"} className="mb-1">
+                                  {clearsTarget ? `Clears your ${targetMarginPct}% target` : `Below your ${targetMarginPct}% target`}
+                                </Badge>
+                              )}
+                              {evaluation.maxBid != null && (
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => setCustomBid(evaluation.maxBid!.toFixed(2))}
+                                  className="mb-0.5"
+                                >
+                                  Reset to max bid
+                                </Button>
+                              )}
+                            </>
+                          );
+                        })()}
                       </div>
-                    );
-                  })()}
-                </div>
+                      {(() => {
+                        const bid = parseFloat(customBid);
+                        if (!Number.isFinite(bid) || bid <= 0) return null;
+                        const { dudShare, concentrationRisk, targetMarginPct, minBidFloor, expectedNetContribution } =
+                          evaluation;
+                        if (expectedNetContribution == null) return null;
+
+                        // The original recommendation can land on "dont_buy" for
+                        // reasons that have nothing to do with the price paid —
+                        // too many duds, or one weak item dominating the manifest
+                        // (see evaluateManifest's recommendation logic). No bid,
+                        // however low, fixes those, so a hypothetical price never
+                        // gets to override them — Cristian's own instruction:
+                        // only let the price change the verdict when the original
+                        // "no" actually was about price.
+                        const structuralReasons: string[] = [];
+                        if (dudShare != null && dudShare >= 0.6) {
+                          structuralReasons.push(`${(dudShare * 100).toFixed(0)}% of lines are likely duds`);
+                        }
+                        if (concentrationRisk) {
+                          structuralReasons.push("one item dominates the manifest's value and looks weak");
+                        }
+
+                        let good: boolean;
+                        let label: string;
+                        if (structuralReasons.length > 0) {
+                          good = false;
+                          label = "Still don't buy";
+                        } else {
+                          const roi = ((expectedNetContribution - bid) / bid) * 100;
+                          const clearsFloor = minBidFloor == null || bid >= minBidFloor;
+                          // Same rounding-consistency fix as the ROI badge above —
+                          // compare the displayed whole-percent figure, not the
+                          // raw float, so this can't disagree with the number
+                          // shown right next to it.
+                          const clearsMargin = targetMarginPct == null || Math.round(roi) >= targetMarginPct;
+                          good = clearsFloor && clearsMargin;
+                          label = good ? "Buy at this price" : "Don't buy at this price";
+                        }
+
+                        return (
+                          <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-3">
+                            <Badge tone={good ? "success" : "danger"} size="lg">
+                              {label}
+                            </Badge>
+                            {structuralReasons.length > 0 && (
+                              <span className="text-sm text-muted-foreground">
+                                Not a price issue — {structuralReasons.join(" and ")}. No bid price fixes this.
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+                </>
               )}
 
               {evaluation.reasoning && (

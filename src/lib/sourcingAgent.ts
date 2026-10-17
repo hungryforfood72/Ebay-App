@@ -91,7 +91,7 @@ export async function setLongTailMonths(months: number): Promise<void> {
 const EXPIRING_PRODUCT =
   /\b(sunscreen|sunblock|spf|vitamins?|multivitamin|supplements?|softgels?|caplets?|tablets?|capsules?|gumm(y|ies)|probiotics?|ibuprofen|acetaminophen|naproxen|aspirin|antacid|laxative|allergy|antihistamine|cough|cold & flu|sinus|nasal spray|pain relie(f|ving)|eye drops?|dry eye|eye relief|artificial tears|lubricant eye|contact (lens )?solution|mouthwash|mouth rinse|oral rinse|saline|electrolytes?|protein|formula|baby food|snacks?|candy|chocolate|cookies?|chips|jerky|coffee|creamer|cappuccino|drink mix|energy drink|tuna|trail mix|nuts|pet food|dog food|cat food|treats)\b/i;
 
-async function expiresByDate(upc: string | null, description: string): Promise<boolean> {
+export async function expiresByDate(upc: string | null, description: string): Promise<boolean> {
   if (upc) {
     const scanned = await prisma.item.findMany({
       where: { upc, isBundle: false },
@@ -192,7 +192,7 @@ const VELOCITY_LOOKBACK_DAYS = 90;
 // mapping — used
 // when a UPC/category has real sales history but literally zero of it
 // happened within the recent window (selling has effectively stalled).
-const STALLED_MONTHS_SENTINEL = 9999;
+export const STALLED_MONTHS_SENTINEL = 9999;
 
 // Physical units of `sales` sold within the last VELOCITY_LOOKBACK_DAYS,
 // reusing whatever sales array the caller already fetched (own or
@@ -1899,6 +1899,7 @@ export async function evaluateManifestChunk(
     evaluationId,
     manifestTitle: manifest.title,
     supplier: manifest.supplier,
+    consignmentSupplierPct: manifest.consignment ? (manifest.consignmentSupplierPct ?? 50) : null,
     targetMarginPct,
     receiveRate,
     totalExpectedNetContribution,
@@ -2009,6 +2010,8 @@ const SELL_RATE_SOURCE_LABELS = {
 async function writeReasoning(input: {
   evaluationId: string;
   manifestTitle: string;
+  // Set for a consignment load (src/lib/consignment.ts): no bid at all.
+  consignmentSupplierPct: number | null;
   supplier: string;
   targetMarginPct: number;
   receiveRate: number;
@@ -2037,8 +2040,12 @@ async function writeReasoning(input: {
   const prompt = `You are explaining a liquidation manifest sourcing decision that has ALREADY been computed. Do not redo the math or change the call — just write a clear, plain-language explanation a busy reseller can read in 10 seconds and trust.
 
 Manifest: "${input.manifestTitle}" from ${input.supplier}
-Call: ${input.recommendation.toUpperCase().replace("_", " ")}
-Max recommended bid: $${input.maxBid.toFixed(2)}
+${
+  input.consignmentSupplierPct != null
+    ? `THIS LOAD IS ON CONSIGNMENT: there is no bid and no upfront cost. The owner picks which items to take, pays the supplier ${input.consignmentSupplierPct}% of the profit after eBay fees and the shipping label only when something sells, and can return whatever doesn't sell. Ignore the buy/bid framing in the numbers below: instead, explain which kinds of items are worth taking, which to leave behind and why, and that slow sellers are worth taking only in the amount that sells within the time limits (the rest stays with the supplier). The app shows the exact pick list separately, so don't list quantities.`
+    : `Call: ${input.recommendation.toUpperCase().replace("_", " ")}
+Max recommended bid: $${input.maxBid.toFixed(2)}`
+}
 Expected net contribution before bid cost: $${input.totalExpectedNetContribution.toFixed(2)}
 Target margin used: ${input.targetMarginPct}%
 Expected net from lines bid cheap: $${input.unprovenNetContribution.toFixed(2)}. Two kinds: lines with NO sell-speed evidence at all (never sold by us, too few live listings to measure, no similar sales), and non-expiring lines that sell too slowly for full value but within a year. The owner is growing by reinvesting profit into more inventory and is fine holding slow, non-expiring stock, but only when it's cheap, since fast sellers free up cash sooner. These were bid at a ${input.unprovenMarginPct}% margin instead. Describe the slow ones as bonus profit the buy doesn't depend on: the fast sellers are what pay for the load.${input.unprovenLines.length > 0 ? ` Biggest ones:\n${input.unprovenLines.join("\n")}` : ""}
