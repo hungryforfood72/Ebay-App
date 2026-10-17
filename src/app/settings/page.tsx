@@ -5,7 +5,10 @@ import { Badge } from "@/components/ui/Badge";
 import { Button, buttonClasses } from "@/components/ui/Button";
 import { Card, SectionHeader } from "@/components/ui/Card";
 import { Field, Input, Select } from "@/components/ui/Input";
-import { Check, Printer, Trash2, X } from "lucide-react";
+import type { BoxSizeDto } from "@/lib/warehouse/boxSizes";
+import { printLabelBatch } from "@/lib/warehouse/labelPrint";
+import type { StationStatus } from "@/lib/warehouse/types";
+import { Check, ExternalLink, Pencil, Printer, Trash2, X } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState, type ReactNode } from "react";
 
@@ -34,13 +37,13 @@ function SettingsPageInner() {
         </SettingsGroup>
 
         <SettingsGroup title="Scanning">
-          <LabelListEditor
-            apiPath="/api/box-sizes"
-            title="Box sizes"
-            description="These show up as a dropdown on the scan and review pages' Box Size field."
-            placeholder="e.g. Small 6x4x2"
-          />
           <ShelfLocationsEditor />
+        </SettingsGroup>
+
+        <SettingsGroup title="Warehouse" id="warehouse">
+          <WarehouseModeCard />
+          <StationsManager />
+          <BoxSizesEditor />
         </SettingsGroup>
 
         <SettingsGroup title="Sourcing agent">
@@ -63,9 +66,9 @@ function SettingsPageInner() {
   );
 }
 
-function SettingsGroup({ title, children }: { title: string; children: ReactNode }) {
+function SettingsGroup({ title, id, children }: { title: string; id?: string; children: ReactNode }) {
   return (
-    <section>
+    <section id={id} className="scroll-mt-20">
       <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</h2>
       <div className="flex flex-col gap-4">{children}</div>
     </section>
@@ -1021,101 +1024,9 @@ function EbaySaleAlerts() {
   );
 }
 
-function LabelListEditor({
-  apiPath,
-  title,
-  description,
-  placeholder,
-}: {
-  apiPath: string;
-  title: string;
-  description: string;
-  placeholder: string;
-}) {
-  const [entries, setEntries] = useState<LabeledEntry[] | null>(null);
-  const [newLabel, setNewLabel] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function load() {
-    const res = await fetch(apiPath);
-    setEntries(await res.json());
-  }
-
-  useEffect(() => {
-    // Initial data load on mount, not a reaction to state we own.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  async function addEntry() {
-    const label = newLabel.trim();
-    if (!label) return;
-    setSaving(true);
-    setError(null);
-    try {
-      const res = await fetch(apiPath, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ label }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error ?? "Failed to add.");
-      }
-      setNewLabel("");
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Something went wrong.");
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function removeEntry(id: string) {
-    setEntries((prev) => prev?.filter((b) => b.id !== id) ?? prev);
-    await fetch(`${apiPath}/${id}`, { method: "DELETE" });
-  }
-
-  return (
-    <Card>
-      <SectionHeader
-        title={title}
-        description={description}
-        action={entries && entries.length > 0 ? <Badge>{entries.length}</Badge> : undefined}
-      />
-      <div className="mb-4 flex gap-2">
-        <Input
-          size="sm"
-          type="text"
-          placeholder={placeholder}
-          value={newLabel}
-          onChange={(e) => setNewLabel(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && addEntry()}
-          aria-label={`New ${title.toLowerCase()}`}
-          className="min-w-0"
-        />
-        <Button onClick={addEntry} disabled={saving || !newLabel.trim()} className="shrink-0">
-          Add
-        </Button>
-      </div>
-      {error && <p className="mb-3 text-sm font-medium text-danger">{error}</p>}
-      {!entries ? (
-        <p className="text-sm text-muted-foreground">Loading…</p>
-      ) : entries.length === 0 ? (
-        <p className="text-sm text-muted-foreground">Nothing yet — add one above.</p>
-      ) : (
-        <LabelChips entries={entries} onRemove={removeEntry} />
-      )}
-    </Card>
-  );
-}
-
-// Shelf locations get their own editor (rather than reusing LabelListEditor)
-// because they also support adding a whole range at once (e.g. "A1-A50")
-// and printing scannable barcode labels for a range — neither applies to
-// box sizes.
+// Shelf locations get their own editor because they also support adding a
+// whole range at once (e.g. "A1-A50") and printing scannable barcode labels
+// for a range.
 function ShelfLocationsEditor() {
   const [entries, setEntries] = useState<LabeledEntry[] | null>(null);
   const [newLabel, setNewLabel] = useState("");
@@ -1328,6 +1239,467 @@ function ExpirationBufferSetting() {
         />
         <SaveButton onClick={save} disabled={saving || !value} saving={saving} saved={saved} />
       </div>
+    </Card>
+  );
+}
+
+// Warehouse mode switch (src/lib/warehouse/settings.ts). The nav links for
+// Sort, Bins, Pick orders and Station appear once it's on.
+function WarehouseModeCard() {
+  const [on, setOn] = useState<boolean | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/warehouse/mode")
+      .then((r) => r.json())
+      .then((d: { on: boolean }) => setOn(d.on));
+  }, []);
+
+  async function toggle() {
+    if (on === null) return;
+    setSaving(true);
+    setMessage(null);
+    try {
+      const res = await fetch("/api/warehouse/mode", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ on: !on }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error ?? "Couldn't change it.");
+      setOn(d.on);
+      setMessage("Saved. Reload other open pages to see the change in the menu.");
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card>
+      <SectionHeader
+        title="Warehouse mode"
+        description="Bins, item labels, the station scale and order picking. New items get a label code (like ES000123) as their SKU. Items listed before keep their shelf location and SKU."
+      />
+      {on === null ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-background p-3">
+          <p className="flex items-center gap-2 font-medium text-foreground">
+            <span className={on ? "size-2.5 rounded-full bg-green-500" : "size-2.5 rounded-full bg-zinc-300"} aria-hidden />
+            {on ? "On" : "Off"}
+          </p>
+          <Button size="sm" variant={on ? "outline" : "primary"} onClick={toggle} disabled={saving}>
+            {saving ? "Saving…" : on ? "Turn off" : "Turn on"}
+          </Button>
+        </div>
+      )}
+      {message && <p className="mt-2 text-sm text-foreground">{message}</p>}
+    </Card>
+  );
+}
+
+// Listing stations: a PC with the scale and the Rollo, running the
+// /station/{id} page. Handhelds pick one to get their weight from, and its
+// labels print there.
+function StationsManager() {
+  const [stations, setStations] = useState<StationStatus[] | null>(null);
+  const [name, setName] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function load() {
+    fetch("/api/stations")
+      .then((r) => r.json())
+      .then((d: StationStatus[]) => setStations(d));
+  }
+
+  useEffect(load, []);
+
+  async function add() {
+    if (!name.trim()) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/stations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim() }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error ?? "Couldn't add the station.");
+      setName("");
+      load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove(s: StationStatus) {
+    if (!confirm(`Delete "${s.name}"? Its print history goes with it, and handhelds using it will need to pick another.`)) return;
+    setError(null);
+    const res = await fetch(`/api/stations/${s.id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      setError(d.error ?? "Couldn't delete the station.");
+    }
+    load();
+  }
+
+  return (
+    <Card>
+      <SectionHeader
+        title="Stations"
+        description="Each listing station is a PC with the scale and label printer. Open its page on that PC and leave it open; the page has setup steps."
+        action={stations && stations.length > 0 ? <Badge>{stations.length}</Badge> : undefined}
+      />
+      <div className="mb-4 flex gap-2">
+        <Input
+          size="sm"
+          type="text"
+          placeholder="e.g. Station 1"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && add()}
+          aria-label="New station name"
+          className="min-w-0"
+        />
+        <Button onClick={add} disabled={saving || !name.trim()} className="shrink-0">
+          Add
+        </Button>
+      </div>
+      {error && <p className="mb-3 text-sm font-medium text-danger">{error}</p>}
+      {!stations ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : stations.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No stations yet. Add one above.</p>
+      ) : (
+        <ul className="divide-y divide-border rounded-lg border border-border">
+          {stations.map((s) => (
+            <li key={s.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
+              <div className="min-w-0">
+                <p className="flex items-center gap-2 font-medium text-foreground">
+                  <span className="truncate">{s.name}</span>
+                  <Badge tone={s.online ? "success" : "neutral"}>{s.online ? "Online" : "Offline"}</Badge>
+                </p>
+                {s.online && s.weightOz !== null && (
+                  <p className="text-xs text-muted-foreground">Scale reads {s.weightOz.toFixed(1)} oz</p>
+                )}
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                <a
+                  href={`/station/${s.id}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className={buttonClasses({ variant: "outline", size: "sm" })}
+                >
+                  <ExternalLink className="size-4" aria-hidden />
+                  Open
+                </a>
+                <Button variant="danger-ghost" size="sm" onClick={() => remove(s)} aria-label={`Delete ${s.name}`}>
+                  <Trash2 className="size-4" aria-hidden />
+                </Button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
+type BoxForm = { label: string; code: string; tareOz: string; lengthIn: string; widthIn: string; heightIn: string };
+
+const EMPTY_BOX_FORM: BoxForm = { label: "", code: "", tareOz: "", lengthIn: "", widthIn: "", heightIn: "" };
+
+function boxToForm(b: BoxSizeDto): BoxForm {
+  const str = (n: number | null) => (n == null ? "" : String(n));
+  return {
+    label: b.label,
+    code: b.code ?? "",
+    tareOz: str(b.tareOz),
+    lengthIn: str(b.lengthIn),
+    widthIn: str(b.widthIn),
+    heightIn: str(b.heightIn),
+  };
+}
+
+// "Empty 3.2 oz · 6 x 4 x 2 in", or what's missing.
+function boxDetails(b: BoxSizeDto): string {
+  const parts = [b.tareOz != null ? `Empty ${b.tareOz} oz` : "No empty weight yet"];
+  if (b.lengthIn != null && b.widthIn != null && b.heightIn != null) {
+    parts.push(`${b.lengthIn} x ${b.widthIn} x ${b.heightIn} in`);
+  }
+  return parts.join(" · ");
+}
+
+// Number input with a short unit inside it, sized to fill its grid cell
+// (SuffixInput above is a fixed width).
+function UnitInput({ suffix, ...props }: Omit<React.ComponentProps<typeof Input>, "type" | "size"> & { suffix: string }) {
+  return (
+    <div className="relative">
+      <Input size="sm" type="number" min={0} {...props} className="pr-10" />
+      <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-muted-foreground">
+        {suffix}
+      </span>
+    </div>
+  );
+}
+
+// The fields for adding or editing a box.
+function BoxFields({ form, onChange }: { form: BoxForm; onChange: (form: BoxForm) => void }) {
+  const set = (key: keyof BoxForm) => (e: React.ChangeEvent<HTMLInputElement>) => onChange({ ...form, [key]: e.target.value });
+  return (
+    <div className="grid gap-3 sm:grid-cols-[1fr_7rem_9rem]">
+      <Field label="Name">
+        <Input size="sm" type="text" placeholder="e.g. Small 6x4x2" value={form.label} onChange={set("label")} />
+      </Field>
+      <Field label="Code" hint="Blank = next one">
+        <Input size="sm" type="text" autoCapitalize="characters" placeholder="BX001" value={form.code} onChange={set("code")} />
+      </Field>
+      <Field label="Empty box weight">
+        <UnitInput suffix="oz" step="0.1" value={form.tareOz} onChange={set("tareOz")} />
+      </Field>
+      <div className="grid grid-cols-3 gap-2 sm:col-span-3 sm:max-w-sm">
+        <Field label="Length">
+          <UnitInput suffix="in" step="0.25" value={form.lengthIn} onChange={set("lengthIn")} />
+        </Field>
+        <Field label="Width">
+          <UnitInput suffix="in" step="0.25" value={form.widthIn} onChange={set("widthIn")} />
+        </Field>
+        <Field label="Height">
+          <UnitInput suffix="in" step="0.25" value={form.heightIn} onChange={set("heightIn")} />
+        </Field>
+      </div>
+    </div>
+  );
+}
+
+// Box sizes: the Box Size dropdown on the scan and review pages, and in
+// warehouse mode a barcode for each (stuck up at the station) that the
+// lister scans so the empty box's weight gets added to the scale reading.
+// Codes are given out automatically (BX001, BX002...); boxes from before
+// warehouse mode got theirs the first time the list loaded.
+const PRINT_HERE = "here";
+
+function BoxSizesEditor() {
+  const [boxes, setBoxes] = useState<BoxSizeDto[] | null>(null);
+  const [stations, setStations] = useState<StationStatus[]>([]);
+  const [newBox, setNewBox] = useState<BoxForm>(EMPTY_BOX_FORM);
+  const [editing, setEditing] = useState<{ id: string; form: BoxForm } | null>(null);
+  const [target, setTarget] = useState(PRINT_HERE);
+  const [copies, setCopies] = useState("1");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [printMessage, setPrintMessage] = useState<string | null>(null);
+
+  async function load() {
+    const res = await fetch("/api/box-sizes");
+    setBoxes(await res.json());
+  }
+
+  useEffect(() => {
+    // Initial data load on mount, not a reaction to state we own.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    load();
+    fetch("/api/stations")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((d: StationStatus[]) => {
+        setStations(d);
+        // Default to a station that's open right now, else print here.
+        const online = d.find((s) => s.online);
+        if (online) setTarget(online.id);
+      })
+      .catch(() => {});
+  }, []);
+
+  async function save(id: string | null, form: BoxForm): Promise<boolean> {
+    if (!form.label.trim()) return false;
+    setSaving(true);
+    setError(null);
+    try {
+      const res = await fetch(id ? `/api/box-sizes/${id}` : "/api/box-sizes", {
+        method: id ? "PATCH" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error ?? "Couldn't save the box.");
+      }
+      await load();
+      return true;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong.");
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove(b: BoxSizeDto) {
+    if (!confirm(`Remove "${b.label}"?${b.code ? ` Its barcode (${b.code}) stops working.` : ""}`)) return;
+    setBoxes((prev) => prev?.filter((x) => x.id !== b.id) ?? prev);
+    await fetch(`/api/box-sizes/${b.id}`, { method: "DELETE" });
+  }
+
+  async function print(list: BoxSizeDto[]) {
+    const n = Number(copies);
+    if (!Number.isInteger(n) || n < 1 || n > 50) {
+      setPrintMessage("Copies must be 1 to 50.");
+      return;
+    }
+    const labels = list
+      .filter((b) => b.code)
+      .map((b) => ({ kind: "box" as const, payload: { code: b.code!, caption: b.label }, copies: n }));
+    if (labels.length === 0) return;
+    setPrintMessage(null);
+    try {
+      if (target === PRINT_HERE) {
+        await printLabelBatch(labels);
+        return;
+      }
+      for (const label of labels) {
+        const res = await fetch(`/api/stations/${target}/print`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(label),
+        });
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          throw new Error(d.error ?? "Couldn't send the labels.");
+        }
+      }
+      const station = stations.find((s) => s.id === target);
+      const total = labels.length * n;
+      setPrintMessage(
+        `Sent ${total} label${total === 1 ? "" : "s"} to ${station?.name ?? "the station"}.` +
+          (station && !station.online ? " It's offline, so they'll print once its page is open." : "")
+      );
+    } catch (e) {
+      setPrintMessage(e instanceof Error ? e.message : "Couldn't print.");
+    }
+  }
+
+  return (
+    <Card>
+      <SectionHeader
+        title="Box sizes"
+        description="The Box Size dropdown on the scan and review pages. In warehouse mode, stick each box's barcode up at the station: scanning it adds the empty box's weight to the scale reading."
+        action={boxes && boxes.length > 0 ? <Badge>{boxes.length}</Badge> : undefined}
+      />
+
+      <div className="mb-4 rounded-lg border border-border bg-background p-3">
+        <p className="mb-2 text-sm font-medium text-foreground">Add a box</p>
+        <BoxFields form={newBox} onChange={setNewBox} />
+        <Button
+          className="mt-1"
+          onClick={async () => {
+            if (await save(null, newBox)) setNewBox(EMPTY_BOX_FORM);
+          }}
+          disabled={saving || !newBox.label.trim()}
+        >
+          Add box
+        </Button>
+      </div>
+
+      {error && <p className="mb-3 text-sm font-medium text-danger">{error}</p>}
+
+      {!boxes ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : boxes.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No boxes yet. Add one above.</p>
+      ) : (
+        <>
+          <ul className="mb-4 divide-y divide-border rounded-lg border border-border">
+            {boxes.map((b) =>
+              editing?.id === b.id ? (
+                <li key={b.id} className="px-3 py-3">
+                  <BoxFields form={editing.form} onChange={(form) => setEditing({ id: b.id, form })} />
+                  <div className="mt-1 flex gap-2">
+                    <Button
+                      size="sm"
+                      onClick={async () => {
+                        if (await save(b.id, editing.form)) setEditing(null);
+                      }}
+                      disabled={saving || !editing.form.label.trim()}
+                    >
+                      {saving ? "Saving…" : "Save"}
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setEditing(null)}>
+                      Cancel
+                    </Button>
+                  </div>
+                </li>
+              ) : (
+                <li key={b.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
+                  <div className="min-w-0">
+                    <p className="flex items-center gap-2 font-medium text-foreground">
+                      {b.code && <Badge className="font-mono">{b.code}</Badge>}
+                      <span className="truncate">{b.label}</span>
+                    </p>
+                    <p className={b.tareOz == null ? "text-xs text-warning" : "text-xs text-muted-foreground"}>
+                      {boxDetails(b)}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => print([b])}
+                      disabled={!b.code}
+                      aria-label={`Print barcode for ${b.label}`}
+                    >
+                      <Printer className="size-4" aria-hidden />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setEditing({ id: b.id, form: boxToForm(b) })}
+                      aria-label={`Edit ${b.label}`}
+                    >
+                      <Pencil className="size-4" aria-hidden />
+                    </Button>
+                    <Button variant="danger-ghost" size="sm" onClick={() => remove(b)} aria-label={`Remove ${b.label}`}>
+                      <Trash2 className="size-4" aria-hidden />
+                    </Button>
+                  </div>
+                </li>
+              )
+            )}
+          </ul>
+
+          <div className="rounded-lg border border-border bg-background p-3">
+            <p className="mb-2 text-sm font-medium text-foreground">Print box barcodes</p>
+            <div className="grid gap-3 sm:grid-cols-[1fr_7rem_auto] sm:items-end">
+              <Field label="Print on">
+                <Select size="sm" value={target} onChange={(e) => setTarget(e.target.value)}>
+                  {stations.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                      {s.online ? "" : " (offline)"}
+                    </option>
+                  ))}
+                  <option value={PRINT_HERE}>This computer</option>
+                </Select>
+              </Field>
+              <Field label="Copies each">
+                <Input size="sm" type="number" min={1} max={50} value={copies} onChange={(e) => setCopies(e.target.value)} />
+              </Field>
+              <Button onClick={() => print(boxes)}>
+                <Printer className="size-4" aria-hidden />
+                Print all ({boxes.length})
+              </Button>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">2 x 1 in labels. The printer button on a box prints just that one.</p>
+            {printMessage && <p className="mt-2 text-sm text-foreground">{printMessage}</p>}
+          </div>
+        </>
+      )}
     </Card>
   );
 }

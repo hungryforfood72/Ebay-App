@@ -64,6 +64,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       pricePerUnit,
       note,
       recordedBy,
+      // Warehouse mode: the bin on the shelf the seller scanned goes first.
+      binCode: typeof body.binCode === "string" && body.binCode ? body.binCode : null,
     });
     return NextResponse.json({ item: updatedItem, adjustment }, { status: 201 });
   } catch (e) {

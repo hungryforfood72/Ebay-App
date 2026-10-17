@@ -2,6 +2,7 @@ import { computeWalkupPrices, getWalkupSaleSettings } from "@/lib/walkupSale";
 import { getLiveAvailableQuantity } from "@/lib/ebay";
 import { parseBundleComponentUnits } from "@/lib/itemUnits";
 import { prisma } from "@/lib/prisma";
+import { classifyScan, normalizeCode } from "@/lib/warehouse/codes";
 import { NextRequest, NextResponse } from "next/server";
 
 // Finds an already-listed shelf item by shelf location + UPC, with no
@@ -10,14 +11,21 @@ import { NextRequest, NextResponse } from "next/server";
 // which manifest a UPC belongs to). Used by the "Sell Shelf Item" scan mode:
 // scan the shelf location, then the UPC, and this figures out which
 // listing that is (and which manifest, if any) on its own.
+//
+// Warehouse mode: "shelf location" also matches items whose bins are on
+// that shelf, and the UPC field also takes the item's own label (ES000123,
+// its sku), which finds the listing directly whatever shelf was scanned.
+// binCode in the answer is the bin on that shelf holding it, for the sale
+// route to take the units out of first.
 export async function GET(request: NextRequest) {
   const shelfLocation = request.nextUrl.searchParams.get("shelfLocation")?.trim();
   const upc = request.nextUrl.searchParams.get("upc")?.trim();
-  if (!shelfLocation) {
-    return NextResponse.json({ error: "A shelf location is required." }, { status: 400 });
-  }
   if (!upc) {
     return NextResponse.json({ error: "A UPC is required." }, { status: 400 });
+  }
+  const itemCode = classifyScan(upc) === "item" ? normalizeCode(upc) : null;
+  if (!shelfLocation && !itemCode) {
+    return NextResponse.json({ error: "A shelf location is required." }, { status: 400 });
   }
 
   // Item.upc is always null for a bundle — its components carry their own
@@ -30,9 +38,16 @@ export async function GET(request: NextRequest) {
   // not come back empty.
   const candidates = await prisma.item.findMany({
     where: {
-      shelfLocation: { equals: shelfLocation, mode: "insensitive" },
+      ...(itemCode
+        ? { sku: itemCode }
+        : {
+            OR: [
+              { shelfLocation: { equals: shelfLocation, mode: "insensitive" } },
+              { binContents: { some: { bin: { shelfLabel: { equals: shelfLocation, mode: "insensitive" } } } } },
+            ],
+          }),
       status: { in: ["listed", "exported"] },
-      OR: [{ ebayOfferId: { not: null } }, { ebayListingId: { not: null } }, { shopifyOnly: true }],
+      AND: [{ OR: [{ ebayOfferId: { not: null } }, { ebayListingId: { not: null } }, { shopifyOnly: true }] }],
     },
     select: {
       id: true,
@@ -49,16 +64,26 @@ export async function GET(request: NextRequest) {
       isBundle: true,
       upc: true,
       bundleComponents: true,
+      binContents: { select: { bin: { select: { code: true, shelfLabel: true } } }, orderBy: { placedAt: "asc" } },
     },
   });
-  const matches = candidates.filter(
-    (i) =>
-      (!i.isBundle && i.upc === upc) ||
-      (i.isBundle && parseBundleComponentUnits(i.bundleComponents).some((c) => c.upc === upc))
-  );
+  const matches = itemCode
+    ? candidates
+    : candidates.filter(
+        (i) =>
+          (!i.isBundle && i.upc === upc) ||
+          (i.isBundle && parseBundleComponentUnits(i.bundleComponents).some((c) => c.upc === upc))
+      );
 
   if (matches.length === 0) {
-    return NextResponse.json({ error: "No listed item at that shelf location with that UPC." }, { status: 404 });
+    return NextResponse.json(
+      {
+        error: itemCode
+          ? `No listed item with label ${itemCode}.`
+          : "No listed item at that shelf location with that UPC.",
+      },
+      { status: 404 }
+    );
   }
   if (matches.length > 1) {
     // Never silently guess which one on a money-affecting match — ask
@@ -69,6 +94,11 @@ export async function GET(request: NextRequest) {
     );
   }
   const item = matches[0];
+  const shelfKey = shelfLocation?.toLowerCase();
+  const binCode =
+    (shelfKey && item.binContents.find((c) => c.bin.shelfLabel?.toLowerCase() === shelfKey)?.bin.code) ??
+    item.binContents[0]?.bin.code ??
+    null;
 
   const storedAvailable = Math.max(0, item.quantity - item.soldQuantity);
   const liveAvailable = await getLiveAvailableQuantity(item);
@@ -81,6 +111,22 @@ export async function GET(request: NextRequest) {
     isMultipack: item.isMultipack,
     packSize: item.packSize,
   };
+
+  if (itemCode && !item.isBundle) {
+    // Found by its label, not a UPC: the manifest walk-up route checks the
+    // UPC the client sends against the item's, so a label scan goes
+    // through the item-only shelf-sale route (manifestId: null), which
+    // accepts the label. The sale itself is recorded the same way either
+    // way; the suggested price falls back to the listed price.
+    return NextResponse.json({
+      itemId: item.id,
+      manifestId: null,
+      binCode,
+      description: item.finalTitle ?? item.aiTitle ?? "Untitled item",
+      currentListedPrice: item.price != null ? Number(item.price) : null,
+      alreadyListed,
+    });
+  }
 
   if (item.isBundle) {
     // A bundle's price isn't any single manifest line's price (it's
@@ -96,6 +142,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       itemId: item.id,
       manifestId: null,
+      binCode,
       isBundle: true,
       description: item.finalTitle ?? item.aiTitle ?? "Untitled bundle",
       currentListedPrice: item.price != null ? Number(item.price) : null,
@@ -112,6 +159,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       itemId: item.id,
       manifestId: null,
+      binCode,
       description: item.finalTitle ?? item.aiTitle ?? "Untitled item",
       currentListedPrice: item.price != null ? Number(item.price) : null,
       alreadyListed,
@@ -129,6 +177,7 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       itemId: item.id,
       manifestId: item.manifestId,
+      binCode,
       description: item.finalTitle ?? item.aiTitle ?? "Untitled item",
       currentListedPrice: item.price != null ? Number(item.price) : null,
       alreadyListed,
@@ -153,6 +202,7 @@ export async function GET(request: NextRequest) {
   return NextResponse.json({
     itemId: item.id,
     manifestId: item.manifestId,
+    binCode,
     description: line.description,
     retailPrice: Number(line.retailPrice),
     landedCostPerUnit,

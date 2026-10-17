@@ -300,6 +300,10 @@ model Item {
 
   shopifySales ShopifySale[]
   inPersonSales InPersonSale[]
+  // Warehouse mode (src/lib/warehouse): which bins hold this listing's
+  // units right now, and each order-pick scan against it.
+  binContents BinContent[]
+  orderPicks  OrderPick[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -533,6 +537,15 @@ model EbayCategory {
 model BoxSize {
   id        String   @id @default(uuid())
   label     String   @unique
+  // Warehouse mode: the barcode staff scan at the listing station to pick
+  // this box ("BX001", see src/lib/warehouse/codes.ts), the empty box's
+  // weight (added to the scale reading to get the package weight), and its
+  // inside dimensions. All null for boxes set up before warehouse mode.
+  code      String? // unique, enforced in code: Prisma blocks adding the constraint from Claude Code
+  tareOz    Decimal? @db.Decimal(6, 2)
+  lengthIn  Decimal? @db.Decimal(5, 2)
+  widthIn   Decimal? @db.Decimal(5, 2)
+  heightIn  Decimal? @db.Decimal(5, 2)
   createdAt DateTime @default(now())
 }
 
@@ -541,6 +554,12 @@ model BoxSize {
 model ShelfLocation {
   id        String   @id @default(uuid())
   label     String   @unique
+  // Warehouse mode cutover: old-system items (Item.shelfLocation) stay where
+  // they are, and a shelf only starts taking bins once it's fully empty of
+  // them and someone has looked and confirmed it (Cristian, 2026-10-17).
+  // A shelf no old item ever used takes bins without this.
+  binsAllowedAt DateTime?
+  binsAllowedBy String?
   createdAt DateTime @default(now())
 }
 
@@ -1243,4 +1262,137 @@ model ConsignmentPickScan {
   scannedAt  DateTime @default(now())
 
   @@index([manifestId, scannedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Warehouse mode (src/lib/warehouse). Off until the "warehouse_mode"
+// AppSetting is "on". Flow: sort station pulls damaged/expired/duds, the
+// listing station weighs the item (Dymo M25 on a station PC), scans a box
+// barcode, prints a 1x2" label with the item's code (which is also its
+// eBay custom label), and the item goes into a bin. Bins get shelved by
+// scanning bin + shelf, merged or emptied over time, and every order pick
+// is verified by scanning the item's label.
+// ---------------------------------------------------------------------------
+
+// Hands out the number in each new item's label code (ES000123). A row per
+// code, autoincrement, so two listing stations saving at the same moment
+// can never get the same number.
+model LabelCounter {
+  id        Int      @id @default(autoincrement())
+  createdAt DateTime @default(now())
+}
+
+// A physical bin with its own barcode ("BN0001"), filled at the binning
+// station by scanning item labels into it. Empty = no BinContent rows; it
+// can be reused. shelfLabel is the ShelfLocation.label it sits on
+// (null = not shelved yet, e.g. still filling at a listing station). When
+// an empty bin gets something placed in it, it's back at a station, so its
+// shelf is cleared (see placeInBin).
+model Bin {
+  id         String    @id @default(uuid())
+  code       String    @unique
+  shelfLabel String?
+  shelvedAt  DateTime?
+  shelvedBy  String?
+  emptiedAt  DateTime?
+  // The binning station tapped "Close bin": done filling, ready to shelve.
+  // Cleared when the bin empties out (then it's reusable).
+  closedAt   DateTime?
+  closedBy   String?
+  createdAt  DateTime  @default(now())
+
+  contents BinContent[]
+
+  @@index([shelfLabel])
+}
+
+// How many of one listing's sellable units are in one bin. A unit is one of
+// the listing's quantity (a 3-pack listing with quantity 2 = 2 units, each
+// a bag of 3 with its own copy of the label). Rows are deleted at 0.
+model BinContent {
+  id        String   @id @default(uuid())
+  bin       Bin      @relation(fields: [binId], references: [id], onDelete: Restrict)
+  binId     String
+  item      Item     @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  itemId    String
+  units     Int
+  placedAt  DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([binId, itemId])
+  @@index([itemId])
+}
+
+// Every bin change, for "where did this go" questions. Codes are stored as
+// text (not FKs) so the log survives bins being deleted.
+model BinMove {
+  id          String   @id @default(uuid())
+  // place | pick | sale | pull | adjust | transfer | merge | shelve | unshelve
+  kind        String
+  itemId      String?
+  fromBinCode String?
+  toBinCode   String?
+  shelfLabel  String?
+  units       Int?
+  note        String?
+  by          String?
+  createdAt   DateTime @default(now())
+
+  @@index([itemId])
+  @@index([createdAt])
+}
+
+// A listing station PC: Chrome open on /station/{id} with the Dymo M25 and
+// the Rollo plugged in. It reports the scale reading here and prints any
+// queued PrintJob. Handhelds pick their station once (remembered on the
+// device) and read its weight while listing.
+model Station {
+  id           String    @id @default(uuid())
+  name         String    @unique
+  weightOz     Decimal?  @db.Decimal(8, 2)
+  weightStable Boolean   @default(false)
+  weightAt     DateTime?
+  lastSeenAt   DateTime?
+  createdAt    DateTime  @default(now())
+
+  printJobs PrintJob[]
+}
+
+// A label waiting to be printed at a station. payload shape depends on kind
+// (src/lib/warehouse/types.ts). copies = labels to print.
+model PrintJob {
+  id        String    @id @default(uuid())
+  station   Station   @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  stationId String
+  // item | bin | shelf | box
+  kind      String
+  payload   Json
+  copies    Int       @default(1)
+  // queued | printing | printed | failed
+  status    String    @default("queued")
+  error     String?
+  createdBy String?
+  createdAt DateTime  @default(now())
+  printedAt DateTime?
+
+  @@index([stationId, status])
+}
+
+// One row per unit picked for an order, verified by scanning the item's
+// label. Picked count for a line = rows with that lineItemId.
+model OrderPick {
+  id         String   @id @default(uuid())
+  // ebay | shopify
+  channel    String
+  orderId    String
+  lineItemId String
+  item       Item     @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  itemId     String
+  binCode    String?
+  pickedBy   String?
+  createdAt  DateTime @default(now())
+
+  @@index([channel, orderId])
+  @@index([lineItemId])
+  @@index([itemId])
 }

@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { EbayApiError, getLiveAvailableQuantity, reviseFixedPriceItemQuantity, updateOfferQuantity } from "./ebay";
 import { prisma } from "./prisma";
 import { queueShopifySync } from "./shopifySync";
+import { removeUnitsBestEffort } from "./warehouse/bins";
 import type { Item, StockAdjustment } from "@/generated/prisma/client";
 
 // Same key/value AppSetting store already used for the sourcing agent's
@@ -112,8 +113,21 @@ export async function recordItemSale(
     Item,
     "id" | "sku" | "quantity" | "soldQuantity" | "ebayOfferId" | "ebayListingId" | "shopifyOnly" | "pastDateAt"
   >,
-  input: { quantity: number; pricePerUnit: number; note: string; recordedBy: string | null }
-): Promise<{ item: Item; adjustment: StockAdjustment }> {
+  input: {
+    quantity: number;
+    pricePerUnit: number;
+    note: string;
+    recordedBy: string | null;
+    // Warehouse mode: the bin the units were taken from, when the seller
+    // scanned it. Units come out of that bin first, then the others.
+    binCode?: string | null;
+  }
+): Promise<{
+  item: Item;
+  adjustment: StockAdjustment;
+  fromBins: { binCode: string; units: number }[];
+  binsUpdated: boolean;
+}> {
   if (!item.ebayOfferId && !item.ebayListingId && !item.shopifyOnly) {
     throw new ItemSaleError("This item isn't currently listed on eBay.", 400);
   }
@@ -133,6 +147,7 @@ export async function recordItemSale(
   }
   const newSoldQuantity = item.soldQuantity + input.quantity;
 
+  let saved: { updatedItem: Item; adjustment: StockAdjustment };
   try {
     if (offEbay) {
       // Nothing on eBay; Shopify follows below.
@@ -176,7 +191,7 @@ export async function recordItemSale(
       }),
     ]);
     queueShopifySync([item.id]);
-    return { item: updatedItem, adjustment };
+    saved = { updatedItem, adjustment };
   } catch (e) {
     // eBay push failed — don't touch the Item (DB and the live listing must
     // never disagree, same reasoning as /api/items/[id]/quantity), but
@@ -194,4 +209,18 @@ export async function recordItemSale(
     });
     throw new ItemSaleError(message, 502);
   }
+
+  // Warehouse mode: the sold units left their bin. Done after the sale is
+  // saved and outside the eBay-failure handling above: eBay has already
+  // changed by now, so a busy bin must never undo the sale record.
+  // Does nothing for items listed before warehouse mode (no bins).
+  const bins = await removeUnitsBestEffort({
+    itemId: item.id,
+    units: input.quantity,
+    kind: "sale",
+    by: input.recordedBy,
+    preferBinCode: input.binCode,
+    note: "In-person sale",
+  });
+  return { item: saved.updatedItem, adjustment: saved.adjustment, fromBins: bins.taken, binsUpdated: bins.binsUpdated };
 }

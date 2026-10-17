@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { getShopifyConfig } from "@/lib/shopify";
 import { publishItemToShopify } from "@/lib/shopifySync";
+import { binGateError } from "@/lib/warehouse/binGate";
 import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 60;
@@ -21,6 +22,11 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
   }
   if (item.status !== "ready") {
     return NextResponse.json({ error: "Mark it ready in review first." }, { status: 400 });
+  }
+  // Same hold as publish-to-eBay: binned before it can sell.
+  if (!item.shopifyPublishedAt) {
+    const binError = await binGateError(item);
+    if (binError) return NextResponse.json({ error: binError }, { status: 400 });
   }
 
   // Same bar as publish-to-eBay: a Shopify product needs these as much.

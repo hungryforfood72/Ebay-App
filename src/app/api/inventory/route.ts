@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { getItemLocations } from "@/lib/warehouse/bins";
 import { NextRequest, NextResponse } from "next/server";
 
 // Active listings this app has actually published (or linked up) to eBay —
@@ -22,6 +23,8 @@ export async function GET(request: NextRequest) {
                   { upc: { contains: q } },
                   { ebayListingId: { contains: q } },
                   { sku: { contains: q, mode: "insensitive" as const } },
+                  // A scanned bin label lists what's in that bin.
+                  { binContents: { some: { bin: { code: q.toUpperCase() } } } },
                 ],
               },
             ]
@@ -48,6 +51,9 @@ export async function GET(request: NextRequest) {
     take: 200,
   });
 
+  // Bins (warehouse mode) or the old shelf (items listed before it).
+  const locations = await getItemLocations(items);
+
   return NextResponse.json({
     items: items.map((i) => ({
       id: i.id,
@@ -55,6 +61,7 @@ export async function GET(request: NextRequest) {
       sku: i.sku,
       upc: i.upc,
       shelfLocation: i.shelfLocation,
+      location: locations.get(i.id) ?? null,
       price: i.price != null ? Number(i.price) : null,
       quantity: i.quantity,
       soldQuantity: i.soldQuantity,

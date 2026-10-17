@@ -1,6 +1,7 @@
 import { getEbayEnvironment, getLiveListingPrice, getMissingScopes } from "@/lib/ebay";
 import { getRequestUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { getItemLocations } from "@/lib/warehouse/bins";
 import { NextResponse } from "next/server";
 
 export const maxDuration = 30;
@@ -99,6 +100,11 @@ export async function GET(request: Request) {
 
   const missingScopes = token ? await getMissingScopes() : [];
 
+  // Where to find each one: its bins (warehouse mode), or the old shelf
+  // for items listed before that. The pull cards use it to say which
+  // bins to empty.
+  const locations = await getItemLocations([...expiringListed, ...expiredNeedingPull]);
+
   // The stored Item.price is only ever what it was set to at publish/
   // discount time — a running Sale event changes the real live price on
   // eBay directly, with no webhook back to this app, so the card would
@@ -136,10 +142,11 @@ export async function GET(request: Request) {
         originalPrice: i.originalPrice != null ? Number(i.originalPrice) : null,
         livePrice: live?.price ?? null,
         liveOriginalPrice: live?.originalPrice ?? null,
+        location: locations.get(i.id) ?? null,
       };
     }),
     expiringUnlisted,
-    expiredNeedingPull,
+    expiredNeedingPull: expiredNeedingPull.map((i) => ({ ...i, location: locations.get(i.id) ?? null })),
     ...(isOwner ? { expiredEndFailed } : {}),
   });
 }

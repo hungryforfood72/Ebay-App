@@ -1,5 +1,6 @@
 import { AuthError, getRequestUser, requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { removeUnitsBestEffort } from "@/lib/warehouse/bins";
 import { NextRequest, NextResponse } from "next/server";
 
 // Either role can acknowledge — whoever physically pulled the item off the
@@ -30,5 +31,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     where: { id },
     data: { shelfPullAcknowledgedAt: new Date(), shelfPullAcknowledgedBy: username },
   });
+  // Warehouse mode: everything still in a bin for this listing came out
+  // with the pull, so the bins stop counting it (and an emptied bin shows
+  // up for reuse). After the pull is recorded, and never failing it if
+  // the bins are busy. Nothing to do for items with no bins.
+  await removeUnitsBestEffort({ itemId: id, units: "all", kind: "pull", by: username, note: "Pulled (expired)" });
   return NextResponse.json(updated);
 }

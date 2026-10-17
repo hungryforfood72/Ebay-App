@@ -10,6 +10,7 @@ import {
   toItemForEbayPublish,
 } from "@/lib/ebay";
 import { stripKnownBlockedWords, tryAutoFix } from "@/lib/publishRemediation";
+import { binGateError } from "@/lib/warehouse/binGate";
 import { prisma } from "@/lib/prisma";
 import { queueShopifyPublish } from "@/lib/shopifySync";
 import { NextRequest, NextResponse } from "next/server";
@@ -84,6 +85,13 @@ export async function POST(
       { error: `Missing ${missing.join(", ")} before this can be published.` },
       { status: 400 }
     );
+  }
+  // Nothing goes live until it's binned, so no order can come in for a bag
+  // still loose on the binning table (src/lib/warehouse/binGate.ts). Only a
+  // first publish: an already-live listing is past this point.
+  if (!item.ebayListingId) {
+    const binError = await binGateError(item);
+    if (binError) return NextResponse.json({ error: binError }, { status: 400 });
   }
 
   const autoFixes: string[] = [];

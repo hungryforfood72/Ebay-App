@@ -2,6 +2,7 @@ import { getRequestUser } from "@/lib/auth";
 import { parseBundleComponentUnits } from "@/lib/itemUnits";
 import { prisma } from "@/lib/prisma";
 import { ItemSaleError, recordItemSale } from "@/lib/walkupSale";
+import { normalizeCode } from "@/lib/warehouse/codes";
 import { NextRequest, NextResponse } from "next/server";
 
 // Records a "Sell Shelf Item" sale for an item that has no manifest to
@@ -34,10 +35,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   // components' instead (see the matching comment in GET
   // /api/items/shelf-lookup), so it's checked against bundleComponents
   // rather than item.upc directly.
+  // Warehouse mode: the seller may have scanned the item's own label
+  // (ES000123) instead of a UPC (see shelf-lookup), which is its sku.
   const matchesUpc = item
-    ? item.isBundle
-      ? parseBundleComponentUnits(item.bundleComponents).some((c) => c.upc === upc)
-      : item.upc === upc
+    ? normalizeCode(upc) === item.sku.toUpperCase() ||
+      (item.isBundle
+        ? parseBundleComponentUnits(item.bundleComponents).some((c) => c.upc === upc)
+        : item.upc === upc)
     : false;
   if (!item || !matchesUpc) {
     return NextResponse.json({ error: "That item doesn't match this UPC." }, { status: 400 });
@@ -48,13 +52,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const note = `Shelf sale — ${roundedQuantity} unit(s) @ $${pricePerUnit.toFixed(2)} each, in person`;
 
   try {
-    const { item: updatedItem, adjustment } = await recordItemSale(item, {
+    const { item: updatedItem, adjustment, fromBins, binsUpdated } = await recordItemSale(item, {
       quantity: roundedQuantity,
       pricePerUnit,
       note,
       recordedBy,
+      // Optional: the bin the units came out of (warehouse mode).
+      binCode: typeof body.binCode === "string" && body.binCode.trim() ? body.binCode : null,
     });
-    return NextResponse.json({ item: updatedItem, adjustment }, { status: 201 });
+    return NextResponse.json({ item: updatedItem, adjustment, fromBins, binsUpdated }, { status: 201 });
   } catch (e) {
     if (e instanceof ItemSaleError) return NextResponse.json({ error: e.message }, { status: e.status });
     throw e;

@@ -1,6 +1,7 @@
 "use client";
 
 import { BuyerOffersSection } from "@/components/BuyerOffersSection";
+import { LocationBadge } from "@/components/LocationBadge";
 import { SendOffersSection } from "@/components/SendOffersSection";
 import { Stat } from "@/components/Stat";
 import { Alert } from "@/components/ui/Alert";
@@ -12,6 +13,7 @@ import { cn } from "@/components/ui/cn";
 import { Input, Select } from "@/components/ui/Input";
 import { ClipboardCheck, ExternalLink, RefreshCw, ScanBarcode } from "lucide-react";
 import { describeBreakdown, type ExpirySplit } from "@/lib/expirationBreakdown";
+import type { ItemLocation } from "@/lib/warehouse/types";
 import type { RelistProgress } from "@/lib/relist";
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
@@ -37,6 +39,8 @@ type ExpiringListedItem = {
   ebayMarkdownError: string | null;
   livePrice: number | null;
   liveOriginalPrice: number | null;
+  // Bins (warehouse mode) or the old shelf. See getItemLocations.
+  location: ItemLocation | null;
 };
 
 function ebayListingUrl(item: Pick<ExpiringListedItem, "ebayListingId" | "ebayEnvironment">): string | null {
@@ -61,6 +65,7 @@ type ExpiredNeedingPullItem = {
   shelfLocation: string;
   expirationDate: string | null;
   expiredAt: string;
+  location: ItemLocation | null;
   // A multi-date listing pulled because only some units hit their date.
   expirySplit: (ExpirySplit & { relisted?: RelistProgress }) | null;
 };
@@ -436,12 +441,23 @@ function ShelfPullRow({
       <div className="min-w-0">
         <p className="font-medium text-foreground">{item.finalTitle ?? item.sku}</p>
         <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-          <Badge>Shelf {item.shelfLocation || "—"}</Badge>
+          <LocationBadge location={item.location} fallbackShelf={item.shelfLocation} />
           Expired{" "}
           {item.expirationDate
             ? new Date(item.expirationDate).toLocaleDateString()
             : new Date(item.expiredAt).toLocaleDateString()}
         </p>
+        {item.location && item.location.bins.length > 0 && (
+          <p className="mt-1.5 text-xs text-foreground">
+            <span className="font-medium">Pull from:</span>{" "}
+            {item.location.bins
+              .map(
+                (b) =>
+                  `${b.binCode}${b.shelfLabel ? ` on shelf ${b.shelfLabel}` : " (not shelved)"}, ${b.units} ${b.units === 1 ? "unit" : "units"}`
+              )
+              .join(" · ")}
+          </p>
+        )}
         {item.expirySplit && (
           <div className="mt-2 text-xs text-foreground">
             <p className="font-medium">Units have different dates. Relist splits it up for you:</p>
@@ -949,7 +965,7 @@ function ExpiringItemCard({
         <div className="min-w-0">
           <p className="font-medium leading-snug text-foreground">{item.finalTitle ?? item.sku}</p>
           <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
-            <Badge>Shelf {item.shelfLocation}</Badge>
+            <LocationBadge location={item.location} fallbackShelf={item.shelfLocation} />
             {item.livePrice != null ? (
               <span>
                 {item.liveOriginalPrice != null && (

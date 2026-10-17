@@ -1,8 +1,10 @@
 "use client";
 
 import BarcodeScanner from "@/components/BarcodeScanner";
+import { formatLbOz, formatOz, LiveWeightReadout, packageWeight, useStationWeight } from "@/components/LiveWeight";
 import { PackSuggestionCard } from "@/components/PackSuggestionCard";
 import { ScanField } from "@/components/ScanField";
+import { StationOnline, StationPicker, useChosenStation } from "@/components/StationPicker";
 import { Alert } from "@/components/ui/Alert";
 import { AppShell } from "@/components/ui/AppShell";
 import { Badge } from "@/components/ui/Badge";
@@ -25,6 +27,7 @@ import {
   Package,
   PackageX,
   Plus,
+  Printer,
   RotateCcw,
   ScanBarcode,
   Search,
@@ -39,6 +42,7 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { describeBreakdown } from "@/lib/expirationBreakdown";
 import type { RelistPart, RelistPlan } from "@/lib/relist";
+import { classifyScan, normalizeCode } from "@/lib/warehouse/codes";
 import { Suspense, useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
 
 type Photo = {
@@ -52,6 +56,19 @@ type LabeledEntry = {
   id: string;
   label: string;
 };
+
+// Warehouse mode: a box's barcode (BX001) and empty weight. tareOz can
+// arrive as a Decimal string, hence Number() wherever it's used.
+type BoxSizeEntry = LabeledEntry & {
+  code?: string | null;
+  tareOz?: number | string | null;
+};
+
+function boxTareOz(box: BoxSizeEntry | undefined): number | null {
+  if (box?.tareOz == null || box.tareOz === "") return null;
+  const n = Number(box.tareOz);
+  return Number.isFinite(n) ? n : null;
+}
 
 type BundleComponentDraft = {
   id: string;
@@ -85,6 +102,12 @@ type Step =
 // up — before any photos have been taken of it.
 const SINGLE_STEPS: Step[] = ["mode", "upc", "quantity", "expiration", "photos", "shelfLocation", "boxWeight"];
 const BUNDLE_STEPS: Step[] = ["mode", "bundleHeroPhoto", "bundleComponents", "bundleQuantity", "shelfLocation", "boxWeight"];
+// Warehouse mode (src/lib/warehouse): no shelf step. The lister weighs it
+// on the station's scale, scans the box, saves, and bags each unit with
+// the labels that print. Bins are filled later at a separate binning
+// station by scanning those labels, so there's no bin step here.
+const WAREHOUSE_SINGLE_STEPS: Step[] = ["mode", "upc", "quantity", "expiration", "photos", "boxWeight"];
+const WAREHOUSE_BUNDLE_STEPS: Step[] = ["mode", "bundleHeroPhoto", "bundleComponents", "bundleQuantity", "boxWeight"];
 
 // Whether this device is mid-scanning, so a reload (the camera app
 // backgrounding the tab can do that) lands back in the scan flow instead of
@@ -210,6 +233,8 @@ function ScanPageInner() {
   const [shelfSaleLookup, setShelfSaleLookup] = useState<{
     itemId: string;
     manifestId: string | null;
+    // Warehouse mode: the bin on the scanned shelf that holds it.
+    binCode?: string | null;
     description: string;
     retailPrice?: number;
     landedCostPerUnit?: number | null;
@@ -277,7 +302,37 @@ function ScanPageInner() {
   const [weightOz, setWeightOz] = useState("");
 
   const [shelfLocations, setShelfLocations] = useState<LabeledEntry[]>([]);
-  const [boxSizes, setBoxSizes] = useState<LabeledEntry[]>([]);
+  const [boxSizes, setBoxSizes] = useState<BoxSizeEntry[]>([]);
+
+  // Warehouse mode (Settings). Off until the check comes back, and off =
+  // this page works exactly as it always has. On = the station, scale, box
+  // barcode steps below, and labels print at the station on save.
+  const [warehouseMode, setWarehouseMode] = useState(false);
+  // The mode check failed twice: showing the normal flow, with a warning.
+  const [modeUnknown, setModeUnknown] = useState(false);
+  const stationChoice = useChosenStation(warehouseMode);
+  const station = stationChoice.station;
+  const [pickingStation, setPickingStation] = useState(false);
+  const [boxScan, setBoxScan] = useState("");
+  // The item's own weight off the scale, before the box is added. null =
+  // the weight wasn't taken from the scale (typed in, or not yet).
+  const [scaleOz, setScaleOz] = useState<number | null>(null);
+  // Typing in the lb/oz boxes switches the auto-fill off for this item, so
+  // a jiggle on the scale can't overwrite what someone typed on purpose.
+  const [typedWeight, setTypedWeight] = useState(false);
+  // Whether the weight was taken (or typed) for THIS item. The weight is
+  // kept from the item before, same as it always was, but this says so if
+  // nobody's put the new one on the scale yet.
+  const [weightIsFresh, setWeightIsFresh] = useState(false);
+  // The last save's labels, for the "Printing N labels" card and Reprint.
+  const [lastSaved, setLastSaved] = useState<{
+    itemId: string;
+    code: string;
+    labels: number;
+    stationName: string;
+  } | null>(null);
+  const [reprinting, setReprinting] = useState(false);
+  const [reprintMessage, setReprintMessage] = useState<string | null>(null);
 
   const [showScanner, setShowScanner] = useState(false);
   const [scanTarget, setScanTarget] = useState<"item" | "component" | "location">("item");
@@ -316,6 +371,26 @@ function ScanPageInner() {
     fetch("/api/box-sizes")
       .then((r) => r.json())
       .then(setBoxSizes);
+    // Tried twice. If it still can't tell, the normal flow shows (the
+    // server saves whichever way the page collected the item) with a
+    // warning, since the labels won't print that way.
+    const checkMode = async (): Promise<boolean> => {
+      const r = await fetch("/api/warehouse/mode", { cache: "no-store" });
+      if (!r.ok) throw new Error(`mode check ${r.status}`);
+      const d: { on?: boolean } = await r.json();
+      return d.on === true;
+    };
+    checkMode()
+      .catch(() => new Promise((wait) => setTimeout(wait, 1500)).then(checkMode))
+      .then((on) => {
+        setModeUnknown(false);
+        if (!on) return;
+        setWarehouseMode(true);
+        // Already past the photos (a reload mid-item): the shelf step
+        // doesn't exist in warehouse mode, the scale step takes its place.
+        setStep((s) => (s === "shelfLocation" ? "boxWeight" : s));
+      })
+      .catch(() => setModeUnknown(true));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -349,6 +424,8 @@ function ScanPageInner() {
     setShelfSaleMode(false);
     resetShelfSale();
     setSavedThisSession(0);
+    setLastSaved(null);
+    setReprintMessage(null);
   }
 
   async function saveDamagedEntry() {
@@ -563,6 +640,10 @@ function ScanPageInner() {
           quantity: qty,
           pricePerUnit: price,
           itemId: shelfSaleLookup.itemId,
+          // Warehouse mode: take the units from the bin on the shelf that
+          // was scanned, not just the oldest bin. Left out when there's
+          // none, so the request is unchanged for items with no bins.
+          ...(shelfSaleLookup.binCode ? { binCode: shelfSaleLookup.binCode } : {}),
         }),
       });
       if (!res.ok) {
@@ -660,6 +741,11 @@ function ScanPageInner() {
     if (fileInputRef.current) fileInputRef.current.value = "";
     if (heroFileInputRef.current) heroFileInputRef.current.value = "";
     if (componentFileInputRef.current) componentFileInputRef.current.value = "";
+    // Warehouse mode: the box scan field starts empty (the box itself stays
+    // picked), and the next stable scale reading fills the weight again.
+    setBoxScan("");
+    setTypedWeight(false);
+    setWeightIsFresh(false);
     // Shelf location, box size, weight, and isBundle are left as-is — items
     // are usually scanned in batches from the same bin into the same box
     // type (and often the same mode), so keeping the selection saves
@@ -689,6 +775,9 @@ function ScanPageInner() {
     setBoxSize(plan.boxSize ?? "");
     setWeightLbs("");
     setWeightOz("");
+    setScaleOz(null);
+    setTypedWeight(false);
+    setWeightIsFresh(false);
     setPhotos([]);
     setRelist({ plan, part });
     setStep("photos");
@@ -713,8 +802,120 @@ function ScanPageInner() {
     endRelist();
   }
 
-  const steps = isBundle ? BUNDLE_STEPS : SINGLE_STEPS;
+  const steps = warehouseMode
+    ? isBundle
+      ? WAREHOUSE_BUNDLE_STEPS
+      : WAREHOUSE_SINGLE_STEPS
+    : isBundle
+      ? BUNDLE_STEPS
+      : SINGLE_STEPS;
   const stepIndex = steps.indexOf(step);
+
+  // --- Warehouse mode: scale and box ------------------------------------------
+
+  const selectedBox = boxSizes.find((b) => b.label === boxSize);
+  const selectedTareOz = boxTareOz(selectedBox);
+
+  // Item weight + empty box, rounded up, into the lb/oz fields that get
+  // saved (and that eBay gets).
+  function fillPackageWeight(itemOz: number, tareOz: number | null) {
+    const { lbs, oz } = packageWeight(itemOz, tareOz);
+    setWeightLbs(String(lbs));
+    setWeightOz(String(oz));
+  }
+
+  function takeScaleWeight(itemOz: number) {
+    setScaleOz(itemOz);
+    setTypedWeight(false);
+    setWeightIsFresh(true);
+    fillPackageWeight(itemOz, selectedTareOz);
+  }
+
+  // Polled only on the weight step. A settled reading fills the weight by
+  // itself unless the weight was typed in by hand for this item.
+  const liveWeight = useStationWeight(
+    warehouseMode ? (station?.id ?? null) : null,
+    warehouseMode && step === "boxWeight",
+    (oz) => {
+      if (typedWeight) return;
+      // Same reading already in: nothing to do (it polls every 700ms).
+      if (weightIsFresh && scaleOz != null && Math.abs(oz - scaleOz) < 0.05) return;
+      takeScaleWeight(oz);
+    }
+  );
+
+  // Picking a box (scan or list) re-adds the new box's empty weight to the
+  // scale reading, so the math always matches the box on screen. Off mode
+  // this is just setBoxSize, same as before.
+  function selectBox(label: string) {
+    setBoxSize(label);
+    if (!warehouseMode || typedWeight || scaleOz == null) return;
+    fillPackageWeight(scaleOz, boxTareOz(boxSizes.find((b) => b.label === label)));
+  }
+
+  function handleBoxScan() {
+    const code = normalizeCode(boxScan);
+    if (!code) return;
+    setMessage(null);
+    const kind = classifyScan(code);
+    const box = boxSizes.find((b) => b.code && normalizeCode(b.code) === code);
+    if (!box) {
+      setMessage(
+        kind === "box"
+          ? `No box set up with code ${code}. Pick the box from the list instead.`
+          : `${code} isn't a box barcode. Box barcodes start with BX.`
+      );
+      setBoxScan("");
+      focusScanField("scan-box");
+      return;
+    }
+    selectBox(box.label);
+    // Weight's already in for this item (off the scale or typed): the box
+    // scan is the last thing, so it saves, and a normal item is weigh, scan
+    // box, done, with no taps. No weight yet = just pick the box and wait;
+    // the stale weight from the item before never saves this way.
+    // State set above isn't visible to saveItem until the next render, so
+    // the box and its recalculated weight are passed in directly.
+    if (weightIsFresh && (weightLbs || weightOz)) {
+      const weight =
+        !typedWeight && scaleOz != null
+          ? packageWeight(scaleOz, boxTareOz(box))
+          : { lbs: Number(weightLbs) || 0, oz: Number(weightOz) || 0 };
+      saveItem({ boxSize: box.label, weightLbs: String(weight.lbs), weightOz: String(weight.oz) });
+    }
+  }
+
+  function typeWeight(setter: (v: string) => void, value: string) {
+    setter(value);
+    if (!warehouseMode) return;
+    setTypedWeight(true);
+    setWeightIsFresh(true);
+  }
+
+  async function reprintLabels(copies?: number) {
+    if (!lastSaved) return;
+    if (!station) {
+      setPickingStation(true);
+      return;
+    }
+    setReprinting(true);
+    setReprintMessage(null);
+    try {
+      const res = await fetch(`/api/items/${lastSaved.itemId}/labels`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stationId: station.id, copies: copies ?? lastSaved.labels }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? "Couldn't reprint.");
+      const n = Number(data.labelsQueued) || 0;
+      setReprintMessage(`Sent ${n} more label${n === 1 ? "" : "s"} to ${station.name}.`);
+    } catch (e) {
+      setReprintMessage(e instanceof Error ? e.message : "Couldn't reprint.");
+    } finally {
+      setReprinting(false);
+    }
+  }
 
   function goBack() {
     setMessage(null);
@@ -757,10 +958,22 @@ function ScanPageInner() {
     if (stepIndex < steps.length - 1) setStep(steps[stepIndex + 1]);
   }
 
-  async function saveItem() {
+  // overrides: warehouse mode's box scan saving in the same moment it
+  // picks the box, before that state has rendered.
+  async function saveItem(overrides?: { boxSize: string; weightLbs: string; weightOz: string }) {
+    // A box scan can arrive while a save is already going (the button is
+    // disabled then, a trigger pull isn't).
+    if (saving) return;
     setMessage(null);
 
-    if (!shelfLocation.trim()) return setMessage("Shelf location is required.");
+    // Warehouse mode: a station (where the labels print) instead of a
+    // shelf location.
+    if (warehouseMode) {
+      if (!station) {
+        setPickingStation(true);
+        return setMessage("Pick this handheld's station first, so the labels print in the right place.");
+      }
+    } else if (!shelfLocation.trim()) return setMessage("Shelf location is required.");
 
     if (isBundle) {
       if (bundleComponents.length === 0) {
@@ -797,10 +1010,13 @@ function ScanPageInner() {
             !isBundle && extraDates.length > 0
               ? dateRows.map((r) => ({ date: r.date, units: Number(r.units) }))
               : undefined,
-          shelfLocation: shelfLocation.trim(),
-          boxSize: boxSize || null,
-          weightLbs: weightLbs ? Number(weightLbs) : null,
-          weightOz: weightOz ? Number(weightOz) : null,
+          // Off mode sends exactly what it always has (undefined keys are
+          // dropped from the JSON).
+          shelfLocation: warehouseMode ? undefined : shelfLocation.trim(),
+          stationId: warehouseMode ? station?.id : undefined,
+          boxSize: (overrides?.boxSize ?? boxSize) || null,
+          weightLbs: (overrides?.weightLbs ?? weightLbs) ? Number(overrides?.weightLbs ?? weightLbs) : null,
+          weightOz: (overrides?.weightOz ?? weightOz) ? Number(overrides?.weightOz ?? weightOz) : null,
           // The actual eBay listing photos — for a bundle, the hero group
           // shot plus every photo taken of every component, not just the
           // hero, so the buyer has real photos of everything included.
@@ -837,7 +1053,17 @@ function ScanPageInner() {
       // for the phone to trigger or wait on here, so it's unaffected by the
       // camera app backgrounding the tab between scans.
       setSavedThisSession((n) => n + 1);
-      const saved: { relistNext?: RelistPart | null } = await res.json().catch(() => ({}));
+      const saved: { id?: string; sku?: string; labelsQueued?: number; relistNext?: RelistPart | null } = await res
+        .json()
+        .catch(() => ({}));
+      if (warehouseMode) {
+        setReprintMessage(null);
+        setLastSaved(
+          saved.id && saved.sku
+            ? { itemId: saved.id, code: saved.sku, labels: saved.labelsQueued ?? 0, stationName: station?.name ?? "the station" }
+            : null
+        );
+      }
       resetForm();
       if (relist) {
         const done = { ...relist.plan, [relist.part]: { ...relist.plan[relist.part], done: true } };
@@ -1274,6 +1500,11 @@ function ScanPageInner() {
 
   const isLastStep = stepIndex === steps.length - 1;
 
+  // Warehouse mode: one label per sellable unit, so a multi-pack counts
+  // in bags and a bundle in whole bundles.
+  const labelUnits = Number(quantity) || 1;
+  const labelUnitWord = isBundle ? "bundle" : isMultipack ? `${packSize || "multi"}-pack bag` : "unit";
+
   return (
     <AppShell
       focused
@@ -1312,6 +1543,82 @@ function ScanPageInner() {
               <ModeTile icon={ShoppingBag} tone="success" label="Walk-up sale" onClick={() => setWalkupMode(true)} />
             </div>
           </Card>
+        )}
+
+        {modeUnknown && (
+          <Alert tone="warning">
+            Couldn&apos;t check if warehouse mode is on, so this is the regular flow (shelf location, no labels).
+            Reload to check again.
+          </Alert>
+        )}
+
+        {warehouseMode &&
+          (pickingStation || stationChoice.needsStation || stationChoice.error ? (
+            <StationPicker
+              stations={stationChoice.stations}
+              selectedId={station?.id ?? null}
+              error={stationChoice.error}
+              onReload={stationChoice.reload}
+              onPick={(s) => {
+                stationChoice.choose(s.id);
+                setPickingStation(false);
+                setMessage(null);
+              }}
+              onCancel={station ? () => setPickingStation(false) : undefined}
+            />
+          ) : (
+            station && (
+              <div className="flex items-center justify-between gap-2 rounded-xl border border-border bg-surface px-3 py-2 text-sm shadow-sm">
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="text-muted-foreground">Station</span>
+                  <span className="truncate font-medium text-foreground">{station.name}</span>
+                  <StationOnline online={liveWeight.status?.online ?? station.online} />
+                </span>
+                <button
+                  type="button"
+                  className="shrink-0 text-sm font-medium text-primary hover:underline"
+                  onClick={() => setPickingStation(true)}
+                >
+                  Change
+                </button>
+              </div>
+            )
+          ))}
+
+        {warehouseMode && lastSaved && (
+          <div className="rounded-xl border border-green-200 bg-green-50 px-3 py-2.5 text-sm text-green-950">
+            <div className="flex items-start gap-2">
+              <Printer className="mt-0.5 size-5 shrink-0 text-green-600" aria-hidden />
+              <div className="min-w-0 flex-1">
+                <p className="font-semibold">
+                  {lastSaved.labels === 1
+                    ? `Printing 1 label at ${lastSaved.stationName}. Bag it and stick the label on it.`
+                    : `Printing ${lastSaved.labels} labels at ${lastSaved.stationName}. Bag each unit and stick a label on it.`}
+                </p>
+                <p className="mt-0.5 tabular-nums text-green-900">Item code {lastSaved.code}</p>
+                {reprintMessage && <p className="mt-1 text-green-900">{reprintMessage}</p>}
+              </div>
+              <button
+                type="button"
+                onClick={() => setLastSaved(null)}
+                aria-label="Hide"
+                className="grid size-7 shrink-0 place-items-center rounded-md text-green-800 hover:bg-green-100"
+              >
+                <X className="size-4" aria-hidden />
+              </button>
+            </div>
+            <div className="mt-2 flex gap-2">
+              <Button variant="outline" size="sm" onClick={() => reprintLabels()} disabled={reprinting}>
+                <Printer className="size-4" aria-hidden />
+                {reprinting ? "Sending…" : lastSaved.labels > 1 ? `Reprint all ${lastSaved.labels}` : "Reprint"}
+              </Button>
+              {lastSaved.labels > 1 && (
+                <Button variant="outline" size="sm" onClick={() => reprintLabels(1)} disabled={reprinting}>
+                  Reprint 1
+                </Button>
+              )}
+            </div>
+          </div>
         )}
 
         <StepProgress current={stepIndex} total={steps.length} />
@@ -1740,7 +2047,143 @@ function ScanPageInner() {
           </Card>
         )}
 
-        {step === "boxWeight" && (
+        {step === "boxWeight" && warehouseMode && (
+          <Card className="flex flex-col gap-4">
+            <SectionHeader
+              className="mb-0"
+              title="Weigh it and pick the box"
+              description={
+                isBundle
+                  ? "Put one whole bundle on the scale."
+                  : isMultipack
+                    ? `Put one ${packSize || "multi"}-pack on the scale: the whole bag, not one piece.`
+                    : "Put one unit on the scale."
+              }
+            />
+            {station ? (
+              <LiveWeightReadout
+                status={liveWeight.status}
+                error={liveWeight.error}
+                onUse={(oz) => {
+                  takeScaleWeight(oz);
+                  // The tap took focus off the box field; put it back so
+                  // the next trigger pull still lands there.
+                  focusScanField("scan-box");
+                }}
+              />
+            ) : (
+              <Alert
+                tone="warning"
+                action={
+                  <Button variant="outline" size="sm" onClick={() => setPickingStation(true)}>
+                    Pick a station
+                  </Button>
+                }
+              >
+                Pick this handheld&apos;s station to get the live weight. Or type it in below.
+              </Alert>
+            )}
+
+            <ScanField
+              id="scan-box"
+              label="Box"
+              prompt="Scan the box size barcode"
+              autoFocus
+              value={boxScan}
+              onChange={setBoxScan}
+              onScan={handleBoxScan}
+              hint="Scanning the box saves the item once the weight is in."
+            />
+            <Field
+              label="Or pick the box"
+              hint={
+                boxSizes.length === 0 ? (
+                  <Link href="/settings" className="font-medium text-primary hover:underline">
+                    Add box sizes in Settings
+                  </Link>
+                ) : undefined
+              }
+            >
+              <Select value={boxSize} onChange={(e) => selectBox(e.target.value)}>
+                <option value="">Select box size…</option>
+                {boxSizes.map((b) => (
+                  <option key={b.id} value={b.label}>
+                    {b.label}
+                    {b.code ? ` (${b.code})` : ""}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            {selectedBox && (
+              <p className="-mt-2 text-sm text-muted-foreground">
+                Box <span className="font-medium text-foreground">{selectedBox.label}</span>
+                {selectedTareOz != null ? `, empty ${formatOz(selectedTareOz)}` : ", no empty weight set (not added)"}
+              </p>
+            )}
+
+            <div>
+              <p className="mb-1.5 text-sm font-medium text-foreground">
+                {isBundle ? "Package weight (whole bundle in its box)" : "Package weight (in its box)"}
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <UnitInput
+                  unit="lb"
+                  min={0}
+                  value={weightLbs}
+                  onChange={(e) => typeWeight(setWeightLbs, e.target.value)}
+                  onWheel={(e) => e.currentTarget.blur()}
+                />
+                <UnitInput
+                  unit="oz"
+                  min={0}
+                  max={15}
+                  value={weightOz}
+                  onChange={(e) => typeWeight(setWeightOz, e.target.value)}
+                  onWheel={(e) => e.currentTarget.blur()}
+                />
+              </div>
+              {scaleOz != null && !typedWeight && (weightLbs || weightOz) ? (
+                <p className="mt-1.5 text-sm tabular-nums text-muted-foreground">
+                  {(() => {
+                    const pkg = packageWeight(scaleOz, selectedTareOz);
+                    const total = formatLbOz(pkg.lbs, pkg.oz);
+                    return selectedTareOz != null
+                      ? `${formatOz(scaleOz)} item + ${formatOz(selectedTareOz)} box = ${total}`
+                      : `${formatOz(scaleOz)} item = ${total}${selectedBox ? "" : " (no box picked yet)"}`;
+                  })()}
+                </p>
+              ) : typedWeight ? (
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  Typed in, so the scale won&apos;t change it.{" "}
+                  {liveWeight.status?.online && (
+                    <button
+                      type="button"
+                      className="font-medium text-primary hover:underline"
+                      onClick={() => {
+                        const reading = liveWeight.status?.weightOz;
+                        if (reading != null && reading > 0) takeScaleWeight(reading);
+                        else setTypedWeight(false);
+                      }}
+                    >
+                      Use the scale again
+                    </button>
+                  )}
+                </p>
+              ) : null}
+              {!weightIsFresh && (weightLbs || weightOz) && (
+                <p className="mt-1.5 text-xs font-medium text-warning">
+                  Still the last item&apos;s weight. Put this one on the scale if it&apos;s different.
+                </p>
+              )}
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Saving prints {labelUnits} label{labelUnits === 1 ? "" : "s"}
+              {station ? ` at ${station.name}` : ""}, one per {labelUnitWord}.
+            </p>
+          </Card>
+        )}
+
+        {step === "boxWeight" && !warehouseMode && (
           <Card className="flex flex-col gap-4">
             <Field
               label={isBundle ? "Box size (whole bundle)" : "Box size"}
@@ -1807,7 +2250,7 @@ function ScanPageInner() {
                 Back
               </Button>
             )}
-            <Button size="xl" block onClick={isLastStep ? saveItem : goNext} disabled={saving}>
+            <Button size="xl" block onClick={isLastStep ? () => saveItem() : goNext} disabled={saving}>
               {isLastStep ? (
                 saving ? (
                   "Saving…"

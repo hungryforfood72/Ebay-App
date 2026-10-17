@@ -3,6 +3,7 @@
 import { Alert } from "@/components/ui/Alert";
 import { AppShell } from "@/components/ui/AppShell";
 import { Badge } from "@/components/ui/Badge";
+import { FetchedLocationBadge } from "@/components/LocationBadge";
 import { Button } from "@/components/ui/Button";
 import { Card, SectionHeader } from "@/components/ui/Card";
 import { cn } from "@/components/ui/cn";
@@ -45,6 +46,9 @@ type BundleComponent = {
 type Item = {
   id: string;
   sku: string;
+  // Warehouse items only: units in bins vs units to bin. Held in review
+  // until they match (src/lib/warehouse/binGate.ts).
+  binProgress?: { inBins: number; needed: number };
   status: "pending_review" | "ready" | "exported" | "listed";
   upc: string | null;
   quantity: number;
@@ -239,6 +243,14 @@ export default function ReviewPage() {
     // is missing" for an item with no weight set.
     if (!item.localPickupOnly && !item.weightLbs && !item.weightOz) {
       setError(`"${label}" needs a package weight before it can go ready.`);
+      return;
+    }
+    // Warehouse items wait in review until the binning station has put
+    // every unit in a bin, so nothing sells while it's loose on the table.
+    // The server refuses it too; this just says why up front.
+    const hold = binHold(item);
+    if (hold) {
+      setError(`"${label}": ${hold}`);
       return;
     }
     setError(null);
@@ -588,6 +600,20 @@ function ProfitEstimate({
   );
 }
 
+// Why a warehouse item can't be marked ready yet, or null if it can.
+function binHold(item: Item): string | null {
+  const p = item.binProgress;
+  if (!p || p.inBins >= p.needed) return null;
+  return p.inBins === 0
+    ? "No bin assigned yet. Scan its labels into a bin at the binning station first."
+    : `Only ${p.inBins} of ${p.needed} units are in a bin. Scan the rest into a bin first.`;
+}
+
+function binHoldBadge(item: Item): string {
+  const p = item.binProgress!;
+  return p.inBins === 0 ? "In review · no bin assigned yet" : `In review · ${p.inBins} of ${p.needed} in bins`;
+}
+
 function ItemCard({
   item,
   rules,
@@ -840,7 +866,8 @@ function ItemCard({
             {item.isBundle ? "Bundles available" : "Qty"} {item.quantity}
           </Badge>
           {item.isMultipack && <Badge tone="primary">Pack of {item.packSize}</Badge>}
-          <Badge>Shelf {item.shelfLocation}</Badge>
+          <FetchedLocationBadge itemId={item.id} shelfLocation={item.shelfLocation} />
+          {binHold(item) && <Badge tone="warning">{binHoldBadge(item)}</Badge>}
           {item.expirationBreakdown ? (
             <Badge tone="warning">Exp {describeBreakdown(item.expirationBreakdown)}</Badge>
           ) : (
@@ -1379,9 +1406,9 @@ function ItemCard({
           <Trash2 className="size-4" aria-hidden />
           Delete
         </Button>
-        <Button onClick={onMarkReady}>
+        <Button onClick={onMarkReady} disabled={binHold(item) != null} title={binHold(item) ?? undefined}>
           <Check className="size-4" aria-hidden />
-          Mark ready
+          {binHold(item) ? "Waiting for a bin" : "Mark ready"}
         </Button>
       </div>
     </Card>

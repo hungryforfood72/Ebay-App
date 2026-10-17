@@ -8,6 +8,8 @@ import {
 import { getRequestUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { queueShopifySync } from "@/lib/shopifySync";
+import { removeUnitsBestEffort } from "@/lib/warehouse/bins";
+import { classifyScan } from "@/lib/warehouse/codes";
 import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 30;
@@ -152,10 +154,31 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       }),
     ]);
     queueShopifySync([id]);
+    // Warehouse mode: removed stock comes out of the item's bins (oldest
+    // placement first) so a picker isn't sent for units that are gone.
+    // Its own step after the adjustment is saved: eBay has already changed,
+    // so a busy bin must never undo the stock record. Added stock is NOT
+    // put in a bin automatically: nobody knows which bin it physically went
+    // into until someone scans it (Fill bins / Put away). Items with no bins
+    // are untouched either way.
+    const bins =
+      signedDelta < 0
+        ? await removeUnitsBestEffort({ itemId: id, units: amount, kind: "adjust", by: recordedBy, note })
+        : { taken: [], binsUpdated: true };
+    // Items with a warehouse label belong in bins even when none hold them
+    // right now (all picked, then restocked).
+    const usesBins =
+      classifyScan(item.sku) === "item" ||
+      bins.taken.length > 0 ||
+      (await prisma.binContent.count({ where: { itemId: id } })) > 0;
     return NextResponse.json({
       ...updated,
       availableQuantity: Math.max(0, updated.quantity - updated.soldQuantity),
       adjustment,
+      fromBins: bins.taken,
+      binsUpdated: bins.binsUpdated,
+      // Set when added units still need scanning into a bin.
+      putAway: signedDelta > 0 && usesBins ? { units: amount } : null,
     });
   } catch (e) {
     // The eBay push failed — still record the attempted adjustment (with

@@ -2,6 +2,7 @@ import { Prisma } from "@/generated/prisma/client";
 import { normalizeBreakdown } from "@/lib/expirationBreakdown";
 import { prisma } from "@/lib/prisma";
 import { AuthError, requireOwner } from "@/lib/auth";
+import { binGateError } from "@/lib/warehouse/binGate";
 import { NextRequest, NextResponse } from "next/server";
 
 const EDITABLE_FIELDS = [
@@ -62,6 +63,14 @@ export async function PATCH(
     }
   }
   if ("status" in data && data.status === "ready") {
+    // Warehouse items stay in review until every unit is in a bin
+    // (src/lib/warehouse/binGate.ts).
+    const current = await prisma.item.findUnique({
+      where: { id },
+      select: { id: true, sku: true, quantity: true, soldQuantity: true },
+    });
+    const binError = current ? await binGateError(current) : null;
+    if (binError) return NextResponse.json({ error: binError }, { status: 400 });
     data.reviewedAt = new Date();
   }
 

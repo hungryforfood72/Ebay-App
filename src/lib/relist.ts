@@ -2,6 +2,7 @@ import type { Item, Prisma } from "@/generated/prisma/client";
 import { AUTO_EXPIRED_NOTE } from "./expireListings";
 import type { ExpirationBatch, ExpirySplit } from "./expirationBreakdown";
 import { prisma } from "./prisma";
+import { removeUnitsBestEffort } from "./warehouse/bins";
 
 // Guided relist of a multi-date listing the expiration sweep pulled
 // (Item.expirySplit). The dashboard sends staff to /scan?relist={id}, which
@@ -132,5 +133,19 @@ export async function recordRelistPart(originalId: string, part: RelistPart, new
       },
     }),
   ]);
+  if (finished) {
+    // Warehouse mode: every unit of the original has been re-scanned under
+    // new labels, so its old bins stop counting it (same moment the
+    // shelf-pull card clears). Best effort, after the relist is recorded:
+    // a busy bin never fails the relist. Nothing to do for items with no
+    // bins.
+    await removeUnitsBestEffort({
+      itemId: originalId,
+      units: "all",
+      kind: "pull",
+      by: null,
+      note: "Relisted after expiry split",
+    });
+  }
   return !relisted.good ? "good" : !relisted.past ? "past" : null;
 }

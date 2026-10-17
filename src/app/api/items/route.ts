@@ -1,6 +1,6 @@
 import { getRequestUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { ItemStatus } from "@/generated/prisma/client";
+import { ItemStatus, type Item, type Prisma } from "@/generated/prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 import { after } from "next/server";
 import { randomUUID } from "node:crypto";
@@ -9,6 +9,11 @@ import { lookupCategoryForItem } from "@/lib/categoryLookup";
 import { earliestBundleExpiration } from "@/lib/csv";
 import { normalizeBreakdown } from "@/lib/expirationBreakdown";
 import { inheritedFields, recordRelistPart, relistPlan, type RelistPart } from "@/lib/relist";
+import { findBin, nextItemCode, placeInBin, WarehouseError } from "@/lib/warehouse/bins";
+import { classifyScan, normalizeCode } from "@/lib/warehouse/codes";
+import { buildItemLabel, queueItemLabels } from "@/lib/warehouse/itemLabel";
+import { isWarehouseMode } from "@/lib/warehouse/settings";
+import { binProgress } from "@/lib/warehouse/binGate";
 
 // Draft (up to 45s for a single item, or up to ~90s for a bundle — parallel
 // per-component naming calls plus one final synthesis call) + category
@@ -26,7 +31,13 @@ export async function GET(request: NextRequest) {
     orderBy: { createdAt: "desc" },
   });
 
-  return NextResponse.json(items);
+  // binProgress: warehouse items only ({inBins, needed}), so review can show
+  // "No bin assigned yet" and hold Mark ready / Publish until it's binned.
+  // Other items get no field, same response as before.
+  const progress = await binProgress(items);
+  return NextResponse.json(
+    progress.size === 0 ? items : items.map((i) => (progress.has(i.id) ? { ...i, binProgress: progress.get(i.id) } : i))
+  );
 }
 
 // Save one scanned item. Called from the mobile scan flow after photos have
@@ -41,11 +52,25 @@ type BundleComponentInput = {
 export async function POST(request: NextRequest) {
   const body = await request.json();
   const isBundle = Boolean(body.isBundle);
+  // Warehouse mode (src/lib/warehouse): no typed shelf location, the sku is
+  // a printed item code (ES000123), and the station PC prints a label per
+  // sellable unit. The lister bags each unit with its label; the bags go
+  // into bins later at the binning station, so normally no bin is sent.
+  // Off = everything below works exactly as it always has.
+  //
+  // Which path is decided by what the page sent, not by the setting: the
+  // page picks its flow when it loads, and Cristian can flip the switch
+  // mid-shift. An item a handheld collected the warehouse way (stationId)
+  // saves the warehouse way, one collected the old way (shelfLocation)
+  // saves the old way, so nothing in progress gets rejected. Only a body
+  // with neither falls back to the setting, to say which field is missing.
+  const has = (v: unknown) => v !== undefined && v !== null && v !== "";
+  const warehouse = has(body.stationId) ? true : has(body.shelfLocation) ? false : await isWarehouseMode();
 
   // UPC isn't required for single items either — custom/handmade products
   // (e.g. our own t-shirts) have no barcode, and export already falls back
   // to "Does Not Apply" for a missing UPC.
-  const required = ["quantity", "shelfLocation"];
+  const required = warehouse ? ["quantity", "stationId"] : ["quantity", "shelfLocation"];
   for (const field of required) {
     if (body[field] === undefined || body[field] === null || body[field] === "") {
       return NextResponse.json(
@@ -90,9 +115,43 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // Warehouse mode checks, all before anything is written: a wrong bin or a
+  // deleted station should leave nothing behind (not even a used-up item
+  // code), so the lister can just fix it and save again. binCode is
+  // optional: sent, the units go straight into that bin; not sent (the
+  // normal case), they're in no bin until the binning station scans them.
+  const username = getRequestUser(request)?.username ?? null;
+  const units = Number(body.quantity);
+  const binCode =
+    warehouse && body.binCode != null && String(body.binCode).trim() !== "" ? normalizeCode(String(body.binCode)) : "";
+  const stationId = warehouse ? String(body.stationId) : "";
+  if (warehouse) {
+    // One unit = one label = one bag, so it has to be whole.
+    if (!Number.isInteger(units) || units < 1) {
+      return NextResponse.json({ error: "Quantity has to be a whole number, at least 1." }, { status: 400 });
+    }
+    if (binCode) {
+      if (classifyScan(binCode) !== "bin") {
+        return NextResponse.json({ error: `${binCode} isn't a bin label. Bin labels start with BN.` }, { status: 400 });
+      }
+      try {
+        await findBin(prisma, binCode);
+      } catch (e) {
+        if (e instanceof WarehouseError) return NextResponse.json({ error: e.message }, { status: e.status });
+        throw e;
+      }
+    }
+    const station = await prisma.station.findUnique({ where: { id: stationId }, select: { id: true } });
+    if (!station) {
+      return NextResponse.json({ error: "That station doesn't exist anymore. Pick a station again." }, { status: 404 });
+    }
+  }
+
   // Prefix the SKU with the shelf location (e.g. "(Location - A6)-<uuid>")
   // so it's recognizable at a glance on eBay's side, not just a bare UUID.
-  const sku = `(Location - ${String(body.shelfLocation).trim()})-${randomUUID()}`;
+  // Warehouse mode: the printed item code instead, which is also what
+  // staff scan to pick it (the location lives in the bin now).
+  const sku = warehouse ? await nextItemCode() : `(Location - ${String(body.shelfLocation).trim()})-${randomUUID()}`;
 
   // A bundle's dates are scanned per piece; the bundle itself takes the
   // earliest. The dashboard's expiring list and the hourly auto-end only
@@ -109,30 +168,71 @@ export async function POST(request: NextRequest) {
   }
   const expirationDate = expirationBreakdown?.[0].date ?? body.expirationDate ?? bundleExpiration;
 
-  const item = await prisma.item.create({
-    data: {
-      sku,
-      upc: original ? original.upc : isBundle ? null : body.upc || null,
-      quantity: Number(body.quantity),
-      isMultipack: Boolean(body.isMultipack),
-      packSize: body.isMultipack ? Number(body.packSize) : null,
-      expirationDate: expirationDate ? new Date(expirationDate) : null,
-      expirationBreakdown: expirationBreakdown ?? undefined,
-      shelfLocation: body.shelfLocation,
-      boxSize: body.boxSize ?? null,
-      weightLbs: body.weightLbs != null ? Number(body.weightLbs) : null,
-      weightOz: body.weightOz != null ? Number(body.weightOz) : null,
-      photoUrls: Array.isArray(body.photoUrls) ? body.photoUrls : [],
-      // Who's signed in, not anything the client sends — this is what the
-      // scan-speed report (/reports/scan-speed) attributes the scan to.
-      scannedBy: getRequestUser(request)?.username ?? null,
-      manifestId: original ? original.manifestId : body.manifestId ?? null,
-      isBundle,
-      bundleComponents: isBundle ? body.bundleComponents : undefined,
-      shopifyOnly: !isBundle && (body.shopifyOnly === true || (original != null && relistPart === "past")),
-      ...(original ? inheritedFields(original) : {}),
-    },
-  });
+  const data: Prisma.ItemUncheckedCreateInput = {
+    sku,
+    upc: original ? original.upc : isBundle ? null : body.upc || null,
+    quantity: Number(body.quantity),
+    isMultipack: Boolean(body.isMultipack),
+    packSize: body.isMultipack ? Number(body.packSize) : null,
+    expirationDate: expirationDate ? new Date(expirationDate) : null,
+    expirationBreakdown: expirationBreakdown ?? undefined,
+    // Required column; in warehouse mode where things are comes from the
+    // bins (BinContent), so it's left blank.
+    shelfLocation: warehouse ? "" : body.shelfLocation,
+    boxSize: body.boxSize ?? null,
+    weightLbs: body.weightLbs != null ? Number(body.weightLbs) : null,
+    weightOz: body.weightOz != null ? Number(body.weightOz) : null,
+    photoUrls: Array.isArray(body.photoUrls) ? body.photoUrls : [],
+    // Who's signed in, not anything the client sends — this is what the
+    // scan-speed report (/reports/scan-speed) attributes the scan to.
+    scannedBy: username,
+    manifestId: original ? original.manifestId : body.manifestId ?? null,
+    isBundle,
+    bundleComponents: isBundle ? body.bundleComponents : undefined,
+    shopifyOnly: !isBundle && (body.shopifyOnly === true || (original != null && relistPart === "past")),
+    ...(original ? inheritedFields(original) : {}),
+  };
+
+  let item: Item;
+  let labelsQueued = 0;
+  if (warehouse) {
+    // The label's name and date are looked up before the transaction so it
+    // only holds a connection for the writes themselves.
+    const payload = await buildItemLabel(
+      prisma,
+      {
+        sku,
+        upc: (data.upc as string | null) ?? null,
+        manifestId: (data.manifestId as string | null) ?? null,
+        isBundle,
+        isMultipack: Boolean(data.isMultipack),
+        packSize: (data.packSize as number | null) ?? null,
+        expirationDate: data.expirationDate instanceof Date ? data.expirationDate : null,
+        condition: (data.condition as string | null | undefined) ?? null,
+      },
+      typeof body.productName === "string" ? body.productName : null
+    );
+    // Item, labels (and bin contents, when a bin was sent) land together or
+    // not at all: no labels for an item that didn't save.
+    try {
+      ({ item, labelsQueued } = await prisma.$transaction(
+        async (tx) => {
+          const created = await tx.item.create({ data });
+          // A bundle's units are whole bundles (its quantity), same as a
+          // multi-pack's are whole packs: one bag, one label each.
+          if (binCode) await placeInBin(tx, { itemId: created.id, binCode, units, by: username });
+          const queued = await queueItemLabels(tx, { stationId, payload, copies: units, by: username });
+          return { item: created, labelsQueued: queued };
+        },
+        { maxWait: 10_000, timeout: 20_000 }
+      ));
+    } catch (e) {
+      if (e instanceof WarehouseError) return NextResponse.json({ error: e.message }, { status: e.status });
+      throw e;
+    }
+  } else {
+    item = await prisma.item.create({ data });
+  }
 
   const relistNext = original ? await recordRelistPart(original.id, relistPart, item.id) : undefined;
   const keepCategory = Boolean(original?.categoryId);
@@ -163,5 +263,6 @@ export async function POST(request: NextRequest) {
   });
 
   // relistNext: the relist part still to do (null = finished), only on a relist.
-  return NextResponse.json({ ...item, relistNext }, { status: 201 });
+  // labelsQueued: warehouse mode only, labels sent to the station's printer.
+  return NextResponse.json({ ...item, relistNext, ...(warehouse ? { labelsQueued } : {}) }, { status: 201 });
 }

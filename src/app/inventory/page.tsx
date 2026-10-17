@@ -10,6 +10,9 @@ import { Input } from "@/components/ui/Input";
 import { ExternalLink, LoaderCircle, Minus, Package, Plus, Search } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useCurrentUser } from "@/components/UserNav";
+import { LocationBadge } from "@/components/LocationBadge";
+import type { ItemLocation } from "@/lib/warehouse/types";
+import Link from "next/link";
 
 type InventoryItem = {
   id: string;
@@ -17,6 +20,8 @@ type InventoryItem = {
   sku: string;
   upc: string | null;
   shelfLocation: string;
+  // Bins (warehouse mode) or the old shelf. See getItemLocations.
+  location: ItemLocation | null;
   price: number | null;
   quantity: number;
   soldQuantity: number;
@@ -71,6 +76,9 @@ export default function InventoryPage() {
   const [noteInput, setNoteInput] = useState("");
   const [saving, setSaving] = useState(false);
   const [rowError, setRowError] = useState<string | null>(null);
+  // Added stock on an item that lives in bins: a reminder to scan the new
+  // units into a bin (the server doesn't guess which one).
+  const [putAwayNotice, setPutAwayNotice] = useState<{ itemId: string; code: string; units: number } | null>(null);
 
   function load(q: string) {
     fetch(`/api/inventory${q ? `?q=${encodeURIComponent(q)}` : ""}`)
@@ -131,15 +139,33 @@ export default function InventoryPage() {
       });
       const result = await res.json();
       if (!res.ok) throw new Error(result.error ?? "Failed to update quantity.");
+      // Units taken out of bins by a removal come off the badges too.
+      const fromBins: { binCode: string; units: number }[] = result.fromBins ?? [];
+      const nextLocation = (loc: ItemLocation | null): ItemLocation | null =>
+        loc && fromBins.length > 0
+          ? {
+              ...loc,
+              bins: loc.bins
+                .map((b) => ({ ...b, units: b.units - (fromBins.find((f) => f.binCode === b.binCode)?.units ?? 0) }))
+                .filter((b) => b.units > 0),
+            }
+          : loc;
       setItems((prev) =>
         prev
           ? prev.map((i) =>
               i.id === item.id
-                ? { ...i, quantity: result.quantity, soldQuantity: result.soldQuantity, availableQuantity: result.availableQuantity }
+                ? {
+                    ...i,
+                    quantity: result.quantity,
+                    soldQuantity: result.soldQuantity,
+                    availableQuantity: result.availableQuantity,
+                    location: nextLocation(i.location),
+                  }
                 : i
             )
           : prev
       );
+      setPutAwayNotice(result.putAway ? { itemId: item.id, code: item.sku, units: result.putAway.units } : null);
       setEditingId(null);
       setLiveCheck(null);
     } catch (e) {
@@ -164,7 +190,7 @@ export default function InventoryPage() {
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="eBay Item ID, title, UPC, or SKU"
+              placeholder="eBay Item ID, title, UPC, SKU or bin"
               aria-label="Search inventory"
               className="pl-10"
             />
@@ -228,7 +254,7 @@ export default function InventoryPage() {
                     <div className="min-w-0 flex-1">
                       <p className="line-clamp-2 font-medium leading-snug text-foreground">{item.title ?? item.sku}</p>
                       <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-                        <Badge>Shelf {item.shelfLocation}</Badge>
+                        <LocationBadge location={item.location} fallbackShelf={item.shelfLocation} />
                         {item.isMultipack && item.packSize ? <Badge tone="primary">{item.packSize}-pack</Badge> : null}
                         <span className="tabular-nums">{item.upc ?? "no UPC"}</span>
                         {listingUrl && (
@@ -261,6 +287,21 @@ export default function InventoryPage() {
                       </Button>
                     )}
                   </div>
+
+                  {putAwayNotice?.itemId === item.id && !isEditing && (
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-amber-50 p-3 text-sm text-amber-950">
+                      <span>
+                        Added {putAwayNotice.units}. Scan {putAwayNotice.units === 1 ? "it" : "them"} into a bin so
+                        pickers can find {putAwayNotice.units === 1 ? "it" : "them"}.
+                      </span>
+                      <Link
+                        href={`/bins?tab=putaway&item=${encodeURIComponent(putAwayNotice.code)}`}
+                        className="font-medium text-primary hover:underline"
+                      >
+                        Put away
+                      </Link>
+                    </div>
+                  )}
 
                   {isEditing && (
                     <div className="mt-4 flex flex-col gap-3 border-t border-border pt-4">

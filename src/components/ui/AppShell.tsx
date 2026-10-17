@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  Archive,
   ChartColumn,
   ClipboardCheck,
   Ellipsis,
@@ -8,9 +9,12 @@ import {
   House,
   LogOut,
   Menu,
+  Monitor,
   Package,
+  PackageCheck,
   ScanBarcode,
   Settings,
+  SplitSquareHorizontal,
   Target,
   Timer,
   X,
@@ -22,7 +26,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { logout, useCurrentUser } from "@/components/UserNav";
 import { cn } from "./cn";
 
-type NavItem = { href: string; label: string; icon: LucideIcon; ownerOnly?: boolean };
+type NavItem = { href: string; label: string; icon: LucideIcon; ownerOnly?: boolean; warehouseOnly?: boolean };
 
 // Single source of truth for app navigation. Every page used to hand-build
 // its own row of <Link>s (which is what overflowed the scanner's screen);
@@ -33,6 +37,12 @@ const NAV: NavItem[] = [
   { href: "/review", label: "Review", icon: ClipboardCheck },
   { href: "/manifests", label: "Manifests", icon: FileSpreadsheet },
   { href: "/inventory", label: "Inventory", icon: Package },
+  // Warehouse mode pages (src/lib/warehouse), hidden until it's turned on
+  // in Settings.
+  { href: "/sort", label: "Sort", icon: SplitSquareHorizontal, warehouseOnly: true },
+  { href: "/bins", label: "Bins", icon: Archive, warehouseOnly: true },
+  { href: "/ship", label: "Pick orders", icon: PackageCheck, warehouseOnly: true },
+  { href: "/station", label: "Station", icon: Monitor, warehouseOnly: true },
   // Owner-only, same as proxy.ts's ownerOnlyPrefixes — employees get
   // redirected away from /analyzer anyway, so don't dangle a dead link.
   { href: "/analyzer", label: "Analyzer", icon: ChartColumn, ownerOnly: true },
@@ -80,8 +90,15 @@ export function AppShell({
   const user = useCurrentUser();
   const isOwner = user?.role === "owner";
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [warehouseMode, setWarehouseMode] = useState(false);
+  useEffect(() => {
+    fetch("/api/warehouse/mode")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setWarehouseMode(d?.on === true))
+      .catch(() => setWarehouseMode(false));
+  }, []);
 
-  const visibleNav = NAV.filter((n) => !n.ownerOnly || isOwner);
+  const visibleNav = NAV.filter((n) => (!n.ownerOnly || isOwner) && (!n.warehouseOnly || warehouseMode));
   const tabs = visibleNav.filter((n) => TAB_HREFS.includes(n.href));
   const moreItems = [...visibleNav.filter((n) => !TAB_HREFS.includes(n.href)), ...(isOwner ? [SETTINGS] : [])];
   const moreActive = moreItems.some((n) => isActive(pathname, n.href));
