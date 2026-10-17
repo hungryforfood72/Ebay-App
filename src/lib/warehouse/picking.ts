@@ -39,9 +39,11 @@ export type PickStatus = "labelled" | "in_app_legacy" | "not_in_app" | "va";
 // pick behind it:
 //   ship    into the shipping pile for that order (the normal case)
 //   pickup  the buyer collects it: set it aside to hand over
+//   delivery Epic Steals free local delivery (Shopify's Local delivery
+//           method): set it aside for the delivery run, no label
 //   counter already sold in person at the counter (Shopify POS); the scan
 //           just takes it off its bin's count
-export type Handoff = "ship" | "pickup" | "counter";
+export type Handoff = "ship" | "pickup" | "delivery" | "counter";
 
 // How a unit is confirmed: its ES label, its product UPC (old items have no
 // label), or a tap (an old item with no UPC on record either).
@@ -285,10 +287,15 @@ function shopifyLines(orders: ShopifyOpenOrder[]): RawLine[] {
     if (o.cancelledAt) continue;
     if (SHOPIFY_SKIP_PAYMENT.includes(o.displayFinancialStatus ?? "")) continue;
     const counter = (o.sourceName ?? "").toLowerCase() === "pos";
-    const pickup = o.shippingLines.nodes.some(
-      (s) => /pick-?up|local/i.test(s.deliveryCategory ?? "") || /pick\s*up/i.test(s.title)
+    // Shopify's deliveryCategory: "local" is Local delivery, "pick-up" is
+    // Local pickup. The method name backs it up.
+    const delivery = o.shippingLines.nodes.some(
+      (s) => /^local$/i.test(s.deliveryCategory ?? "") || /local\s*deliver/i.test(s.title)
     );
-    const handoff: Handoff = counter ? "counter" : pickup ? "pickup" : "ship";
+    const pickup = o.shippingLines.nodes.some(
+      (s) => /pick-?up/i.test(s.deliveryCategory ?? "") || /pick\s*up/i.test(s.title)
+    );
+    const handoff: Handoff = counter ? "counter" : delivery ? "delivery" : pickup ? "pickup" : "ship";
     const whatnot = /whatnot/i.test(o.app?.name ?? "") || /whatnot/i.test(o.sourceName ?? "");
     for (const li of o.lineItems.nodes) {
       if (li.currentQuantity < 1) continue;

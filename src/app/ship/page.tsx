@@ -122,6 +122,7 @@ type OrderGroup = {
   buyer: string | null;
   source: string;
   pickup: boolean;
+  delivery: boolean;
   lines: PickLine[];
 };
 
@@ -203,7 +204,7 @@ export default function ShipPage() {
       if (l.status === "va" || l.handoff === "counter") continue;
       const key = `${l.channel}:${l.orderId}`;
       if (!map.has(key)) {
-        map.set(key, { key, orderNumber: l.orderNumber, buyer: l.buyer, source: l.source, pickup: l.handoff === "pickup", lines: [] });
+        map.set(key, { key, orderNumber: l.orderNumber, buyer: l.buyer, source: l.source, pickup: l.handoff === "pickup", delivery: l.handoff === "delivery", lines: [] });
       }
       map.get(key)!.lines.push(l);
     }
@@ -257,14 +258,18 @@ export default function ShipPage() {
               ? "Cleared from the bins"
               : line.handoff === "pickup"
                 ? `Correct, set it aside for pickup (order ${line.orderNumber})`
-                : `Correct, put it with order ${line.orderNumber}`,
+                : line.handoff === "delivery"
+                  ? `Correct, set it aside for local delivery (order ${line.orderNumber})`
+                  : `Correct, put it with order ${line.orderNumber}`,
           detail:
             line.handoff === "counter"
               ? `Counter sale ${line.orderNumber}. ${more > 0 ? `${more} more to clear.` : "All cleared."}`
               : orderDone
                 ? line.handoff === "pickup"
                   ? `Order ${line.orderNumber} is ready for pickup.`
-                  : `Order ${line.orderNumber} is ready to pack.`
+                  : line.handoff === "delivery"
+                    ? `Order ${line.orderNumber} is ready for local delivery. No label needed.`
+                    : `Order ${line.orderNumber} is ready to pack.`
                 : count,
           note: [json.manual ? "Confirmed by tap, not a scan." : null, json.binNote].filter(Boolean).join(" ") || null,
           undoLine: { ...line, picked: json.picked },
@@ -492,6 +497,7 @@ export default function ShipPage() {
                           <PackageCheck className="size-5 text-success" aria-hidden />
                           {orderLabel(o)}
                           {o.pickup && <Badge tone="primary">Pickup</Badge>}
+                          {o.delivery && <Badge tone="primary">Local delivery</Badge>}
                         </p>
                         <ul className="mt-2 flex flex-col gap-1 text-sm">
                           {o.lines.map((l) => (
@@ -542,6 +548,11 @@ export default function ShipPage() {
                           {l.handoff === "pickup" && (
                             <Badge tone="primary" className="mt-1.5">
                               Pickup: hand to the customer
+                            </Badge>
+                          )}
+                          {l.handoff === "delivery" && (
+                            <Badge tone="primary" className="mt-1.5">
+                              Local delivery: no label
                             </Badge>
                           )}
                         </div>
@@ -675,6 +686,7 @@ function VerifyBadges({ line }: { line: PickLine }) {
     <div className="mt-1.5 flex flex-wrap gap-1">
       {line.source !== "eBay" && <Badge tone="purple">{line.source}</Badge>}
       {line.handoff === "pickup" && <Badge tone="primary">Pickup: hand to the customer</Badge>}
+      {line.handoff === "delivery" && <Badge tone="primary">Local delivery: no label</Badge>}
       {line.handoff === "counter" && <Badge tone="neutral">Sold at the counter</Badge>}
       {line.status === "in_app_legacy" && <Badge tone="warning">Old system</Badge>}
       {line.verifyBy === "upc" && <Badge tone="warning">No label, scan the UPC</Badge>}
