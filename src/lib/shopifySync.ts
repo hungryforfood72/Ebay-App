@@ -63,12 +63,6 @@ const PRICING_KEYS: Record<keyof ShopifyPricing, string> = {
 };
 const PRICING_DEFAULTS: ShopifyPricing = { ebayPct: 30, retailPct: 50, noRetailPct: 35 };
 
-// Manifest retail is often far under what an item really goes for on eBay
-// (a $4.06-retail plush that sells for $25.99), so the retail side never
-// takes the price more than this far under the eBay price. Cristian picked
-// this floor over a straight "whichever is cheaper".
-const MAX_OFF_EBAY_PCT = 50;
-
 export async function getShopifyPricing(): Promise<ShopifyPricing> {
   const rows = await prisma.appSetting.findMany({ where: { key: { in: Object.values(PRICING_KEYS) } } });
   const pricing = { ...PRICING_DEFAULTS };
@@ -115,8 +109,12 @@ export function shopifyPriceFor(
   pricing: ShopifyPricing
 ): number {
   if (!usableRetail(retail, ebayOriginal)) return pctOff(ebayPrice, pricing.noRetailPct);
-  const fromRetail = Math.max(pctOff(retail, pricing.retailPct), pctOff(ebayPrice, MAX_OFF_EBAY_PCT));
-  return Math.min(pctOff(ebayPrice, pricing.ebayPct), fromRetail);
+  // No floor under the eBay price, even when manifest retail is far below
+  // it (a $4.06-retail plush listed at $25.99 goes for $2.03). Cristian
+  // dropped the 50%-off-eBay floor the same day: he'd rather move volume at
+  // a lower profit and grow the store's customers. Every item it touched
+  // still cleared a profit after Whatnot fees.
+  return Math.min(pctOff(ebayPrice, pricing.ebayPct), pctOff(retail, pricing.retailPct));
 }
 
 // Cristian: short-dated and past-date items go 65% off the regular store

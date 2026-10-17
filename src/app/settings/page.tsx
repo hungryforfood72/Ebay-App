@@ -856,7 +856,7 @@ function ShopifyConnection() {
             <p className="mb-1 text-sm font-medium text-foreground">Shopify price</p>
             <p className="mb-2 text-xs text-muted-foreground">
               Whichever is the bigger discount: the eBay % off the eBay price, or the retail % off the
-              manifest&apos;s retail, but never more than half off the eBay price. Items with no retail on record
+              manifest&apos;s retail. Items with no retail on record
               use the last one. Follows every eBay price change, discounts included. Past-date items stay 65% off
               the eBay price less the first %.
             </p>
