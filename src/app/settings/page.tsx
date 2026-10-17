@@ -46,6 +46,7 @@ function SettingsPageInner() {
         <SettingsGroup title="Sourcing agent">
           <SourcingMarginSetting />
           <MaxMonthsToSellThroughSetting />
+          <UnprovenMarginSetting />
         </SettingsGroup>
 
         <SettingsGroup title="Pricing & listings">
@@ -342,6 +343,61 @@ function MaxMonthsToSellThroughSetting() {
           min={1}
           value={value}
           aria-label="Slow-mover threshold in months"
+          onChange={(e) => {
+            setValue(e.target.value);
+            setSaved(false);
+          }}
+        />
+        <SaveButton onClick={save} disabled={saving || !value} saving={saving} saved={saved} />
+      </div>
+    </Card>
+  );
+}
+
+// Margin for lines the Analyzer has no sell-speed evidence on at all, so
+// they only get bought cheap (getUnprovenMarginPct). Same fetch/save
+// pattern as SourcingMarginSetting.
+function UnprovenMarginSetting() {
+  const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  function load() {
+    fetch("/api/settings/sourcing-unproven-margin")
+      .then((r) => r.json())
+      .then((data: { unprovenMarginPct: number }) => setValue(String(data.unprovenMarginPct)));
+  }
+
+  useEffect(load, []);
+
+  async function save() {
+    setSaving(true);
+    setSaved(false);
+    try {
+      const res = await fetch("/api/settings/sourcing-unproven-margin", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ unprovenMarginPct: Number(value) }),
+      });
+      if (res.ok) setSaved(true);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card>
+      <SectionHeader
+        title="Margin on unproven items"
+        description="For items with no proof of how fast they sell (never sold by you, too few eBay listings to measure). They still count toward the bid, but at this margin instead, so you only pay a little for them. 100% means paying at most half of what they're expected to net."
+      />
+      <div className="flex flex-wrap items-center gap-3">
+        <SuffixInput
+          suffix="%"
+          step="5"
+          min={0}
+          value={value}
+          aria-label="Margin on unproven items in percent"
           onChange={(e) => {
             setValue(e.target.value);
             setSaved(false);

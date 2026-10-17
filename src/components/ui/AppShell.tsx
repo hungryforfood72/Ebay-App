@@ -11,6 +11,7 @@ import {
   Package,
   ScanBarcode,
   Settings,
+  Target,
   Timer,
   X,
   type LucideIcon,
@@ -36,6 +37,7 @@ const NAV: NavItem[] = [
   // redirected away from /analyzer anyway, so don't dangle a dead link.
   { href: "/analyzer", label: "Analyzer", icon: ChartColumn, ownerOnly: true },
   { href: "/reports/scan-speed", label: "Scan speed", icon: Timer, ownerOnly: true },
+  { href: "/reports/analyzer-accuracy", label: "Analyzer accuracy", icon: Target, ownerOnly: true },
 ];
 const SETTINGS: NavItem = { href: "/settings", label: "Settings", icon: Settings, ownerOnly: true };
 

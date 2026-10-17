@@ -1,5 +1,6 @@
 import { syncEbaySales } from "@/lib/channelSync";
 import { updatePackStrategyKnowledge } from "@/lib/packAdvisor";
+import { runPredictionTracker } from "@/lib/predictionTracker";
 import { runShopifySync } from "@/lib/shopifySync";
 import { updateSourcingKnowledge } from "@/lib/sourcingAgent";
 import { NextRequest, NextResponse } from "next/server";
@@ -29,6 +30,13 @@ export async function GET(request: NextRequest) {
     await updatePackStrategyKnowledge();
   } catch (e) {
     console.error("[cron] updatePackStrategyKnowledge failed", e);
+  }
+  // The Analyzer's report card: guesses vs real results on bought loads,
+  // and the corrections its next evaluations use.
+  try {
+    await runPredictionTracker();
+  } catch (e) {
+    console.error("[cron] runPredictionTracker failed", e);
   }
 
   const shopify = await runShopifySync({ items: [], publish: { limit: 25, retryFailed: true } });

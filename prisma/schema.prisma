@@ -596,6 +596,7 @@ model Manifest {
   items   Item[]
 
   sourcingEvaluations SourcingEvaluation[]
+  predictionOutcomes  PredictionOutcome[]
   walkupSales         ManifestWalkupSale[]
 }
 
@@ -670,6 +671,13 @@ model SourcingEvaluation {
   // (Settings page), snapshotted here for the same cross-chunk consistency
   // reason as the settings above.
   maxMonthsToSellThrough     Float?
+  // Margin required on lines with no sell-speed evidence at all (see
+  // getUnprovenMarginPct): Cristian will gamble on those, but only cheap.
+  unprovenMarginPct          Float?
+  // What the prediction tracker had learned when this ran (see
+  // SourcingCalibration), so every chunk uses the same correction.
+  priceCalibration           Float?
+  speedCalibration           Float?
   // Soft per-evaluation cap on live web-search event-status checks (see
   // MAX_EVENT_CHECKS) — tracked across chunks so a manifest heavy on
   // occasion-tied merch can't re-earn a fresh budget on every continuation.
@@ -1131,4 +1139,56 @@ model HandCount {
   createdAt  DateTime @default(now())
 
   @@index([upc, manifestId, createdAt])
+}
+
+// The Analyzer's report card (src/lib/predictionTracker.ts): for a bought
+// manifest, what its latest evaluation guessed per UPC next to what really
+// happened once the units were listed. Refreshed by the 4-hourly full-sync
+// cron. One row per manifest + UPC.
+model PredictionOutcome {
+  id                     String   @id @default(uuid())
+  manifest               Manifest @relation(fields: [manifestId], references: [id], onDelete: Cascade)
+  manifestId             String
+  evaluationId           String
+  evaluatedAt            DateTime
+  supplier               String
+  upc                    String
+  description            String
+  // The guess
+  dataConfidence         String
+  sellRateSource         String?
+  predictedDud           Boolean
+  predictedUnitPrice     Decimal? @db.Decimal(10, 2)
+  predictedNetPerUnit    Decimal? @db.Decimal(10, 2)
+  predictedUnitsPerMonth Float?
+  expectedUnits          Int
+  // What happened (units are manifest units)
+  listedUnits            Int
+  soldUnits              Int
+  dudUnits               Int
+  ebayUnitsSold          Int
+  actualUnitPrice        Decimal? @db.Decimal(10, 2) // eBay, buyer-paid, per unit
+  actualNetPerUnit       Decimal? @db.Decimal(10, 2) // eBay, after fees + label
+  firstListedAt          DateTime?
+  lastSoldAt             DateTime?
+  monthsActive           Float?
+  actualUnitsPerMonth    Float?
+  // actual / predicted; null until there's enough to compare
+  priceRatio             Float?
+  speedRatio             Float?
+  updatedAt              DateTime @updatedAt
+
+  @@unique([manifestId, upc])
+}
+
+// Corrections the prediction tracker learned from PredictionOutcome rows:
+// "price" multiplies market-based price estimates, "speed" multiplies the
+// live-listings sell rate. 1 = no correction. Only applied once enough
+// products have real results (see predictionTracker.ts).
+model SourcingCalibration {
+  kind       String   @id
+  factor     Float
+  rawMedian  Float
+  sampleSize Int
+  updatedAt  DateTime @updatedAt
 }

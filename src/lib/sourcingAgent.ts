@@ -15,6 +15,7 @@ import { logAiUsage } from "./aiUsage";
 import { advisePackSize } from "./packAdvisor";
 import { EbayApiError, getListingSales, searchActiveListings, searchActiveListingsBy, type ActiveListingComp } from "./ebay";
 import { ebayBanReason } from "./ebayBanned";
+import { ACCURACY_KNOWLEDGE_SCOPE, getCalibration } from "./predictionTracker";
 import { boxesFor, exactSearchKeywords, isExactTitleMatch, LOT_TITLE, priceFromExactComps } from "./exactComps";
 import type { ManifestSupplier } from "@/generated/prisma/client";
 
@@ -63,6 +64,28 @@ export async function setMaxMonthsToSellThrough(months: number): Promise<void> {
     where: { key: MAX_MONTHS_TO_SELL_THROUGH_KEY },
     create: { key: MAX_MONTHS_TO_SELL_THROUGH_KEY, value: String(months) },
     update: { value: String(months) },
+  });
+}
+
+// Margin required on lines with no sell-speed evidence at all (never sold
+// by us, too few live listings to measure, no category sales). Cristian
+// 2026-10-17: he'll still take a chance on those and doesn't mind them
+// sitting on the shelf, but only at a really cheap price. 100% = pay at
+// most half of what they're expected to net.
+const UNPROVEN_MARGIN_KEY = "sourcing_unproven_margin_pct";
+const DEFAULT_UNPROVEN_MARGIN_PCT = 100;
+
+export async function getUnprovenMarginPct(): Promise<number> {
+  const row = await prisma.appSetting.findUnique({ where: { key: UNPROVEN_MARGIN_KEY } });
+  const value = row ? Number(row.value) : NaN;
+  return Number.isFinite(value) && value >= 0 ? value : DEFAULT_UNPROVEN_MARGIN_PCT;
+}
+
+export async function setUnprovenMarginPct(pct: number): Promise<void> {
+  await prisma.appSetting.upsert({
+    where: { key: UNPROVEN_MARGIN_KEY },
+    create: { key: UNPROVEN_MARGIN_KEY, value: String(pct) },
+    update: { value: String(pct) },
   });
 }
 
@@ -151,6 +174,10 @@ const MIN_LISTINGS_FOR_STALLED = 5;
 
 type MarketSellRate = { unitsPerMonth: number | null; sampled: number };
 
+// Corrections learned by the prediction tracker (src/lib/predictionTracker.ts)
+// from bought manifests: actual / guessed, 1 = none.
+type Calibration = { price: number; speed: number };
+
 async function marketSellRate(comps: ActiveListingComp[]): Promise<MarketSellRate> {
   const sample = comps.filter((c) => !isResellerLot(c.title, detectPackSize(c.title))).slice(0, SALES_SAMPLE_SIZE);
   const sales = await Promise.all(sample.map((c) => getListingSales(c.itemId).catch(() => null)));
@@ -167,9 +194,10 @@ async function marketSellRate(comps: ActiveListingComp[]): Promise<MarketSellRat
   return { unitsPerMonth: enough ? average : null, sampled: rates.length };
 }
 
-function monthsAtMarketRate(rate: MarketSellRate | null, physicalUnits: number): number | null {
+function monthsAtMarketRate(rate: MarketSellRate | null, physicalUnits: number, speedCalibration: number): number | null {
   if (rate?.unitsPerMonth == null) return null;
-  return rate.unitsPerMonth > 0 ? physicalUnits / rate.unitsPerMonth : STALLED_MONTHS_SENTINEL;
+  const unitsPerMonth = rate.unitsPerMonth * speedCalibration;
+  return unitsPerMonth > 0 ? physicalUnits / unitsPerMonth : STALLED_MONTHS_SENTINEL;
 }
 
 // Selling-cost fallbacks and pack-size reading live in ./packSize, shared
@@ -781,7 +809,8 @@ type LineEstimateResult = {
 async function estimateOtherSupplierLine(
   group: LineGroup,
   receiveRate: number,
-  maxMonthsToSellThrough: number
+  maxMonthsToSellThrough: number,
+  calibration: Calibration
 ): Promise<LineEstimateResult> {
   const effectiveUnits = Math.round(group.boxes * receiveRate);
   const base = {
@@ -850,7 +879,7 @@ async function estimateOtherSupplierLine(
   const net = price - fees - FALLBACK_SHIPPING_COST;
   // Comps here are priced per box, so the rate is boxes per month.
   const sellRate = await marketSellRate(comps);
-  const monthsToSellThrough = monthsAtMarketRate(sellRate, effectiveUnits);
+  const monthsToSellThrough = monthsAtMarketRate(sellRate, effectiveUnits, calibration.speed);
   const slowMover = monthsToSellThrough != null && monthsToSellThrough > maxMonthsToSellThrough;
   const flaggedDud = net <= 0 || slowMover || base.postHolidayFiller;
   return {
@@ -874,7 +903,8 @@ async function estimateLine(
   receiveRate: number,
   runTrendCheck: boolean,
   eventCheckBudget: EventCheckBudget,
-  maxMonthsToSellThrough: number
+  maxMonthsToSellThrough: number,
+  calibration: Calibration
 ): Promise<LineEstimateResult> {
   // Can't be listed on eBay at all (needles, Rx devices — see ebayBanned),
   // so it's worth $0 whatever the comps say. Skipped before any lookup:
@@ -905,7 +935,7 @@ async function estimateLine(
     };
   }
 
-  if (group.strictPricing) return estimateOtherSupplierLine(group, receiveRate, maxMonthsToSellThrough);
+  if (group.strictPricing) return estimateOtherSupplierLine(group, receiveRate, maxMonthsToSellThrough, calibration);
 
   // Own-history: exact UPC, across every manifest ever sold, not just this one.
   let ownSalesCount = 0;
@@ -1202,7 +1232,7 @@ async function estimateLine(
   // flagged; a real history with zero recent sales is a "stalled" signal.
   let sellRateSource: "own" | "ebay_listings" | "category" | null = null;
   let monthsToSellThroughEstimate: number | null = null;
-  const marketMonths = monthsAtMarketRate(sellRate, effectiveUnits * manifestUnitPackSize);
+  const marketMonths = monthsAtMarketRate(sellRate, effectiveUnits * manifestUnitPackSize, calibration.speed);
   if (ownSalesCount > 0) {
     sellRateSource = "own";
     monthsToSellThroughEstimate = computeMonthsToSellThrough(ownRecentUnits, effectiveUnits);
@@ -1312,14 +1342,18 @@ async function estimateLine(
       marketScore * marketMedian +
       webCheckScore * (webCheckPrice ?? 0)) /
     priceTotalScore;
+  // What the prediction tracker learned about how our market-based price
+  // guesses compare with what bought loads really sold for. Our own sales
+  // history is already real, so it's left alone.
+  const calibratedSalePrice = dataConfidence === "own_history" ? blendedSalePrice : blendedSalePrice * calibration.price;
   // Only our own sales of this exact UPC are trusted past the retail cap —
   // everything else (fuzzy historical title matches, a category average,
   // live comps, a web check) can be matching the wrong product or pack
   // size. See UNVERIFIED_RETAIL_MULTIPLE_CAP.
   const estimatedUnitSalePrice =
     dataConfidence !== "own_history" && group.retailPrice > 0
-      ? Math.min(blendedSalePrice, group.retailPrice * UNVERIFIED_RETAIL_MULTIPLE_CAP)
-      : blendedSalePrice;
+      ? Math.min(calibratedSalePrice, group.retailPrice * UNVERIFIED_RETAIL_MULTIPLE_CAP)
+      : calibratedSalePrice;
   // FALLBACK_SHIPPING_COST/FALLBACK_FEE_FIXED are per-LISTING costs (one
   // shipment, one order) — dividing by typicalPackSize amortizes them
   // across the physical units in that listing, same reasoning as
@@ -1492,20 +1526,30 @@ export async function evaluateManifestChunk(
   let targetMarginPct: number;
   let receiveRate: number;
   let maxMonthsToSellThrough: number;
+  let unprovenMarginPct: number;
+  let calibration: Calibration;
   if (evaluation.targetMarginPct != null) {
     targetMarginPct = evaluation.targetMarginPct;
     receiveRate = evaluation.receiveRate!;
     maxMonthsToSellThrough = evaluation.maxMonthsToSellThrough!;
+    // Evaluations started before these existed resume with the defaults.
+    unprovenMarginPct = evaluation.unprovenMarginPct ?? targetMarginPct;
+    calibration = { price: evaluation.priceCalibration ?? 1, speed: evaluation.speedCalibration ?? 1 };
   } else {
     targetMarginPct = await getTargetMarginPct();
     receiveRate = await getSupplierReceiveRate(manifest.supplier);
     maxMonthsToSellThrough = await getMaxMonthsToSellThrough();
+    unprovenMarginPct = Math.max(targetMarginPct, await getUnprovenMarginPct());
+    calibration = await getCalibration();
     await prisma.sourcingEvaluation.update({
       where: { id: evaluationId },
       data: {
         targetMarginPct,
         receiveRate,
         maxMonthsToSellThrough,
+        unprovenMarginPct,
+        priceCalibration: calibration.price,
+        speedCalibration: calibration.speed,
       },
     });
   }
@@ -1584,7 +1628,8 @@ export async function evaluateManifestChunk(
       receiveRate,
       runTrendCheck,
       eventCheckBudget,
-      maxMonthsToSellThrough
+      maxMonthsToSellThrough,
+      calibration
     );
     await prisma.sourcingLineEstimate.create({
       data: {
@@ -1678,9 +1723,17 @@ export async function evaluateManifestChunk(
     };
   });
 
+  // Lines with no sell-speed evidence of any kind still count, but they're
+  // bid at the (higher) unproven margin, so they're only bought cheap.
+  // Rows from before sellRateSource existed all read null, but those
+  // evaluations never reach this point again.
+  const isUnproven = (est: LineEstimateResult) => !est.flaggedDud && (est.sellRateSource ?? null) === null;
   let totalExpectedNetContribution = 0;
+  let unprovenNetContribution = 0;
   for (const est of lineEstimates) {
-    totalExpectedNetContribution += (est.estimatedNetPerUnit ?? 0) * est.effectiveUnits;
+    const net = (est.estimatedNetPerUnit ?? 0) * est.effectiveUnits;
+    totalExpectedNetContribution += net;
+    if (isUnproven(est)) unprovenNetContribution += net;
   }
   const dudCount = lineEstimates.filter((e) => e.flaggedDud).length;
   const dudShare = lineEstimates.length > 0 ? dudCount / lineEstimates.length : 0;
@@ -1693,7 +1746,11 @@ export async function evaluateManifestChunk(
   const topShare = totalExtendedRetail > 0 && topGroup ? topGroup.extendedRetail / totalExtendedRetail : 0;
   const concentrationRisk = topShare > 0.35 && Boolean(topEstimate?.flaggedDud);
 
-  const maxBid = Math.max(0, totalExpectedNetContribution / (1 + targetMarginPct / 100));
+  const maxBid = Math.max(
+    0,
+    (totalExpectedNetContribution - unprovenNetContribution) / (1 + targetMarginPct / 100) +
+      unprovenNetContribution / (1 + unprovenMarginPct / 100)
+  );
 
   // Buy/Don't-Buy is code-computed and deterministic — the LLM only
   // explains it afterward, never re-decides it, so the call stays
@@ -1703,6 +1760,7 @@ export async function evaluateManifestChunk(
 
   const knowledgeScopes = [
     `supplier:${manifest.supplier}`,
+    ACCURACY_KNOWLEDGE_SCOPE,
     ...new Set(sortedGroups.map((g) => g.category).filter((c): c is string => Boolean(c)).map((c) => `category:${c}`)),
   ].slice(0, 10);
   const knowledgeNotes = await prisma.sourcingKnowledge.findMany({ where: { scope: { in: knowledgeScopes } } });
@@ -1714,6 +1772,14 @@ export async function evaluateManifestChunk(
     targetMarginPct,
     receiveRate,
     totalExpectedNetContribution,
+    unprovenNetContribution,
+    unprovenMarginPct,
+    unprovenLines: lineEstimates
+      .filter((e) => isUnproven(e) && (e.estimatedNetPerUnit ?? 0) > 0)
+      .sort((a, b) => (b.estimatedNetPerUnit ?? 0) * b.effectiveUnits - (a.estimatedNetPerUnit ?? 0) * a.effectiveUnits)
+      .slice(0, 5)
+      .map((e) => `- ${e.description}: ${e.effectiveUnits} units, est. $${((e.estimatedNetPerUnit ?? 0) * e.effectiveUnits).toFixed(0)} net`),
+    calibration,
     maxBid,
     recommendation,
     dudShare,
@@ -1812,6 +1878,10 @@ async function writeReasoning(input: {
   targetMarginPct: number;
   receiveRate: number;
   totalExpectedNetContribution: number;
+  unprovenNetContribution: number;
+  unprovenMarginPct: number;
+  unprovenLines: string[];
+  calibration: Calibration;
   maxBid: number;
   recommendation: "buy" | "dont_buy";
   dudShare: number;
@@ -1836,6 +1906,8 @@ Call: ${input.recommendation.toUpperCase().replace("_", " ")}
 Max recommended bid: $${input.maxBid.toFixed(2)}
 Expected net contribution before bid cost: $${input.totalExpectedNetContribution.toFixed(2)}
 Target margin used: ${input.targetMarginPct}%
+Expected net from lines with NO sell-speed evidence at all (we've never sold them, too few live listings to measure, no similar sales): $${input.unprovenNetContribution.toFixed(2)}. The owner is fine taking a chance on these but only cheap, so they were bid at a ${input.unprovenMarginPct}% margin instead.${input.unprovenLines.length > 0 ? ` Biggest ones:\n${input.unprovenLines.join("\n")}` : ""}
+Learned corrections from past bought loads (actual vs guessed, 1.00 = none yet): price ${input.calibration.price.toFixed(2)}, sell speed ${input.calibration.speed.toFixed(2)}.
 Supplier's real historical receive rate (after damage/expired): ${(input.receiveRate * 100).toFixed(0)}%
 Share of lines flagged as likely duds: ${(input.dudShare * 100).toFixed(0)}%
 Concentration risk flagged: ${input.concentrationRisk ? "yes — one item dominates the manifest's value and looks weak" : "no"}
