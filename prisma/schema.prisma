@@ -674,6 +674,9 @@ model SourcingEvaluation {
   // Margin required on lines with no sell-speed evidence at all (see
   // getUnprovenMarginPct): Cristian will gamble on those, but only cheap.
   unprovenMarginPct          Float?
+  // Longest sell-through for non-expiring stock kept at that cheap margin
+  // (see getLongTailMonths).
+  longTailMonths             Float?
   // What the prediction tracker had learned when this ran (see
   // SourcingCalibration), so every chunk uses the same correction.
   priceCalibration           Float?
@@ -760,6 +763,9 @@ model SourcingLineEstimate {
   // "category". listingUnitsPerMonth = the measured market rate per listing.
   sellRateSource         String?
   listingUnitsPerMonth   Float?
+  // Too slow for full value, doesn't expire, within longTailMonths: kept,
+  // bid at the cheap margin. Not a dud.
+  longTail               Boolean            @default(false)
   // Unused since 2026-10-16 (see categoryInventoryLoad on SourcingEvaluation).
   ebayCategoryId         String?
   categoryWeeksOnHand    Float?

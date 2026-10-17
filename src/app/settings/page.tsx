@@ -46,6 +46,7 @@ function SettingsPageInner() {
         <SettingsGroup title="Sourcing agent">
           <SourcingMarginSetting />
           <MaxMonthsToSellThroughSetting />
+          <LongTailMonthsSetting />
           <UnprovenMarginSetting />
         </SettingsGroup>
 
@@ -333,8 +334,8 @@ function MaxMonthsToSellThroughSetting() {
   return (
     <Card>
       <SectionHeader
-        title="Slow-mover threshold"
-        description="A line gets flagged (and its profit contribution zeroed, same as any other dud) if its recent real sell rate says the expected quantity would take longer than this to sell through — even if the per-unit price looks good."
+        title="Full-value sell-through"
+        description="Items that would sell through within this count at your normal target margin. Slower ones that expire (sunscreen, medicine, food) are duds past this point. Slower ones that don't expire go by the next setting."
       />
       <div className="flex flex-wrap items-center gap-3">
         <SuffixInput
@@ -343,6 +344,60 @@ function MaxMonthsToSellThroughSetting() {
           min={1}
           value={value}
           aria-label="Slow-mover threshold in months"
+          onChange={(e) => {
+            setValue(e.target.value);
+            setSaved(false);
+          }}
+        />
+        <SaveButton onClick={save} disabled={saving || !value} saving={saving} saved={saved} />
+      </div>
+    </Card>
+  );
+}
+
+// Longest sell-through for non-expiring stock that still counts (at the
+// cheap margin below) — see getLongTailMonths. Same fetch/save pattern.
+function LongTailMonthsSetting() {
+  const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  function load() {
+    fetch("/api/settings/sourcing-long-tail-months")
+      .then((r) => r.json())
+      .then((data: { longTailMonths: number }) => setValue(String(data.longTailMonths)));
+  }
+
+  useEffect(load, []);
+
+  async function save() {
+    setSaving(true);
+    setSaved(false);
+    try {
+      const res = await fetch("/api/settings/sourcing-long-tail-months", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ longTailMonths: Number(value) }),
+      });
+      if (res.ok) setSaved(true);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card>
+      <SectionHeader
+        title="Longest wait for items that don't expire"
+        description="Slow sellers that don't expire still count toward the bid up to this many months, at the unproven-and-slow margin below. They're bonus profit, not what the buy depends on. Slower than this is a dud."
+      />
+      <div className="flex flex-wrap items-center gap-3">
+        <SuffixInput
+          suffix="months"
+          step="1"
+          min={1}
+          value={value}
+          aria-label="Longest wait for items that don't expire, in months"
           onChange={(e) => {
             setValue(e.target.value);
             setSaved(false);
@@ -388,8 +443,8 @@ function UnprovenMarginSetting() {
   return (
     <Card>
       <SectionHeader
-        title="Margin on unproven items"
-        description="For items with no proof of how fast they sell (never sold by you, too few eBay listings to measure). They still count toward the bid, but at this margin instead, so you only pay a little for them. 100% means paying at most half of what they're expected to net."
+        title="Margin on unproven and slow items"
+        description="For items with no proof of how fast they sell, and for slow sellers that don't expire. They still count toward the bid, but at this margin instead, so you only pay a little for them and the fast sellers carry the buy. 100% means paying at most half of what they're expected to net."
       />
       <div className="flex flex-wrap items-center gap-3">
         <SuffixInput

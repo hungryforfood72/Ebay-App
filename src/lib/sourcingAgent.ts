@@ -59,6 +59,64 @@ export async function getMaxMonthsToSellThrough(): Promise<number> {
   return Number.isFinite(value) && value > 0 ? value : DEFAULT_MAX_MONTHS_TO_SELL_THROUGH;
 }
 
+// Slow-seller tiers, Cristian 2026-10-17: he's growing by rolling profit
+// into more inventory, and most of it doesn't expire, so selling in 8-12
+// months is still profit. But cash that sells in 2 months turns over ~6x
+// a year, so slower stock only counts cheap:
+//   sells within getMaxMonthsToSellThrough (6): full value, target margin
+//   doesn't expire, sells within this (12): counted at the unproven margin
+//   anything slower, or an expiring product past the first limit: dud
+const LONG_TAIL_MONTHS_KEY = "sourcing_long_tail_months";
+const DEFAULT_LONG_TAIL_MONTHS = 12;
+
+export async function getLongTailMonths(): Promise<number> {
+  const row = await prisma.appSetting.findUnique({ where: { key: LONG_TAIL_MONTHS_KEY } });
+  const value = row ? Number(row.value) : NaN;
+  return Number.isFinite(value) && value > 0 ? value : DEFAULT_LONG_TAIL_MONTHS;
+}
+
+export async function setLongTailMonths(months: number): Promise<void> {
+  await prisma.appSetting.upsert({
+    where: { key: LONG_TAIL_MONTHS_KEY },
+    create: { key: LONG_TAIL_MONTHS_KEY, value: String(months) },
+    update: { value: String(months) },
+  });
+}
+
+// Products with a printed expiration date, by what they are. Built from the
+// items Lizvet has actually entered dates for (vitamins, OTC medicine,
+// sunscreen, food, eye drops and contact solution) vs ones she hasn't (hair
+// color, bandages, school supplies, lip balm, hairspray). Liquidation.com
+// shorthand can slip past it; our own scans of the UPC win when we have them.
+const EXPIRING_PRODUCT =
+  /\b(sunscreen|sunblock|spf|vitamins?|multivitamin|supplements?|softgels?|caplets?|tablets?|capsules?|gumm(y|ies)|probiotics?|ibuprofen|acetaminophen|naproxen|aspirin|antacid|laxative|allergy|antihistamine|cough|cold & flu|sinus|nasal spray|pain relie(f|ving)|eye drops?|dry eye|eye relief|artificial tears|lubricant eye|contact (lens )?solution|mouthwash|mouth rinse|oral rinse|saline|electrolytes?|protein|formula|baby food|snacks?|candy|chocolate|cookies?|chips|jerky|coffee|creamer|cappuccino|drink mix|energy drink|tuna|trail mix|nuts|pet food|dog food|cat food|treats)\b/i;
+
+async function expiresByDate(upc: string | null, description: string): Promise<boolean> {
+  if (upc) {
+    const scanned = await prisma.item.findMany({
+      where: { upc, isBundle: false },
+      select: { expirationDate: true },
+      take: 20,
+    });
+    if (scanned.length > 0) return scanned.some((i) => i.expirationDate != null);
+  }
+  return EXPIRING_PRODUCT.test(description);
+}
+
+// Applies the tiers above. longTail = still counts, but only cheap.
+export async function slowSellerTier(
+  months: number | null,
+  limits: SpeedLimits,
+  upc: string | null,
+  description: string
+): Promise<{ slowMover: boolean; longTail: boolean }> {
+  if (months == null || months <= limits.fullValueMonths) return { slowMover: false, longTail: false };
+  if (months > limits.longTailMonths || (await expiresByDate(upc, description))) return { slowMover: true, longTail: false };
+  return { slowMover: false, longTail: true };
+}
+
+type SpeedLimits = { fullValueMonths: number; longTailMonths: number };
+
 export async function setMaxMonthsToSellThrough(months: number): Promise<void> {
   await prisma.appSetting.upsert({
     where: { key: MAX_MONTHS_TO_SELL_THROUGH_KEY },
@@ -798,6 +856,9 @@ type LineEstimateResult = {
   seasonal: string | null;
   slowMover: boolean;
   monthsToSellThrough: number | null;
+  // Sells too slowly for full value but is kept at the cheap margin (see
+  // slowSellerTier).
+  longTail?: boolean;
   // Where monthsToSellThrough came from, and the market rate when measured.
   sellRateSource?: "own" | "ebay_listings" | "category" | null;
   listingUnitsPerMonth?: number | null;
@@ -818,7 +879,7 @@ type LineEstimateResult = {
 async function estimateOtherSupplierLine(
   group: LineGroup,
   receiveRate: number,
-  maxMonthsToSellThrough: number,
+  limits: SpeedLimits,
   calibration: Calibration
 ): Promise<LineEstimateResult> {
   const effectiveUnits = Math.round(group.boxes * receiveRate);
@@ -890,11 +951,12 @@ async function estimateOtherSupplierLine(
   // measured when the price math works, to save eBay calls.
   const sellRate: MarketSellRate | null = net > 0 ? await marketSellRate(comps) : null;
   const monthsToSellThrough = monthsAtMarketRate(sellRate, effectiveUnits, calibration.speed);
-  const slowMover = monthsToSellThrough != null && monthsToSellThrough > maxMonthsToSellThrough;
+  const { slowMover, longTail } = await slowSellerTier(monthsToSellThrough, limits, group.upc, group.description);
   const flaggedDud = net <= 0 || slowMover || base.postHolidayFiller;
   return {
     ...base,
     slowMover,
+    longTail,
     monthsToSellThrough,
     sellRateSource: monthsToSellThrough != null ? "ebay_listings" : null,
     listingUnitsPerMonth: sellRate?.unitsPerMonth ?? null,
@@ -913,7 +975,7 @@ async function estimateLine(
   receiveRate: number,
   runTrendCheck: boolean,
   eventCheckBudget: EventCheckBudget,
-  maxMonthsToSellThrough: number,
+  limits: SpeedLimits,
   calibration: Calibration
 ): Promise<LineEstimateResult> {
   // Can't be listed on eBay at all (needles, Rx devices — see ebayBanned),
@@ -945,7 +1007,7 @@ async function estimateLine(
     };
   }
 
-  if (group.strictPricing) return estimateOtherSupplierLine(group, receiveRate, maxMonthsToSellThrough, calibration);
+  if (group.strictPricing) return estimateOtherSupplierLine(group, receiveRate, limits, calibration);
 
   // Own-history: exact UPC, across every manifest ever sold, not just this one.
   let ownSalesCount = 0;
@@ -1420,7 +1482,7 @@ async function estimateLine(
     sellRateSource = "category";
     monthsToSellThroughEstimate = computeMonthsToSellThrough(categoryRecentUnits, effectiveUnits);
   }
-  const slowMover = monthsToSellThroughEstimate != null && monthsToSellThroughEstimate > maxMonthsToSellThrough;
+  const { slowMover, longTail } = await slowSellerTier(monthsToSellThroughEstimate, limits, group.upc, group.description);
 
   // A good per-unit price doesn't mean much if the expected quantity would
   // sit on the shelf for a year or more — see the "Sell-through velocity"
@@ -1479,6 +1541,7 @@ async function estimateLine(
     dataConfidence,
     flaggedDud,
     slowMover,
+    longTail,
     monthsToSellThrough: monthsToSellThroughEstimate,
     sellRateSource,
     listingUnitsPerMonth: sellRate?.unitsPerMonth ?? null,
@@ -1574,6 +1637,7 @@ export async function evaluateManifestChunk(
   let targetMarginPct: number;
   let receiveRate: number;
   let maxMonthsToSellThrough: number;
+  let longTailMonths: number;
   let unprovenMarginPct: number;
   let calibration: Calibration;
   if (evaluation.targetMarginPct != null) {
@@ -1581,12 +1645,14 @@ export async function evaluateManifestChunk(
     receiveRate = evaluation.receiveRate!;
     maxMonthsToSellThrough = evaluation.maxMonthsToSellThrough!;
     // Evaluations started before these existed resume with the defaults.
+    longTailMonths = evaluation.longTailMonths ?? maxMonthsToSellThrough;
     unprovenMarginPct = evaluation.unprovenMarginPct ?? targetMarginPct;
     calibration = { price: evaluation.priceCalibration ?? 1, speed: evaluation.speedCalibration ?? 1 };
   } else {
     targetMarginPct = await getTargetMarginPct();
     receiveRate = await getSupplierReceiveRate(manifest.supplier);
     maxMonthsToSellThrough = await getMaxMonthsToSellThrough();
+    longTailMonths = Math.max(maxMonthsToSellThrough, await getLongTailMonths());
     unprovenMarginPct = Math.max(targetMarginPct, await getUnprovenMarginPct());
     calibration = await getCalibration();
     await prisma.sourcingEvaluation.update({
@@ -1596,6 +1662,7 @@ export async function evaluateManifestChunk(
         receiveRate,
         maxMonthsToSellThrough,
         unprovenMarginPct,
+        longTailMonths,
         priceCalibration: calibration.price,
         speedCalibration: calibration.speed,
       },
@@ -1683,7 +1750,7 @@ export async function evaluateManifestChunk(
       receiveRate,
       runTrendCheck,
       eventCheckBudget,
-      maxMonthsToSellThrough,
+      { fullValueMonths: maxMonthsToSellThrough, longTailMonths },
       calibration
     );
     await prisma.sourcingLineEstimate.create({
@@ -1704,6 +1771,7 @@ export async function evaluateManifestChunk(
         dataConfidence: result.dataConfidence,
         flaggedDud: result.flaggedDud,
         slowMover: result.slowMover,
+        longTail: result.longTail ?? false,
         monthsToSellThrough: result.monthsToSellThrough,
         sellRateSource: result.sellRateSource ?? null,
         listingUnitsPerMonth: result.listingUnitsPerMonth ?? null,
@@ -1770,6 +1838,7 @@ export async function evaluateManifestChunk(
       dataConfidence: row.dataConfidence as LineEstimateResult["dataConfidence"],
       flaggedDud: row.flaggedDud,
       slowMover: row.slowMover,
+      longTail: row.longTail,
       monthsToSellThrough: row.monthsToSellThrough,
       sellRateSource: row.sellRateSource as LineEstimateResult["sellRateSource"],
       listingUnitsPerMonth: row.listingUnitsPerMonth,
@@ -1787,12 +1856,14 @@ export async function evaluateManifestChunk(
   // Rows from before sellRateSource existed all read null, but those
   // evaluations never reach this point again.
   const isUnproven = (est: LineEstimateResult) => !est.flaggedDud && (est.sellRateSource ?? null) === null;
+  // Same cheap margin for slow-but-kept stock (see slowSellerTier).
+  const isCheap = (est: LineEstimateResult) => isUnproven(est) || Boolean(est.longTail);
   let totalExpectedNetContribution = 0;
   let unprovenNetContribution = 0;
   for (const est of lineEstimates) {
     const net = (est.estimatedNetPerUnit ?? 0) * est.effectiveUnits;
     totalExpectedNetContribution += net;
-    if (isUnproven(est)) unprovenNetContribution += net;
+    if (isCheap(est)) unprovenNetContribution += net;
   }
   const dudCount = lineEstimates.filter((e) => e.flaggedDud).length;
   const dudShare = lineEstimates.length > 0 ? dudCount / lineEstimates.length : 0;
@@ -1834,10 +1905,15 @@ export async function evaluateManifestChunk(
     unprovenNetContribution,
     unprovenMarginPct,
     unprovenLines: lineEstimates
-      .filter((e) => isUnproven(e) && (e.estimatedNetPerUnit ?? 0) > 0)
+      .filter((e) => isCheap(e) && (e.estimatedNetPerUnit ?? 0) > 0)
       .sort((a, b) => (b.estimatedNetPerUnit ?? 0) * b.effectiveUnits - (a.estimatedNetPerUnit ?? 0) * a.effectiveUnits)
       .slice(0, 5)
-      .map((e) => `- ${e.description}: ${e.effectiveUnits} units, est. $${((e.estimatedNetPerUnit ?? 0) * e.effectiveUnits).toFixed(0)} net`),
+      .map(
+        (e) =>
+          `- ${e.description}: ${e.effectiveUnits} units, est. $${((e.estimatedNetPerUnit ?? 0) * e.effectiveUnits).toFixed(0)} net, ${
+            e.longTail ? `slow (~${e.monthsToSellThrough?.toFixed(0)} months to sell through, doesn't expire)` : "no sell-speed evidence"
+          }`
+      ),
     calibration,
     maxBid,
     recommendation,
@@ -1965,7 +2041,7 @@ Call: ${input.recommendation.toUpperCase().replace("_", " ")}
 Max recommended bid: $${input.maxBid.toFixed(2)}
 Expected net contribution before bid cost: $${input.totalExpectedNetContribution.toFixed(2)}
 Target margin used: ${input.targetMarginPct}%
-Expected net from lines with NO sell-speed evidence at all (we've never sold them, too few live listings to measure, no similar sales): $${input.unprovenNetContribution.toFixed(2)}. The owner is fine taking a chance on these but only cheap, so they were bid at a ${input.unprovenMarginPct}% margin instead.${input.unprovenLines.length > 0 ? ` Biggest ones:\n${input.unprovenLines.join("\n")}` : ""}
+Expected net from lines bid cheap: $${input.unprovenNetContribution.toFixed(2)}. Two kinds: lines with NO sell-speed evidence at all (never sold by us, too few live listings to measure, no similar sales), and non-expiring lines that sell too slowly for full value but within a year. The owner is growing by reinvesting profit into more inventory and is fine holding slow, non-expiring stock, but only when it's cheap, since fast sellers free up cash sooner. These were bid at a ${input.unprovenMarginPct}% margin instead. Describe the slow ones as bonus profit the buy doesn't depend on: the fast sellers are what pay for the load.${input.unprovenLines.length > 0 ? ` Biggest ones:\n${input.unprovenLines.join("\n")}` : ""}
 Learned corrections from past bought loads (actual vs guessed, 1.00 = none yet): price ${input.calibration.price.toFixed(2)}, sell speed ${input.calibration.speed.toFixed(2)}.
 Supplier's real historical receive rate (after damage/expired): ${(input.receiveRate * 100).toFixed(0)}%
 Share of lines flagged as likely duds: ${(input.dudShare * 100).toFixed(0)}%

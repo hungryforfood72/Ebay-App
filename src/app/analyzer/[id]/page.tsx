@@ -39,6 +39,7 @@ type SourcingLineEstimate = {
   slowMover: boolean;
   monthsToSellThrough: number | null;
   sellRateSource: "own" | "ebay_listings" | "category" | null;
+  longTail: boolean;
 };
 
 type SourcingEvaluation = {
@@ -908,11 +909,17 @@ function ConfidenceBadge({ confidence }: { confidence: string }) {
 // evaluations that ran before it existed get labeled too.
 function EstimateTags({ estimate: e, showConfidence = true }: { estimate: SourcingLineEstimate; showConfidence?: boolean }) {
   const banned = ebayBanReason(e.description);
-  if (!e.flaggedDud && !e.slowMover && !banned && !showConfidence) return null;
+  if (!e.flaggedDud && !e.slowMover && !e.longTail && !banned && !showConfidence) return null;
   return (
     <div className="mt-1.5 flex flex-wrap gap-1.5">
       {showConfidence && <ConfidenceBadge confidence={e.dataConfidence} />}
       {banned ? <Badge tone="danger">{banned}</Badge> : e.flaggedDud && <Badge tone="warning">dud</Badge>}
+      {e.longTail && (
+        <Badge tone="primary">
+          slow, bonus · bid cheap
+          {e.monthsToSellThrough != null ? ` · ~${e.monthsToSellThrough.toFixed(0)}mo to sell through` : ""}
+        </Badge>
+      )}
       {e.slowMover && (
         <Badge tone="purple">
           slow mover
