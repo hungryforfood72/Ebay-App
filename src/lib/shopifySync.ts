@@ -6,6 +6,7 @@ import {
   updateOfferQuantity,
 } from "./ebay";
 import { formatExpiration } from "./formatExpiration";
+import { parseBundleComponentUnits } from "./itemUnits";
 import { prisma } from "./prisma";
 import {
   addTags,
@@ -154,24 +155,32 @@ function believableRetail(retail: number | null, price: number, ebayOriginal: nu
   return Math.round(retail * 100) / 100;
 }
 
-// Retail for each item's whole listing (a 3-pack is 3x the unit retail),
-// from its manifest line. Bundles and items scanned outside a manifest
-// have none.
+// Retail for each item's whole listing (a 3-pack is 3x the unit retail, a
+// bundle is the sum of its parts), from its manifest lines. Items scanned
+// outside a manifest, and bundles with any part missing a retail, have none.
 export async function retailPrices(
-  items: Pick<Item, "id" | "manifestId" | "upc" | "isMultipack" | "packSize" | "isBundle">[]
+  items: Pick<Item, "id" | "manifestId" | "upc" | "isMultipack" | "packSize" | "isBundle" | "bundleComponents">[]
 ): Promise<Map<string, number>> {
-  const wanted = items.filter((i) => i.manifestId && i.upc && !i.isBundle);
+  const parts = (i: (typeof items)[number]) =>
+    i.isBundle ? parseBundleComponentUnits(i.bundleComponents) : i.upc ? [{ upc: i.upc, unitsPerBundle: i.isMultipack && i.packSize ? i.packSize : 1 }] : [];
+  const wanted = items.filter((i) => i.manifestId && parts(i).length > 0);
   const result = new Map<string, number>();
   if (wanted.length === 0) return result;
   const lines = await prisma.manifestLine.findMany({
-    where: { OR: wanted.map((i) => ({ manifestId: i.manifestId!, upc: i.upc! })) },
+    where: { OR: wanted.flatMap((i) => parts(i).map((p) => ({ manifestId: i.manifestId!, upc: p.upc }))) },
     select: { manifestId: true, upc: true, retailPrice: true },
   });
   for (const i of wanted) {
-    const line = lines.find((l) => l.manifestId === i.manifestId && l.upc === i.upc && Number(l.retailPrice) > 0);
-    if (!line) continue;
-    const pack = i.isMultipack && i.packSize ? i.packSize : 1;
-    result.set(i.id, Number(line.retailPrice) * pack);
+    let total = 0;
+    for (const p of parts(i)) {
+      const line = lines.find((l) => l.manifestId === i.manifestId && l.upc === p.upc && Number(l.retailPrice) > 0);
+      if (!line) {
+        total = NaN;
+        break;
+      }
+      total += Number(line.retailPrice) * p.unitsPerBundle;
+    }
+    if (total > 0) result.set(i.id, total);
   }
   return result;
 }
