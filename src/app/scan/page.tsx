@@ -1406,7 +1406,7 @@ function ScanPageInner() {
 
   if (!scanning) {
     return (
-      <AppShell width="narrow" title="Scan inventory" subtitle="Start scanning, or sell something already on the shelf.">
+      <AppShell width="narrow" title="List inventory" subtitle="Start listing, or sell something already on the shelf.">
         <div className="flex flex-col gap-3">
           <OptionCard
             primary
@@ -1670,7 +1670,7 @@ function ScanPageInner() {
     <AppShell
       focused
       width="narrow"
-      title="Scanning"
+      title="Listing"
       subtitle={`${savedThisSession} saved`}
       actions={
         <>

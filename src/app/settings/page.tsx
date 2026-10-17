@@ -520,7 +520,7 @@ function WalkupSaleMarginSettings() {
     <Card>
       <SectionHeader
         title="Walk-up sale pricing"
-        description={`Instant in-person pricing for the Scan page's "Walk-up sale" and "Sell shelf item" modes.`}
+        description={`Instant in-person pricing for the List page's "Walk-up sale" and "Sell shelf item" modes.`}
       />
       <div className="mb-4 flex flex-col divide-y divide-border rounded-lg border border-border">
         {rows.map((row) => (
@@ -1103,7 +1103,7 @@ function ShelfLocationsEditor() {
     <Card>
       <SectionHeader
         title="Shelf locations"
-        description="Suggested on the scan page's shelf location field — and can be entered by scanning a printed barcode label instead of typing."
+        description="Suggested on the List page's shelf location field — and can be entered by scanning a printed barcode label instead of typing."
         action={entries && entries.length > 0 ? <Badge>{entries.length}</Badge> : undefined}
       />
 
