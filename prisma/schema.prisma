@@ -604,6 +604,7 @@ model Manifest {
   sourcingEvaluations SourcingEvaluation[]
   predictionOutcomes  PredictionOutcome[]
   consignmentPayments ConsignmentPayment[]
+  pickScans           ConsignmentPickScan[]
   walkupSales         ManifestWalkupSale[]
 }
 
@@ -1222,4 +1223,21 @@ model ConsignmentPayment {
   createdAt  DateTime @default(now())
 
   @@index([manifestId])
+}
+
+// Pick mode on a consignment load (/pick/[id]): every barcode scanned at
+// the supplier's, with the take/leave answer it got, so the page can show
+// which TAKE products have been found. productKey = the evaluation's
+// SourcingLineEstimate id the scan matched (null when it matched nothing).
+model ConsignmentPickScan {
+  id         String   @id @default(uuid())
+  manifest   Manifest @relation(fields: [manifestId], references: [id], onDelete: Cascade)
+  manifestId String
+  code       String
+  productKey String?
+  decision   String // "take" | "leave" | "unknown"
+  scannedBy  String?
+  scannedAt  DateTime @default(now())
+
+  @@index([manifestId, scannedAt])
 }

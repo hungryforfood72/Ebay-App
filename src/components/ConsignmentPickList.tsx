@@ -2,11 +2,12 @@
 
 import { Alert } from "@/components/ui/Alert";
 import { Badge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
+import { Button, buttonClasses } from "@/components/ui/Button";
 import { Card, SectionHeader } from "@/components/ui/Card";
 import { cn } from "@/components/ui/cn";
 import { Input } from "@/components/ui/Input";
-import { ChevronDown, Download } from "lucide-react";
+import { ChevronDown, Download, ScanBarcode } from "lucide-react";
+import Link from "next/link";
 import { useState } from "react";
 
 // Mirrors ConsignmentPickList in src/lib/consignment.ts.
@@ -155,7 +156,15 @@ function downloadCsv(list: ConsignmentPickListData, title: string) {
 }
 
 // What to take from a consignment load (src/lib/consignment.ts).
-export function ConsignmentPickListView({ list, title }: { list: ConsignmentPickListData; title: string }) {
+export function ConsignmentPickListView({
+  list,
+  title,
+  manifestId,
+}: {
+  list: ConsignmentPickListData;
+  title: string;
+  manifestId: string;
+}) {
   const [showSkipped, setShowSkipped] = useState(false);
 
   return (
@@ -175,7 +184,11 @@ export function ConsignmentPickListView({ list, title }: { list: ConsignmentPick
         <Alert tone="info">Nothing here clears the bar at this split.</Alert>
       ) : (
         <>
-          <div>
+          <div className="flex flex-wrap gap-2">
+            <Link href={`/pick/${manifestId}`} className={buttonClasses({ size: "sm" })}>
+              <ScanBarcode className="size-4" aria-hidden />
+              Scan to pick (take / leave)
+            </Link>
             <Button variant="outline" size="sm" onClick={() => downloadCsv(list, title)}>
               <Download className="size-4" aria-hidden />
               Download pick list

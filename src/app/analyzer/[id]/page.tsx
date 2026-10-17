@@ -384,7 +384,11 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
             <div className="flex flex-col gap-4">
               {candidate.consignment ? (
                 candidate.consignmentPickList && (
-                  <ConsignmentPickListView list={candidate.consignmentPickList} title={candidate.title} />
+                  <ConsignmentPickListView
+                    list={candidate.consignmentPickList}
+                    title={candidate.title}
+                    manifestId={candidate.id}
+                  />
                 )
               ) : (
                 <>

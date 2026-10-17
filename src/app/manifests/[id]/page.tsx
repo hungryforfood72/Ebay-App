@@ -345,6 +345,14 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
           </section>
         )}
 
+        {manifest.consignment && (
+          <div>
+            <Link href={`/pick/${manifest.id}`} className={buttonClasses({ variant: "outline", size: "sm" })}>
+              <ScanBarcode className="size-4" aria-hidden />
+              Pick mode: scan for take / leave
+            </Link>
+          </div>
+        )}
         {isOwner && manifest.consignment && <ConsignmentLedgerCard manifestId={manifest.id} />}
 
         {isOwner && evaluation?.status === "complete" && (
