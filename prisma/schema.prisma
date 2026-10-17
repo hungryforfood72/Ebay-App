@@ -603,6 +603,7 @@ model Manifest {
 
   sourcingEvaluations SourcingEvaluation[]
   predictionOutcomes  PredictionOutcome[]
+  consignmentPayments ConsignmentPayment[]
   walkupSales         ManifestWalkupSale[]
 }
 
@@ -1204,4 +1205,21 @@ model SourcingCalibration {
   rawMedian  Float
   sampleSize Int
   updatedAt  DateTime @updatedAt
+}
+
+// Money paid to a consignment supplier (Manifest.consignment). What's owed
+// is his share of each sale's profit, worked out live from the sales
+// themselves (src/lib/consignmentLedger.ts); these rows are what's been
+// paid against it.
+model ConsignmentPayment {
+  id         String   @id @default(uuid())
+  manifest   Manifest @relation(fields: [manifestId], references: [id], onDelete: Cascade)
+  manifestId String
+  amount     Decimal  @db.Decimal(10, 2)
+  paidAt     DateTime
+  note       String?
+  recordedBy String?
+  createdAt  DateTime @default(now())
+
+  @@index([manifestId])
 }
