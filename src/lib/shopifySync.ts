@@ -49,32 +49,80 @@ import type { Item, Prisma } from "@/generated/prisma/client";
 // Pricing
 // ---------------------------------------------------------------------------
 
-// Cristian: Shopify buyers pay their own shipping, so the price is this
-// much under the eBay price (which includes free shipping).
-const DISCOUNT_PCT_KEY = "shopify_price_discount_pct";
-const DEFAULT_DISCOUNT_PCT = 10;
+// Cristian (2026-10-17): the store is the bargain channel. Shopify buyers
+// pay their own shipping and there are no eBay fees, so an item goes
+// whichever is the bigger discount: ebayPct off the eBay price, or
+// retailPct off the manifest retail. Items with no usable retail (listed
+// before manifests, bundles, inflated retail) go noRetailPct off eBay.
+export type ShopifyPricing = { ebayPct: number; retailPct: number; noRetailPct: number };
 
-export async function getShopifyDiscountPct(): Promise<number> {
-  const row = await prisma.appSetting.findUnique({ where: { key: DISCOUNT_PCT_KEY } });
-  const value = row ? Number(row.value) : NaN;
-  return Number.isFinite(value) && value >= 0 && value < 100 ? value : DEFAULT_DISCOUNT_PCT;
+const PRICING_KEYS: Record<keyof ShopifyPricing, string> = {
+  ebayPct: "shopify_price_discount_pct",
+  retailPct: "shopify_retail_discount_pct",
+  noRetailPct: "shopify_no_retail_discount_pct",
+};
+const PRICING_DEFAULTS: ShopifyPricing = { ebayPct: 30, retailPct: 50, noRetailPct: 35 };
+
+// Manifest retail is often far under what an item really goes for on eBay
+// (a $4.06-retail plush that sells for $25.99), so the retail side never
+// takes the price more than this far under the eBay price. Cristian picked
+// this floor over a straight "whichever is cheaper".
+const MAX_OFF_EBAY_PCT = 50;
+
+export async function getShopifyPricing(): Promise<ShopifyPricing> {
+  const rows = await prisma.appSetting.findMany({ where: { key: { in: Object.values(PRICING_KEYS) } } });
+  const pricing = { ...PRICING_DEFAULTS };
+  for (const field of Object.keys(PRICING_KEYS) as (keyof ShopifyPricing)[]) {
+    const value = Number(rows.find((r) => r.key === PRICING_KEYS[field])?.value);
+    if (Number.isFinite(value) && value >= 0 && value < 100) pricing[field] = value;
+  }
+  return pricing;
 }
 
-export async function setShopifyDiscountPct(pct: number): Promise<void> {
-  await prisma.appSetting.upsert({
-    where: { key: DISCOUNT_PCT_KEY },
-    create: { key: DISCOUNT_PCT_KEY, value: String(pct) },
-    update: { value: String(pct) },
-  });
+export async function setShopifyPricing(pricing: ShopifyPricing): Promise<void> {
+  await prisma.$transaction(
+    (Object.keys(PRICING_KEYS) as (keyof ShopifyPricing)[]).map((field) =>
+      prisma.appSetting.upsert({
+        where: { key: PRICING_KEYS[field] },
+        create: { key: PRICING_KEYS[field], value: String(pricing[field]) },
+        update: { value: String(pricing[field]) },
+      })
+    )
+  );
 }
 
-export function shopifyPriceFor(ebayPrice: number, discountPct: number): number {
-  return Math.round(ebayPrice * (1 - discountPct / 100) * 100) / 100;
+function pctOff(amount: number, pct: number): number {
+  return Math.round(amount * (1 - pct / 100) * 100) / 100;
+}
+
+// Supplier manifests sometimes carry inflated "retail" values (a box of
+// Nexcare DUO bandages at $21, really ~$6). Pricing off one, or showing it
+// as the struck-through price, would be a fake discount, so retail only
+// counts when it's at most this many times the original eBay price, which
+// is what the item actually goes for.
+const MAX_RETAIL_TO_EBAY = 3;
+
+function usableRetail(retail: number | null, ebayOriginal: number): retail is number {
+  return retail != null && retail > 0 && !(ebayOriginal > 0 && retail > ebayOriginal * MAX_RETAIL_TO_EBAY);
+}
+
+// The regular store price for a listing at `ebayPrice` (eBay discounts
+// included). `retail` is the whole listing's retail (see retailPrices).
+export function shopifyPriceFor(
+  ebayPrice: number,
+  ebayOriginal: number,
+  retail: number | null,
+  pricing: ShopifyPricing
+): number {
+  if (!usableRetail(retail, ebayOriginal)) return pctOff(ebayPrice, pricing.noRetailPct);
+  const fromRetail = Math.max(pctOff(retail, pricing.retailPct), pctOff(ebayPrice, MAX_OFF_EBAY_PCT));
+  return Math.min(pctOff(ebayPrice, pricing.ebayPct), fromRetail);
 }
 
 // Cristian: short-dated and past-date items go 65% off the regular store
-// price (the original eBay price, from before any eBay discount, less the
-// store discount).
+// price (the original eBay price, from before any eBay discount, less
+// ebayPct). Left on the eBay-only math on purpose when the retail rule
+// came in: past-date prices stay as they were.
 const PAST_DATE_OFF_PCT = 65;
 
 // The crossed-out price is the item's retail price when there's a
@@ -82,25 +130,19 @@ const PAST_DATE_OFF_PCT = 65;
 // through RETAIL_TAG. Without one: past-date items show the regular store
 // price crossed out, regular items show none.
 export const RETAIL_TAG = "retail-compare";
-// Supplier manifests sometimes carry inflated "retail" values (a box of
-// Nexcare DUO bandages at $21, really ~$6). Showing one of those as the
-// struck-through price would be a fake discount, so retail only counts
-// when it's at most this many times the original eBay price, which is
-// what the item actually goes for.
-const MAX_RETAIL_TO_EBAY = 3;
 
 type ExpectedPrices = { price: number; compareAt: number | null; retailCompare: boolean };
 
 function expectedPrices(
   item: Pick<Item, "price" | "originalPrice" | "pastDateAt">,
-  discountPct: number,
+  pricing: ShopifyPricing,
   retail: number | null
 ): ExpectedPrices {
   const original = Number(item.originalPrice ?? item.price ?? 0);
-  const regular = shopifyPriceFor(original, discountPct);
+  const regular = pctOff(original, pricing.ebayPct);
   const price = item.pastDateAt
-    ? Math.max(0.5, Math.round(regular * (1 - PAST_DATE_OFF_PCT / 100) * 100) / 100)
-    : shopifyPriceFor(Number(item.price ?? 0), discountPct);
+    ? Math.max(0.5, pctOff(regular, PAST_DATE_OFF_PCT))
+    : shopifyPriceFor(Number(item.price ?? 0), original, retail, pricing);
   const goodRetail = believableRetail(retail, price, original);
   if (goodRetail != null) return { price, compareAt: goodRetail, retailCompare: true };
   return { price, compareAt: item.pastDateAt ? regular : null, retailCompare: false };
@@ -110,9 +152,7 @@ function expectedPrices(
 // here (several items sell above manifest retail, since the eBay price
 // includes shipping), and not wildly above the original eBay price.
 function believableRetail(retail: number | null, price: number, ebayOriginal: number): number | null {
-  if (retail == null || retail <= 0) return null;
-  if (retail < price * 1.05) return null;
-  if (ebayOriginal > 0 && retail > ebayOriginal * MAX_RETAIL_TO_EBAY) return null;
+  if (!usableRetail(retail, ebayOriginal) || retail < price * 1.05) return null;
   return Math.round(retail * 100) / 100;
 }
 
@@ -364,9 +404,9 @@ export async function publishItemToShopify(itemId: string, options?: { fromRevie
     }
     if (available <= 0) return "nothing_left";
 
-    const [location, discountPct, category] = await Promise.all([
+    const [location, pricing, category] = await Promise.all([
       getLocation(),
-      getShopifyDiscountPct(),
+      getShopifyPricing(),
       item.categoryId ? prisma.ebayCategory.findUnique({ where: { id: item.categoryId } }) : null,
     ]);
     const specifics = (item.itemSpecifics ?? {}) as Record<string, string>;
@@ -376,7 +416,7 @@ export async function publishItemToShopify(itemId: string, options?: { fromRevie
     // disclosure, tags and Online Store only, never a moment at full price
     // or on Whatnot.
     const pastDate = Boolean(item.pastDateAt);
-    const prices = expectedPrices(item, discountPct, (await retailPrices([item])).get(item.id) ?? null);
+    const prices = expectedPrices(item, pricing, (await retailPrices([item])).get(item.id) ?? null);
     const tags = item.condition ? [`Condition: ${CONDITION_LABEL[item.condition] ?? item.condition}`] : [];
     if (prices.retailCompare) tags.push(RETAIL_TAG);
     if (pastDate) {
@@ -798,7 +838,7 @@ export async function runShopifySync(scope: ShopifySyncScope): Promise<ShopifySy
     const lateRead = notReadYet.length
       ? await readStock(notReadYet.map((i) => i.shopifyInventoryItemId!), location.id, whatnot?.id)
       : new Map<string, ShopifyStockState>();
-    const discountPct = await getShopifyDiscountPct();
+    const pricing = await getShopifyPricing();
     const paths = await categoryPaths(items.map((i) => i.categoryId));
     const retail = await retailPrices(items);
 
@@ -844,7 +884,7 @@ export async function runShopifySync(scope: ShopifySyncScope): Promise<ShopifySy
           await unpublishFromChannels(item.shopifyProductId!, [whatnot.id]);
           result.offWhatnot++;
         }
-        const want = expectedPrices(item, discountPct, retail.get(item.id) ?? null);
+        const want = expectedPrices(item, pricing, retail.get(item.id) ?? null);
         const hasRetailTag = stock.tags.includes(RETAIL_TAG);
         if (want.retailCompare && !hasRetailTag) await addTags(item.shopifyProductId!, [RETAIL_TAG]);
         if (!want.retailCompare && hasRetailTag) await removeTags(item.shopifyProductId!, [RETAIL_TAG]);

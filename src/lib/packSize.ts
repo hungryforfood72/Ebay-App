@@ -379,18 +379,17 @@ const SHOP_CHANNEL_FEE_FIXED = 0.3;
 
 export type ShopChannelWorth = {
   worthIt: boolean;
-  // The Shopify price: the eBay-equivalent price less the store discount.
+  // The Shopify price (shopifyPriceFor in shopifySync).
   price: number;
   profit: number;
   requiredProfit: number;
 };
 
 // The same set-aside item sold on Shopify/Whatnot instead of eBay: the
-// buyer pays the label there, so only the price (with the store's
-// discount off) and that channel's fees come out. Same bar as
-// listingWorth (target return on cost, or MIN_PROFIT_PER_SALE).
-export function shopChannelWorth(ebay: ListingWorth, discountPct: number): ShopChannelWorth {
-  const price = ebay.price * (1 - discountPct / 100);
+// buyer pays the label there, so only the store price and that channel's
+// fees come out. Same bar as listingWorth (target return on cost, or
+// MIN_PROFIT_PER_SALE).
+export function shopChannelWorth(ebay: ListingWorth, price: number): ShopChannelWorth {
   const profit = price * (1 - SHOP_CHANNEL_FEE_RATE) - SHOP_CHANNEL_FEE_FIXED - (ebay.itemCost ?? 0);
   return { worthIt: profit >= ebay.requiredProfit, price, profit, requiredProfit: ebay.requiredProfit };
 }

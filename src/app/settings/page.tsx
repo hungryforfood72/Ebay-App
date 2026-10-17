@@ -657,10 +657,19 @@ function EbayConnectionStatus() {
   );
 }
 
+type ShopifyPricing = { ebayPct: number; retailPct: number; noRetailPct: number };
+type PricingDraft = Record<keyof ShopifyPricing, string>;
+
+const PRICING_FIELDS: { key: keyof ShopifyPricing; label: string }[] = [
+  { key: "ebayPct", label: "Off eBay price" },
+  { key: "retailPct", label: "Off retail" },
+  { key: "noRetailPct", label: "No retail: off eBay" },
+];
+
 type ShopifyStatus = {
   configured: boolean;
   missingEnvVars?: string[];
-  discountPct: number;
+  pricing: ShopifyPricing;
   shop?: { name: string; domain: string } | null;
   missingScopes?: string[];
   location?: { id: string; name: string } | null;
@@ -680,7 +689,7 @@ function ShopifyConnection() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState<"webhooks" | "publish" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [discount, setDiscount] = useState("");
+  const [pricing, setPricing] = useState<PricingDraft>({ ebayPct: "", retailPct: "", noRetailPct: "" });
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
@@ -693,7 +702,11 @@ function ShopifyConnection() {
       })
       .then((data) => {
         setStatus(data);
-        setDiscount(String(data.discountPct));
+        setPricing({
+          ebayPct: String(data.pricing.ebayPct),
+          retailPct: String(data.pricing.retailPct),
+          noRetailPct: String(data.pricing.noRetailPct),
+        });
         setLoadError(null);
       })
       .catch((e) => setLoadError(e instanceof Error ? e.message : "Couldn't load Shopify status."));
@@ -735,14 +748,20 @@ function ShopifyConnection() {
     }
   }
 
-  async function saveDiscount() {
+  async function savePricing() {
     setSaving(true);
     setSaved(false);
     try {
       const res = await fetch("/api/settings/shopify-discount", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ discountPct: Number(discount) }),
+        body: JSON.stringify({
+          pricing: {
+            ebayPct: Number(pricing.ebayPct),
+            retailPct: Number(pricing.retailPct),
+            noRetailPct: Number(pricing.noRetailPct),
+          },
+        }),
       });
       if (res.ok) setSaved(true);
     } finally {
@@ -836,22 +855,33 @@ function ShopifyConnection() {
           <div>
             <p className="mb-1 text-sm font-medium text-foreground">Shopify price</p>
             <p className="mb-2 text-xs text-muted-foreground">
-              How far under the eBay price, since Shopify buyers pay their own shipping. Follows every eBay price
-              change, discounts included.
+              Whichever is the bigger discount: the eBay % off the eBay price, or the retail % off the
+              manifest&apos;s retail, but never more than half off the eBay price. Items with no retail on record
+              use the last one. Follows every eBay price change, discounts included. Past-date items stay 65% off
+              the eBay price less the first %.
             </p>
-            <div className="flex flex-wrap items-center gap-3">
-              <SuffixInput
-                suffix="% off"
-                step="1"
-                min={0}
-                value={discount}
-                aria-label="Shopify discount percent"
-                onChange={(e) => {
-                  setDiscount(e.target.value);
-                  setSaved(false);
-                }}
+            <div className="flex flex-wrap items-end gap-3">
+              {PRICING_FIELDS.map((f) => (
+                <label key={f.key} className="flex flex-col gap-1 text-xs text-muted-foreground">
+                  {f.label}
+                  <SuffixInput
+                    suffix="% off"
+                    step="1"
+                    min={0}
+                    value={pricing[f.key]}
+                    onChange={(e) => {
+                      setPricing((p) => ({ ...p, [f.key]: e.target.value }));
+                      setSaved(false);
+                    }}
+                  />
+                </label>
+              ))}
+              <SaveButton
+                onClick={savePricing}
+                disabled={saving || Object.values(pricing).some((v) => v === "")}
+                saving={saving}
+                saved={saved}
               />
-              <SaveButton onClick={saveDiscount} disabled={saving || discount === ""} saving={saving} saved={saved} />
             </div>
           </div>
 

@@ -20,7 +20,7 @@ import {
 } from "@/lib/packSize";
 import { prisma } from "@/lib/prisma";
 import { getShopifyConfig } from "@/lib/shopify";
-import { getShopifyDiscountPct } from "@/lib/shopifySync";
+import { getShopifyPricing, shopifyPriceFor } from "@/lib/shopifySync";
 import { NOT_RETURN_ENTRY, returnedUnitsByUpc } from "@/lib/warehouse/returnReconcile";
 import { Prisma } from "@/generated/prisma/client";
 import { NextRequest, NextResponse } from "next/server";
@@ -269,7 +269,10 @@ export async function GET(request: NextRequest) {
   let shopChannel: { worthIt: boolean | null; price: number | null; profit: number | null } | null = null;
   if (setAside && getShopifyConfig()) {
     if (setAside.worth) {
-      const w = shopChannelWorth(setAside.worth, await getShopifyDiscountPct());
+      const unitRetail = lines[0] ? Number(lines[0].retailPrice) : 0;
+      const retail = unitRetail > 0 ? unitRetail * setAside.packSize : null;
+      const ebayPrice = setAside.worth.price;
+      const w = shopChannelWorth(setAside.worth, shopifyPriceFor(ebayPrice, ebayPrice, retail, await getShopifyPricing()));
       shopChannel = { worthIt: w.worthIt, price: w.price, profit: w.profit };
     } else {
       shopChannel = { worthIt: null, price: null, profit: null };

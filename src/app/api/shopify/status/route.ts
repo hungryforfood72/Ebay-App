@@ -10,7 +10,7 @@ import {
   missingShopifyScopes,
   SHOPIFY_WEBHOOK_TOPICS,
 } from "@/lib/shopify";
-import { getShopifyDiscountPct, shopifyCounts } from "@/lib/shopifySync";
+import { getShopifyPricing, shopifyCounts } from "@/lib/shopifySync";
 import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 30;
@@ -21,9 +21,9 @@ export async function GET(request: NextRequest) {
   const denied = ownerOnly(request);
   if (denied) return denied;
 
-  const discountPct = await getShopifyDiscountPct();
+  const pricing = await getShopifyPricing();
   if (!getShopifyConfig()) {
-    return NextResponse.json({ configured: false, missingEnvVars: missingShopifyEnvVars(), discountPct });
+    return NextResponse.json({ configured: false, missingEnvVars: missingShopifyEnvVars(), pricing });
   }
 
   const webhookUrl = `${request.nextUrl.origin}/api/shopify/webhook`;
@@ -43,7 +43,7 @@ export async function GET(request: NextRequest) {
 
   return NextResponse.json({
     configured: true,
-    discountPct,
+    pricing,
     shop: shop.value ? { name: shop.value.name, domain: shop.value.domain } : null,
     missingScopes: shop.value ? missingShopifyScopes(shop.value.grantedScopes) : [],
     location: location.value,

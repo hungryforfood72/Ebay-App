@@ -1,7 +1,7 @@
 import type { Prisma } from "@/generated/prisma/client";
 import { shopChannelWorth, type ListingWorth } from "../packSize";
 import { prisma } from "../prisma";
-import { getShopifyDiscountPct } from "../shopifySync";
+import { getShopifyPricing, shopifyPriceFor, type ShopifyPricing } from "../shopifySync";
 import { upcMatchKeys } from "../upcMatch";
 import { WarehouseError } from "./bins";
 import { findDudBox } from "./dudBoxes";
@@ -184,8 +184,9 @@ export async function decideDudEntries(args: {
 // Owner-only money hint for one unit (see DudMoneyHint). estimatedNetPerUnit
 // is zeroed on a dud, so the net is worked out again from the price parts.
 // The Shopify side reuses the pack card's Shopify/Whatnot math
-// (shopChannelWorth) with no item cost, so it's the same fee assumptions.
-function moneyHint(e: DudEstimate | null, discountPct: number): DudMoneyHint | null {
+// (shopifyPriceFor + shopChannelWorth) with no item cost, so it's the same
+// price rule and fee assumptions.
+function moneyHint(e: DudEstimate | null, pricing: ShopifyPricing | null, retail: number | null): DudMoneyHint | null {
   if (!e) return null;
   const price = e.estimatedUnitSalePrice != null ? Number(e.estimatedUnitSalePrice) : 0;
   if (price <= 0) return { ebayPrice: null, ebayNet: null, shopNet: null };
@@ -204,7 +205,7 @@ function moneyHint(e: DudEstimate | null, discountPct: number): DudMoneyHint | n
   return {
     ebayPrice: round(price),
     ebayNet: round(price - fees - shipping),
-    shopNet: round(shopChannelWorth(asEbay, discountPct).profit),
+    shopNet: pricing ? round(shopChannelWorth(asEbay, shopifyPriceFor(price, price, retail, pricing)).profit) : null,
   };
 }
 
@@ -230,29 +231,30 @@ export async function getDudBoxDetail(rawCode: string, isOwner: boolean): Promis
   const [box, entries, lines, evaluationId] = await Promise.all([
     prisma.dudBox.findUniqueOrThrow({ where: { id: found.id }, include: { manifest: { select: { title: true } } } }),
     prisma.manifestDudEntry.findMany({ where: { dudBoxId: found.id }, orderBy: { createdAt: "asc" } }),
-    prisma.manifestLine.findMany({ where: { manifestId: found.manifestId }, select: { upc: true, description: true } }),
+    prisma.manifestLine.findMany({ where: { manifestId: found.manifestId }, select: { upc: true, description: true, retailPrice: true } }),
     latestCompleteEvaluationId(found.manifestId),
   ]);
-  const [estimates, discountPct] = await Promise.all([
+  const [estimates, pricing] = await Promise.all([
     evaluationId
       ? prisma.sourcingLineEstimate.findMany({ where: { evaluationId }, select: DUD_ESTIMATE_SELECT })
       : Promise.resolve([] as DudEstimate[]),
-    isOwner ? getShopifyDiscountPct() : Promise.resolve(0),
+    isOwner ? getShopifyPricing() : Promise.resolve(null),
   ]);
   const findEstimate = estimateIndex(estimates);
-  const lineByKey = new Map<string, string>();
-  for (const l of lines) for (const k of upcMatchKeys(l.upc)) if (!lineByKey.has(k)) lineByKey.set(k, l.description);
-  const lineDescription = (upc: string) => {
+  const lineByKey = new Map<string, (typeof lines)[number]>();
+  for (const l of lines) for (const k of upcMatchKeys(l.upc)) if (!lineByKey.has(k)) lineByKey.set(k, l);
+  const lineFor = (upc: string) => {
     for (const k of upcMatchKeys(upc)) {
-      const d = lineByKey.get(k);
-      if (d) return d;
+      const l = lineByKey.get(k);
+      if (l) return l;
     }
     return null;
   };
 
   const shaped: DudBoxEntry[] = entries.map((e) => {
     const estimate = findEstimate(e.upc);
-    const description = lineDescription(e.upc) ?? estimate?.description ?? `UPC ${e.upc}`;
+    const line = lineFor(e.upc);
+    const description = line?.description ?? estimate?.description ?? `UPC ${e.upc}`;
     const call = dudCall({ description, evaluated: evaluationId != null, estimate });
     // Not flagged by anything: the sorter put it in the box on their own.
     const dudReason = call.dud
@@ -271,7 +273,7 @@ export async function getDudBoxDetail(rawCode: string, isOwner: boolean): Promis
       note: e.note,
       recordedBy: e.recordedBy,
       createdAt: e.createdAt.toISOString(),
-      ...(isOwner ? { money: moneyHint(estimate, discountPct) } : {}),
+      ...(isOwner ? { money: moneyHint(estimate, pricing, line && Number(line.retailPrice) > 0 ? Number(line.retailPrice) : null) } : {}),
     };
   });
 

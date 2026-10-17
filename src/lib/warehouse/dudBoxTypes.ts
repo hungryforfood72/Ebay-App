@@ -25,7 +25,7 @@ export type DudMoneyHint = {
   // Expected eBay sale price, and what's left after eBay fees and shipping.
   ebayPrice: number | null;
   ebayNet: number | null;
-  // Same price on Shopify/Whatnot with the store discount, after Whatnot's
+  // The store price on Shopify/Whatnot (shopifyPriceFor), after Whatnot's
   // fees (the higher of the two stores'; the buyer pays shipping there).
   shopNet: number | null;
 };
