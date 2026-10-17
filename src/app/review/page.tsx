@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 import { describeBreakdown, type ExpirationBatch } from "@/lib/expirationBreakdown";
 import { priceOutcome } from "@/lib/offerMath";
+import type { RetailCheckLine, RetailCheckRow } from "@/lib/retailCheck";
 import { labelForWeight } from "@/lib/shippingZone";
 import Link from "next/link";
 import { useEffect, useRef, useState, type ComponentProps } from "react";
@@ -425,6 +426,8 @@ export default function ReviewPage() {
           </div>
         </section>
 
+        <RetailCheckSection />
+
         <section>
           <SectionHeader
             title="Ready to list"
@@ -719,6 +722,29 @@ function ItemCard({
   const [typedPrice, setTypedPrice] = useState<string | null>(null);
   const [priceResearchError, setPriceResearchError] = useState<string | null>(null);
   const priceResearchedFor = useRef<string | null>(null);
+  // Owner fixing a wrong manifest retail right here (null = not editing).
+  const [retailDraft, setRetailDraft] = useState<string | null>(null);
+  const [retailSaving, setRetailSaving] = useState(false);
+
+  async function saveRetail() {
+    if (!retailDraft) return;
+    setRetailSaving(true);
+    try {
+      const res = await fetch("/api/retail-check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ itemId: item.id, unitRetail: Number(retailDraft) }),
+      });
+      if (!res.ok) {
+        setPriceResearchError((await res.json().catch(() => ({}))).error ?? "Couldn't save the retail.");
+        return;
+      }
+      setRetailDraft(null);
+      await researchPrice();
+    } finally {
+      setRetailSaving(false);
+    }
+  }
 
   // Active-listing comps only — there's no API path to real sold-price data
   // (eBay's Marketplace Insights API is closed to new applicants), so this
@@ -1045,6 +1071,34 @@ function ItemCard({
                         {` (comps ${priceResearchResult.median >= priceResearchResult.retailPrice ? "above" : "below"} retail)`}
                       </span>
                     )}
+                    {priceResearchResult.profitBasis && item.upc && retailDraft == null && (
+                      <button
+                        type="button"
+                        className="ml-2 text-xs text-primary underline"
+                        onClick={() => setRetailDraft(String(priceResearchResult.unitRetail ?? ""))}
+                      >
+                        Fix retail
+                      </button>
+                    )}
+                  </span>
+                )}
+                {retailDraft != null && (
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span className="text-muted-foreground">Real retail for one:</span>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      min={0}
+                      className="w-28"
+                      value={retailDraft}
+                      onChange={(e) => setRetailDraft(e.target.value)}
+                    />
+                    <Button size="sm" onClick={saveRetail} disabled={retailSaving || !(Number(retailDraft) > 0)}>
+                      {retailSaving ? "Saving…" : "Save"}
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => setRetailDraft(null)} disabled={retailSaving}>
+                      Cancel
+                    </Button>
                   </span>
                 )}
                 {priceResearchResult?.profitBasis && !item.shopifyOnly && (
@@ -1425,5 +1479,103 @@ function SuffixNumber({ suffix, ...props }: Omit<ComponentProps<typeof Input>, "
         {suffix}
       </span>
     </div>
+  );
+}
+
+// Live listings whose manifest retail looks wrong (see src/lib/retailCheck.ts):
+// type the real retail for one unit, or say it's right. Owner only: the API
+// refuses anyone else, and this then shows nothing.
+function RetailCheckSection() {
+  const [rows, setRows] = useState<RetailCheckRow[] | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [savingKey, setSavingKey] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+
+  function load() {
+    fetch("/api/retail-check")
+      .then(async (r) => setRows(r.ok ? ((await r.json()).rows as RetailCheckRow[]) : null))
+      .catch(() => setRows(null));
+  }
+
+  useEffect(load, []);
+
+  async function save(line: RetailCheckLine, unitRetail: number | null) {
+    const key = `${line.manifestId}:${line.upc}`;
+    setSavingKey(key);
+    setMessage(null);
+    try {
+      const res = await fetch("/api/retail-check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ manifestId: line.manifestId, upc: line.upc, unitRetail }),
+      });
+      if (!res.ok) {
+        setMessage((await res.json().catch(() => ({}))).error ?? "Couldn't save.");
+        return;
+      }
+      setDrafts((d) => ({ ...d, [key]: "" }));
+      load();
+    } finally {
+      setSavingKey(null);
+    }
+  }
+
+  if (!rows || rows.length === 0) return null;
+  return (
+    <section>
+      <SectionHeader
+        title="Retail to check"
+        description="Live listings where the manifest retail looks off. The store prices off retail and shows it crossed out, so fix it or say it's right."
+        action={<Badge tone="warning">{rows.length}</Badge>}
+      />
+      {message && <Alert tone="danger">{message}</Alert>}
+      <Card padded={false} className="divide-y divide-border">
+        {rows.map((row) => (
+          <div key={row.itemId} className="flex flex-col gap-3 p-4">
+            <div className="flex items-start gap-3">
+              {row.photoUrl && <Thumb src={row.photoUrl} size="sm" />}
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-foreground">{row.title}</p>
+                <p className="text-xs text-muted-foreground">
+                  eBay ${row.ebayPrice.toFixed(2)} · retail ${row.retail.toFixed(2)} · store ${row.storePrice.toFixed(2)}
+                </p>
+                <p className="text-xs text-warning">
+                  {row.reason === "too_high"
+                    ? "Retail is over 4x the eBay price, so the store hides it and prices this as no-retail."
+                    : "Retail is under half the eBay price, so 50% off it makes the store price very low."}
+                </p>
+              </div>
+            </div>
+            {row.lines.map((line) => {
+              const key = `${line.manifestId}:${line.upc}`;
+              const draft = drafts[key] ?? "";
+              const saving = savingKey === key;
+              return (
+                <div key={key} className="flex flex-wrap items-center gap-2">
+                  <span className="min-w-0 flex-1 text-xs text-muted-foreground">
+                    {line.description}: ${line.unitRetail.toFixed(2)} each{line.units > 1 ? `, ${line.units} in this listing` : ""}
+                  </span>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    min={0}
+                    placeholder="Real retail"
+                    className="w-28"
+                    value={draft}
+                    onChange={(e) => setDrafts((d) => ({ ...d, [key]: e.target.value }))}
+                  />
+                  <Button size="sm" onClick={() => save(line, Number(draft))} disabled={saving || !(Number(draft) > 0)}>
+                    Save
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => save(line, null)} disabled={saving}>
+                    Looks right
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </Card>
+    </section>
   );
 }

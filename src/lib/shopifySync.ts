@@ -91,14 +91,17 @@ function pctOff(amount: number, pct: number): number {
 }
 
 // Supplier manifests sometimes carry inflated "retail" values (a box of
-// Nexcare DUO bandages at $21, really ~$6). Pricing off one, or showing it
-// as the struck-through price, would be a fake discount, so retail only
+// Nexcare DUO bandages at $21, really $8.99). Pricing off one, or showing
+// it as the struck-through price, would be a fake discount, so retail only
 // counts when it's at most this many times the original eBay price, which
-// is what the item actually goes for.
-const MAX_RETAIL_TO_EBAY = 3;
+// is what the item actually goes for. 4x since 2026-10-17: drugstore retail
+// runs high next to eBay (Banana Boat Kids Sport, $16.99 a can at CVS, sells
+// as a $16.99 4-pack), and bad retail now gets fixed by hand on Review.
+export const MAX_RETAIL_TO_EBAY = 4;
 
-function usableRetail(retail: number | null, ebayOriginal: number): retail is number {
-  return retail != null && retail > 0 && !(ebayOriginal > 0 && retail > ebayOriginal * MAX_RETAIL_TO_EBAY);
+export function usableRetail(retail: number | null, ebayOriginal: number): retail is number {
+  // In cents, so a retail of exactly 4x isn't lost to float rounding.
+  return retail != null && retail > 0 && !(ebayOriginal > 0 && Math.round(retail * 100) > Math.round(ebayOriginal * MAX_RETAIL_TO_EBAY * 100));
 }
 
 // The regular store price for a listing at `ebayPrice` (eBay discounts

@@ -981,6 +981,14 @@ model ManifestLine {
   // comps are per box — Medical Supplies 2026-10-15 had Hollister 14204 as
   // 30 pieces = 6 boxes of 5, valued per piece at a box price (5x high).
   piecesPerBox     Int?
+  // Review's "Retail to check" list (src/lib/retailCheck.ts): when Cristian
+  // corrects retailPrice by hand, the supplier's own figure is kept here the
+  // first time (null = never corrected). retailCheckedAt: he looked at this
+  // line's retail and fixed it or said it's right, so it stops being listed.
+  // extendedRetail is left alone either way: it's the supplier's declared
+  // value, and the load's cost split (cogs.ts) runs on it.
+  supplierRetailPrice Decimal?  @db.Decimal(10, 2)
+  retailCheckedAt     DateTime?
 
   @@index([manifestId, upc])
 }
