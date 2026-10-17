@@ -1866,7 +1866,8 @@ function xmlField(block: string, tag: string): string | null {
   return m ? xmlDecode(m[1]) : null;
 }
 
-// Every pending offer on the account (all listings, not just the app's).
+// Every pending offer buyers sent on the account's listings (all listings,
+// not just the app's).
 export async function getPendingBestOffers(): Promise<ReceivedBestOffer[]> {
   const offers: ReceivedBestOffer[] = [];
   for (let page = 1; ; page++) {
@@ -1876,6 +1877,9 @@ export async function getPendingBestOffers(): Promise<ReceivedBestOffer[]> {
     );
     // One <ItemBestOffers> per listing: its offers, then the <Item> they're on.
     for (const group of xml.split("<ItemBestOffers>").slice(1)) {
+      // Confirmed live 2026-10-17: offers we made on someone else's
+      // listing come back here too, tagged Role "Buyer". Only ours to answer.
+      if (xmlField(group, "Role") === "Buyer") continue;
       const itemBlock = group.slice(group.indexOf("<Item>"));
       const listingId = xmlField(itemBlock, "ItemID");
       if (!listingId) continue;
