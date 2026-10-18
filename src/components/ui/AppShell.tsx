@@ -19,6 +19,7 @@ import {
   SplitSquareHorizontal,
   Target,
   Timer,
+  Truck,
   Undo2,
   X,
   type LucideIcon,
@@ -59,6 +60,8 @@ const NAV: NavEntry[] = [
       { href: "/sort", label: "Sort", icon: SplitSquareHorizontal, warehouseOnly: true },
       { href: "/bins", label: "Bins", icon: Archive, warehouseOnly: true },
       { href: "/ship", label: "Pick orders", icon: PackageCheck, warehouseOnly: true },
+      // Epic Steals local delivery runs; any signed-in user can drive.
+      { href: "/deliveries", label: "Deliveries", icon: Truck },
       { href: "/returns", label: "Returns", icon: Undo2, warehouseOnly: true },
       { href: "/duds", label: "Duds", icon: PackageX, warehouseOnly: true },
       { href: "/station", label: "Station", icon: Monitor, warehouseOnly: true },

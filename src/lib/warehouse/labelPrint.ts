@@ -29,7 +29,15 @@ export function printLabelBatch(labels: LabelSpec[]): Promise<void> {
   return run;
 }
 
-function printDocument(html: string): Promise<void> {
+// Any other printable page (the 4x6 local delivery label), same way. size
+// is the page, matching the document's own @page size.
+export function printPage(html: string, size: { width: string; height: string }): Promise<void> {
+  const run = queue.then(() => printDocument(html, size));
+  queue = run.catch(() => {});
+  return run;
+}
+
+function printDocument(html: string, size: { width: string; height: string } = { width: "2in", height: "1in" }): Promise<void> {
   return new Promise((resolve, reject) => {
     if (typeof document === "undefined") {
       reject(new Error("Printing only works in the browser."));
@@ -44,8 +52,8 @@ function printDocument(html: string): Promise<void> {
       position: "fixed",
       left: "-10000px",
       top: "0",
-      width: "2in",
-      height: "1in",
+      width: size.width,
+      height: size.height,
       border: "0",
     });
 

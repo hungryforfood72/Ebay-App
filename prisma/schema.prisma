@@ -1471,3 +1471,69 @@ model ItemReturn {
   @@index([itemId])
   @@index([createdAt])
 }
+
+// Epic Steals free local delivery (src/lib/delivery). One row per Shopify
+// order that picked the Local delivery method, copied in from Shopify each
+// time /deliveries loads, so the driver works off the app's own copy (with
+// the label code, route position and proof photo) instead of Shopify's.
+model LocalDelivery {
+  id             String       @id @default(uuid())
+  shopifyOrderId String       @unique
+  orderName      String // "#1001"
+  // What the label's barcode reads ("D1001"); the driver scans it at the
+  // door so the wrong bag can't go to the wrong house.
+  code           String       @unique
+  // ready: waiting for a run. out: on a run. delivered. failed: couldn't
+  // deliver (failedNote), goes back on the next run. gone: fulfilled or
+  // cancelled on Shopify some other way.
+  status         String       @default("ready")
+  orderedAt      DateTime
+  name           String
+  address1       String
+  address2       String?
+  city           String
+  province       String?
+  zip            String
+  phone          String?
+  email          String?
+  lat            Float?
+  lng            Float?
+  // [{ lineItemId, title, quantity }]
+  items          Json
+  // The buyer's order note (gate codes, "leave at back door").
+  note           String?
+  labelPrintedAt DateTime?
+  run            DeliveryRun? @relation(fields: [runId], references: [id])
+  runId          String?
+  // Position in the run, from 0 (stop A).
+  stop           Int?
+  deliveredAt    DateTime?
+  deliveredBy    String?
+  photoUrl       String?
+  failedNote     String?
+  // After the drop-off: fulfilled and marked delivered on Shopify, and the
+  // photo emailed. followUpError keeps whichever of those failed so it can
+  // be retried; the delivery itself still counts.
+  shopifyDoneAt  DateTime?
+  emailSentAt    DateTime?
+  followUpError  String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([status])
+  @@index([runId])
+}
+
+// One driver's trip. Starts where the phone is (or the shop), stops in
+// the order route.ts worked out.
+model DeliveryRun {
+  id         String          @id @default(uuid())
+  driver     String?
+  startLat   Float
+  startLng   Float
+  // true = drive back to the start after the last stop.
+  endAtStart Boolean         @default(false)
+  startedAt  DateTime        @default(now())
+  finishedAt DateTime?
+  stops      LocalDelivery[]
+}

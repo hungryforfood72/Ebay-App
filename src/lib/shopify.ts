@@ -13,9 +13,15 @@ export const SHOPIFY_API_VERSION = "2026-10";
 export const SHOPIFY_REQUIRED_SCOPES = [
   "write_products",
   "write_inventory",
-  "read_orders",
+  // write (not just read) since local delivery: the order note gets the
+  // delivery photo. Delivery also needs protected customer data access
+  // (name, address, email, phone), which isn't a scope.
+  "write_orders",
   "read_locations",
   "write_publications",
+  // Local delivery: fulfill the order and mark it delivered.
+  "write_merchant_managed_fulfillment_orders",
+  "write_fulfillments",
 ];
 
 export type ShopifyConfig = { shop: string; clientId: string; clientSecret: string };
@@ -125,9 +131,9 @@ export async function shopifyGraphql<T>(query: string, variables?: Record<string
   }
 }
 
-type UserError = { field?: string[] | null; message: string; code?: string | null };
+export type UserError = { field?: string[] | null; message: string; code?: string | null };
 
-function throwOnUserErrors(what: string, userErrors: UserError[] | undefined) {
+export function throwOnUserErrors(what: string, userErrors: UserError[] | undefined) {
   if (userErrors && userErrors.length > 0) {
     throw new ShopifyApiError(`${what}: ${userErrors.map((e) => e.message).join("; ")}`, userErrors, userErrors[0].code ?? undefined);
   }
