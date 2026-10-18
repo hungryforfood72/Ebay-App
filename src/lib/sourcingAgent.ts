@@ -2319,7 +2319,10 @@ Write 3-6 sentences: which items drove the call, any supplier/category patterns 
 
   try {
     const response = await anthropic.messages.create(
-      { model: "claude-opus-5-5", max_tokens: 600, messages: [{ role: "user", content: prompt }] },
+      // 600 cut every explanation off mid-sentence (2026-10-18: all 8 latest
+      // hit exactly 600 output tokens with ~150 words of text): the model
+      // spends part of the budget thinking before it writes.
+      { model: "claude-opus-5-5", max_tokens: 3000, messages: [{ role: "user", content: prompt }] },
       { timeout: 45_000, maxRetries: 0 }
     );
     await logAiUsage("sourcing.reasoning", response, { evaluationId: input.evaluationId });
