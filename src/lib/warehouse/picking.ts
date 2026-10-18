@@ -96,6 +96,9 @@ export type PickLine = {
   grabFrom: { shelf: string | null; binCode: string | null; binningTable: boolean };
   // What the store itself says, for lines with no app record.
   listing: { title: string; customLabel: string | null; shelfHint: string | null; image: string | null };
+  // The order's page on its own store (eBay Seller Hub or Shopify admin),
+  // where the shipping label gets bought once it's packed.
+  orderUrl: string | null;
 };
 
 export type ShipOrdersResponse = {
@@ -600,6 +603,7 @@ export async function getPickList(options?: { fresh?: boolean }): Promise<ShipOr
             binningTable: verifyBy === "label",
           },
       listing: { title: l.title, customLabel: l.sku, shelfHint: shelfFromSku(l.sku), image: l.image },
+      orderUrl: orderUrl(l),
     };
   });
 
@@ -615,6 +619,17 @@ export async function getPickList(options?: { fresh?: boolean }): Promise<ShipOr
 // where a pick round starts anyway: grab everything still loose there,
 // then walk the shelves once, instead of finishing the aisles and having
 // to come back for it.
+// Shipping labels are bought on the order's own store (Cristian,
+// 2026-10-17), so Ready to pack links straight to it. eBay: the Seller Hub
+// order page (has Print shipping label). Shopify and Whatnot: the order in
+// Shopify admin ({shop}/admin/orders/{id} goes to admin.shopify.com).
+function orderUrl(l: Pick<RawLine, "channel" | "orderId">): string | null {
+  if (l.channel === "ebay") return `https://www.ebay.com/sh/ord/details?orderid=${encodeURIComponent(l.orderId)}`;
+  const shop = getShopifyConfig()?.shop;
+  const id = l.orderId.split("/").pop();
+  return shop && id ? `https://${shop}/admin/orders/${id}` : null;
+}
+
 export function sortWalkingPath(lines: PickLine[]): PickLine[] {
   const byAge = [...lines].sort((a, b) => a.orderedAt.localeCompare(b.orderedAt));
   const group = (l: PickLine) =>

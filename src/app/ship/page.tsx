@@ -20,7 +20,7 @@ import type {
   ShipOrdersResponse,
   UnpickResponse,
 } from "@/lib/warehouse/picking";
-import { ChevronDown, CircleCheck, CircleX, Info, MapPin, PackageCheck, RefreshCw, Undo2, X } from "lucide-react";
+import { ChevronDown, CircleCheck, CircleX, ExternalLink, Info, MapPin, PackageCheck, RefreshCw, Undo2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 // Order picking on the handheld. Scan an item's label and the page works out
@@ -547,6 +547,18 @@ export default function ShipPage() {
                           </Button>
                         </p>
                         {slipMessage?.key === o.key && <p className="mt-1 text-xs text-foreground">{slipMessage.text}</p>}
+                        {o.lines[0]?.orderUrl && !o.delivery && (
+                          <a
+                            href={o.lines[0].orderUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="mt-2 inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground"
+                          >
+                            <ExternalLink className="size-4" aria-hidden />
+                            {o.lines[0].channel === "ebay" ? "Open in eBay" : "Open in Shopify"}
+                            {o.pickup ? "" : " to buy the label"}
+                          </a>
+                        )}
                         <ul className="mt-2 flex flex-col gap-1 text-sm">
                           {o.lines.map((l) => (
                             <li key={l.key} className="text-foreground">
