@@ -1,19 +1,19 @@
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
 
-// ONE-TIME TOOL: the consignment loads the item lookup can open, newest
-// first, and whether the Analyzer has finished on each (the TAKE / LEAVE
-// answers come from it). Removal: see src/app/api/one-time/item-lookup.
+// ONE-TIME TOOL: recent manifests the counting tool can open (the
+// combined Costco file is uploaded in the Analyzer first, not run yet).
+// Removal: see src/app/api/one-time/item-lookup.
 export async function GET() {
   const manifests = await prisma.manifest.findMany({
-    where: { consignment: true },
     orderBy: { createdAt: "desc" },
+    take: 15,
     select: {
       id: true,
       title: true,
       createdAt: true,
       _count: { select: { lines: true } },
-      sourcingEvaluations: { where: { status: "complete" }, select: { id: true }, take: 1 },
+      sourcingEvaluations: { orderBy: { startedAt: "desc" }, select: { status: true }, take: 1 },
     },
   });
   return NextResponse.json({
@@ -22,7 +22,7 @@ export async function GET() {
       title: m.title,
       createdAt: m.createdAt.toISOString(),
       lines: m._count.lines,
-      analyzed: m.sourcingEvaluations.length > 0,
+      analyzer: m.sourcingEvaluations[0]?.status ?? null,
     })),
   });
 }

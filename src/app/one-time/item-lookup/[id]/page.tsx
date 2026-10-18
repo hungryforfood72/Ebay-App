@@ -4,245 +4,409 @@ import BarcodeScanner from "@/components/BarcodeScanner";
 import { ScanField } from "@/components/ScanField";
 import { Alert } from "@/components/ui/Alert";
 import { AppShell } from "@/components/ui/AppShell";
+import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, SectionHeader } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { cn } from "@/components/ui/cn";
-import { Camera, ChevronDown, CircleCheck, CircleX, Search } from "lucide-react";
+import { Camera, CircleCheck, Search } from "lucide-react";
+import Link from "next/link";
 import { use as usePromise, useEffect, useMemo, useState } from "react";
 
-// ONE-TIME TOOL (Cristian, 2026-10-17): the leftover Costco food loads
-// have no UPCs, only Costco's Item #. Find a product by Item # or by name,
-// see TAKE / LEAVE (consignment pick list from the Analyzer, same as
-// /pick/[id]), and when it's a TAKE and in hand, scan its UPC: that saves
-// it onto the manifest so listing it later lines up with its retail and
-// cost, and counts it as found.
+// ONE-TIME TOOL (Cristian, 2026-10-17): count the leftover Costco food
+// (Item # but no UPC on the manifest). Find a product by Item # or name,
+// scan its UPC, type how many; "Done counting" drops what wasn't found;
+// then the Analyzer runs and this page shows Sell / Dud.
 // To remove the tool: delete src/app/one-time and src/app/api/one-time.
 
-type Product = {
-  key: string;
-  decision: "take" | "leave";
-  description: string;
-  upc: string | null;
-  itemNumbers: string[];
-  reason: string | null;
+type Line = { id: string; supplierSku: string | null; description: string; upc: string | null; expectedQuantity: number; retailPrice: number };
+type Counted = Record<string, { count: number; upc: string | null; originalQty: number; by: string | null; at: string }>;
+type ResultRow = { description: string; upc: string | null; itemNumbers: string[]; units: number; sellUnits: number; reason: string; netPerUnit: number | null; monthsToSell: number | null };
+type Data = {
+  title: string;
+  lines: Line[];
+  counted: Counted;
+  finished: boolean;
+  analyzer: string | null;
+  results: { sell: ResultRow[]; dud: ResultRow[]; profit: number | null } | null;
 };
 
 const norm = (s: string) => s.trim().toLowerCase().replace(/^0+/, "");
 
-function search(products: Product[], query: string): Product[] {
+function search(lines: Line[], query: string): Line[] {
   const q = query.trim().toLowerCase();
   if (!q) return [];
-  const byItem = products.filter((p) => p.itemNumbers.some((n) => norm(n) === norm(q) || norm(n).startsWith(norm(q))));
+  const byItem = lines.filter((l) => l.supplierSku && (norm(l.supplierSku) === norm(q) || norm(l.supplierSku).startsWith(norm(q))));
   const words = q.split(/\s+/).filter(Boolean);
-  const byName = products.filter((p) => !byItem.includes(p) && words.every((w) => p.description.toLowerCase().includes(w)));
-  return [...byItem, ...byName].sort((a, b) => (a.decision === b.decision ? 0 : a.decision === "take" ? -1 : 1)).slice(0, 25);
+  const byName = lines.filter((l) => !byItem.includes(l) && words.every((w) => l.description.toLowerCase().includes(w)));
+  return [...byItem, ...byName].slice(0, 25);
 }
 
-export default function ItemLookupPage({ params }: { params: Promise<{ id: string }> }) {
+async function post(id: string, body: Record<string, unknown>) {
+  const res = await fetch(`/api/one-time/item-lookup/${id}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error ?? "Couldn't save.");
+  return json;
+}
+
+export default function CountPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = usePromise(params);
-  const [title, setTitle] = useState("");
-  const [products, setProducts] = useState<Product[] | null>(null);
-  const [found, setFound] = useState<Set<string>>(new Set());
-  const [saved, setSaved] = useState<Record<string, string>>({});
+  const [data, setData] = useState<Data | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
-  const [selected, setSelected] = useState<Product | null>(null);
-  const [upc, setUpc] = useState("");
-  const [cameraOpen, setCameraOpen] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [selected, setSelected] = useState<Line | null>(null);
+  const [adding, setAdding] = useState(false);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
-  const [showRemaining, setShowRemaining] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    Promise.all([fetch(`/api/manifests/${id}/pick`), fetch(`/api/one-time/item-lookup/${id}`)])
-      .then(async ([pickRes, savedRes]) => {
-        const pick = await pickRes.json();
-        if (!pickRes.ok) throw new Error(pick.error ?? "Couldn't load the pick list.");
-        const s = await savedRes.json();
-        if (cancelled) return;
-        setTitle(pick.title);
-        setProducts(pick.products);
-        setFound(new Set(pick.foundKeys));
-        setSaved(s.saved ?? {});
-      })
-      .catch((e) => !cancelled && setError(e instanceof Error ? e.message : "Couldn't load."));
-    return () => {
-      cancelled = true;
-    };
-  }, [id]);
-
-  const results = useMemo(() => (products ? search(products, query) : []), [products, query]);
-  const take = useMemo(() => products?.filter((p) => p.decision === "take") ?? [], [products]);
-  const remaining = take.filter((p) => !found.has(p.key));
-
-  function choose(p: Product) {
-    setSelected(p);
-    setUpc("");
-    setMessage(null);
+  async function load() {
+    try {
+      const res = await fetch(`/api/one-time/item-lookup/${id}`);
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error ?? "Couldn't load.");
+      setData(json);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't load.");
+    }
   }
 
-  async function saveUpc(raw: string) {
-    const code = raw.trim();
-    if (!selected || !code) return;
-    const itemNumber = selected.itemNumbers[0];
-    if (!itemNumber) {
-      setMessage({ ok: false, text: "This product has no Item # on the manifest, so there's nothing to attach the UPC to." });
-      return;
-    }
-    setSaving(true);
-    setMessage(null);
+  useEffect(() => {
+    // Initial load, not a reaction to state we own.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  const results = useMemo(() => (data ? search(data.lines, query) : []), [data, query]);
+  const countedIds = Object.keys(data?.counted ?? {});
+  const found = countedIds.filter((k) => (data?.counted[k]?.count ?? 0) > 0).length;
+
+  function afterSave(text: string, counted: Counted, newLine?: Line) {
+    setData((d) => (d ? { ...d, counted, lines: newLine ? [...d.lines, newLine] : d.lines } : d));
+    setMessage({ ok: true, text });
+    setSelected(null);
+    setAdding(false);
+    setQuery("");
+    setTimeout(() => document.getElementById("count-query")?.focus(), 50);
+  }
+
+  async function finish() {
+    if (!data) return;
+    const notFound = data.lines.length - found;
+    if (!confirm(`Done counting? This removes the ${notFound} product(s) you didn't find (or counted 0) from this manifest, so the Analyzer only checks what you have. ${found} stay.`)) return;
     try {
-      const res = await fetch(`/api/one-time/item-lookup/${id}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ itemNumber, upc: code, productKey: selected.key, decision: selected.decision }),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error ?? "Couldn't save the UPC.");
-      setSaved((prev) => ({ ...prev, ...Object.fromEntries(selected.itemNumbers.map((n) => [n, json.upc])) }));
-      setFound((prev) => new Set(prev).add(selected.key));
-      setMessage({ ok: true, text: `Saved UPC ${json.upc} for ${selected.description}. Marked found.` });
-      setUpc("");
-      setQuery("");
-      document.getElementById("lookup-query")?.focus();
+      const json = await post(id, { action: "finish" });
+      setMessage({ ok: true, text: `Done. Kept ${json.kept ?? found}, removed ${json.removed}. Now run the Analyzer.` });
+      load();
     } catch (e) {
-      setMessage({ ok: false, text: e instanceof Error ? e.message : "Couldn't save the UPC." });
+      setMessage({ ok: false, text: e instanceof Error ? e.message : "Couldn't finish." });
+    }
+  }
+
+  if (error) {
+    return (
+      <AppShell title="Count the leftover food" width="narrow">
+        <Alert tone="danger">{error}</Alert>
+      </AppShell>
+    );
+  }
+  if (!data) {
+    return (
+      <AppShell title="Count the leftover food" width="narrow">
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      </AppShell>
+    );
+  }
+
+  return (
+    <AppShell title={`Count: ${data.title}`} subtitle="One-time tool for the leftover food" width="narrow">
+      <div className="flex flex-col gap-5">
+        {message && <Alert tone={message.ok ? "success" : "danger"}>{message.text}</Alert>}
+
+        {!data.finished ? (
+          <>
+            <div>
+              <div className="mb-1.5 flex items-baseline justify-between text-sm">
+                <span className="font-medium text-foreground">
+                  Counted {countedIds.length} of {data.lines.length}
+                </span>
+                <span className="text-muted-foreground">{found} found</span>
+              </div>
+              <div className="h-2.5 w-full overflow-hidden rounded-full bg-muted">
+                <div className="h-full rounded-full bg-success" style={{ width: `${data.lines.length ? (countedIds.length / data.lines.length) * 100 : 0}%` }} />
+              </div>
+            </div>
+
+            {!selected && !adding && (
+              <>
+                <div className="relative">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
+                  <Input
+                    id="count-query"
+                    autoFocus
+                    className="pl-9"
+                    placeholder="Item # or name (e.g. 1846994 or snackies)"
+                    value={query}
+                    onChange={(e) => {
+                      setQuery(e.target.value);
+                      setMessage(null);
+                    }}
+                  />
+                </div>
+                {query.trim() && (
+                  <Card padded={false} className="divide-y divide-border">
+                    {results.length === 0 && (
+                      <p className="p-4 text-sm text-muted-foreground">Nothing on the manifest matches &ldquo;{query}&rdquo;. Use &ldquo;Not on the list&rdquo; below.</p>
+                    )}
+                    {results.map((l) => {
+                      const c = data.counted[l.id];
+                      return (
+                        <button key={l.id} type="button" onClick={() => setSelected(l)} className="flex w-full items-center gap-3 p-3 text-left hover:bg-muted">
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-sm text-foreground">{l.description}</span>
+                            <span className="block text-xs text-muted-foreground">
+                              Item # {l.supplierSku ?? "none"} · manifest had {c?.originalQty ?? l.expectedQuantity}
+                            </span>
+                          </span>
+                          {c && <Badge tone={c.count > 0 ? "success" : "neutral"}>{c.count > 0 ? `${c.count} counted` : "none left"}</Badge>}
+                        </button>
+                      );
+                    })}
+                  </Card>
+                )}
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" onClick={() => setAdding(true)}>
+                    Not on the list? Add it
+                  </Button>
+                  <Button variant="success" onClick={finish} disabled={found === 0}>
+                    <CircleCheck className="size-4" aria-hidden />
+                    Done counting
+                  </Button>
+                </div>
+              </>
+            )}
+
+            {selected && (
+              <CountCard
+                line={selected}
+                counted={data.counted[selected.id]}
+                onCancel={() => setSelected(null)}
+                onSave={async (upc, count) => {
+                  const json = await post(id, { action: "count", lineId: selected.id, upc, count });
+                  afterSave(count > 0 ? `${selected.description}: ${count} counted.` : `${selected.description}: marked none left.`, json.counted);
+                }}
+              />
+            )}
+
+            {adding && (
+              <AddCard
+                onCancel={() => setAdding(false)}
+                onSave={async (fields) => {
+                  const json = await post(id, { action: "add", ...fields });
+                  afterSave(`Added ${fields.description}: ${fields.count} counted.`, json.counted, json.line);
+                }}
+              />
+            )}
+          </>
+        ) : (
+          <Results data={data} id={id} />
+        )}
+      </div>
+    </AppShell>
+  );
+}
+
+function UpcField({ value, onChange, onScan }: { value: string; onChange: (v: string) => void; onScan: () => void }) {
+  const [camera, setCamera] = useState(false);
+  return (
+    <>
+      <ScanField id="count-upc" label="UPC" prompt="Scan the product's barcode" autoFocus value={value} onChange={onChange} onScan={onScan} hint="Or type the numbers under the barcode." />
+      <Button variant="outline" onClick={() => setCamera(true)}>
+        <Camera className="size-4" aria-hidden />
+        Use the camera
+      </Button>
+      {camera && (
+        <BarcodeScanner
+          onDetected={(code) => {
+            setCamera(false);
+            onChange(code);
+            document.getElementById("count-qty")?.focus();
+          }}
+          onClose={() => setCamera(false)}
+        />
+      )}
+    </>
+  );
+}
+
+function CountCard({
+  line,
+  counted,
+  onSave,
+  onCancel,
+}: {
+  line: Line;
+  counted: Counted[string] | undefined;
+  onSave: (upc: string, count: number) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [upc, setUpc] = useState(counted?.upc ?? line.upc ?? "");
+  const [qty, setQty] = useState(counted ? String(counted.count) : "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save(count: number) {
+    setSaving(true);
+    setError(null);
+    try {
+      await onSave(upc, count);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't save.");
     } finally {
       setSaving(false);
     }
   }
 
-  const savedUpc = selected ? selected.itemNumbers.map((n) => saved[n]).find(Boolean) : null;
+  return (
+    <Card className="flex flex-col gap-3">
+      <div>
+        <p className="text-lg font-semibold text-foreground">{line.description}</p>
+        <p className="text-sm text-muted-foreground">
+          Item # {line.supplierSku ?? "none"} · manifest had {counted?.originalQty ?? line.expectedQuantity}
+        </p>
+      </div>
+      <UpcField value={upc} onChange={setUpc} onScan={() => document.getElementById("count-qty")?.focus()} />
+      <label className="flex flex-col gap-1 text-sm font-medium text-foreground">
+        How many do you have?
+        <Input
+          id="count-qty"
+          type="number"
+          inputMode="numeric"
+          min={0}
+          value={qty}
+          onChange={(e) => setQty(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && qty !== "") save(Number(qty));
+          }}
+        />
+      </label>
+      {error && <Alert tone="danger">{error}</Alert>}
+      <div className="flex flex-wrap gap-2">
+        <Button size="lg" onClick={() => save(Number(qty))} disabled={saving || qty === "" || Number(qty) < 1}>
+          {saving ? "Saving…" : "Save"}
+        </Button>
+        <Button variant="outline" onClick={() => save(0)} disabled={saving}>
+          None left
+        </Button>
+        <Button variant="ghost" onClick={onCancel} disabled={saving}>
+          Back
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
+function AddCard({
+  onSave,
+  onCancel,
+}: {
+  onSave: (f: { upc: string; description: string; count: number; unitRetail: number | null }) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [upc, setUpc] = useState("");
+  const [description, setDescription] = useState("");
+  const [qty, setQty] = useState("");
+  const [retail, setRetail] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save() {
+    setSaving(true);
+    setError(null);
+    try {
+      await onSave({ upc, description, count: Number(qty), unitRetail: retail ? Number(retail) : null });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't save.");
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
-    <AppShell title={title ? `Find by Item #: ${title}` : "Find by Item #"} subtitle="One-time tool for the leftover food" width="narrow">
-      <div className="flex flex-col gap-5">
-        {error && <Alert tone="danger">{error}</Alert>}
-        {products && (
-          <>
-            <div>
-              <div className="mb-1.5 flex items-baseline justify-between text-sm">
-                <span className="font-medium text-foreground">
-                  Found {take.length - remaining.length} of {take.length} to take
-                </span>
-                <span className="text-muted-foreground">{products.length - take.length} to leave</span>
-              </div>
-              <div className="h-2.5 w-full overflow-hidden rounded-full bg-muted">
-                <div
-                  className="h-full rounded-full bg-success transition-[width] duration-300"
-                  style={{ width: `${take.length ? ((take.length - remaining.length) / take.length) * 100 : 0}%` }}
-                />
-              </div>
-            </div>
-
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
-              <Input
-                id="lookup-query"
-                autoFocus
-                className="pl-9"
-                placeholder="Item # or product name (e.g. 1846994 or snackies)"
-                value={query}
-                onChange={(e) => {
-                  setQuery(e.target.value);
-                  setSelected(null);
-                }}
-              />
-            </div>
-
-            {query.trim() && !selected && (
-              <Card padded={false} className="divide-y divide-border">
-                {results.length === 0 && <p className="p-4 text-sm text-muted-foreground">Nothing on this manifest matches &ldquo;{query}&rdquo;.</p>}
-                {results.map((p) => (
-                  <button key={p.key} type="button" onClick={() => choose(p)} className="flex w-full items-center gap-3 p-3 text-left hover:bg-muted">
-                    <span className={cn("w-14 shrink-0 text-xs font-bold uppercase", p.decision === "take" ? "text-success" : "text-danger")}>{p.decision}</span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-sm text-foreground">{p.description}</span>
-                      <span className="block text-xs text-muted-foreground">Item # {p.itemNumbers.join(" / ") || "none"}</span>
-                    </span>
-                    {found.has(p.key) && <CircleCheck className="size-4 shrink-0 text-success" aria-label="Found" />}
-                  </button>
-                ))}
-              </Card>
-            )}
-
-            {selected && (
-              <div className={cn("rounded-2xl p-5 text-white shadow-sm", selected.decision === "take" ? "bg-success" : "bg-danger")} role="status">
-                <div className="flex items-center gap-3">
-                  {selected.decision === "take" ? <CircleCheck className="size-10 shrink-0" aria-hidden /> : <CircleX className="size-10 shrink-0" aria-hidden />}
-                  <p className="text-4xl font-bold tracking-tight">{selected.decision === "take" ? "TAKE" : "LEAVE"}</p>
-                </div>
-                <p className="mt-3 text-lg font-semibold leading-snug">{selected.description}</p>
-                <p className="mt-1 text-sm opacity-90">
-                  {[`Item # ${selected.itemNumbers.join(" / ") || "none"}`, selected.decision === "leave" ? selected.reason : null, savedUpc ? `UPC ${savedUpc} on file` : null]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </p>
-              </div>
-            )}
-
-            {selected?.decision === "take" && (
-              <Card className="flex flex-col gap-3">
-                <SectionHeader title={savedUpc ? "Scan again to change the UPC" : "Found it? Scan its UPC"} description="The barcode on the product itself. It's saved to the manifest and marks it found." />
-                <ScanField
-                  id="lookup-upc"
-                  label="UPC"
-                  prompt="Scan the product's barcode"
-                  autoFocus
-                  value={upc}
-                  onChange={setUpc}
-                  onScan={() => saveUpc(upc)}
-                  hint={saving ? "Saving…" : "Or type the numbers under the barcode."}
-                />
-                <Button variant="outline" onClick={() => setCameraOpen(true)} disabled={saving}>
-                  <Camera className="size-4" aria-hidden />
-                  Use the camera
-                </Button>
-              </Card>
-            )}
-
-            {message && <Alert tone={message.ok ? "success" : "danger"}>{message.text}</Alert>}
-
-            {remaining.length > 0 && (
-              <Card padded={false}>
-                <button
-                  type="button"
-                  onClick={() => setShowRemaining((v) => !v)}
-                  className="flex w-full items-center justify-between gap-2 p-4 text-left text-sm font-medium text-foreground"
-                >
-                  TAKE items still to find ({remaining.length})
-                  <ChevronDown className={cn("size-4 transition-transform", showRemaining && "rotate-180")} aria-hidden />
-                </button>
-                {showRemaining && (
-                  <ul className="divide-y divide-border border-t border-border text-sm">
-                    {remaining.map((p) => (
-                      <li key={p.key}>
-                        <button type="button" onClick={() => choose(p)} className="w-full px-4 py-2.5 text-left hover:bg-muted">
-                          <span className="block text-foreground">{p.description}</span>
-                          <span className="block text-xs text-muted-foreground">Item # {p.itemNumbers.join(" / ") || "none"}</span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </Card>
-            )}
-          </>
-        )}
-        {!products && !error && <p className="text-sm text-muted-foreground">Loading…</p>}
+    <Card className="flex flex-col gap-3">
+      <SectionHeader title="Not on the list" description="Something you have that isn't on the Costco manifests." />
+      <UpcField value={upc} onChange={setUpc} onScan={() => document.getElementById("add-name")?.focus()} />
+      <Input id="add-name" placeholder="What is it? (brand, product, size)" value={description} onChange={(e) => setDescription(e.target.value)} />
+      <div className="flex gap-2">
+        <Input id="count-qty" type="number" inputMode="numeric" min={1} placeholder="How many" value={qty} onChange={(e) => setQty(e.target.value)} />
+        <Input type="number" inputMode="decimal" min={0} step="0.01" placeholder="Retail each (optional)" value={retail} onChange={(e) => setRetail(e.target.value)} />
       </div>
+      {error && <Alert tone="danger">{error}</Alert>}
+      <div className="flex flex-wrap gap-2">
+        <Button size="lg" onClick={save} disabled={saving || !upc || !description.trim() || !(Number(qty) > 0)}>
+          {saving ? "Saving…" : "Add it"}
+        </Button>
+        <Button variant="ghost" onClick={onCancel} disabled={saving}>
+          Back
+        </Button>
+      </div>
+    </Card>
+  );
+}
 
-      {cameraOpen && (
-        <BarcodeScanner
-          onDetected={(scanned) => {
-            setCameraOpen(false);
-            saveUpc(scanned);
-          }}
-          onClose={() => setCameraOpen(false)}
-        />
+function Results({ data, id }: { data: Data; id: string }) {
+  if (!data.results) {
+    return (
+      <Card className="flex flex-col gap-3">
+        <p className="font-semibold text-foreground">Counting is done: {data.lines.length} products kept.</p>
+        <p className="text-sm text-muted-foreground">
+          {data.analyzer === "running"
+            ? "The Analyzer is running. Come back when it finishes."
+            : "Next: run the Analyzer on it. When it finishes, Sell / Dud shows up here."}
+        </p>
+        <Link href={`/analyzer/${id}`} className="text-sm font-medium text-primary underline">
+          Open it in the Analyzer
+        </Link>
+      </Card>
+    );
+  }
+  const money = (n: number | null) => (n == null ? null : `$${n.toFixed(2)}`);
+  const rows = (list: ResultRow[], sell: boolean) =>
+    list.map((r, i) => (
+      <li key={`${r.description}-${i}`} className="px-4 py-2.5">
+        <p className="text-sm text-foreground">{r.description}</p>
+        <p className="text-xs text-muted-foreground">
+          {[
+            r.itemNumbers.length ? `Item # ${r.itemNumbers.join(" / ")}` : null,
+            r.upc ? `UPC ${r.upc}` : null,
+            sell ? `list ${r.sellUnits} of ${r.units}` : `${r.units} on hand`,
+            sell && r.netPerUnit != null ? `~${money(r.netPerUnit)} each after fees + label` : null,
+            r.reason,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        </p>
+      </li>
+    ));
+  return (
+    <>
+      {data.results.profit != null && (
+        <Alert tone="success">
+          {data.results.sell.length} worth listing, {data.results.dud.length} duds. About {money(data.results.profit)} after eBay fees and labels if the
+          suggested amounts sell.
+        </Alert>
       )}
-    </AppShell>
+      <section>
+        <SectionHeader title={`Sell (${data.results.sell.length})`} description="Worth listing. Slow sellers say how many to list; the rest are in-person / local." />
+        <ul className={cn("divide-y divide-border rounded-xl border border-border")}>{rows(data.results.sell, true)}</ul>
+      </section>
+      <section>
+        <SectionHeader title={`Dud (${data.results.dud.length})`} description="Not worth eBay: sell in person, locally, or on the past-date page." />
+        <ul className="divide-y divide-border rounded-xl border border-border">{rows(data.results.dud, false)}</ul>
+      </section>
+    </>
   );
 }
