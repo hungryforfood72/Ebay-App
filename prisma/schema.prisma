@@ -1399,6 +1399,10 @@ model Station {
   weightStable Boolean   @default(false)
   weightAt     DateTime?
   lastSeenAt   DateTime?
+  // This station's PC has a 4x6 printer as its default: packing slips and
+  // local delivery labels print here (src/lib/warehouse/packingSlip.ts).
+  // One station at a time.
+  packingSlips Boolean   @default(false)
   createdAt    DateTime  @default(now())
 
   printJobs PrintJob[]
@@ -1536,4 +1540,17 @@ model DeliveryRun {
   startedAt  DateTime        @default(now())
   finishedAt DateTime?
   stops      LocalDelivery[]
+}
+
+// One per order that got its packing slip, so finishing the pick prints it
+// once (the Reprint button prints it again on purpose).
+model PackingSlip {
+  id          String   @id @default(uuid())
+  channel     String
+  orderId     String
+  orderNumber String
+  printedBy   String?
+  createdAt   DateTime @default(now())
+
+  @@unique([channel, orderId])
 }

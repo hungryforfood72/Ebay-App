@@ -1,4 +1,5 @@
 import { getRequestUser } from "@/lib/auth";
+import { printPackingSlip } from "@/lib/warehouse/packingSlip";
 import { pickUnit, type PickChannel } from "@/lib/warehouse/picking";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -33,7 +34,16 @@ export async function POST(request: NextRequest) {
       },
       user.username
     );
-    return NextResponse.json(result);
+    // The order's last item: its packing slip goes to the packing station.
+    // A slip problem never undoes the pick.
+    let slip = null;
+    if (result.ok && result.picked >= result.quantity) {
+      slip = await printPackingSlip({ channel, orderId: body.orderId, by: user.username, force: false }).catch((e) => {
+        console.error("[ship/pick] packing slip", e);
+        return null;
+      });
+    }
+    return NextResponse.json(result.ok ? { ...result, slip } : result);
   } catch (e) {
     console.error("[ship/pick]", e);
     return NextResponse.json({ error: `Couldn't save the pick: ${e instanceof Error ? e.message : String(e)}` }, { status: 502 });

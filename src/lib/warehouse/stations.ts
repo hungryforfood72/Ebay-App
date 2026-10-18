@@ -15,6 +15,7 @@ export const STATION_STATUS_SELECT = {
   weightStable: true,
   weightAt: true,
   lastSeenAt: true,
+  packingSlips: true,
 } as const;
 
 type StationRow = {
@@ -24,6 +25,7 @@ type StationRow = {
   weightStable: boolean;
   weightAt: Date | null;
   lastSeenAt: Date | null;
+  packingSlips: boolean;
 };
 
 export function toStationStatus(row: StationRow, now = Date.now()): StationStatus {
@@ -37,6 +39,7 @@ export function toStationStatus(row: StationRow, now = Date.now()): StationStatu
     weightOz: online && row.weightOz != null ? row.weightOz.toNumber() : null,
     weightStable: online && row.weightStable,
     weightAt: row.weightAt ? row.weightAt.toISOString() : null,
+    packingSlips: row.packingSlips,
   };
 }
 

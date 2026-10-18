@@ -851,6 +851,54 @@ export async function pickUnit(req: PickRequest, by: string | null): Promise<Pic
 }
 
 // ---------------------------------------------------------------------------
+// One order, for its packing slip (warehouse/packingSlip.ts)
+// ---------------------------------------------------------------------------
+
+export type OrderForSlip = {
+  channel: PickChannel;
+  orderId: string;
+  orderNumber: string;
+  source: string;
+  buyer: string | null;
+  orderedAt: string;
+  handoff: Handoff;
+  lines: { title: string; quantity: number; picked: number; code: string | null }[];
+  // Same rule as "Ready to pack" on /ship: every line the app can check is
+  // picked (and there's at least one).
+  fullyPicked: boolean;
+};
+
+export async function orderForSlip(channel: PickChannel, orderId: string): Promise<OrderForSlip | null> {
+  const match = (lines: RawLine[]) => lines.filter((l) => l.channel === channel && l.orderId === orderId);
+  let lines = match((await getOpenLines()).lines);
+  if (lines.length === 0) lines = match((await getOpenLines(true)).lines);
+  if (lines.length === 0) return null;
+  const [items, picks] = await Promise.all([
+    matchItems(lines),
+    prisma.orderPick.groupBy({ by: ["lineItemId"], where: { channel, orderId }, _count: { _all: true } }),
+  ]);
+  const checkable: { picked: number; quantity: number }[] = [];
+  const out = lines.map((l) => {
+    const item = items.get(lineKey(l.channel, l.lineItemId)) ?? null;
+    const picked = picks.find((p) => p.lineItemId === l.lineItemId)?._count._all ?? 0;
+    if (item) checkable.push({ picked, quantity: l.quantity });
+    return { title: item ? itemTitle(item) : l.title, quantity: l.quantity, picked, code: item?.sku ?? l.sku };
+  });
+  const first = lines[0];
+  return {
+    channel,
+    orderId,
+    orderNumber: first.orderNumber,
+    source: first.source,
+    buyer: first.buyer,
+    orderedAt: first.orderedAt,
+    handoff: first.handoff,
+    lines: out,
+    fullyPicked: checkable.length > 0 && checkable.every((l) => l.picked >= l.quantity),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/ship/unpick
 // ---------------------------------------------------------------------------
 

@@ -28,6 +28,17 @@ export type PrintJobKind = "item" | "bin" | "shelf" | "box" | "dud";
 
 export type PrintJobPayload = ItemLabelPayload | CodeLabelPayload;
 
+// Whole 4x6 pages rather than 2x1 labels: they only go to the station
+// marked for packing slips (its PC's default printer is a 4x6 Rollo). The
+// html is the complete printable page; code is what the station's log shows.
+export const PAGE_JOB_KINDS = ["packing_slip", "delivery_label"] as const;
+export type PageJobKind = (typeof PAGE_JOB_KINDS)[number];
+export type PageJobPayload = { code: string; html: string };
+
+export function isPageKind(v: unknown): v is PageJobKind {
+  return (PAGE_JOB_KINDS as readonly unknown[]).includes(v);
+}
+
 // GET /api/stations/{id}. online = the station page checked in recently.
 // weightOz is the latest scale reading (null = no scale reading yet);
 // weightStable = the Dymo said the reading had settled.
@@ -38,6 +49,8 @@ export type StationStatus = {
   weightOz: number | null;
   weightStable: boolean;
   weightAt: string | null;
+  // Packing slips and local delivery labels print here.
+  packingSlips: boolean;
 };
 
 // One place an item's units physically are.

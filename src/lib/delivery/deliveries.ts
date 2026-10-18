@@ -329,6 +329,18 @@ export async function getDeliveries(options: { sync: boolean }): Promise<Deliver
   };
 }
 
+// The delivery for one Shopify order, for printing its label at packing.
+// Pulls from Shopify first if the app hasn't seen the order yet.
+export async function deliveryForOrder(shopifyOrderId: string): Promise<DeliveryView | null> {
+  let row = await prisma.localDelivery.findUnique({ where: { shopifyOrderId } });
+  if (!row && getShopifyConfig()) {
+    await syncFromShopify();
+    row = await prisma.localDelivery.findUnique({ where: { shopifyOrderId } });
+  }
+  if (!row) return null;
+  return view(row, (await pickedUnits([row])).get(row.id) ?? 0);
+}
+
 export async function markLabelPrinted(ids: string[]): Promise<void> {
   await prisma.localDelivery.updateMany({ where: { id: { in: ids } }, data: { labelPrintedAt: new Date() } });
 }

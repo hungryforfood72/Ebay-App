@@ -7,10 +7,10 @@ import { AppShell } from "@/components/ui/AppShell";
 import { Badge, type BadgeTone } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, SectionHeader } from "@/components/ui/Card";
-import { printLabels } from "@/lib/warehouse/labelPrint";
+import { printLabels, printPage } from "@/lib/warehouse/labelPrint";
 import { formatOunces, formatPoundsOunces, scaleStatusMessage } from "@/lib/warehouse/scale";
 import type { PrintJobRow } from "@/lib/warehouse/stations";
-import type { CodeLabelPayload, ItemLabelPayload, PrintJobKind, PrintJobPayload, StationStatus } from "@/lib/warehouse/types";
+import { isPageKind, type CodeLabelPayload, type ItemLabelPayload, type PageJobPayload, type PrintJobKind, type PrintJobPayload, type StationStatus } from "@/lib/warehouse/types";
 import { Copy, Printer, RotateCcw, Scale, Usb } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
@@ -149,8 +149,14 @@ export default function StationPage() {
     setNowPrinting(job);
     let result: { status: "printed" } | { status: "failed"; error: string } = { status: "printed" };
     try {
-      if (!isLabelKind(job.kind)) throw new Error(`Unknown label type "${job.kind}".`);
-      await printLabels(job.kind, job.payload, job.copies);
+      if (isPageKind(job.kind)) {
+        // Packing slip or local delivery label: a whole 4x6 page.
+        const page = job.payload as unknown as PageJobPayload;
+        for (let i = 0; i < job.copies; i++) await printPage(page.html, { width: "4in", height: "6in" });
+      } else {
+        if (!isLabelKind(job.kind)) throw new Error(`Unknown label type "${job.kind}".`);
+        await printLabels(job.kind, job.payload, job.copies);
+      }
     } catch (e) {
       result = { status: "failed", error: e instanceof Error ? e.message : "Printing failed." };
     }
@@ -237,6 +243,24 @@ export default function StationPage() {
     }
   }
 
+  // Makes this the packing station (packing slips + local delivery
+  // labels), or stops it being one.
+  async function setPackingSlips(on: boolean) {
+    setMessage(null);
+    try {
+      const res = await fetch(`/api/stations/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ packingSlips: on }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Couldn't change that.");
+      setStation(data as StationStatus);
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : "Couldn't change that.");
+    }
+  }
+
   async function reprint(job: PrintJobRow) {
     setMessage(null);
     try {
@@ -293,6 +317,22 @@ export default function StationPage() {
                 </Button>
               }
             />
+            <label className="mb-3 flex items-start gap-2 text-sm text-foreground">
+              <input
+                type="checkbox"
+                className="mt-0.5 size-4"
+                checked={station?.packingSlips ?? false}
+                disabled={!station || stopped}
+                onChange={(e) => setPackingSlips(e.target.checked)}
+              />
+              <span>
+                Packing slips print here
+                <span className="block text-xs text-muted-foreground">
+                  Only on a PC whose default printer has 4x6 labels. Each picked order&apos;s packing slip (and local delivery label)
+                  prints here. One station at a time.
+                </span>
+              </span>
+            </label>
             {message && <p className="mb-3 text-sm text-foreground">{message}</p>}
             {nowPrinting && (
               <p className="mb-3 text-sm font-medium text-primary">Printing {payloadCode(nowPrinting.payload)}…</p>

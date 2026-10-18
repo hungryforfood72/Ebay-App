@@ -10,6 +10,8 @@ import { Card, SectionHeader } from "@/components/ui/Card";
 import { cn } from "@/components/ui/cn";
 import { upcMatchKeys } from "@/lib/upcMatch";
 import { classifyScan, normalizeCode } from "@/lib/warehouse/codes";
+import { printPage } from "@/lib/warehouse/labelPrint";
+import type { SlipResult } from "@/lib/warehouse/packingSlip";
 import type {
   ExpectedItem,
   PickLine,
@@ -126,12 +128,54 @@ type OrderGroup = {
   lines: PickLine[];
 };
 
+// One line for the pick result about the order's packing slip.
+function slipNote(slip: SlipResult | null | undefined): string | null {
+  if (!slip) return null;
+  if (slip.status === "queued") {
+    const where = slip.online ? `printing at ${slip.station}` : `sent to ${slip.station} (its page isn't open, it prints when it is)`;
+    const label = slip.delivery === false ? " The delivery label didn't print: no address yet, print it from Deliveries." : slip.delivery ? " Delivery label too." : "";
+    return `Packing slip ${where}.${label}`;
+  }
+  if (slip.status === "no_station") return "No packing station is set up: tap Packing slip under Ready to pack to print it.";
+  return null;
+}
+
 export default function ShipPage() {
   const [data, setData] = useState<ShipOrdersResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [code, setCode] = useState("");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [slipBusy, setSlipBusy] = useState<string | null>(null);
+  const [slipMessage, setSlipMessage] = useState<{ key: string; text: string } | null>(null);
+
+  // Packing slip button on Ready to pack: to the packing station, or
+  // printed right here when there isn't one.
+  async function reprintSlip(order: OrderGroup) {
+    const line = order.lines[0];
+    if (!line) return;
+    setSlipBusy(order.key);
+    setSlipMessage(null);
+    try {
+      const res = await fetch("/api/ship/packing-slip", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ channel: line.channel, orderId: line.orderId }),
+      });
+      const json = (await res.json()) as SlipResult | { error: string };
+      if (!res.ok || "error" in json) throw new Error("error" in json ? json.error : "Couldn't print the packing slip.");
+      if (json.status === "print_here") {
+        for (const page of json.pages) await printPage(page, { width: "4in", height: "6in" });
+        setSlipMessage({ key: order.key, text: "Sent to this device's printer (no packing station is set up)." });
+      } else {
+        setSlipMessage({ key: order.key, text: slipNote(json) ?? "That order isn't open any more." });
+      }
+    } catch (e) {
+      setSlipMessage({ key: order.key, text: e instanceof Error ? e.message : "Couldn't print the packing slip." });
+    } finally {
+      setSlipBusy(null);
+    }
+  }
   const [currentBin, setCurrentBin] = useState<string | null>(null);
   const [result, setResult] = useState<Result | null>(null);
   const [busy, setBusy] = useState(false);
@@ -240,7 +284,7 @@ export default function ShipPage() {
           manual,
         }),
       });
-      const json = (await res.json()) as PickResponse | { error: string };
+      const json = (await res.json()) as (PickResponse & { slip?: SlipResult | null }) | { error: string };
       if (!res.ok || "error" in json) throw new Error("error" in json ? json.error : "Couldn't save the pick.");
       if (json.ok) {
         const pickedBy = me && !line.pickedBy.includes(me) ? [...line.pickedBy, me] : line.pickedBy;
@@ -271,7 +315,7 @@ export default function ShipPage() {
                     ? `Order ${line.orderNumber} is ready for local delivery. No label needed.`
                     : `Order ${line.orderNumber} is ready to pack.`
                 : count,
-          note: [json.manual ? "Confirmed by tap, not a scan." : null, json.binNote].filter(Boolean).join(" ") || null,
+          note: [json.manual ? "Confirmed by tap, not a scan." : null, json.binNote, slipNote(json.slip)].filter(Boolean).join(" ") || null,
           undoLine: { ...line, picked: json.picked },
         });
       } else if (json.code === "already_picked") {
@@ -498,7 +542,11 @@ export default function ShipPage() {
                           {orderLabel(o)}
                           {o.pickup && <Badge tone="primary">Pickup</Badge>}
                           {o.delivery && <Badge tone="primary">Local delivery</Badge>}
+                          <Button size="sm" variant="outline" className="ml-auto" onClick={() => reprintSlip(o)} disabled={slipBusy === o.key}>
+                            {slipBusy === o.key ? "Sending…" : "Packing slip"}
+                          </Button>
                         </p>
+                        {slipMessage?.key === o.key && <p className="mt-1 text-xs text-foreground">{slipMessage.text}</p>}
                         <ul className="mt-2 flex flex-col gap-1 text-sm">
                           {o.lines.map((l) => (
                             <li key={l.key} className="text-foreground">
