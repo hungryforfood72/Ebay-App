@@ -35,15 +35,21 @@ function allocateSequentially(
   return allocated;
 }
 
-// For an Analyzer Beta copy: the manifest it was copied from and that
-// manifest's latest finished standard evaluation, so the beta page can put
+// For a comparison copy (Analyzer Beta): the manifest it was copied from
+// and that manifest's latest finished legacy evaluation, so the page can put
 // the two side by side.
 async function betaComparison(sourceId: string | null) {
   if (!sourceId) return { source: null, evaluation: null };
   const source = await prisma.manifest.findUnique({ where: { id: sourceId }, select: { id: true, title: true } });
   if (!source) return { source: null, evaluation: null };
+  return { source, evaluation: await comparisonEvaluation(sourceId, "legacy") };
+}
+
+// The latest finished evaluation by the given Analyzer, in the shape the
+// Analyzer page's comparison card reads.
+async function comparisonEvaluation(manifestId: string, engine: string) {
   const evaluation = await prisma.sourcingEvaluation.findFirst({
-    where: { manifestId: sourceId, status: "complete" },
+    where: { manifestId, status: "complete", engine },
     orderBy: { startedAt: "desc" },
     include: {
       lineEstimates: {
@@ -59,9 +65,9 @@ async function betaComparison(sourceId: string | null) {
       },
     },
   });
-  return {
-    source,
-    evaluation: evaluation && {
+  return (
+    evaluation && {
+      engine: evaluation.engine,
       recommendation: evaluation.recommendation,
       maxBid: evaluation.maxBid != null ? Number(evaluation.maxBid) : null,
       expectedNetContribution: evaluation.expectedNetContribution != null ? Number(evaluation.expectedNetContribution) : null,
@@ -76,8 +82,8 @@ async function betaComparison(sourceId: string | null) {
         dataConfidence: e.dataConfidence,
         flaggedDud: e.flaggedDud,
       })),
-    },
-  };
+    }
+  );
 }
 
 export async function GET(
@@ -416,6 +422,16 @@ export async function GET(
     purchased: manifest.purchased,
     analyzerBeta: manifest.analyzerBeta,
     ...(isOwner && manifest.analyzerBeta ? { betaComparison: await betaComparison(manifest.betaSourceId) } : {}),
+    // The other Analyzer's latest finished run on this same manifest, if
+    // it's been run both ways, for the page's side-by-side.
+    ...(isOwner && !manifest.analyzerBeta && latestEvaluation
+      ? {
+          engineComparison: await comparisonEvaluation(
+            manifest.id,
+            latestEvaluation.engine === "compliant" ? "legacy" : "compliant"
+          ),
+        }
+      : {}),
     ...(isOwner
       ? {
           bidStatus: manifest.bidStatus,
@@ -471,6 +487,7 @@ export async function GET(
     // receiving/listing work.
     sourcingEvaluation: isOwner && latestEvaluation && {
       id: latestEvaluation.id,
+      engine: latestEvaluation.engine,
       status: latestEvaluation.status,
       recommendation: latestEvaluation.recommendation,
       maxBid: latestEvaluation.maxBid != null ? Number(latestEvaluation.maxBid) : null,

@@ -651,6 +651,13 @@ model SourcingEvaluation {
   manifest       Manifest  @relation(fields: [manifestId], references: [id], onDelete: Cascade)
   manifestId     String
   status         String // "running" | "complete" | "failed"
+  // Which Analyzer ran (2026-10-18 switch): "compliant" = the live one,
+  // priced inside eBay's API License (no other sellers' eBay data, see
+  // "Analyzer Beta" in src/lib/sourcingAgent.ts). "legacy" = the original,
+  // priced from Browse comps and other sellers' sold counts; still runnable
+  // on request. The column default is legacy so every row from before the
+  // switch reads correctly; new runs always set it.
+  engine         String    @default("legacy")
   recommendation String? // "buy" | "dont_buy"
   maxBid         Decimal?  @db.Decimal(10, 2)
   // Total expected revenue across the manifest minus fees/shipping, BEFORE
@@ -1270,11 +1277,12 @@ model PredictionOutcome {
   // actual / predicted; null until there's enough to compare
   priceRatio             Float?
   speedRatio             Float?
-  // "regular": the bought manifest's own evaluation. "beta": the latest
-  // Analyzer Beta evaluation of a copy of it, scored against the bought
-  // manifest's real results. Beta rows sit under the copy's manifestId
-  // (Manifest.betaSourceId points back), so the unique key stays as is.
-  variant                String   @default("regular")
+  // Which Analyzer made the guess (SourcingEvaluation.engine): "legacy" or
+  // "compliant". A bought manifest's own latest evaluation is scored under
+  // its id; a compliant run on an Analyzer Beta copy of it sits under the
+  // copy's id (Manifest.betaSourceId points back), so the unique key stays
+  // as is.
+  variant                String   @default("legacy")
   updatedAt              DateTime @updatedAt
 
   @@unique([manifestId, upc])

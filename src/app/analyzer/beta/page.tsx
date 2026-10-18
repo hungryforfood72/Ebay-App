@@ -20,11 +20,11 @@ type ManifestRow = {
   recommendation?: "buy" | "dont_buy" | null;
 };
 
-// Analyzer Beta (2026-10-18): the same Analyzer, priced without any of
-// eBay's data about other sellers (their listings, prices or sold counts),
-// which eBay's API License doesn't allow for pricing. It runs on a copy of a
-// manifest so its call can be compared with the standard Analyzer's on the
-// same load. See BetaPricing in src/lib/sourcingAgent.ts.
+// Compare Analyzers: run the current Analyzer (priced without eBay's data
+// about other sellers, see BetaPricing in src/lib/sourcingAgent.ts) on a
+// copy of a manifest, to compare with the legacy Analyzer's call on the
+// same load. Started 2026-10-18 as the "Analyzer Beta", before the
+// compliant Analyzer became the live one.
 export default function AnalyzerBetaPage() {
   const router = useRouter();
   const [copies, setCopies] = useState<ManifestRow[] | null>(null);
@@ -60,23 +60,25 @@ export default function AnalyzerBetaPage() {
 
   return (
     <AppShell
-      title="Analyzer Beta"
-      subtitle="The Analyzer, priced without other sellers' eBay data, so it stays inside eBay's API terms."
+      title="Compare Analyzers"
+      subtitle="Run the current Analyzer on a copy of a load the legacy Analyzer already judged, and see them side by side."
     >
       <div className="flex flex-col gap-6">
-        <Alert tone="info" title="How the beta prices things">
+        <Alert tone="info" title="How the current Analyzer works">
           It never looks at other sellers&apos; eBay listings, prices or sold counts. Prices come from your own sales,
           the manifest&apos;s retail times what your own sales actually get as a share of retail, and web research of
-          store prices (with eBay&apos;s sites blocked) for the most valuable items. Sell speed comes only from your own
-          sales. The dud, holiday, banned-item and pack-size checks are the same as the regular Analyzer. As your own
-          sales grow, they take over more of every estimate.
+          store prices (with eBay&apos;s sites blocked) for the most valuable items. Sell speed comes from your own sales
+          or, for the most valuable items, demand outside eBay (Amazon sales, rank, reviews). The dud, holiday,
+          banned-item and pack-size checks are the same as the legacy Analyzer. As your own sales grow, they take
+          over more of every estimate.
         </Alert>
 
         <Card>
-          <SectionHeader title="Copy a manifest into the beta" />
+          <SectionHeader title="Copy a manifest to compare" />
           <p className="mb-3 text-sm text-muted-foreground">
-            Makes a separate copy to run the beta on, so you can compare it with the regular Analyzer&apos;s call on the
-            same load. The original isn&apos;t changed, and a copy can&apos;t be bought or bid on.
+            Makes a separate copy to run the current Analyzer on, next to the legacy Analyzer&apos;s call on the original.
+            The original isn&apos;t changed, and a copy can&apos;t be bought or bid on. (On a manifest still in the
+            Analyzer you can also just hit &ldquo;Run legacy&rdquo; there.)
           </p>
           <div className="flex flex-wrap items-end gap-2">
             <div className="w-full max-w-md">
@@ -112,18 +114,18 @@ export default function AnalyzerBetaPage() {
             </div>
             <Button onClick={copy} disabled={!sourceId || copying}>
               <Copy className="size-4" aria-hidden />
-              {copying ? "Copying…" : "Copy into beta"}
+              {copying ? "Copying…" : "Copy and compare"}
             </Button>
           </div>
           {error && <p className="mt-3 text-sm font-medium text-danger">{error}</p>}
         </Card>
 
         <section>
-          <SectionHeader title="Beta copies" action={copies && copies.length > 0 ? <Badge>{copies.length}</Badge> : undefined} />
+          <SectionHeader title="Comparison copies" action={copies && copies.length > 0 ? <Badge>{copies.length}</Badge> : undefined} />
           {copies === null && <p className="text-sm text-muted-foreground">Loading…</p>}
           {copies && copies.length === 0 && (
             <Card>
-              <p className="text-sm text-muted-foreground">No beta copies yet.</p>
+              <p className="text-sm text-muted-foreground">No comparison copies yet.</p>
             </Card>
           )}
           {copies && copies.length > 0 && (

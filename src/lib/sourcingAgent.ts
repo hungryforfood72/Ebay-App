@@ -1179,7 +1179,8 @@ export async function ownRetailRecovery(): Promise<RetailRecovery> {
 // Set for a beta evaluation, null for the standard Analyzer. deepResearch:
 // the line is in the top MAX_DEEP_RESEARCH_LINES by value, so it gets a web
 // price check (the beta's main per-product signal, about $0.04 each).
-type BetaPricing = { deepResearch: boolean; recovery: RetailRecovery } | null;
+// savePackDecisions: hand the pack-size call to the scan page (PackDecision).
+type BetaPricing = { deepResearch: boolean; recovery: RetailRecovery; savePackDecisions: boolean } | null;
 
 // Other-supplier lines in the beta: the standard path prices them off exact
 // eBay listings per box, which the beta can't use, so they're priced like
@@ -1785,6 +1786,7 @@ async function estimateLine(
           packStats,
           evaluationId,
           compliant,
+          saveDecision: beta?.savePackDecisions ?? true,
         })
       : packRecommendation;
 
@@ -1923,8 +1925,8 @@ export async function evaluateManifestChunk(
     maxMonthsToSellThrough = await getMaxMonthsToSellThrough();
     longTailMonths = Math.max(maxMonthsToSellThrough, await getLongTailMonths());
     unprovenMarginPct = Math.max(targetMarginPct, await getUnprovenMarginPct());
-    // The beta learns its own corrections (see predictionTracker.ts).
-    calibration = await getCalibration(manifest.analyzerBeta ? "beta" : "regular");
+    // Each Analyzer learns its own corrections (see predictionTracker.ts).
+    calibration = await getCalibration(evaluation.engine === "compliant" ? "compliant" : "legacy");
     await prisma.sourcingEvaluation.update({
       where: { id: evaluationId },
       data: {
@@ -1998,9 +2000,13 @@ export async function evaluateManifestChunk(
   const remainingDeep = deepGroups.filter((g) => !doneKeys.has(g.groupKey));
   const remainingShallow = shallowGroups.filter((g) => !doneKeys.has(g.groupKey));
 
-  // Analyzer Beta: priced inside eBay's API License (see BetaPricing).
-  const compliant = manifest.analyzerBeta;
+  // The live Analyzer is priced inside eBay's API License (see BetaPricing);
+  // "legacy" is the original comps-based one, run only on request.
+  const compliant = evaluation.engine === "compliant";
   const recovery = compliant ? await ownRetailRecovery() : null;
+  // The new Analyzer's pack calls go to the scan page like the old one's
+  // did (Cristian's 2026-09-27 ask), except from comparison copies.
+  const savePackDecisions = compliant && !manifest.analyzerBeta;
 
   let budgetResetsAt: Date | null = null;
   async function checkBrowseBudget() {
@@ -2028,7 +2034,7 @@ export async function evaluateManifestChunk(
       eventCheckBudget,
       { fullValueMonths: maxMonthsToSellThrough, longTailMonths },
       calibration,
-      recovery ? { deepResearch: deepIndex != null, recovery } : null
+      recovery ? { deepResearch: deepIndex != null, recovery, savePackDecisions } : null
     );
     await prisma.sourcingLineEstimate.create({
       data: {
@@ -2325,7 +2331,7 @@ async function writeReasoning(input: {
 ${
   beta
     ? `
-How prices were estimated (this is the beta version of the analysis): from our own past sales, the manifest's retail price times the share of retail our own sales actually bring in (currently ${(beta.overall * 100).toFixed(0)}%, from ${beta.sampleSize} matched sale${beta.sampleSize === 1 ? "" : "s"} of ours, leaning on a 50% rule of thumb until there are more), and web research of store prices for the most valuable items. It does not look at other sellers' eBay listings, prices or sales at all, so never mention live comps, eBay listings or eBay demand. Sell speed comes from our own sales, or, for the most valuable items, a read of demand outside eBay (Amazon "bought in past month", sales rank, reviews), else our sales of similar items.
+How prices were estimated: from our own past sales, the manifest's retail price times the share of retail our own sales actually bring in (currently ${(beta.overall * 100).toFixed(0)}%, from ${beta.sampleSize} matched sale${beta.sampleSize === 1 ? "" : "s"} of ours, leaning on a 50% rule of thumb until there are more), and web research of store prices for the most valuable items. It does not look at other sellers' eBay listings, prices or sales at all, so never mention live comps, eBay listings or eBay demand. Sell speed comes from our own sales, or, for the most valuable items, a read of demand outside eBay (Amazon "bought in past month", sales rank, reviews), else our sales of similar items.
 `
     : ""
 }

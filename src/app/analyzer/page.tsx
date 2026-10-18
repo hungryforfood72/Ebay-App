@@ -5,7 +5,8 @@ import { Badge } from "@/components/ui/Badge";
 import { Card, SectionHeader } from "@/components/ui/Card";
 import { cn } from "@/components/ui/cn";
 import { ManifestUpload } from "@/components/ManifestUpload";
-import { ChartColumn, ChevronDown, ChevronRight, Gavel } from "lucide-react";
+import { buttonClasses } from "@/components/ui/Button";
+import { ChartColumn, ChevronDown, ChevronRight, Gavel, SplitSquareHorizontal } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
@@ -53,6 +54,12 @@ export default function AnalyzerPage() {
     <AppShell
       title="Analyzer"
       subtitle="Get a Buy / Don't-Buy call and a max bid on a manifest before you commit. Loads you've already bought live under Manifests."
+      actions={
+        <Link href="/analyzer/beta" className={buttonClasses({ variant: "outline", size: "sm" })}>
+          <SplitSquareHorizontal className="size-4" aria-hidden />
+          Compare with legacy
+        </Link>
+      }
     >
       <div className="flex flex-col gap-6">
         <ManifestUpload

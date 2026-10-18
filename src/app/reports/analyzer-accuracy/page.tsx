@@ -41,8 +41,9 @@ type Report = {
   calibration: { kind: string; factor: number; rawMedian: number; sampleSize: number; updatedAt: string }[];
   lessons: { notes: string; updatedAt: string } | null;
   outcomes: Outcome[];
-  // Analyzer Beta vs regular on the same bought products; null until a
-  // beta-evaluated load has listings.
+  // Current (compliant) vs legacy Analyzer on the same bought products, from
+  // comparison copies; null until a compared load has listings. regular =
+  // legacy, beta = current.
   betaVsRegular: {
     products: number;
     withSales: number;
@@ -108,8 +109,10 @@ function correctionText(c: Report["calibration"][number] | undefined, label: str
   };
 }
 
-async function fetchReport(): Promise<Report> {
-  const res = await fetch("/api/reports/analyzer-accuracy");
+type Analyzer = "compliant" | "legacy";
+
+async function fetchReport(analyzer: Analyzer): Promise<Report> {
+  const res = await fetch(`/api/reports/analyzer-accuracy?analyzer=${analyzer}`);
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? "Couldn't load the report.");
   return data as Report;
@@ -124,23 +127,25 @@ export default function AnalyzerAccuracyPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState<Filter>("sold");
   const [manifestId, setManifestId] = useState("all");
+  // The live Analyzer by default; the legacy one's report card on request.
+  const [analyzer, setAnalyzer] = useState<Analyzer>("compliant");
 
   useEffect(() => {
     let cancelled = false;
-    fetchReport()
+    fetchReport(analyzer)
       .then((data) => !cancelled && setReport(data))
       .catch((e) => !cancelled && setError(e instanceof Error ? e.message : "Couldn't load the report."));
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [analyzer]);
 
   async function refresh() {
     setRefreshing(true);
     try {
       const res = await fetch("/api/reports/analyzer-accuracy", { method: "POST" });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "Refresh failed.");
-      setReport(await fetchReport());
+      setReport(await fetchReport(analyzer));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Refresh failed.");
@@ -209,7 +214,19 @@ export default function AnalyzerAccuracyPage() {
             {report.betaVsRegular && <BetaVsRegularCard data={report.betaVsRegular} />}
 
             <Card padded={false}>
-              <div className="grid gap-3 p-4 sm:grid-cols-2 sm:p-5">
+              <div className="grid gap-3 p-4 sm:grid-cols-3 sm:p-5">
+                <Field label="Analyzer">
+                  <Select
+                    value={analyzer}
+                    onChange={(e) => {
+                      setAnalyzer(e.target.value as Analyzer);
+                      setManifestId("all");
+                    }}
+                  >
+                    <option value="compliant">Analyzer (current)</option>
+                    <option value="legacy">Legacy Analyzer</option>
+                  </Select>
+                </Field>
                 <Field label="Show">
                   <Select value={filter} onChange={(e) => setFilter(e.target.value as Filter)}>
                     {FILTERS.map((f) => (
@@ -282,8 +299,8 @@ export default function AnalyzerAccuracyPage() {
   );
 }
 
-// The Analyzer Beta (no eBay data about other sellers) next to the regular
-// Analyzer, scored on the same products of the same bought loads.
+// The current Analyzer (no eBay data about other sellers) next to the legacy
+// one, scored on the same products of the same bought loads.
 function BetaVsRegularCard({ data }: { data: NonNullable<Report["betaVsRegular"]> }) {
   const rows: { label: string; value: (s: BetaScore) => string }[] = [
     {
@@ -296,16 +313,16 @@ function BetaVsRegularCard({ data }: { data: NonNullable<Report["betaVsRegular"]
   return (
     <Card>
       <SectionHeader
-        title="Analyzer Beta vs regular"
-        description={`Both scored on the same ${data.products} listed products (${data.withSales} with sales). Lower is better on every row.`}
+        title="Current vs legacy Analyzer"
+        description={`Both scored on the same ${data.products} listed products (${data.withSales} with sales), from loads run through both. Lower is better on every row.`}
       />
       <div className="overflow-x-auto rounded-xl border border-border">
         <table className="w-full text-sm">
           <thead className="bg-background">
             <tr className="border-b border-border text-left text-xs font-medium text-muted-foreground">
               <th className="px-4 py-2.5" />
-              <th className="px-3 py-2.5 text-right">Regular</th>
-              <th className="px-4 py-2.5 text-right">Beta</th>
+              <th className="px-3 py-2.5 text-right">Legacy</th>
+              <th className="px-4 py-2.5 text-right">Current</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border tabular-nums">

@@ -11,28 +11,46 @@ export async function GET(request: NextRequest) {
   const denied = ownerOnly(request);
   if (denied) return denied;
 
-  const [outcomes, calibration, lessons, betaOutcomes] = await Promise.all([
+  // ?analyzer=legacy for the original Analyzer's report card; the live
+  // (compliant) one by default.
+  const analyzer = request.nextUrl.searchParams.get("analyzer") === "legacy" ? "legacy" : "compliant";
+  const [outcomes, calibration, lessons, legacyOutcomes, copyOutcomes] = await Promise.all([
     prisma.predictionOutcome.findMany({
-      where: { variant: "regular" },
-      include: { manifest: { select: { title: true } } },
+      where: { variant: analyzer },
+      include: { manifest: { select: { title: true, betaSourceId: true } } },
       orderBy: [{ soldUnits: "desc" }, { listedUnits: "desc" }],
     }),
     prisma.sourcingCalibration.findMany(),
     prisma.sourcingKnowledge.findUnique({ where: { scope: ACCURACY_KNOWLEDGE_SCOPE } }),
+    prisma.predictionOutcome.findMany({ where: { variant: "legacy" } }),
     prisma.predictionOutcome.findMany({
-      where: { variant: "beta" },
+      where: { variant: "compliant", manifest: { analyzerBeta: true } },
       include: { manifest: { select: { betaSourceId: true } } },
     }),
   ]);
+  // A comparison copy's rows sit under the copy; report them under the load
+  // they were copied from, so the manifest filter groups them with it.
+  const sourceTitles = new Map(
+    (
+      await prisma.manifest.findMany({
+        where: { id: { in: [...new Set(outcomes.map((o) => o.manifest.betaSourceId).filter((id): id is string => id != null))] } },
+        select: { id: true, title: true },
+      })
+    ).map((m) => [m.id, m.title])
+  );
 
+  const prefix = analyzer === "compliant" ? "compliant_" : "";
   return NextResponse.json({
-    calibration,
+    analyzer,
+    calibration: calibration
+      .filter((c) => (prefix ? c.kind.startsWith(prefix) : !c.kind.includes("_")))
+      .map((c) => ({ ...c, kind: c.kind.replace(prefix, "") })),
     lessons: lessons ? { notes: lessons.notes, updatedAt: lessons.updatedAt } : null,
-    betaVsRegular: betaVsRegular(outcomes, betaOutcomes),
+    betaVsRegular: betaVsRegular(legacyOutcomes, copyOutcomes),
     outcomes: outcomes.map((o) => ({
       id: o.id,
-      manifestId: o.manifestId,
-      manifestTitle: o.manifest.title,
+      manifestId: o.manifest.betaSourceId ?? o.manifestId,
+      manifestTitle: (o.manifest.betaSourceId && sourceTitles.get(o.manifest.betaSourceId)) || o.manifest.title,
       upc: o.upc,
       description: o.description,
       evaluatedAt: o.evaluatedAt,
@@ -66,10 +84,11 @@ type ScoredOutcome = {
   monthsActive: number | null;
 };
 
-// The Analyzer Beta against the regular Analyzer on the same products of the
-// same bought loads (src/lib/predictionTracker.ts, variant "beta"): how far
-// off each one's price was, and how many of its dud / will-sell calls real
-// sales proved wrong. null until a beta-evaluated load has listings.
+// The live (compliant) Analyzer against the legacy one on the same products
+// of the same bought loads, from comparison copies (Analyzer Beta, see
+// src/lib/predictionTracker.ts): how far off each one's price was, and how
+// many of its dud / will-sell calls real sales proved wrong. null until a
+// compared load has listings.
 function betaVsRegular(regular: ScoredOutcome[], beta: (ScoredOutcome & { manifest: { betaSourceId: string | null } })[]) {
   const regularByKey = new Map(regular.map((o) => [`${o.manifestId}|${o.upc}`, o]));
   const pairs = beta

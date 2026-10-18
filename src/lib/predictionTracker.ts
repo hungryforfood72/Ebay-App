@@ -17,7 +17,9 @@ import { NOT_RETURN_ENTRY } from "./warehouse/returnReconcile";
 //      Analyzer applies on its next runs (SourcingCalibration): "price" for
 //      market-based price estimates, "speed" for the live-listings sell
 //      rate. Shrunk toward 1 until there's a real sample, and clamped, so a
-//      handful of odd products can't swing every future bid.
+//      handful of odd products can't swing every future bid. Each Analyzer
+//      (PredictionOutcome.variant: "legacy", "compliant") has its own pair;
+//      the live compliant one's are "compliant_price" / "compliant_speed".
 //   3. updateAccuracyLessons: when there are new results, Claude reads the
 //      biggest misses and keeps a short "accuracy" note that the Analyzer's
 //      reasoning reads on every evaluation.
@@ -55,15 +57,16 @@ export async function refreshPredictionOutcomes(): Promise<{ manifests: number; 
     where: { status: "complete" as const },
     orderBy: { startedAt: "desc" as const },
     take: 1,
-    select: { id: true, startedAt: true, lineEstimates: true },
+    select: { id: true, startedAt: true, lineEstimates: true, engine: true },
   };
   const manifests = await prisma.manifest.findMany({
     where: { purchased: true, sourcingEvaluations: { some: { status: "complete" } } },
     select: { id: true, supplier: true, sourcingEvaluations: latestComplete },
   });
-  // Analyzer Beta copies of bought manifests: their guesses are scored
-  // against the bought manifest's real results (variant "beta", stored
-  // under the copy's id).
+  // Comparison copies of bought manifests (Analyzer Beta, compliant runs):
+  // scored against the bought manifest's real results, stored under the
+  // copy's id. Skipped once the bought manifest's own latest run is
+  // compliant, so the same load isn't counted twice.
   const betaCopies = await prisma.manifest.findMany({
     where: { analyzerBeta: true, betaSourceId: { not: null }, sourcingEvaluations: { some: { status: "complete" } } },
     select: { id: true, betaSourceId: true, sourcingEvaluations: latestComplete },
@@ -79,17 +82,26 @@ export async function refreshPredictionOutcomes(): Promise<{ manifests: number; 
       outcomeManifestId: m.id,
       manifest: { id: m.id, supplier: m.supplier },
       evaluation: m.sourcingEvaluations[0],
-      variant: "regular",
+      variant: m.sourcingEvaluations[0].engine,
     })),
     ...betaCopies
-      .filter((c) => sourceById.has(c.betaSourceId!))
+      .filter(
+        (c) =>
+          sourceById.has(c.betaSourceId!) && bought.get(c.betaSourceId!)?.sourcingEvaluations[0]?.engine !== "compliant"
+      )
       .map((c) => ({
         outcomeManifestId: c.id,
-        manifest: bought.get(c.betaSourceId!) ?? sourceById.get(c.betaSourceId!)!,
+        manifest: sourceById.get(c.betaSourceId!)!,
         evaluation: c.sourcingEvaluations[0],
-        variant: "beta",
+        variant: "compliant",
       })),
   ];
+  // A copy skipped now (its load got its own compliant run) drops its old
+  // rows too, so nothing counts twice. They're only derived numbers.
+  const skippedCopies = betaCopies.filter((c) => !jobs.some((j) => j.outcomeManifestId === c.id)).map((c) => c.id);
+  if (skippedCopies.length > 0) {
+    await prisma.predictionOutcome.deleteMany({ where: { manifestId: { in: skippedCopies } } });
+  }
 
   let products = 0;
   for (const { outcomeManifestId, manifest, evaluation, variant } of jobs) {
@@ -247,9 +259,9 @@ function correction(ratios: number[], bounds: readonly [number, number]) {
 }
 
 export async function updateCalibration(): Promise<{ price: number; speed: number }> {
-  await updateBetaCalibration();
+  await updateCompliantCalibration();
   const outcomes = await prisma.predictionOutcome.findMany({
-    where: { variant: "regular", OR: [{ priceRatio: { not: null } }, { speedRatio: { not: null } }] },
+    where: { variant: "legacy", OR: [{ priceRatio: { not: null } }, { speedRatio: { not: null } }] },
     select: {
       priceRatio: true,
       speedRatio: true,
@@ -294,13 +306,13 @@ export async function updateCalibration(): Promise<{ price: number; speed: numbe
   return { price: price.factor, speed: speed.factor };
 }
 
-// The Analyzer Beta's own corrections ("beta_price", "beta_speed"): its
-// prices come from retail and store research and its speed from the
-// outside-eBay demand read (web_demand), so the regular Analyzer's
-// corrections for live comps don't fit it.
-async function updateBetaCalibration(): Promise<void> {
+// The live (compliant) Analyzer's own corrections ("compliant_price",
+// "compliant_speed"): its prices come from retail and store research and
+// its speed from the outside-eBay demand read (web_demand), so the legacy
+// Analyzer's corrections for live comps don't fit it.
+async function updateCompliantCalibration(): Promise<void> {
   const outcomes = await prisma.predictionOutcome.findMany({
-    where: { variant: "beta", OR: [{ priceRatio: { not: null } }, { speedRatio: { not: null } }] },
+    where: { variant: "compliant", OR: [{ priceRatio: { not: null } }, { speedRatio: { not: null } }] },
     select: { priceRatio: true, speedRatio: true, dataConfidence: true, sellRateSource: true, monthsActive: true, soldUnits: true, listedUnits: true },
   });
   const price = correction(
@@ -319,14 +331,14 @@ async function updateBetaCalibration(): Promise<void> {
     SPEED_FACTOR_BOUNDS
   );
   await prisma.$transaction([
-    prisma.sourcingCalibration.upsert({ where: { kind: "beta_price" }, create: { kind: "beta_price", ...price }, update: price }),
-    prisma.sourcingCalibration.upsert({ where: { kind: "beta_speed" }, create: { kind: "beta_speed", ...speed }, update: speed }),
+    prisma.sourcingCalibration.upsert({ where: { kind: "compliant_price" }, create: { kind: "compliant_price", ...price }, update: price }),
+    prisma.sourcingCalibration.upsert({ where: { kind: "compliant_speed" }, create: { kind: "compliant_speed", ...speed }, update: speed }),
   ]);
 }
 
-export async function getCalibration(variant: "regular" | "beta" = "regular"): Promise<{ price: number; speed: number }> {
+export async function getCalibration(variant: "legacy" | "compliant" = "compliant"): Promise<{ price: number; speed: number }> {
   const rows = await prisma.sourcingCalibration.findMany();
-  const prefix = variant === "beta" ? "beta_" : "";
+  const prefix = variant === "compliant" ? "compliant_" : "";
   const factor = (kind: string) => rows.find((r) => r.kind === `${prefix}${kind}`)?.factor ?? 1;
   return { price: factor("price"), speed: factor("speed") };
 }
@@ -360,15 +372,16 @@ function describeOutcome(o: {
 export async function updateAccuracyLessons(): Promise<void> {
   const existing = await prisma.sourcingKnowledge.findUnique({ where: { scope: ACCURACY_KNOWLEDGE_SCOPE } });
   const since = existing?.updatedAt ?? new Date(0);
-  // The regular Analyzer's guesses only (the beta's are compared on the
-  // accuracy report instead).
+  // The live Analyzer's guesses only (legacy ones are compared on the
+  // accuracy report instead). Until its loads sell, the note written from
+  // legacy results stays as it is.
   const changed = await prisma.predictionOutcome.count({
-    where: { variant: "regular", updatedAt: { gt: since }, soldUnits: { gt: 0 } },
+    where: { variant: "compliant", updatedAt: { gt: since }, soldUnits: { gt: 0 } },
   });
   if (changed === 0) return;
 
   const outcomes = await prisma.predictionOutcome.findMany({
-    where: { variant: "regular", OR: [{ soldUnits: { gt: 0 } }, { listedUnits: { gt: 0 } }] },
+    where: { variant: "compliant", OR: [{ soldUnits: { gt: 0 } }, { listedUnits: { gt: 0 } }] },
   });
   const logMiss = (r: number | null) => (r != null && r > 0 ? Math.abs(Math.log(r)) : 0);
   const biggestPriceMisses = outcomes

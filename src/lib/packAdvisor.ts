@@ -69,11 +69,14 @@ export async function advisePackSize(input: {
   // only found under Liquidation.com shorthand) showed no card at all. The
   // Analyzer leaves it off, keeping its "no listings, no call" behavior.
   allowNoListings?: boolean;
-  // Analyzer Beta (eBay API License, see compliant in sourcingAgent.ts):
-  // decides without other sellers' listings, and stays out of PackDecision
-  // both ways. Saved calls were made from live listings, and a beta call
-  // saved there would replace what the scan page shows Lizvet.
+  // The live Analyzer (eBay API License, see compliant in sourcingAgent.ts):
+  // decides without other sellers' listings and never reuses a saved call,
+  // since older ones were made from live listings.
   compliant?: boolean;
+  // Compliant calls only: save it for the scan page to reuse (the live
+  // Analyzer does; comparison copies don't, so they can't replace what the
+  // scan page shows Lizvet). Non-compliant calls are always saved.
+  saveDecision?: boolean;
 }): Promise<PackAdvice | null> {
   if (input.packStats.length === 0 && !input.allowNoListings && !input.compliant) return null;
 
@@ -150,7 +153,7 @@ export async function advisePackSize(input: {
     if (!Number.isInteger(packSize) || packSize < 1 || packSize > MAX_RECOMMENDED_PACK || !reason) {
       throw new Error(`unusable answer: ${JSON.stringify(parsed)}`);
     }
-    if (input.upc && !input.compliant) {
+    if (input.upc && (!input.compliant || input.saveDecision)) {
       await prisma.packDecision
         .create({ data: { upc: input.upc, packSize, reason, unitWeightOz } })
         .catch((e) => console.error(`[packAdvisor] failed to save decision for ${input.upc}`, e));

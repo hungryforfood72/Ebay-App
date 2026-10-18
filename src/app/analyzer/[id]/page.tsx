@@ -46,6 +46,8 @@ type SourcingLineEstimate = {
 
 type SourcingEvaluation = {
   id: string;
+  // "compliant" = the current Analyzer, "legacy" = the original comps-based one.
+  engine: "compliant" | "legacy";
   status: "running" | "complete" | "failed";
   recommendation: "buy" | "dont_buy" | null;
   maxBid: number | null;
@@ -84,11 +86,17 @@ type CandidateDetail = {
   // sellers' eBay data, compared against the original's standard call.
   analyzerBeta: boolean;
   betaComparison?: BetaComparison;
+  // The other Analyzer's latest finished run on this manifest, if it's been
+  // run both ways.
+  engineComparison?: CompareEvaluation | null;
 };
 
 type BetaComparison = {
   source: { id: string; title: string } | null;
-  evaluation: {
+  evaluation: CompareEvaluation | null;
+};
+
+type CompareEvaluation = {
     recommendation: "buy" | "dont_buy" | null;
     maxBid: number | null;
     expectedNetContribution: number | null;
@@ -103,7 +111,6 @@ type BetaComparison = {
       dataConfidence: string;
       flaggedDud: boolean;
     }[];
-  } | null;
 };
 
 // The Analyzer's detail view — deliberately much simpler than the real
@@ -158,11 +165,26 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [candidate?.sourcingEvaluation?.status]);
 
-  async function runSourcingEvaluation() {
+  // engine "legacy" runs the original comps-based Analyzer, after a warning:
+  // it uses other sellers' eBay data, which eBay's API terms don't allow
+  // for pricing (2026-10-18 switch, see SourcingEvaluation.engine).
+  async function runSourcingEvaluation(engine?: "legacy") {
+    if (
+      engine === "legacy" &&
+      !confirm(
+        "Run the legacy Analyzer? It prices from other sellers' eBay listings and sold counts, which eBay's API terms don't allow. The current Analyzer doesn't."
+      )
+    ) {
+      return;
+    }
     setStartingEvaluation(true);
     setEvaluationError(null);
     try {
-      const res = await fetch(`/api/manifests/${id}/sourcing-evaluate`, { method: "POST" });
+      const res = await fetch(`/api/manifests/${id}/sourcing-evaluate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(engine ? { engine } : {}),
+      });
       if (!res.ok) {
         const result = await res.json().catch(() => ({}));
         throw new Error(result.error ?? "Failed to start evaluation.");
@@ -241,7 +263,7 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
   }
 
   async function deleteBetaCopy() {
-    if (!confirm(`Delete the beta copy "${candidate?.title}"? The original manifest isn't affected.`)) return;
+    if (!confirm(`Delete the comparison copy "${candidate?.title}"? The original manifest isn't affected.`)) return;
     const res = await fetch(`/api/manifests/${id}`, { method: "DELETE" });
     if (!res.ok) {
       const result = await res.json().catch(() => ({}));
@@ -319,7 +341,7 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
         <span className="inline-flex flex-wrap items-center gap-x-2">
           {beta ? (
             <Link href="/analyzer/beta" className="font-medium text-primary hover:underline">
-              Analyzer Beta
+              Compare Analyzers
             </Link>
           ) : (
             <Link href="/analyzer" className="font-medium text-primary hover:underline">
@@ -357,10 +379,9 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
     >
       <div className="flex flex-col gap-6">
         {beta && (
-          <Alert tone="info" title="Analyzer Beta copy">
-            Priced without other sellers&apos; eBay listings, prices or sold counts: your own sales, the manifest&apos;s
-            retail times what your sales recover from retail, and store-price web research (eBay blocked) for the most
-            valuable items.
+          <Alert tone="info" title="Comparison copy">
+            A copy for comparing the current Analyzer with the legacy one on the same load. It can&apos;t be bought or
+            bid on.
             {candidate.betaComparison?.source && (
               <>
                 {" "}
@@ -405,10 +426,22 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
             title="Sourcing recommendation"
             action={
               evaluation?.status !== "running" ? (
-                <Button variant="outline" size="sm" onClick={runSourcingEvaluation} disabled={startingEvaluation}>
-                  <RefreshCw className={cn("size-4", startingEvaluation && "animate-spin")} aria-hidden />
-                  {startingEvaluation ? "Starting…" : evaluation ? "Re-run" : "Run evaluation"}
-                </Button>
+                <div className="flex flex-wrap items-center gap-1">
+                  {!beta && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => runSourcingEvaluation("legacy")}
+                      disabled={startingEvaluation}
+                    >
+                      Run legacy
+                    </Button>
+                  )}
+                  <Button variant="outline" size="sm" onClick={() => runSourcingEvaluation()} disabled={startingEvaluation}>
+                    <RefreshCw className={cn("size-4", startingEvaluation && "animate-spin")} aria-hidden />
+                    {startingEvaluation ? "Starting…" : evaluation ? "Re-run" : "Run evaluation"}
+                  </Button>
+                </div>
               ) : undefined
             }
           />
@@ -416,18 +449,18 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
 
           {!evaluation && !evaluationError && (
             <p className="text-sm text-muted-foreground">
-              {beta
-                ? "Checks your own sales, the manifest's retail and store-price research to suggest a max bid, without any of eBay's data about other sellers."
-                : "Checks real historical sold data, live eBay comps, and supplier patterns to suggest a max bid before you commit to buying this manifest."}
+              Checks your own sales, the manifest&apos;s retail, store prices and demand outside eBay (Amazon sales,
+              rank, reviews) to say whether things will sell and suggest a max bid, without any of eBay&apos;s data
+              about other sellers.
             </p>
           )}
 
           {evaluation?.status === "running" && (
             <div className="flex flex-col gap-2">
               <p className="text-sm text-muted-foreground">
-                {beta
-                  ? "Evaluating — checking your own sales, retail and store prices for each item. This can take several minutes for a large manifest…"
-                  : "Evaluating — checking historical sales, live comps, and market signal for each item. This can take a couple minutes for a large manifest…"}
+                {evaluation.engine === "compliant"
+                  ? "Evaluating — checking your own sales, retail, store prices and demand for each item. This can take several minutes for a large manifest…"
+                  : "Evaluating with the legacy Analyzer — checking historical sales, live comps, and market signal for each item. This can take a couple minutes for a large manifest…"}
               </p>
               {(() => {
                 const { processedSteps, totalSteps } = evaluation;
@@ -471,6 +504,11 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
                     <Badge tone={evaluation.recommendation === "buy" ? "success" : "danger"} size="lg">
                       {evaluation.recommendation === "buy" ? "Buy" : "Don't buy"}
                     </Badge>
+                    {evaluation.engine === "legacy" && (
+                      <Badge tone="neutral" title="The original Analyzer, priced from other sellers' eBay listings">
+                        Legacy Analyzer
+                      </Badge>
+                    )}
                     <span className="text-xs text-muted-foreground">{new Date(evaluation.startedAt).toLocaleString()}</span>
                   </div>
 
@@ -728,7 +766,20 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
         </Card>
 
         {beta && evaluation?.status === "complete" && candidate.betaComparison && (
-          <BetaComparisonCard comparison={candidate.betaComparison} beta={evaluation} unitsLabel={unitsLabel} />
+          <BetaComparisonCard
+            legacy={candidate.betaComparison.evaluation}
+            current={evaluation}
+            legacyNote=" on the original manifest"
+            unitsLabel={unitsLabel}
+          />
+        )}
+        {!beta && evaluation?.status === "complete" && candidate.engineComparison && (
+          <BetaComparisonCard
+            legacy={evaluation.engine === "legacy" ? evaluation : candidate.engineComparison}
+            current={evaluation.engine === "legacy" ? candidate.engineComparison : evaluation}
+            legacyNote=""
+            unitsLabel={unitsLabel}
+          />
         )}
 
         <section>
@@ -791,27 +842,32 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
   );
 }
 
-// The beta's call next to the regular Analyzer's latest finished call on
-// the manifest it was copied from, plus the products whose expected profit
-// moved the most between the two. Products match by UPC (description when
-// there's none).
+// The current Analyzer's call next to the legacy one's (on this manifest,
+// or for a comparison copy on the manifest it was copied from), plus the
+// products whose expected profit moved the most between the two. Products
+// match by UPC (description when there's none).
 function BetaComparisonCard({
-  comparison,
-  beta,
+  legacy,
+  current,
+  legacyNote,
   unitsLabel,
 }: {
-  comparison: BetaComparison;
-  beta: SourcingEvaluation;
+  legacy: CompareEvaluation | null;
+  current: CompareEvaluation;
+  // Where the legacy run came from, under the title.
+  legacyNote: string;
   unitsLabel: string;
 }) {
   const [showAll, setShowAll] = useState(false);
-  const regular = comparison.evaluation;
+  // regular = the legacy run, beta = the current Analyzer's.
+  const regular = legacy;
+  const beta = current;
   if (!regular) {
     return (
       <Card>
-        <SectionHeader title="Beta vs regular Analyzer" />
+        <SectionHeader title="Current vs legacy Analyzer" />
         <p className="text-sm text-muted-foreground">
-          The original manifest has no finished regular Analyzer run to compare with.
+          The original manifest has no finished legacy Analyzer run to compare with.
         </p>
       </Card>
     );
@@ -845,17 +901,18 @@ function BetaComparisonCard({
 
   return (
     <Card>
-      <SectionHeader title="Beta vs regular Analyzer" />
+      <SectionHeader title="Current vs legacy Analyzer" />
       <p className="mb-3 text-xs text-muted-foreground">
-        Regular Analyzer run of {new Date(regular.startedAt).toLocaleDateString()} on the original manifest.
+        Legacy Analyzer run of {new Date(regular.startedAt).toLocaleDateString()}
+        {legacyNote}.
       </p>
       <div className="overflow-x-auto rounded-xl border border-border">
         <table className="w-full text-sm">
           <thead className="bg-background">
             <tr className="border-b border-border text-left text-xs font-medium text-muted-foreground">
               <th className="px-4 py-2.5" />
-              <th className="px-3 py-2.5 text-right">Regular</th>
-              <th className="px-3 py-2.5 text-right">Beta</th>
+              <th className="px-3 py-2.5 text-right">Legacy</th>
+              <th className="px-3 py-2.5 text-right">Current</th>
               <th className="px-4 py-2.5 text-right">Change</th>
             </tr>
           </thead>
@@ -899,7 +956,7 @@ function BetaComparisonCard({
       </div>
       <p className="mt-3 text-sm text-muted-foreground">
         {priced.length > 0
-          ? `${closePrice} of ${priced.length} products priced by both are within 25% of the regular Analyzer's sale price.`
+          ? `${closePrice} of ${priced.length} products priced by both are within 25% of the legacy Analyzer's sale price.`
           : "No products were priced by both, so there's nothing to compare per product."}
       </p>
 
@@ -911,8 +968,8 @@ function BetaComparisonCard({
               <thead className="bg-background">
                 <tr className="border-b border-border text-left text-xs font-medium text-muted-foreground">
                   <th className="px-4 py-2.5">Item</th>
-                  <th className="px-3 py-2.5 text-right">Regular sale/unit</th>
-                  <th className="px-3 py-2.5 text-right">Beta sale/unit</th>
+                  <th className="px-3 py-2.5 text-right">Legacy sale/unit</th>
+                  <th className="px-3 py-2.5 text-right">Current sale/unit</th>
                   <th className="px-3 py-2.5 text-right">{unitsLabel}</th>
                   <th className="px-4 py-2.5 text-right">Profit change</th>
                 </tr>

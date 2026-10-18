@@ -30,10 +30,16 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     throw e;
   }
 
-  const manifest = await prisma.manifest.findUnique({ where: { id }, select: { id: true } });
+  const manifest = await prisma.manifest.findUnique({ where: { id }, select: { id: true, analyzerBeta: true } });
   if (!manifest) {
     return NextResponse.json({ error: "Manifest not found." }, { status: 404 });
   }
+
+  // The live Analyzer is the compliant one (2026-10-18); { engine: "legacy" }
+  // runs the original comps-based one, which the page asks about first.
+  // Comparison copies only ever run the compliant one.
+  const body = await request.json().catch(() => ({}));
+  const engine = body.engine === "legacy" && !manifest.analyzerBeta ? "legacy" : "compliant";
 
   const latest = await prisma.sourcingEvaluation.findFirst({
     where: { manifestId: id },
@@ -41,13 +47,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     include: { _count: { select: { lineEstimates: true } } },
   });
 
+  // Resuming only continues the same Analyzer's run.
   const evaluation =
-    latest?.status === "failed" && latest._count.lineEstimates > 0
+    latest?.status === "failed" && latest._count.lineEstimates > 0 && latest.engine === engine
       ? await prisma.sourcingEvaluation.update({
           where: { id: latest.id },
           data: { status: "running", error: null, completedAt: null, continuationCount: 0 },
         })
-      : await prisma.sourcingEvaluation.create({ data: { manifestId: id, status: "running" } });
+      : await prisma.sourcingEvaluation.create({ data: { manifestId: id, status: "running", engine } });
 
   const origin = request.nextUrl.origin;
   after(() => runSourcingChunk(evaluation.id, id, origin));
