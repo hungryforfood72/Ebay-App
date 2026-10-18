@@ -14,7 +14,6 @@ import {
   ExternalLink,
   Package,
   Plus,
-  RefreshCw,
   Search,
   Send,
   Sparkles,
@@ -698,18 +697,7 @@ function ItemCard({
   const [categorySearchError, setCategorySearchError] = useState<string | null>(null);
   const [priceResearching, setPriceResearching] = useState(false);
   const [priceResearchResult, setPriceResearchResult] = useState<{
-    count: number;
-    median: number | null;
-    low: number | null;
-    high: number | null;
-    // "same_pack": listings of this exact pack size. "scaled": none exist,
-    // so median is the per-unit median of other pack sizes times packSize.
-    basis?: "same_pack" | "scaled";
     packSize?: number;
-    // Scaled only: the pack sizes near this one the estimate came from.
-    nearPacks?: { packSize: number; count: number; medianTotal: number }[];
-    // Pieces in one unit, read off the photo by the AI draft.
-    countPerPackage?: number | null;
     // For the whole listing (unitRetail x packSize).
     retailPrice: number | null;
     unitRetail?: number | null;
@@ -746,12 +734,10 @@ function ItemCard({
     }
   }
 
-  // Active-listing comps only — there's no API path to real sold-price data
-  // (eBay's Marketplace Insights API is closed to new applicants), so this
-  // is framed as "based on active competition," never auto-fills the price
-  // field, purely advisory. Comps are totalPrice (item + real fixed
-  // shipping cost), not just the item's own price, so a free-shipping
-  // listing and a cheaper-item-plus-shipping listing compare fairly.
+  // Manifest retail and, for the owner, the profit line. Comps are no longer
+  // pulled through eBay's API (its license bars using them to suggest
+  // prices): the box links to eBay's own search instead, opened in the
+  // browser, which is how Cristian checks them anyway (2026-10-18).
   async function researchPrice() {
     setPriceResearching(true);
     setPriceResearchError(null);
@@ -759,23 +745,7 @@ function ItemCard({
     try {
       const res = await fetch(`/api/items/${item.id}/price-research`);
       const result = await res.json();
-      if (!res.ok) {
-        // Manifest retail price doesn't depend on the eBay call succeeding
-        // — still show it even if the comp search itself failed.
-        if (result.retailPrice != null) {
-          setPriceResearchResult({
-            count: 0,
-            median: null,
-            low: null,
-            high: null,
-            packSize: result.packSize,
-            retailPrice: result.retailPrice,
-            unitRetail: result.unitRetail,
-            profitBasis: result.profitBasis,
-          });
-        }
-        throw new Error(result.error ?? "Price research failed.");
-      }
+      if (!res.ok) throw new Error(result.error ?? "Couldn't load the retail price.");
       setPriceResearchResult(result);
     } catch (e) {
       setPriceResearchError(e instanceof Error ? e.message : "Something went wrong.");
@@ -1012,63 +982,44 @@ function ItemCard({
                 </div>
               </Field>
               <div className="mt-2 flex flex-col gap-1 rounded-lg bg-background p-2.5 text-xs">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium text-muted-foreground">
-                    Active comps{priceResearchResult?.packSize && priceResearchResult.packSize > 1 ? ` for ${priceResearchResult.packSize}-packs` : ""} (shipped)
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-medium text-muted-foreground">Check comps on eBay</span>
+                  <span className="flex flex-wrap items-center gap-3">
+                    {(() => {
+                      // Title words find far more listings than the UPC (most
+                      // sellers never fill it in); the UPC link is there for
+                      // an exact match.
+                      const query = item.finalTitle ?? item.aiTitle ?? item.upc ?? "";
+                      const search = (q: string, sold: boolean) =>
+                        `https://www.ebay.com/sch/i.html?_nkw=${encodeURIComponent(q)}${sold ? "&LH_Sold=1&LH_Complete=1" : ""}`;
+                      const link = "inline-flex items-center gap-1 font-medium text-primary hover:underline";
+                      if (!query) return null;
+                      return (
+                        <>
+                          <a href={search(query, true)} target="_blank" rel="noopener noreferrer" className={link}>
+                            Sold <ExternalLink className="size-3.5" aria-hidden />
+                          </a>
+                          <a href={search(query, false)} target="_blank" rel="noopener noreferrer" className={link}>
+                            Active <ExternalLink className="size-3.5" aria-hidden />
+                          </a>
+                          {item.upc && query !== item.upc && (
+                            <a href={search(item.upc, true)} target="_blank" rel="noopener noreferrer" className={link}>
+                              Sold by UPC <ExternalLink className="size-3.5" aria-hidden />
+                            </a>
+                          )}
+                        </>
+                      );
+                    })()}
                   </span>
-                  <button
-                    type="button"
-                    onClick={researchPrice}
-                    disabled={priceResearching}
-                    title="Searches active (not sold) listings for this UPC, total price includes the seller's shipping charge when it's a fixed cost — advisory only, doesn't change the price"
-                    className="inline-flex items-center gap-1 font-medium text-primary hover:underline disabled:opacity-50"
-                  >
-                    <RefreshCw className={cn("size-3.5", priceResearching && "animate-spin")} aria-hidden />
-                    {priceResearching ? "Checking…" : "Refresh"}
-                  </button>
                 </div>
+                {priceResearching && <span className="text-muted-foreground">Loading retail…</span>}
                 {priceResearchError && <span className="text-danger">{priceResearchError}</span>}
-                {!priceResearchError && priceResearchResult && priceResearchResult.count === 0 && (
-                  <span className="text-muted-foreground">No active comps found.</span>
-                )}
-                {priceResearchResult && priceResearchResult.count > 0 && priceResearchResult.basis !== "scaled" && (
-                  <span className="text-foreground">
-                    ${priceResearchResult.low?.toFixed(2)}–${priceResearchResult.high?.toFixed(2)} · median{" "}
-                    <strong>${priceResearchResult.median?.toFixed(2)}</strong> · {priceResearchResult.count} comp
-                    {priceResearchResult.count === 1 ? "" : "s"}
-                  </span>
-                )}
-                {priceResearchResult && priceResearchResult.count > 0 && priceResearchResult.basis === "scaled" && (
-                  <span className="text-foreground">
-                    No {priceResearchResult.packSize}-pack listings. Other pack sizes work out to about{" "}
-                    <strong>${priceResearchResult.median?.toFixed(2)}</strong> for {priceResearchResult.packSize} (
-                    {priceResearchResult.count} comp{priceResearchResult.count === 1 ? "" : "s"})
-                    {priceResearchResult.nearPacks && priceResearchResult.nearPacks.length > 0 && (
-                      <span className="block text-muted-foreground">
-                        {priceResearchResult.nearPacks
-                          .map((p) => `${p.packSize}-pack $${p.medianTotal.toFixed(2)}${p.count > 1 ? ` (${p.count})` : ""}`)
-                          .join(" · ")}
-                      </span>
-                    )}
-                  </span>
-                )}
-                {priceResearchResult?.countPerPackage != null && priceResearchResult.countPerPackage > 1 && (
-                  <span className="text-muted-foreground">
-                    Photo shows {priceResearchResult.countPerPackage} per package, so &ldquo;{priceResearchResult.countPerPackage} ct&rdquo; in a comp
-                    title counts as 1 package.
-                  </span>
-                )}
                 {priceResearchResult?.retailPrice != null && (
                   <span className="text-foreground">
                     Manifest retail ${priceResearchResult.retailPrice.toFixed(2)}
                     {priceResearchResult.packSize && priceResearchResult.packSize > 1 && priceResearchResult.unitRetail != null && (
                       <span className="text-muted-foreground">
                         {` for ${priceResearchResult.packSize} ($${priceResearchResult.unitRetail.toFixed(2)} each)`}
-                      </span>
-                    )}
-                    {priceResearchResult.median != null && (
-                      <span className="text-muted-foreground">
-                        {` (comps ${priceResearchResult.median >= priceResearchResult.retailPrice ? "above" : "below"} retail)`}
                       </span>
                     )}
                     {priceResearchResult.profitBasis && item.upc && retailDraft == null && (

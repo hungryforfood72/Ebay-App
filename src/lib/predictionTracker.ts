@@ -51,23 +51,48 @@ function physicalUnits(quantity: number, item: { isMultipack: boolean; packSize:
 }
 
 export async function refreshPredictionOutcomes(): Promise<{ manifests: number; products: number }> {
+  const latestComplete = {
+    where: { status: "complete" as const },
+    orderBy: { startedAt: "desc" as const },
+    take: 1,
+    select: { id: true, startedAt: true, lineEstimates: true },
+  };
   const manifests = await prisma.manifest.findMany({
     where: { purchased: true, sourcingEvaluations: { some: { status: "complete" } } },
-    select: {
-      id: true,
-      supplier: true,
-      sourcingEvaluations: {
-        where: { status: "complete" },
-        orderBy: { startedAt: "desc" },
-        take: 1,
-        select: { id: true, startedAt: true, lineEstimates: true },
-      },
-    },
+    select: { id: true, supplier: true, sourcingEvaluations: latestComplete },
   });
+  // Analyzer Beta copies of bought manifests: their guesses are scored
+  // against the bought manifest's real results (variant "beta", stored
+  // under the copy's id).
+  const betaCopies = await prisma.manifest.findMany({
+    where: { analyzerBeta: true, betaSourceId: { not: null }, sourcingEvaluations: { some: { status: "complete" } } },
+    select: { id: true, betaSourceId: true, sourcingEvaluations: latestComplete },
+  });
+  const bought = new Map(manifests.map((m) => [m.id, m]));
+  const boughtSources = await prisma.manifest.findMany({
+    where: { id: { in: betaCopies.map((c) => c.betaSourceId!) }, purchased: true },
+    select: { id: true, supplier: true },
+  });
+  const sourceById = new Map(boughtSources.map((m) => [m.id, m]));
+  const jobs = [
+    ...manifests.map((m) => ({
+      outcomeManifestId: m.id,
+      manifest: { id: m.id, supplier: m.supplier },
+      evaluation: m.sourcingEvaluations[0],
+      variant: "regular",
+    })),
+    ...betaCopies
+      .filter((c) => sourceById.has(c.betaSourceId!))
+      .map((c) => ({
+        outcomeManifestId: c.id,
+        manifest: bought.get(c.betaSourceId!) ?? sourceById.get(c.betaSourceId!)!,
+        evaluation: c.sourcingEvaluations[0],
+        variant: "beta",
+      })),
+  ];
 
   let products = 0;
-  for (const manifest of manifests) {
-    const evaluation = manifest.sourcingEvaluations[0];
+  for (const { outcomeManifestId, manifest, evaluation, variant } of jobs) {
     const estimates = evaluation.lineEstimates.filter((e) => e.upc);
     if (estimates.length === 0) continue;
     const upcs = estimates.map((e) => e.upc!);
@@ -191,16 +216,17 @@ export async function refreshPredictionOutcomes(): Promise<{ manifests: number; 
         priceRatio: predictedUnitPrice && actualUnitPrice != null ? actualUnitPrice / predictedUnitPrice : null,
         speedRatio:
           predictedUnitsPerMonth && actualUnitsPerMonth != null ? actualUnitsPerMonth / predictedUnitsPerMonth : null,
+        variant,
       };
       await prisma.predictionOutcome.upsert({
-        where: { manifestId_upc: { manifestId: manifest.id, upc } },
-        create: { manifestId: manifest.id, upc, ...data },
+        where: { manifestId_upc: { manifestId: outcomeManifestId, upc } },
+        create: { manifestId: outcomeManifestId, upc, ...data },
         update: data,
       });
       products++;
     }
   }
-  return { manifests: manifests.length, products };
+  return { manifests: jobs.length, products };
 }
 
 function median(values: number[]): number {
@@ -221,8 +247,9 @@ function correction(ratios: number[], bounds: readonly [number, number]) {
 }
 
 export async function updateCalibration(): Promise<{ price: number; speed: number }> {
+  await updateBetaCalibration();
   const outcomes = await prisma.predictionOutcome.findMany({
-    where: { OR: [{ priceRatio: { not: null } }, { speedRatio: { not: null } }] },
+    where: { variant: "regular", OR: [{ priceRatio: { not: null } }, { speedRatio: { not: null } }] },
     select: {
       priceRatio: true,
       speedRatio: true,
@@ -267,9 +294,40 @@ export async function updateCalibration(): Promise<{ price: number; speed: numbe
   return { price: price.factor, speed: speed.factor };
 }
 
-export async function getCalibration(): Promise<{ price: number; speed: number }> {
+// The Analyzer Beta's own corrections ("beta_price", "beta_speed"): its
+// prices come from retail and store research and its speed from the
+// outside-eBay demand read (web_demand), so the regular Analyzer's
+// corrections for live comps don't fit it.
+async function updateBetaCalibration(): Promise<void> {
+  const outcomes = await prisma.predictionOutcome.findMany({
+    where: { variant: "beta", OR: [{ priceRatio: { not: null } }, { speedRatio: { not: null } }] },
+    select: { priceRatio: true, speedRatio: true, dataConfidence: true, sellRateSource: true, monthsActive: true, soldUnits: true, listedUnits: true },
+  });
+  const price = correction(
+    outcomes.filter((o) => o.priceRatio != null && o.dataConfidence !== "own_history").map((o) => o.priceRatio!),
+    PRICE_FACTOR_BOUNDS
+  );
+  const speed = correction(
+    outcomes
+      .filter(
+        (o) =>
+          o.speedRatio != null &&
+          o.sellRateSource === "web_demand" &&
+          ((o.monthsActive ?? 0) >= MIN_MONTHS_FOR_SPEED_CALIBRATION || o.soldUnits >= o.listedUnits)
+      )
+      .map((o) => Math.min(o.speedRatio!, 10)),
+    SPEED_FACTOR_BOUNDS
+  );
+  await prisma.$transaction([
+    prisma.sourcingCalibration.upsert({ where: { kind: "beta_price" }, create: { kind: "beta_price", ...price }, update: price }),
+    prisma.sourcingCalibration.upsert({ where: { kind: "beta_speed" }, create: { kind: "beta_speed", ...speed }, update: speed }),
+  ]);
+}
+
+export async function getCalibration(variant: "regular" | "beta" = "regular"): Promise<{ price: number; speed: number }> {
   const rows = await prisma.sourcingCalibration.findMany();
-  const factor = (kind: string) => rows.find((r) => r.kind === kind)?.factor ?? 1;
+  const prefix = variant === "beta" ? "beta_" : "";
+  const factor = (kind: string) => rows.find((r) => r.kind === `${prefix}${kind}`)?.factor ?? 1;
   return { price: factor("price"), speed: factor("speed") };
 }
 
@@ -302,11 +360,15 @@ function describeOutcome(o: {
 export async function updateAccuracyLessons(): Promise<void> {
   const existing = await prisma.sourcingKnowledge.findUnique({ where: { scope: ACCURACY_KNOWLEDGE_SCOPE } });
   const since = existing?.updatedAt ?? new Date(0);
-  const changed = await prisma.predictionOutcome.count({ where: { updatedAt: { gt: since }, soldUnits: { gt: 0 } } });
+  // The regular Analyzer's guesses only (the beta's are compared on the
+  // accuracy report instead).
+  const changed = await prisma.predictionOutcome.count({
+    where: { variant: "regular", updatedAt: { gt: since }, soldUnits: { gt: 0 } },
+  });
   if (changed === 0) return;
 
   const outcomes = await prisma.predictionOutcome.findMany({
-    where: { OR: [{ soldUnits: { gt: 0 } }, { listedUnits: { gt: 0 } }] },
+    where: { variant: "regular", OR: [{ soldUnits: { gt: 0 } }, { listedUnits: { gt: 0 } }] },
   });
   const logMiss = (r: number | null) => (r != null && r > 0 ? Math.abs(Math.log(r)) : 0);
   const biggestPriceMisses = outcomes
@@ -321,7 +383,7 @@ export async function updateAccuracyLessons(): Promise<void> {
   const stuck = outcomes
     .filter((o) => !o.predictedDud && o.listedUnits > 0 && o.soldUnits === 0 && (o.monthsActive ?? 0) >= 1)
     .slice(0, 8);
-  const calibration = await prisma.sourcingCalibration.findMany();
+  const calibration = await prisma.sourcingCalibration.findMany({ where: { kind: { in: ["price", "speed"] } } });
 
   const prompt = `You keep a short running note on how accurate a liquidation-reselling sourcing Analyzer has been, by comparing its guesses on manifests that were actually bought with what really happened on eBay. The Analyzer reads this note when explaining future buy/bid calls.
 

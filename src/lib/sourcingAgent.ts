@@ -683,11 +683,20 @@ async function getTrendNudge(subject: ResearchSubject, evaluationId: string, com
 // data is reused with no call, older findings go into the prompt as dated
 // background the model can answer from or choose to re-check.
 // ---------------------------------------------------------------------------
-async function getWebPriceCheck(subject: ResearchSubject, evaluationId: string, compliant: boolean): Promise<number | null> {
+// demand: the beta's outside-eBay read of how well it sells (see
+// DemandTier). Always null for the standard Analyzer.
+type WebCheck = { price: number | null; demand: DemandTier | null };
+
+async function getWebPriceCheck(subject: ResearchSubject, evaluationId: string, compliant: boolean): Promise<WebCheck> {
   const prior = await priorResearch("price", subject, compliant);
   const latest = prior[0];
-  if (latest && daysSince(latest.basisAt) <= PRICE_REUSE_DAYS) {
-    return latest.price != null ? Number(latest.price) : null;
+  // A beta finding from before the demand read existed (verdict null) is
+  // checked again, so it gets one.
+  if (latest && daysSince(latest.basisAt) <= PRICE_REUSE_DAYS && (!compliant || latest.verdict != null)) {
+    return {
+      price: latest.price != null ? Number(latest.price) : null,
+      demand: compliant ? parseDemandTier(latest.verdict) : null,
+    };
   }
 
   // The newest web data any earlier finding rests on — what a no-search
@@ -699,7 +708,8 @@ async function getWebPriceCheck(subject: ResearchSubject, evaluationId: string, 
       const age = Math.round(daysSince(p.basisAt));
       const how = p.searched ? "web search" : "judged from earlier findings, no new search";
       const price = p.price != null ? `$${Number(p.price).toFixed(2)}` : "couldn't price it";
-      return `- ${p.basisAt.toISOString().slice(0, 10)} (${age} days ago, ${how}): ${price}${p.note ? `. ${p.note}` : ""}`;
+      const demand = compliant && p.verdict ? `, demand ${p.verdict}` : "";
+      return `- ${p.basisAt.toISOString().slice(0, 10)} (${age} days ago, ${how}): ${price}${demand}${p.note ? `. ${p.note}` : ""}`;
     });
     const stale = newestBasis != null && daysSince(newestBasis) > PRICE_STALE_DAYS;
     priorBlock = `
@@ -760,25 +770,63 @@ PRICE: 17.50 (a plain number, no currency symbol) or PRICE: UNKNOWN`,
     // Only a committed final answer (a number or UNKNOWN) is worth
     // remembering — a response that never got to its PRICE line isn't a
     // finding.
-    if (!/PRICE:\s*(\$?\d|UNKNOWN)/i.test(lastLine)) return null;
+    if (!/PRICE:\s*(\$?\d|UNKNOWN)/i.test(lastLine)) return { price: null, demand: null };
     const match = lastLine.match(/PRICE:\s*\$?(\d+(?:\.\d{1,2})?)/i);
     const parsed = match ? Number(match[1]) : NaN;
     const price = Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    // The beta answers NOTE, DEMAND, PRICE; the standard check NOTE, PRICE.
+    const demandLine = compliant && /^DEMAND:/i.test(lines.at(-1) ?? "") ? lines.pop()! : null;
+    const demandWord = demandLine?.replace(/^DEMAND:\s*/i, "").match(/^[A-Z]+/i)?.[0].toUpperCase() ?? "UNKNOWN";
     const noteLine = lines.pop() ?? "";
     const note = /^NOTE:/i.test(noteLine) ? noteLine.replace(/^NOTE:\s*/i, "").slice(0, 300) : null;
     const searched = didSearch(response);
     await recordResearch(
       "price",
       subject,
-      { price, note, searched, basisAt: searched || !newestBasis ? new Date() : newestBasis },
+      {
+        price,
+        note,
+        searched,
+        basisAt: searched || !newestBasis ? new Date() : newestBasis,
+        ...(compliant ? { verdict: parseDemandTier(demandWord) ?? "UNKNOWN" } : {}),
+      },
       evaluationId,
       compliant
     );
-    return price;
+    return { price, demand: compliant ? parseDemandTier(demandWord) : null };
   } catch (e) {
     console.error(`[sourcingAgent] web price check failed for "${subject.description}"`, e);
-    return null;
+    return { price: null, demand: null };
   }
+}
+
+// ---------------------------------------------------------------------------
+// The beta's "will it sell" read (Cristian, 2026-10-18: that's what the
+// Analyzer is mainly for; he prices items himself at review). Other sellers'
+// sold counts are off limits (license 8.1(d)), so the beta's price check
+// also rates demand from signals outside eBay: Amazon's "bought in past
+// month" badge, Best Sellers Rank, reviews, whether stores still carry it.
+// Each tier stands for a rough pace one seller's listing could sell at,
+// which goes through the same slow-seller tiers as every other sell rate.
+// Judgment numbers, not measured: the prediction tracker's beta speed
+// correction (beta_speed) adjusts them once bought loads show real pace.
+// ---------------------------------------------------------------------------
+type DemandTier = "FAST" | "NORMAL" | "SLOW" | "DEAD";
+
+const DEMAND_UNITS_PER_MONTH: Record<DemandTier, number> = {
+  FAST: 20,
+  NORMAL: 6,
+  SLOW: 1.5,
+  DEAD: 0,
+};
+
+function parseDemandTier(word: string | null | undefined): DemandTier | null {
+  return word === "FAST" || word === "NORMAL" || word === "SLOW" || word === "DEAD" ? word : null;
+}
+
+function monthsAtDemandTier(tier: DemandTier, units: number, speedCalibration: number): number {
+  const unitsPerMonth = DEMAND_UNITS_PER_MONTH[tier] * speedCalibration;
+  return unitsPerMonth > 0 ? units / unitsPerMonth : STALLED_MONTHS_SENTINEL;
 }
 
 // The beta's price check. Same answer format as the standard one, but it
@@ -792,10 +840,19 @@ ${hasPrior ? "" : "Search for it. "}Base the estimate on what the product costs 
 
 Do NOT use eBay listings, eBay sold prices, or any site that reports eBay prices. If you come across one, ignore it.
 
-Only answer UNKNOWN if you cannot even identify what kind of product this is or find any store price to reason from. A rough estimate reasoned from the store price is far more useful here than no answer, so commit to your best number whenever you have ANY basis for one.${priorBlock}
+Only answer UNKNOWN if you cannot even identify what kind of product this is or find any store price to reason from. A rough estimate reasoned from the store price is far more useful here than no answer, so commit to your best number whenever you have ANY basis for one.
 
-End your response with EXACTLY these two lines and nothing after them:
-NOTE: one short line on what your answer is based on (e.g. "Walmart $9.97, Target $10.49, everyday item")
+Also judge how well this product sells right now, from signals outside eBay: Amazon's "bought in past month" badge, its Best Sellers Rank, how many reviews it has and whether they're recent, whether major stores still carry it, and whether it's discontinued, recalled or tied to an occasion that has passed. Rate it:
+- FAST: clearly popular (e.g. thousands bought a month on Amazon, near the top of its category)
+- NORMAL: a steady seller (e.g. hundreds bought a month, plenty of recent reviews, widely stocked)
+- SLOW: niche or fading (few signs of recent buying, poor rank, very specialized, or discontinued with little interest)
+- DEAD: no real sign anyone buys it now
+- UNKNOWN: you can't tell
+Judge demand for the product itself, not what it costs.${priorBlock}
+
+End your response with EXACTLY these three lines and nothing after them:
+NOTE: one short line on what your answer is based on (e.g. "Walmart $9.97, Target $10.49; Amazon 2K+ bought past month")
+DEMAND: FAST, NORMAL, SLOW, DEAD or UNKNOWN
 PRICE: 17.50 (a plain number, no currency symbol) or PRICE: UNKNOWN`;
 }
 
@@ -933,9 +990,12 @@ type LineEstimateResult = {
   // slowSellerTier).
   longTail?: boolean;
   // Where monthsToSellThrough came from, and the market rate when measured.
-  sellRateSource?: "own" | "ebay_listings" | "category" | null;
+  // web_demand: Analyzer Beta only (see DemandTier).
+  sellRateSource?: SellRateSource | null;
   listingUnitsPerMonth?: number | null;
 };
+
+type SellRateSource = "own" | "ebay_listings" | "web_demand" | "category";
 
 // Other-supplier manifests (supplier "unknown", uploaded through the
 // column mapper). Cristian's call 2026-10-15: these three fixes apply ONLY
@@ -1577,7 +1637,8 @@ async function estimateLine(
   const wantsWebCheck = beta
     ? beta.deepResearch && preliminaryConfidence !== "own_history"
     : preliminaryConfidence === "category_fallback";
-  const rawWebCheckPrice = wantsWebCheck ? await getWebPriceCheck(group, evaluationId, compliant) : null;
+  const webCheck = wantsWebCheck ? await getWebPriceCheck(group, evaluationId, compliant) : null;
+  const rawWebCheckPrice = webCheck?.price ?? null;
   // Same last-resort sanity cap as the market_only path below — a
   // web-search-derived number is still a guess, not a real sale, so it
   // shouldn't be trusted past a implausible multiple of the manifest's own
@@ -1660,10 +1721,11 @@ async function estimateLine(
   // Listings are only checked for a line whose price math already works
   // and that we've never sold ourselves: each listing is an eBay call, and
   // an 855-line manifest checking everything blew the 5,000/day limit.
-  let sellRateSource: "own" | "ebay_listings" | "category" | null = null;
+  let sellRateSource: SellRateSource | null = null;
   let monthsToSellThroughEstimate: number | null = null;
   // Never in the beta: other sellers' sold counts are seller performance
-  // data (license 8.1(d)), so it goes own sales, then category, then none.
+  // data (license 8.1(d)). It goes own sales, then its outside-eBay demand
+  // read (web_demand, deep lines only), then category, then none.
   if (!compliant && ownSalesCount === 0 && rawNet > 0 && activeCompCount > 0) {
     sellRate ??= await measureMarketSpeed();
   }
@@ -1674,6 +1736,9 @@ async function estimateLine(
   } else if (marketMonths != null) {
     sellRateSource = "ebay_listings";
     monthsToSellThroughEstimate = marketMonths;
+  } else if (webCheck?.demand) {
+    sellRateSource = "web_demand";
+    monthsToSellThroughEstimate = monthsAtDemandTier(webCheck.demand, effectiveUnits, calibration.speed);
   } else if (categorySalesCount > 0) {
     sellRateSource = "category";
     monthsToSellThroughEstimate = computeMonthsToSellThrough(categoryRecentUnits, effectiveUnits);
@@ -1858,7 +1923,8 @@ export async function evaluateManifestChunk(
     maxMonthsToSellThrough = await getMaxMonthsToSellThrough();
     longTailMonths = Math.max(maxMonthsToSellThrough, await getLongTailMonths());
     unprovenMarginPct = Math.max(targetMarginPct, await getUnprovenMarginPct());
-    calibration = await getCalibration();
+    // The beta learns its own corrections (see predictionTracker.ts).
+    calibration = await getCalibration(manifest.analyzerBeta ? "beta" : "regular");
     await prisma.sourcingEvaluation.update({
       where: { id: evaluationId },
       data: {
@@ -2160,7 +2226,9 @@ export async function evaluateManifestChunk(
               ? `~${e.monthsToSellThrough.toFixed(1)} months to sell through`
               : e.sellRateSource === "ebay_listings"
                 ? "live eBay listings of it show essentially no sales"
-                : "no recent sales at all despite real history — effectively stalled"
+                : e.sellRateSource === "web_demand"
+                  ? "demand signals outside eBay show essentially no one buying it"
+                  : "no recent sales at all despite real history — effectively stalled"
           } (${SELL_RATE_SOURCE_LABELS[e.sellRateSource ?? "own"]})`
       )
       .slice(0, 10),
@@ -2216,6 +2284,7 @@ async function mapWithConcurrency<T>(
 const SELL_RATE_SOURCE_LABELS = {
   own: "based on our own recent sales",
   ebay_listings: "based on how fast other sellers' live listings of it sell",
+  web_demand: "based on demand signals outside eBay, like Amazon sales",
   category: "based on our sales of similar items",
 } as const;
 
@@ -2256,7 +2325,7 @@ async function writeReasoning(input: {
 ${
   beta
     ? `
-How prices were estimated (this is the beta version of the analysis): from our own past sales, the manifest's retail price times the share of retail our own sales actually bring in (currently ${(beta.overall * 100).toFixed(0)}%, from ${beta.sampleSize} matched sale${beta.sampleSize === 1 ? "" : "s"} of ours, leaning on a 50% rule of thumb until there are more), and web research of store prices for the most valuable items. It does not look at other sellers' eBay listings, prices or sales at all, so never mention live comps, eBay listings or eBay demand. Sell speed comes only from our own sales.
+How prices were estimated (this is the beta version of the analysis): from our own past sales, the manifest's retail price times the share of retail our own sales actually bring in (currently ${(beta.overall * 100).toFixed(0)}%, from ${beta.sampleSize} matched sale${beta.sampleSize === 1 ? "" : "s"} of ours, leaning on a 50% rule of thumb until there are more), and web research of store prices for the most valuable items. It does not look at other sellers' eBay listings, prices or sales at all, so never mention live comps, eBay listings or eBay demand. Sell speed comes from our own sales, or, for the most valuable items, a read of demand outside eBay (Amazon "bought in past month", sales rank, reviews), else our sales of similar items.
 `
     : ""
 }

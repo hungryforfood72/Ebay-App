@@ -1270,6 +1270,11 @@ model PredictionOutcome {
   // actual / predicted; null until there's enough to compare
   priceRatio             Float?
   speedRatio             Float?
+  // "regular": the bought manifest's own evaluation. "beta": the latest
+  // Analyzer Beta evaluation of a copy of it, scored against the bought
+  // manifest's real results. Beta rows sit under the copy's manifestId
+  // (Manifest.betaSourceId points back), so the unique key stays as is.
+  variant                String   @default("regular")
   updatedAt              DateTime @updatedAt
 
   @@unique([manifestId, upc])

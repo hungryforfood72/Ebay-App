@@ -35,10 +35,21 @@ type Outcome = {
   speedRatio: number | null;
 };
 
+type BetaScore = { medianPriceMissPct: number | null; dudsThatSold: number; dudCalls: number; stuck: number };
+
 type Report = {
   calibration: { kind: string; factor: number; rawMedian: number; sampleSize: number; updatedAt: string }[];
   lessons: { notes: string; updatedAt: string } | null;
   outcomes: Outcome[];
+  // Analyzer Beta vs regular on the same bought products; null until a
+  // beta-evaluated load has listings.
+  betaVsRegular: {
+    products: number;
+    withSales: number;
+    pricedByBoth: number;
+    regular: BetaScore;
+    beta: BetaScore;
+  } | null;
 };
 
 type Filter = "all" | "sold" | "dud_sold" | "stuck" | "waiting";
@@ -195,6 +206,8 @@ export default function AnalyzerAccuracyPage() {
               </p>
             </Card>
 
+            {report.betaVsRegular && <BetaVsRegularCard data={report.betaVsRegular} />}
+
             <Card padded={false}>
               <div className="grid gap-3 p-4 sm:grid-cols-2 sm:p-5">
                 <Field label="Show">
@@ -266,5 +279,46 @@ export default function AnalyzerAccuracyPage() {
         )}
       </div>
     </AppShell>
+  );
+}
+
+// The Analyzer Beta (no eBay data about other sellers) next to the regular
+// Analyzer, scored on the same products of the same bought loads.
+function BetaVsRegularCard({ data }: { data: NonNullable<Report["betaVsRegular"]> }) {
+  const rows: { label: string; value: (s: BetaScore) => string }[] = [
+    {
+      label: `Typical price miss (${data.pricedByBoth} sold products)`,
+      value: (s) => (s.medianPriceMissPct != null ? `${s.medianPriceMissPct}%` : "—"),
+    },
+    { label: "Called a dud, sold anyway", value: (s) => `${s.dudsThatSold} of ${s.dudCalls}` },
+    { label: "Expected to sell, nothing after a month", value: (s) => String(s.stuck) },
+  ];
+  return (
+    <Card>
+      <SectionHeader
+        title="Analyzer Beta vs regular"
+        description={`Both scored on the same ${data.products} listed products (${data.withSales} with sales). Lower is better on every row.`}
+      />
+      <div className="overflow-x-auto rounded-xl border border-border">
+        <table className="w-full text-sm">
+          <thead className="bg-background">
+            <tr className="border-b border-border text-left text-xs font-medium text-muted-foreground">
+              <th className="px-4 py-2.5" />
+              <th className="px-3 py-2.5 text-right">Regular</th>
+              <th className="px-4 py-2.5 text-right">Beta</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border tabular-nums">
+            {rows.map((row) => (
+              <tr key={row.label}>
+                <td className="px-4 py-2.5 text-foreground">{row.label}</td>
+                <td className="px-3 text-right">{row.value(data.regular)}</td>
+                <td className="px-4 text-right">{row.value(data.beta)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
   );
 }

@@ -1,7 +1,5 @@
 import { getRequestUser } from "@/lib/auth";
 import { cogsMapsFor, costPerListingUnit, unitCostForScan } from "@/lib/cogs";
-import { EbayApiError, searchActiveListings } from "@/lib/ebay";
-import { detectPackSizeNear, isResellerLot, summarizeComps } from "@/lib/packSize";
 import { prisma } from "@/lib/prisma";
 import { typicalSingleLabelCost } from "@/lib/shippingCost";
 import { getTargetMarginPct } from "@/lib/sourcingAgent";
@@ -9,6 +7,13 @@ import { NextResponse } from "next/server";
 
 export const maxDuration = 30;
 
+// What the review page shows next to the price field: the manifest retail
+// for this listing and, for the owner, what a sale costs besides eBay's
+// fees (for the live profit line). Until 2026-10-18 this also searched
+// active eBay listings and showed their median; eBay's API License bars
+// using its data to suggest prices (sec. 9), and Cristian checks comps
+// himself at review anyway, so the page now links him to eBay's own search
+// instead (opened in his browser, normal use of the site).
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const item = await prisma.item.findUnique({ where: { id } });
@@ -16,17 +21,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     return NextResponse.json({ error: "Item not found." }, { status: 404 });
   }
 
-  const keywords = item.finalTitle ?? item.aiTitle;
-  if (!item.upc && !keywords) {
-    return NextResponse.json({ error: "Need a UPC or a title to search comps." }, { status: 400 });
-  }
-
-  // Everything here is priced for what this listing actually is: a 3-pack
-  // item is compared against 3-pack listings and 3 units' worth of retail.
-  // Until 2026-09-27 it took one median across every comp (singles, 2-packs,
-  // 8-packs mixed) and set it against one unit's retail, so a Sun Bum
-  // 3-pack showed a $24 "median" next to $18.99 retail, neither of which
-  // was the price of a 3-pack.
+  // A 3-pack item is compared against 3 units' worth of retail.
   const packSize = item.isMultipack && item.packSize ? item.packSize : 1;
 
   const retailLine = item.manifestId && item.upc
@@ -65,72 +60,5 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
     };
   }
 
-  try {
-    const comps = await searchActiveListings({
-      upc: item.upc,
-      keywords: keywords ?? "",
-      excludeListingId: item.ebayListingId,
-    });
-    const samePack = comps.filter((c) => {
-      const size = detectPackSizeNear(c.title, packSize, item.countPerPackage);
-      return size === packSize && !isResellerLot(c.title, size, packSize);
-    });
-
-    if (samePack.length > 0) {
-      const totals = samePack.map((c) => c.totalPrice).sort((a, b) => a - b);
-      const mid = Math.floor(totals.length / 2);
-      const median = totals.length % 2 === 0 ? (totals[mid - 1] + totals[mid]) / 2 : totals[mid];
-      return NextResponse.json({
-        comps: samePack.slice(0, 10),
-        count: totals.length,
-        median,
-        low: totals[0],
-        high: totals[totals.length - 1],
-        basis: "same_pack",
-        packSize,
-        countPerPackage: item.countPerPackage,
-        retailPrice,
-        unitRetail,
-        profitBasis,
-      });
-    }
-
-    // Nobody lists this pack size: scale the per-unit median up to this one,
-    // labeled as an estimate. Pack sizes near ours (half to double) are the
-    // basis when there are any: a single's price carries a whole shipping
-    // charge, so 28 x a single stick's price is far more than a 28-stick lot
-    // goes for.
-    const summary = summarizeComps(comps, packSize, item.countPerPackage);
-    const isNear = (size: number) => size > 1 && size >= packSize / 2 && size <= packSize * 2;
-    const nearStats = packSize > 1 ? summary.packStats.filter((s) => isNear(s.packSize)) : [];
-    let scaledPerUnit = summary.medianPerUnit;
-    let scaledCount = summary.activeCompCount;
-    if (nearStats.length > 0) {
-      const perUnit = comps
-        .map((c) => ({ c, size: detectPackSizeNear(c.title, packSize, item.countPerPackage) }))
-        .filter(({ c, size }) => isNear(size) && !isResellerLot(c.title, size, packSize))
-        .map(({ c, size }) => c.totalPrice / size)
-        .sort((a, b) => a - b);
-      const mid = Math.floor(perUnit.length / 2);
-      scaledPerUnit = perUnit.length % 2 === 0 ? (perUnit[mid - 1] + perUnit[mid]) / 2 : perUnit[mid];
-      scaledCount = perUnit.length;
-    }
-    return NextResponse.json({
-      comps: [],
-      count: scaledCount,
-      median: scaledCount > 0 ? scaledPerUnit * packSize : null,
-      low: null,
-      high: null,
-      basis: "scaled",
-      nearPacks: nearStats.map((s) => ({ packSize: s.packSize, count: s.count, medianTotal: s.medianTotal })),
-      packSize,
-      countPerPackage: item.countPerPackage,
-      retailPrice,
-      unitRetail,
-      profitBasis,
-    });
-  } catch (e) {
-    const message = e instanceof EbayApiError || e instanceof Error ? e.message : "Price research failed.";
-    return NextResponse.json({ error: message, retailPrice, unitRetail, packSize, profitBasis }, { status: 502 });
-  }
+  return NextResponse.json({ packSize, retailPrice, unitRetail, profitBasis });
 }
