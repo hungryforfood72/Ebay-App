@@ -1,3 +1,4 @@
+import { logActivity } from "@/lib/activityLog";
 import { createMarkdownPromotion, EbayApiError, findMarkdownOnListing, stopMarkdownPromotion } from "@/lib/ebay";
 import { ownerOnly } from "@/lib/auth";
 import { MARKDOWN_SKIPPED_PREFIX } from "@/lib/markdownCheck";
@@ -97,7 +98,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   if (!item.photoUrls[0]) {
     return NextResponse.json({ error: "This item needs at least one photo before starting a sale event." }, { status: 400 });
   }
-  return startSale(item, percentOff, defaultEndDate(item));
+  const res = await startSale(item, percentOff, defaultEndDate(item));
+  if (res.ok) await logActivity({ request }, { action: "item.sale", summary: `Started a ${percentOff}% off eBay sale on ${item.finalTitle ?? item.sku}`, targetType: "item", targetId: id, before: null, after: { percentOff } });
+  return res;
 }
 
 // Changes a sale's % off. eBay has no safe in-place edit we've verified, so
@@ -149,7 +152,16 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     where: { id },
     data: { ebayMarkdownId: null, markdownPercentOff: null, markdownStartedAt: null, markdownEndsAt: null, ebayMarkdownError: null },
   });
-  return startSale(cleared, percentOff, endDate, `Ended the ${item.markdownPercentOff}% sale, but the new one didn't start: `);
+  const res = await startSale(cleared, percentOff, endDate, `Ended the ${item.markdownPercentOff}% sale, but the new one didn't start: `);
+  await logActivity({ request }, {
+    action: "item.sale",
+    summary: `eBay sale ${item.markdownPercentOff}% -> ${percentOff}% off on ${item.finalTitle ?? item.sku}${res.ok ? "" : " (new sale failed to start)"}`,
+    targetType: "item",
+    targetId: id,
+    before: { percentOff: item.markdownPercentOff },
+    after: { percentOff: res.ok ? percentOff : null },
+  });
+  return res;
 }
 
 // Ends a sale event early — the listing itself stays live, only the
@@ -172,6 +184,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       where: { id },
       data: { ebayMarkdownId: null, markdownPercentOff: null, markdownStartedAt: null, markdownEndsAt: null, ebayMarkdownError: null },
     });
+    await logActivity({ request }, { action: "item.sale", summary: `Ended the ${item.markdownPercentOff}% off eBay sale on ${item.finalTitle ?? item.sku}`, targetType: "item", targetId: id, before: { percentOff: item.markdownPercentOff }, after: null });
     return NextResponse.json(updated);
   } catch (e) {
     const message = e instanceof EbayApiError || e instanceof Error ? e.message : "Stopping the sale event failed.";

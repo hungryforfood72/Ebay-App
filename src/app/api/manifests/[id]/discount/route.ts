@@ -1,3 +1,4 @@
+import { logActivity } from "@/lib/activityLog";
 import { computeDiscountedPrice, discountBasePrice } from "@/lib/discount";
 import { ownerOnly } from "@/lib/auth";
 import { EbayApiError, reviseFixedPriceItemPrice, toItemForEbayPublish, updateOfferPrice } from "@/lib/ebay";
@@ -40,6 +41,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   }
 
   const failed: { itemId: string; title: string; message: string }[] = [];
+  const changes: { itemId: string; title: string; before: unknown; after: number }[] = [];
   let updated = 0;
   const updatedIds: string[] = [];
 
@@ -56,6 +58,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         await reviseFixedPriceItemPrice(item.ebayListingId!, newPrice);
       }
       await prisma.item.update({ where: { id: item.id }, data: { price: newPrice, originalPrice: basePrice } });
+      changes.push({ itemId: item.id, title: item.finalTitle ?? item.sku, before: item.price, after: newPrice });
       updated++;
       updatedIds.push(item.id);
     } catch (e) {
@@ -65,5 +68,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   }
 
   queueShopifySync(updatedIds);
+  await logActivity({ request }, {
+    action: "manifest.discount",
+    summary: `${mode === "percent" ? `${value}% off` : `$${value} off`} on ${updated} item(s) of manifest ${id}${failed.length ? `, ${failed.length} failed` : ""}`,
+    targetType: "manifest",
+    targetId: id,
+    after: { mode, value, changes, failed },
+  });
   return NextResponse.json({ updated, failed });
 }

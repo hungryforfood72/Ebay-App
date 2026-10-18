@@ -1,3 +1,4 @@
+import { changedFields, logActivity } from "@/lib/activityLog";
 import { Prisma } from "@/generated/prisma/client";
 import { normalizeBreakdown } from "@/lib/expirationBreakdown";
 import { prisma } from "@/lib/prisma";
@@ -74,7 +75,20 @@ export async function PATCH(
     data.reviewedAt = new Date();
   }
 
+  const before = await prisma.item.findUnique({ where: { id } });
   const item = await prisma.item.update({ where: { id }, data });
+  const change = before ? changedFields(before as unknown as Record<string, unknown>, Object.fromEntries(Object.keys(data).map((k) => [k, (item as unknown as Record<string, unknown>)[k]]))) : null;
+  if (change) {
+    const fields = Object.keys(change.after);
+    const priceNote = "price" in change.after ? ` (price $${change.before.price ?? "none"} -> $${change.after.price})` : "";
+    await logActivity({ request }, {
+      action: "item.edit",
+      summary: `Edited ${fields.join(", ")}${priceNote} on ${item.finalTitle ?? item.sku}`,
+      targetType: "item",
+      targetId: id,
+      ...change,
+    });
+  }
 
   return NextResponse.json(item);
 }
@@ -93,6 +107,11 @@ export async function DELETE(
     throw e;
   }
   const { id } = await params;
+  const before = await prisma.item.findUnique({
+    where: { id },
+    select: { sku: true, upc: true, finalTitle: true, price: true, quantity: true, soldQuantity: true, status: true, manifestId: true, ebayListingId: true, shopifyProductId: true, createdAt: true },
+  });
   await prisma.item.delete({ where: { id } });
+  await logActivity({ request }, { action: "item.delete", summary: `Deleted ${before?.finalTitle ?? before?.sku ?? id}`, targetType: "item", targetId: id, before });
   return NextResponse.json({ ok: true });
 }

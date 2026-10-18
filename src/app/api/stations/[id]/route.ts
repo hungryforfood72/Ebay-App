@@ -1,3 +1,4 @@
+import { logActivity } from "@/lib/activityLog";
 import { ownerOnly } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { STATION_STATUS_SELECT, toStationStatus } from "@/lib/warehouse/stations";
@@ -27,6 +28,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     if (body.packingSlips) await tx.station.updateMany({ where: { id: { not: id }, packingSlips: true }, data: { packingSlips: false } });
     return tx.station.update({ where: { id }, data: { packingSlips: body.packingSlips }, select: STATION_STATUS_SELECT });
   });
+  await logActivity({ request }, { action: "setting", summary: `${updated.name}: packing slips ${body.packingSlips ? "on" : "off"}`, targetType: "station", targetId: id, after: { packingSlips: body.packingSlips } });
   return NextResponse.json(toStationStatus(updated));
 }
 

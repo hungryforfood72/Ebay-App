@@ -1,3 +1,4 @@
+import { logActivity } from "@/lib/activityLog";
 import { ownerOnly } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { retailCheckList, setLineRetail } from "@/lib/retailCheck";
@@ -30,7 +31,21 @@ export async function POST(request: NextRequest) {
   if (unitRetail != null && (!Number.isFinite(unitRetail) || unitRetail <= 0)) {
     return NextResponse.json({ error: "Enter a retail price above $0." }, { status: 400 });
   }
+  const before = await prisma.manifestLine.findFirst({ where: { manifestId: body.manifestId, upc: body.upc }, select: { retailPrice: true, description: true } });
   const updated = await setLineRetail(body.manifestId, body.upc, unitRetail);
+  if (updated > 0) {
+    await logActivity({ request }, {
+      action: "retail",
+      summary:
+        unitRetail == null
+          ? `Marked retail $${before?.retailPrice} as right on ${before?.description ?? body.upc}`
+          : `Retail $${before?.retailPrice} -> $${unitRetail} on ${before?.description ?? body.upc}`,
+      targetType: "manifestLine",
+      targetId: `${body.manifestId}:${body.upc}`,
+      before: { retailPrice: before?.retailPrice ?? null },
+      after: { retailPrice: unitRetail ?? before?.retailPrice ?? null },
+    });
+  }
   if (updated === 0) return NextResponse.json({ error: "That item isn't on the manifest." }, { status: 404 });
   return NextResponse.json({ updated });
 }

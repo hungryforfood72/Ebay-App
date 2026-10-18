@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-import { AUTH_COOKIE_NAME, createSession, deleteSession, getRequestUser, verifyPassword } from "@/lib/auth";
+import { AUTH_COOKIE_NAME, createSession, deleteSession, getRequestUser, getUserForSessionToken, verifyPassword } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { logActivity } from "@/lib/activityLog";
 
 const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60; // 30 days — matches createSession's own expiry
 
@@ -28,10 +29,18 @@ export async function POST(request: Request) {
   // Same generic error whether the username doesn't exist or the password
   // is wrong — doesn't tell an attacker which one they got right.
   if (!user || !(await verifyPassword(password, user.passwordHash, user.passwordSalt))) {
+    await logActivity(
+      { request, username },
+      { action: "auth.login_failed", summary: `Failed sign-in as "${username}"${user ? " (wrong password)" : " (no such user)"}`, targetType: "user", targetId: username }
+    );
     return NextResponse.json({ error: "Wrong username or password." }, { status: 401 });
   }
 
   const { token, expiresAt } = await createSession(user.id);
+  await logActivity(
+    { request, user: { id: user.id, username: user.username, role: user.role } },
+    { action: "auth.login", summary: `${user.username} signed in`, targetType: "user", targetId: user.username }
+  );
 
   const res = NextResponse.json({ ok: true, role: user.role });
   res.cookies.set(AUTH_COOKIE_NAME, token, {
@@ -56,7 +65,12 @@ export async function DELETE(request: Request) {
     .map((c) => c.trim())
     .find((c) => c.startsWith(`${AUTH_COOKIE_NAME}=`))
     ?.slice(AUTH_COOKIE_NAME.length + 1);
-  if (token) await deleteSession(token);
+  if (token) {
+    // Who's signing out, before the session row that says so is gone.
+    const who = await getUserForSessionToken(token);
+    await deleteSession(token);
+    if (who) await logActivity({ request, user: who }, { action: "auth.logout", summary: `${who.username} signed out`, targetType: "user", targetId: who.username });
+  }
 
   const res = NextResponse.json({ ok: true });
   res.cookies.delete(AUTH_COOKIE_NAME);

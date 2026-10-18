@@ -1,3 +1,4 @@
+import { logActivity } from "@/lib/activityLog";
 import { ownerOnly } from "@/lib/auth";
 import { getShopifyPricing, setShopifyPricing, type ShopifyPricing } from "@/lib/shopifySync";
 import { NextRequest, NextResponse } from "next/server";
@@ -22,6 +23,8 @@ export async function PUT(request: NextRequest) {
   if (Object.values(pricing).some((pct) => !Number.isFinite(pct) || pct < 0 || pct >= 100)) {
     return NextResponse.json({ error: "Enter each percent from 0 up to (not including) 100." }, { status: 400 });
   }
+  const before = await getShopifyPricing();
   await setShopifyPricing(pricing);
+  await logActivity({ request }, { action: "setting", summary: `Shopify pricing %: ${JSON.stringify(before)} -> ${JSON.stringify(pricing)}`, targetType: "setting", targetId: "shopify-discount", before, after: pricing });
   return NextResponse.json({ pricing });
 }

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
+import type { NextFetchEvent, NextRequest } from "next/server";
+import { logRequest } from "@/lib/activityLog";
 import { AUTH_COOKIE_NAME, getUserForSessionToken } from "@/lib/auth";
 
 // Header names proxy.ts attaches after verifying a session — routes/pages
@@ -26,7 +27,7 @@ const SHARE_PATHS = [/^\/s\/[A-Za-z0-9_-]{32}$/, /^\/api\/share\/[A-Za-z0-9_-]{3
 // bundled docs before relying on it) — a real Prisma session lookup here
 // is cheap and simple, unlike the stateless signed-cookie scheme an edge
 // runtime would have forced.
-export async function proxy(request: NextRequest) {
+export async function proxy(request: NextRequest, event: NextFetchEvent) {
   const { pathname } = request.nextUrl;
 
   const token = request.cookies.get(AUTH_COOKIE_NAME)?.value;
@@ -88,12 +89,19 @@ export async function proxy(request: NextRequest) {
   // page component assumes those numbers are always present, so a
   // stripped response there would crash the page rather than just show
   // fewer numbers.
-  const ownerOnlyPrefixes = ["/settings", "/api/users", "/analyzer", "/reports", "/api/reports"];
+  const ownerOnlyPrefixes = ["/settings", "/api/users", "/analyzer", "/reports", "/api/reports", "/activity", "/api/activity"];
   if (user.role !== "owner" && ownerOnlyPrefixes.some((p) => pathname.startsWith(p))) {
     if (pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "Owner access required." }, { status: 403 });
     }
     return NextResponse.redirect(new URL("/", request.url));
+  }
+
+  // Activity log (src/lib/activityLog.ts): every data-changing API call,
+  // with who made it. A copy of the request is read after the response is
+  // sent, so it costs the request nothing and the route still gets the body.
+  if (request.method !== "GET" && request.method !== "HEAD" && pathname.startsWith("/api/")) {
+    event.waitUntil(logRequest(request.clone(), user));
   }
 
   const requestHeaders = new Headers(request.headers);

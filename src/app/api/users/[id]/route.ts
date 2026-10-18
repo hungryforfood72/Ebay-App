@@ -1,3 +1,4 @@
+import { logActivity } from "@/lib/activityLog";
 import { AuthError, requireOwner } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
@@ -30,5 +31,6 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
   // Sessions cascade automatically (Session.user has onDelete: Cascade) —
   // deleting the user immediately signs them out everywhere.
   await prisma.user.delete({ where: { id } });
+  await logActivity({ request }, { action: "user.delete", summary: `Deleted ${target.role} account "${target.username}"`, targetType: "user", targetId: target.username, before: { username: target.username, role: target.role } });
   return NextResponse.json({ ok: true });
 }

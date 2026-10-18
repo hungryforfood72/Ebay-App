@@ -1,3 +1,4 @@
+import { logActivity } from "@/lib/activityLog";
 import { AuthError, hashPassword, requireOwner } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
@@ -50,5 +51,6 @@ export async function POST(request: Request) {
     data: { username, passwordHash: hash, passwordSalt: salt, role },
     select: { id: true, username: true, role: true, createdAt: true },
   });
+  await logActivity({ request }, { action: "user.create", summary: `Added ${role} account "${username}"`, targetType: "user", targetId: username, after: { username, role } });
   return NextResponse.json(user, { status: 201 });
 }

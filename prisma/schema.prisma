@@ -1554,3 +1554,34 @@ model PackingSlip {
 
   @@unique([channel, orderId])
 }
+
+// Who did what, for looking back when something goes wrong (Cristian,
+// 2026-10-17: "better to have it and not need it"). Two kinds of rows:
+// - action "request": every data-changing API call by a signed-in user,
+//   written by proxy.ts (method + path + the JSON sent, passwords hidden).
+// - named actions ("item.edit", "item.delete", "item.price", "setting",
+//   "auth.login"...): the important changes, with before and after values.
+// src/lib/activityLog.ts. Never read by the app's own logic.
+model ActivityLog {
+  id         String   @id @default(uuid())
+  at         DateTime @default(now())
+  // null = no one signed in (a failed login, the cron)
+  username   String?
+  role       String?
+  action     String
+  // What it was done to: "item" + Item.id, "setting" + key, "user" + name
+  targetType String?
+  targetId   String?
+  // One readable line: "Price $27.99 -> $19.99 on Lot of 2 L'Oreal..."
+  summary    String
+  before     Json?
+  after      Json?
+  method     String?
+  path       String?
+  ip         String?
+
+  @@index([at])
+  @@index([username, at])
+  @@index([targetType, targetId])
+  @@index([action, at])
+}

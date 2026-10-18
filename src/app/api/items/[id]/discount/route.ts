@@ -1,3 +1,4 @@
+import { logActivity } from "@/lib/activityLog";
 import { computeDiscountedPrice, discountBasePrice } from "@/lib/discount";
 import { ownerOnly } from "@/lib/auth";
 import { EbayApiError, reviseFixedPriceItemPrice, toItemForEbayPublish, updateOfferPrice } from "@/lib/ebay";
@@ -45,6 +46,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       await reviseFixedPriceItemPrice(item.ebayListingId!, newPrice);
     }
     const updated = await prisma.item.update({ where: { id }, data: { price: newPrice, originalPrice: basePrice } });
+    await logActivity({ request }, {
+      action: "item.price",
+      summary: `Price $${item.price} -> $${newPrice} (${mode === "percent" ? `${value}% off` : `$${value} off`} $${basePrice}) on ${item.finalTitle ?? item.sku}`,
+      targetType: "item",
+      targetId: id,
+      before: { price: item.price, originalPrice: item.originalPrice },
+      after: { price: newPrice, originalPrice: basePrice },
+    });
     queueShopifySync([id]);
     return NextResponse.json(updated);
   } catch (e) {

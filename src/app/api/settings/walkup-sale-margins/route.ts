@@ -1,3 +1,4 @@
+import { logActivity } from "@/lib/activityLog";
 import { getWalkupSaleSettings, setWalkupSaleSettings } from "@/lib/walkupSale";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -22,6 +23,10 @@ export async function PUT(request: NextRequest) {
     }
   }
 
+  const before = await getWalkupSaleSettings();
+
   await setWalkupSaleSettings({ floorMarginPct, idealRetailPct, nearExpiryRetailPct });
+
+  await logActivity({ request }, { action: "setting", summary: `Walk-up sale margins: ${JSON.stringify(before)} -> ${JSON.stringify({ floorMarginPct, idealRetailPct, nearExpiryRetailPct })}`, targetType: "setting", targetId: "walkup-sale-margins", before, after: { floorMarginPct, idealRetailPct, nearExpiryRetailPct } });
   return NextResponse.json({ floorMarginPct, idealRetailPct, nearExpiryRetailPct });
 }
