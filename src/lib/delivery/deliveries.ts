@@ -498,6 +498,26 @@ async function completeOnShopify(d: LocalDelivery): Promise<void> {
   throwOnUserErrors("Couldn't add the photo to the order note", updated.orderUpdate.userErrors);
 }
 
+// Settings check: the real delivered email with a made-up order, so the
+// Gmail setup can be tried before the first delivery.
+export async function sendTestDeliveryEmail(to: string): Promise<void> {
+  const sample = {
+    name: "Test Customer",
+    orderName: "#TEST",
+    address1: "123 Sample St",
+    address2: null,
+    city: "Chicago",
+    province: "IL",
+    zip: "60629",
+    email: to,
+    deliveredAt: new Date(),
+    photoUrl: "https://ebay-app-iota.vercel.app/icons/epic-steals-192.png",
+    items: [{ lineItemId: "test", title: "Sample item (this is a test email)", quantity: 1 }],
+  } as unknown as LocalDelivery;
+  const email = deliveredEmail(sample);
+  await sendEmail({ ...email, subject: `[Test] ${email.subject}` });
+}
+
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 }

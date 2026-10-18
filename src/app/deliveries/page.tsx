@@ -1,6 +1,7 @@
 "use client";
 
 import BarcodeScanner from "@/components/BarcodeScanner";
+import { useCurrentUser } from "@/components/UserNav";
 import { Alert } from "@/components/ui/Alert";
 import { AppShell } from "@/components/ui/AppShell";
 import { Badge } from "@/components/ui/Badge";
@@ -252,6 +253,7 @@ export default function DeliveriesPage() {
         )}
 
         {delivered.length > 0 && <DeliveredList deliveries={delivered} onChange={() => load(false)} />}
+        <TestEmail />
       </div>
     </AppShell>
   );
@@ -516,6 +518,55 @@ function DeliveredList({ deliveries, onChange }: { deliveries: DeliveryView[]; o
               </div>
             </div>
           ))}
+      </Card>
+    </section>
+  );
+}
+
+// Owner only: send the delivered email (with a made-up order) to check the
+// Gmail setup before the first real delivery.
+function TestEmail() {
+  const user = useCurrentUser();
+  const [to, setTo] = useState("");
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  if (user?.role !== "owner") return null;
+
+  async function send() {
+    setSending(true);
+    setResult(null);
+    try {
+      const res = await fetch("/api/deliveries/test-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to }),
+      });
+      const json = await res.json();
+      setResult(res.ok ? { ok: true, text: `Sent to ${to}. Check that inbox (and spam).` } : { ok: false, text: json.error ?? "Couldn't send." });
+    } catch {
+      setResult({ ok: false, text: "Couldn't reach the app." });
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <section>
+      <SectionHeader title="Test the delivery email" description="Sends the delivered-with-photo email with a made-up order." />
+      <Card className="flex flex-col gap-3">
+        <form
+          className="flex flex-wrap gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            send();
+          }}
+        >
+          <Input type="email" placeholder="Send to (email)" value={to} onChange={(e) => setTo(e.target.value)} className="min-w-0 flex-1" />
+          <Button type="submit" disabled={sending || !to.trim()}>
+            {sending ? "Sending…" : "Send test email"}
+          </Button>
+        </form>
+        {result && <Alert tone={result.ok ? "success" : "danger"}>{result.text}</Alert>}
       </Card>
     </section>
   );
