@@ -7,6 +7,9 @@ import type { DeliveryView, ShipFrom } from "./deliveries";
 // The barcode is the delivery's code (D1001). At the door the driver scans
 // it and the app checks it against the stop, so the wrong bag never gets
 // left at the wrong house.
+//
+// Nothing on it says what's inside, not even an item count (Cristian: a bag
+// left at a door shouldn't tell a passer-by it's worth taking).
 
 function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -37,8 +40,6 @@ function addressLines(a: { address1: string; address2: string | null; city: stri
 }
 
 function labelBody(d: DeliveryView, from: ShipFrom | null): string {
-  const items = d.items.slice(0, 6).map((i) => `<li>${i.quantity > 1 ? `<b>${i.quantity}x</b> ` : ""}${esc(i.title)}</li>`).join("");
-  const more = d.items.length > 6 ? `<li>+ ${d.items.length - 6} more</li>` : "";
   const fromBlock = from
     ? `${esc(from.name)}<br>${addressLines(from).map(esc).join("<br>")}${from.phone ? `<br>${esc(from.phone)}` : ""}`
     : "Epic Steals";
@@ -51,8 +52,8 @@ function labelBody(d: DeliveryView, from: ShipFrom | null): string {
     ${d.phone ? `<p class="phone">${esc(d.phone)}</p>` : ""}
     ${d.note ? `<p class="note">Note: ${esc(d.note)}</p>` : ""}
   </div>
-  <div class="bar">${barcode(d.code)}<p class="code">${esc(d.code)} · Order ${esc(d.orderName)} · ${d.units} item${d.units === 1 ? "" : "s"}</p></div>
-  <ul class="items">${items}${more}</ul>
+  <div class="bar">${barcode(d.code)}<p class="code">${esc(d.code)} · Order ${esc(d.orderName)}</p></div>
+  <div class="spacer"></div>
   <footer>Scan this label at the door before delivering · epic-steals.com</footer>
 </section>`;
 }
@@ -78,8 +79,7 @@ small { display: block; font-size: 7pt; font-weight: 700; letter-spacing: 1px; c
 .note { font-size: 9pt; margin-top: 0.04in; font-style: italic; }
 .bar { text-align: center; }
 .code { font-size: 9pt; font-weight: 700; margin-top: 0.03in; }
-.items { list-style: none; font-size: 7.5pt; line-height: 1.25; flex: 1; overflow: hidden; border-top: 1px solid #000; padding-top: 0.04in; }
-.items li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.spacer { flex: 1; }
 footer { font-size: 7pt; text-align: center; border-top: 1px solid #000; padding-top: 0.04in; }
 </style></head><body>${deliveries.map((d) => labelBody(d, from)).join("")}</body></html>`;
 }
