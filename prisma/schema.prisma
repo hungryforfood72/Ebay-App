@@ -618,6 +618,13 @@ model Manifest {
   // Read-only link for the consignment supplier (/s/{shareToken}, no login,
   // see src/lib/supplierShare.ts). null = no link / turned off.
   shareToken             String?
+  // Analyzer Beta (2026-10-18): a copy of another manifest, evaluated with
+  // pricing that stays inside eBay's API License (no other sellers' listings,
+  // prices or sold counts; see compliant in src/lib/sourcingAgent.ts).
+  // Always purchased: false, so it never shows up as a real load.
+  // betaSourceId = the manifest it was copied from, for the comparison.
+  analyzerBeta           Boolean @default(false)
+  betaSourceId           String?
 
   lines   ManifestLine[]
   damaged ManifestDamagedEntry[]
@@ -853,6 +860,10 @@ model ResearchObservation {
   // no-search answers.
   basisAt        DateTime
   evaluationId   String?
+  // Made by the Analyzer Beta: searched with eBay's sites blocked and never
+  // asked for eBay prices. Each Analyzer reads only its own kind, so the
+  // beta never builds on a finding that came from eBay pages.
+  compliant      Boolean  @default(false)
   createdAt      DateTime @default(now())
 
   @@index([kind, upc, createdAt])

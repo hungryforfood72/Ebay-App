@@ -80,6 +80,30 @@ type CandidateDetail = {
   consignmentSupplierPct: number;
   shareToken: string | null;
   consignmentPickList: ConsignmentPickListData | null;
+  // Analyzer Beta copy (see src/app/analyzer/beta): priced without other
+  // sellers' eBay data, compared against the original's standard call.
+  analyzerBeta: boolean;
+  betaComparison?: BetaComparison;
+};
+
+type BetaComparison = {
+  source: { id: string; title: string } | null;
+  evaluation: {
+    recommendation: "buy" | "dont_buy" | null;
+    maxBid: number | null;
+    expectedNetContribution: number | null;
+    dudShare: number | null;
+    startedAt: string;
+    lineEstimates: {
+      upc: string | null;
+      description: string;
+      estimatedUnitSalePrice: number | null;
+      estimatedNetPerUnit: number | null;
+      effectiveUnits: number;
+      dataConfidence: string;
+      flaggedDud: boolean;
+    }[];
+  } | null;
 };
 
 // The Analyzer's detail view — deliberately much simpler than the real
@@ -216,6 +240,17 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
     }
   }
 
+  async function deleteBetaCopy() {
+    if (!confirm(`Delete the beta copy "${candidate?.title}"? The original manifest isn't affected.`)) return;
+    const res = await fetch(`/api/manifests/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const result = await res.json().catch(() => ({}));
+      alert(result.error ?? "Couldn't delete the copy.");
+      return;
+    }
+    router.push("/analyzer/beta");
+  }
+
   if (!candidate) {
     return (
       <AppShell title="Analyzer">
@@ -225,6 +260,7 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
   }
 
   const evaluation = candidate.sourcingEvaluation;
+  const beta = candidate.analyzerBeta;
   // Other-supplier manifests are priced by the box (see
   // estimateOtherSupplierLine), so their counts are boxes, not pieces.
   const unitsLabel = candidate.supplier === "unknown" ? "Boxes" : "Units";
@@ -281,9 +317,15 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
       }
       subtitle={
         <span className="inline-flex flex-wrap items-center gap-x-2">
-          <Link href="/analyzer" className="font-medium text-primary hover:underline">
-            All candidates
-          </Link>
+          {beta ? (
+            <Link href="/analyzer/beta" className="font-medium text-primary hover:underline">
+              Analyzer Beta
+            </Link>
+          ) : (
+            <Link href="/analyzer" className="font-medium text-primary hover:underline">
+              All candidates
+            </Link>
+          )}
           <span aria-hidden>·</span>
           {new Date(candidate.createdAt).toLocaleDateString()}
           <span aria-hidden>·</span>
@@ -292,6 +334,11 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
         </span>
       }
       actions={
+        beta ? (
+          <Button variant="danger-ghost" onClick={deleteBetaCopy}>
+            Delete copy
+          </Button>
+        ) : (
         <>
           {/* With an active bid, the Bid card's "Won, mark as purchased" does this. */}
           {candidate.bidStatus !== "active" && (
@@ -305,20 +352,41 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
             Upload another
           </Link>
         </>
+        )
       }
     >
       <div className="flex flex-col gap-6">
-        <ConsignmentTermsCard
-          manifestId={candidate.id}
-          consignment={candidate.consignment}
-          supplierPct={candidate.consignmentSupplierPct}
-          onSaved={load}
-        />
+        {beta && (
+          <Alert tone="info" title="Analyzer Beta copy">
+            Priced without other sellers&apos; eBay listings, prices or sold counts: your own sales, the manifest&apos;s
+            retail times what your sales recover from retail, and store-price web research (eBay blocked) for the most
+            valuable items.
+            {candidate.betaComparison?.source && (
+              <>
+                {" "}
+                Copied from{" "}
+                <Link href={`/manifests/${candidate.betaComparison.source.id}`} className="font-medium text-primary hover:underline">
+                  {candidate.betaComparison.source.title}
+                </Link>
+                .
+              </>
+            )}
+          </Alert>
+        )}
+
+        {!beta && (
+          <ConsignmentTermsCard
+            manifestId={candidate.id}
+            consignment={candidate.consignment}
+            supplierPct={candidate.consignmentSupplierPct}
+            onSaved={load}
+          />
+        )}
         {candidate.consignment && (
           <SupplierShareCard manifestId={candidate.id} shareToken={candidate.shareToken} onChange={load} />
         )}
 
-        {!candidate.consignment && (
+        {!candidate.consignment && !beta && (
           <BidCard
             bidStatus={candidate.bidStatus}
             bidAmount={candidate.bidAmount}
@@ -348,16 +416,18 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
 
           {!evaluation && !evaluationError && (
             <p className="text-sm text-muted-foreground">
-              Checks real historical sold data, live eBay comps, and supplier patterns to suggest a max bid before
-              you commit to buying this manifest.
+              {beta
+                ? "Checks your own sales, the manifest's retail and store-price research to suggest a max bid, without any of eBay's data about other sellers."
+                : "Checks real historical sold data, live eBay comps, and supplier patterns to suggest a max bid before you commit to buying this manifest."}
             </p>
           )}
 
           {evaluation?.status === "running" && (
             <div className="flex flex-col gap-2">
               <p className="text-sm text-muted-foreground">
-                Evaluating — checking historical sales, live comps, and market signal for each item. This can take a
-                couple minutes for a large manifest…
+                {beta
+                  ? "Evaluating — checking your own sales, retail and store prices for each item. This can take several minutes for a large manifest…"
+                  : "Evaluating — checking historical sales, live comps, and market signal for each item. This can take a couple minutes for a large manifest…"}
               </p>
               {(() => {
                 const { processedSteps, totalSteps } = evaluation;
@@ -657,6 +727,10 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
           )}
         </Card>
 
+        {beta && evaluation?.status === "complete" && candidate.betaComparison && (
+          <BetaComparisonCard comparison={candidate.betaComparison} beta={evaluation} unitsLabel={unitsLabel} />
+        )}
+
         <section>
           <SectionHeader title="Manifest lines" action={<Badge>{candidate.lines.length}</Badge>} />
           <ul className="flex flex-col gap-2 md:hidden">
@@ -714,6 +788,168 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
         </section>
       </div>
     </AppShell>
+  );
+}
+
+// The beta's call next to the regular Analyzer's latest finished call on
+// the manifest it was copied from, plus the products whose expected profit
+// moved the most between the two. Products match by UPC (description when
+// there's none).
+function BetaComparisonCard({
+  comparison,
+  beta,
+  unitsLabel,
+}: {
+  comparison: BetaComparison;
+  beta: SourcingEvaluation;
+  unitsLabel: string;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const regular = comparison.evaluation;
+  if (!regular) {
+    return (
+      <Card>
+        <SectionHeader title="Beta vs regular Analyzer" />
+        <p className="text-sm text-muted-foreground">
+          The original manifest has no finished regular Analyzer run to compare with.
+        </p>
+      </Card>
+    );
+  }
+
+  const keyOf = (e: { upc: string | null; description: string }) => e.upc ?? `desc:${e.description}`;
+  const totalNet = (e: { estimatedNetPerUnit: number | null; effectiveUnits: number }) =>
+    (e.estimatedNetPerUnit ?? 0) * e.effectiveUnits;
+  const regularByKey = new Map(regular.lineEstimates.map((e) => [keyOf(e), e]));
+  const rows = beta.lineEstimates
+    .map((b) => {
+      const r = regularByKey.get(keyOf(b));
+      return r ? { b, r, diff: totalNet(b) - totalNet(r) } : null;
+    })
+    .filter((x): x is NonNullable<typeof x> => x != null);
+  const priced = rows.filter(
+    (x) => x.r.estimatedUnitSalePrice != null && x.b.estimatedUnitSalePrice != null && x.r.estimatedUnitSalePrice > 0
+  );
+  const closePrice = priced.filter(
+    (x) => Math.abs(x.b.estimatedUnitSalePrice! - x.r.estimatedUnitSalePrice!) / x.r.estimatedUnitSalePrice! <= 0.25
+  ).length;
+  const newlyDud = rows.filter((x) => x.b.flaggedDud && !x.r.flaggedDud).length;
+  const noLongerDud = rows.filter((x) => !x.b.flaggedDud && x.r.flaggedDud).length;
+  const biggest = rows.slice().sort((x, y) => Math.abs(y.diff) - Math.abs(x.diff));
+  const shown = showAll ? biggest : biggest.slice(0, 15);
+
+  const call = (rec: "buy" | "dont_buy" | null) => (rec === "buy" ? "Buy" : rec === "dont_buy" ? "Don't buy" : "—");
+  const dollars = (n: number | null) => (n != null ? money(n) : "—");
+  const signed = (n: number) => `${n >= 0 ? "+" : "−"}${money(Math.abs(n))}`;
+  const pct = (n: number | null) => (n != null ? `${(n * 100).toFixed(0)}%` : "—");
+
+  return (
+    <Card>
+      <SectionHeader title="Beta vs regular Analyzer" />
+      <p className="mb-3 text-xs text-muted-foreground">
+        Regular Analyzer run of {new Date(regular.startedAt).toLocaleDateString()} on the original manifest.
+      </p>
+      <div className="overflow-x-auto rounded-xl border border-border">
+        <table className="w-full text-sm">
+          <thead className="bg-background">
+            <tr className="border-b border-border text-left text-xs font-medium text-muted-foreground">
+              <th className="px-4 py-2.5" />
+              <th className="px-3 py-2.5 text-right">Regular</th>
+              <th className="px-3 py-2.5 text-right">Beta</th>
+              <th className="px-4 py-2.5 text-right">Change</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border tabular-nums">
+            <tr>
+              <td className="px-4 py-2.5 font-medium text-foreground">Call</td>
+              <td className="px-3 text-right">{call(regular.recommendation)}</td>
+              <td className="px-3 text-right">{call(beta.recommendation)}</td>
+              <td className="px-4 text-right text-muted-foreground">
+                {regular.recommendation === beta.recommendation ? "same" : "different"}
+              </td>
+            </tr>
+            <tr>
+              <td className="px-4 py-2.5 font-medium text-foreground">Max bid</td>
+              <td className="px-3 text-right">{dollars(regular.maxBid)}</td>
+              <td className="px-3 text-right">{dollars(beta.maxBid)}</td>
+              <td className="px-4 text-right">
+                {regular.maxBid != null && beta.maxBid != null ? signed(beta.maxBid - regular.maxBid) : "—"}
+              </td>
+            </tr>
+            <tr>
+              <td className="px-4 py-2.5 font-medium text-foreground">Expected net</td>
+              <td className="px-3 text-right">{dollars(regular.expectedNetContribution)}</td>
+              <td className="px-3 text-right">{dollars(beta.expectedNetContribution)}</td>
+              <td className="px-4 text-right">
+                {regular.expectedNetContribution != null && beta.expectedNetContribution != null
+                  ? signed(beta.expectedNetContribution - regular.expectedNetContribution)
+                  : "—"}
+              </td>
+            </tr>
+            <tr>
+              <td className="px-4 py-2.5 font-medium text-foreground">Likely duds</td>
+              <td className="px-3 text-right">{pct(regular.dudShare)}</td>
+              <td className="px-3 text-right">{pct(beta.dudShare)}</td>
+              <td className="px-4 text-right text-muted-foreground">
+                {newlyDud} new, {noLongerDud} cleared
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p className="mt-3 text-sm text-muted-foreground">
+        {priced.length > 0
+          ? `${closePrice} of ${priced.length} products priced by both are within 25% of the regular Analyzer's sale price.`
+          : "No products were priced by both, so there's nothing to compare per product."}
+      </p>
+
+      {biggest.length > 0 && (
+        <>
+          <h3 className="mt-5 mb-2 text-sm font-semibold text-foreground">Biggest changes in expected profit</h3>
+          <div className="overflow-x-auto rounded-xl border border-border">
+            <table className="w-full text-sm">
+              <thead className="bg-background">
+                <tr className="border-b border-border text-left text-xs font-medium text-muted-foreground">
+                  <th className="px-4 py-2.5">Item</th>
+                  <th className="px-3 py-2.5 text-right">Regular sale/unit</th>
+                  <th className="px-3 py-2.5 text-right">Beta sale/unit</th>
+                  <th className="px-3 py-2.5 text-right">{unitsLabel}</th>
+                  <th className="px-4 py-2.5 text-right">Profit change</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border tabular-nums">
+                {shown.map(({ b, r, diff }) => (
+                  <tr key={keyOf(b)}>
+                    <td className="max-w-xs px-4 py-2.5">
+                      <p className="truncate font-medium text-foreground">{b.description}</p>
+                      <div className="mt-1 flex flex-wrap gap-1.5">
+                        <ConfidenceBadge confidence={r.dataConfidence} />
+                        <span className="text-xs text-muted-foreground">→</span>
+                        <ConfidenceBadge confidence={b.dataConfidence} />
+                        {b.flaggedDud && !r.flaggedDud && <Badge tone="warning">now dud</Badge>}
+                        {!b.flaggedDud && r.flaggedDud && <Badge tone="success">no longer dud</Badge>}
+                      </div>
+                    </td>
+                    <td className="px-3 text-right">{dollars(r.estimatedUnitSalePrice)}</td>
+                    <td className="px-3 text-right">{dollars(b.estimatedUnitSalePrice)}</td>
+                    <td className="px-3 text-right">{b.effectiveUnits}</td>
+                    <td className={cn("px-4 text-right font-medium", diff >= 0 ? "text-success" : "text-danger")}>
+                      {signed(diff)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {biggest.length > 15 && (
+            <Button variant="ghost" size="sm" onClick={() => setShowAll((v) => !v)} className="mt-2 -ml-2">
+              <ChevronDown className={cn("size-4 transition-transform", showAll && "rotate-180")} aria-hidden />
+              {showAll ? "Show top 15" : `Show all ${biggest.length}`}
+            </Button>
+          )}
+        </>
+      )}
+    </Card>
   );
 }
 
@@ -925,6 +1161,8 @@ const CONFIDENCE_TONES: Record<string, BadgeTone> = {
   category_fallback: "warning",
   market_only: "neutral",
   exact_match: "primary",
+  retail_estimate: "warning",
+  unpriced: "neutral",
 };
 
 function ConfidenceBadge({ confidence }: { confidence: string }) {

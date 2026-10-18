@@ -7,11 +7,15 @@ import { NextRequest, NextResponse } from "next/server";
 // else (including omitted) returns real, bought manifests — the default a
 // plain /api/manifests call has always meant, kept that way so the
 // existing Manifests page's fetch doesn't need to change.
+// ?beta=true returns Analyzer Beta copies instead (owner only); they're
+// never in either of the other two lists.
 export async function GET(request: NextRequest) {
   const isOwner = getRequestUser(request)?.role === "owner";
+  const beta = request.nextUrl.searchParams.get("beta") === "true";
+  if (beta && !isOwner) return NextResponse.json([]);
   const purchased = request.nextUrl.searchParams.get("purchased") !== "false";
   const manifests = await prisma.manifest.findMany({
-    where: { purchased },
+    where: beta ? { analyzerBeta: true } : { purchased, analyzerBeta: false },
     orderBy: { createdAt: "desc" },
     include: {
       _count: { select: { lines: true, items: true } },

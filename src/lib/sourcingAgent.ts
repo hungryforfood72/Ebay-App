@@ -507,6 +507,43 @@ function extractText(content: Array<{ type: string; text?: string }>): string {
 }
 
 // ---------------------------------------------------------------------------
+// Analyzer Beta: pricing inside eBay's API License (2026-10-18). The
+// license bars using eBay Content "to suggest or model prices for items
+// listed on eBay" (sec. 9), and deriving seller performance or success
+// rates without eBay's written permission (8.1(d)). eBay Content excludes
+// information obtained independent of eBay. So a beta evaluation (a manifest
+// with analyzerBeta) never calls the Browse API, reads or writes
+// MarketCompSnapshot, or looks at other sellers' sold counts. It prices from
+// Cristian's own sales (his own information), the manifest's retail, and
+// web research with eBay's sites (and sites that resell eBay sold data)
+// blocked. The standard Analyzer is unchanged.
+// ---------------------------------------------------------------------------
+const EBAY_DATA_DOMAINS = [
+  "ebay.com",
+  "ebay.ca",
+  "ebay.co.uk",
+  "ebay.com.au",
+  "ebay.de",
+  "ebay.fr",
+  "ebay.it",
+  "ebay.es",
+  "ebayimg.com",
+  "terapeak.com",
+  "worthpoint.com",
+  "130point.com",
+];
+
+function webSearchTool(compliant: boolean) {
+  return {
+    type: "web_search_20260209" as const,
+    name: "web_search" as const,
+    max_uses: 2,
+    allowed_callers: ["direct" as const],
+    ...(compliant ? { blocked_domains: EBAY_DATA_DOMAINS } : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Research memory — every web-search finding is kept in ResearchObservation
 // so the agent learns items over time instead of paying to re-research the
 // same product on every manifest (see that model's schema comment). A
@@ -540,11 +577,12 @@ function daysSince(date: Date): number {
   return (Date.now() - date.getTime()) / (1000 * 60 * 60 * 24);
 }
 
-async function priorResearch(kind: ResearchKind, subject: ResearchSubject) {
+// Each Analyzer reads only its own findings (see ResearchObservation.compliant).
+async function priorResearch(kind: ResearchKind, subject: ResearchSubject, compliant: boolean) {
   return prisma.researchObservation.findMany({
     where: subject.upc
-      ? { kind, upc: subject.upc }
-      : { kind, descriptionKey: descriptionKey(subject.description) },
+      ? { kind, upc: subject.upc, compliant }
+      : { kind, descriptionKey: descriptionKey(subject.description), compliant },
     orderBy: { createdAt: "desc" },
     take: PRIOR_FINDINGS_SHOWN,
   });
@@ -554,7 +592,8 @@ async function recordResearch(
   kind: ResearchKind,
   subject: ResearchSubject,
   finding: { price?: number | null; verdict?: string; note?: string | null; searched: boolean; basisAt: Date },
-  evaluationId: string
+  evaluationId: string,
+  compliant: boolean
 ): Promise<void> {
   try {
     await prisma.researchObservation.create({
@@ -569,6 +608,7 @@ async function recordResearch(
         searched: finding.searched,
         basisAt: finding.basisAt,
         evaluationId,
+        compliant,
       },
     });
   } catch (e) {
@@ -586,8 +626,8 @@ function didSearch(response: { usage: { server_tool_use?: { web_search_requests:
 // one API call, no client-side tool loop needed). Best-effort: a failure
 // here just means no trend nudge for that line, not a failed evaluation.
 // ---------------------------------------------------------------------------
-async function getTrendNudge(subject: ResearchSubject, evaluationId: string): Promise<string | null> {
-  const [latest] = await priorResearch("trend", subject);
+async function getTrendNudge(subject: ResearchSubject, evaluationId: string, compliant: boolean): Promise<string | null> {
+  const [latest] = await priorResearch("trend", subject, compliant);
   if (latest?.verdict && daysSince(latest.basisAt) <= TREND_REUSE_DAYS) {
     return latest.verdict === "NONE" ? null : latest.verdict;
   }
@@ -596,7 +636,7 @@ async function getTrendNudge(subject: ResearchSubject, evaluationId: string): Pr
       {
         model: "claude-haiku-4-5",
         max_tokens: 300,
-        tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 2, allowed_callers: ["direct"] }],
+        tools: [webSearchTool(compliant)],
         messages: [
           {
             role: "user",
@@ -614,7 +654,8 @@ async function getTrendNudge(subject: ResearchSubject, evaluationId: string): Pr
       "trend",
       subject,
       { verdict: signal ?? "NONE", searched: didSearch(response), basisAt: new Date() },
-      evaluationId
+      evaluationId,
+      compliant
     );
     return signal;
   } catch (e) {
@@ -642,8 +683,8 @@ async function getTrendNudge(subject: ResearchSubject, evaluationId: string): Pr
 // data is reused with no call, older findings go into the prompt as dated
 // background the model can answer from or choose to re-check.
 // ---------------------------------------------------------------------------
-async function getWebPriceCheck(subject: ResearchSubject, evaluationId: string): Promise<number | null> {
-  const prior = await priorResearch("price", subject);
+async function getWebPriceCheck(subject: ResearchSubject, evaluationId: string, compliant: boolean): Promise<number | null> {
+  const prior = await priorResearch("price", subject, compliant);
   const latest = prior[0];
   if (latest && daysSince(latest.basisAt) <= PRICE_REUSE_DAYS) {
     return latest.price != null ? Number(latest.price) : null;
@@ -683,11 +724,13 @@ ${
         // with no price); 1000 let all 20 finish.
         model: "claude-haiku-4-5",
         max_tokens: 1000,
-        tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 2, allowed_callers: ["direct"] }],
+        tools: [webSearchTool(compliant)],
         messages: [
           {
             role: "user",
-            content: `You're pricing a liquidation/resale item. What would "${subject.description}" realistically sell for right now on eBay?
+            content: compliant
+              ? compliantPriceCheckPrompt(subject.description, prior.length > 0, priorBlock)
+              : `You're pricing a liquidation/resale item. What would "${subject.description}" realistically sell for right now on eBay?
 
 ${prior.length > 0 ? "" : "Search for it. "}If you find actual current listing or sold prices, use those. If you only find retail/list price, give your best realistic estimate of what a liquidation reseller would actually get for it on eBay (typically well below retail — liquidation/secondhand goods commonly sell in the 40-70% of retail range, more or less depending on the category and condition) rather than the retail price itself.
 
@@ -728,13 +771,32 @@ PRICE: 17.50 (a plain number, no currency symbol) or PRICE: UNKNOWN`,
       "price",
       subject,
       { price, note, searched, basisAt: searched || !newestBasis ? new Date() : newestBasis },
-      evaluationId
+      evaluationId,
+      compliant
     );
     return price;
   } catch (e) {
     console.error(`[sourcingAgent] web price check failed for "${subject.description}"`, e);
     return null;
   }
+}
+
+// The beta's price check. Same answer format as the standard one, but it
+// reasons from store prices and never from eBay: eBay's sites are blocked
+// in the search itself (webSearchTool), and the prompt tells the model to
+// ignore any eBay price it comes across anyway.
+function compliantPriceCheckPrompt(description: string, hasPrior: boolean, priorBlock: string): string {
+  return `You're estimating what a liquidation reseller would realistically get for "${description}" (new, unused) when selling it online.
+
+${hasPrior ? "" : "Search for it. "}Base the estimate on what the product costs new at regular stores and retailer websites (Amazon, Walmart, Target, drugstores, the brand's own site), then work out a realistic resale price: liquidation goods commonly sell for roughly 40-70% of the usual store price, lower for everyday items people can grab at any store, higher for things that are hard to find, discontinued or in demand.
+
+Do NOT use eBay listings, eBay sold prices, or any site that reports eBay prices. If you come across one, ignore it.
+
+Only answer UNKNOWN if you cannot even identify what kind of product this is or find any store price to reason from. A rough estimate reasoned from the store price is far more useful here than no answer, so commit to your best number whenever you have ANY basis for one.${priorBlock}
+
+End your response with EXACTLY these two lines and nothing after them:
+NOTE: one short line on what your answer is based on (e.g. "Walmart $9.97, Target $10.49, everyday item")
+PRICE: 17.50 (a plain number, no currency symbol) or PRICE: UNKNOWN`;
 }
 
 // ---------------------------------------------------------------------------
@@ -768,10 +830,11 @@ type EventCheckBudget = { remaining: number; used: number };
 async function isOccasionOutOfSeason(
   subject: ResearchSubject,
   evaluationId: string,
-  budget: EventCheckBudget
+  budget: EventCheckBudget,
+  compliant: boolean
 ): Promise<boolean> {
   // A fresh answer from memory costs nothing, so it doesn't touch the budget.
-  const [latest] = await priorResearch("event", subject);
+  const [latest] = await priorResearch("event", subject, compliant);
   if (latest?.verdict && daysSince(latest.basisAt) <= EVENT_REUSE_DAYS) {
     return latest.verdict === "YES";
   }
@@ -784,7 +847,7 @@ async function isOccasionOutOfSeason(
       {
         model: "claude-haiku-4-5",
         max_tokens: 200,
-        tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 2, allowed_callers: ["direct"] }],
+        tools: [webSearchTool(compliant)],
         messages: [
           {
             role: "user",
@@ -801,7 +864,7 @@ async function isOccasionOutOfSeason(
     // as the very first word.
     const text = extractText(response.content).toUpperCase();
     const verdict = /\bYES\b/.test(text) ? "YES" : /\bNO\b/.test(text) ? "NO" : "UNSURE";
-    await recordResearch("event", subject, { verdict, searched: didSearch(response), basisAt: new Date() }, evaluationId);
+    await recordResearch("event", subject, { verdict, searched: didSearch(response), basisAt: new Date() }, evaluationId, compliant);
     return verdict === "YES";
   } catch (e) {
     console.error(`[sourcingAgent] occasion-season check failed for "${description}"`, e);
@@ -847,7 +910,16 @@ type LineEstimateResult = {
   // See recommendPackSize (./packSize) — null when there's too little to go on.
   recommendedPackSize: number | null;
   recommendedPackBasis: "agent" | "listings" | "estimate" | null;
-  dataConfidence: "own_history" | "historical_match" | "web_price_check" | "category_fallback" | "market_only" | "exact_match";
+  // retail_estimate / unpriced: Analyzer Beta only (see BetaPricing).
+  dataConfidence:
+    | "own_history"
+    | "historical_match"
+    | "web_price_check"
+    | "category_fallback"
+    | "market_only"
+    | "exact_match"
+    | "retail_estimate"
+    | "unpriced";
   flaggedDud: boolean;
   marketCheckFailed: boolean;
   marketTrend: string | null;
@@ -970,6 +1042,99 @@ async function estimateOtherSupplierLine(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Analyzer Beta pricing inputs (see "Analyzer Beta" above extractText).
+// ---------------------------------------------------------------------------
+
+// What Cristian's own eBay sales actually bring in, as a share of the
+// manifest retail of the same product: the beta's stand-in for live comps.
+// Own sales are his own information, which the license treats separately
+// from other sellers' data. Starts out mostly the rule of thumb (8 matched
+// sales on 2026-10-18, median 48% of retail) and leans on his real numbers
+// as sales add up: each sale counts as one vote against
+// RECOVERY_PRIOR_WEIGHT votes for the prior, and a category's own ratio is
+// pulled toward the overall one the same way.
+const RETAIL_RECOVERY_PRIOR = 0.5;
+const RECOVERY_PRIOR_WEIGHT = 10;
+// Same share of the blend live comps get in the standard Analyzer (at most
+// 10), so the rest of the blend keeps its shape.
+const RETAIL_ESTIMATE_WEIGHT = 10;
+
+export type RetailRecovery = { overall: number; sampleSize: number; byCategory: Map<string, number> };
+
+export async function ownRetailRecovery(): Promise<RetailRecovery> {
+  const sales = await prisma.ebayItemSale.findMany({
+    where: { quantity: { gt: 0 }, item: { isBundle: false, manifestId: { not: null }, upc: { not: null } } },
+    select: {
+      quantity: true,
+      revenue: true,
+      soldAt: true,
+      item: { select: { upc: true, manifestId: true, isMultipack: true, packSize: true } },
+    },
+  });
+  const pairs = [...new Map(sales.map((s) => [`${s.item.manifestId}|${s.item.upc}`, s.item])).values()];
+  const lines =
+    pairs.length > 0
+      ? await prisma.manifestLine.findMany({
+          where: {
+            retailPrice: { gt: 0 },
+            OR: pairs.map((p) => ({ manifestId: p.manifestId!, upc: p.upc! })),
+          },
+          select: { manifestId: true, upc: true, retailPrice: true, category: true },
+        })
+      : [];
+  const lineByKey = new Map(lines.map((l) => [`${l.manifestId}|${l.upc}`, l]));
+
+  let total = 0;
+  let weight = 0;
+  let sampleSize = 0;
+  const byCategorySums = new Map<string, { total: number; weight: number }>();
+  for (const s of sales) {
+    const line = lineByKey.get(`${s.item.manifestId}|${s.item.upc}`);
+    if (!line) continue;
+    const units = soldPhysicalUnits({ soldQuantity: s.quantity, isMultipack: s.item.isMultipack, packSize: s.item.packSize });
+    // Clamped: one mistyped retail shouldn't swing every estimate.
+    const ratio = Math.min(3, Math.max(0.05, Number(s.revenue) / units / Number(line.retailPrice)));
+    const w = recencyWeight(s.soldAt);
+    total += ratio * w;
+    weight += w;
+    sampleSize++;
+    if (line.category) {
+      const c = byCategorySums.get(line.category) ?? { total: 0, weight: 0 };
+      c.total += ratio * w;
+      c.weight += w;
+      byCategorySums.set(line.category, c);
+    }
+  }
+  const overall = (total + RETAIL_RECOVERY_PRIOR * RECOVERY_PRIOR_WEIGHT) / (weight + RECOVERY_PRIOR_WEIGHT);
+  const byCategory = new Map(
+    [...byCategorySums].map(([category, c]) => [
+      category,
+      (c.total + overall * RECOVERY_PRIOR_WEIGHT) / (c.weight + RECOVERY_PRIOR_WEIGHT),
+    ])
+  );
+  return { overall, sampleSize, byCategory };
+}
+
+// Set for a beta evaluation, null for the standard Analyzer. deepResearch:
+// the line is in the top MAX_DEEP_RESEARCH_LINES by value, so it gets a web
+// price check (the beta's main per-product signal, about $0.04 each).
+type BetaPricing = { deepResearch: boolean; recovery: RetailRecovery } | null;
+
+// Other-supplier lines in the beta: the standard path prices them off exact
+// eBay listings per box, which the beta can't use, so they're priced like
+// any other line but per box as sold (retail and count converted to boxes).
+function perBoxGroup(group: LineGroup): LineGroup {
+  const perBox = group.boxes > 0 ? Math.max(1, Math.round(group.expectedQuantity / group.boxes)) : 1;
+  if (perBox === 1) return { ...group, expectedQuantity: group.boxes };
+  return {
+    ...group,
+    expectedQuantity: group.boxes,
+    retailPrice: group.retailPrice * perBox,
+    description: `${group.description} (box of ${perBox})`,
+  };
+}
+
 async function estimateLine(
   group: LineGroup,
   evaluationId: string,
@@ -977,8 +1142,10 @@ async function estimateLine(
   runTrendCheck: boolean,
   eventCheckBudget: EventCheckBudget,
   limits: SpeedLimits,
-  calibration: Calibration
+  calibration: Calibration,
+  beta: BetaPricing = null
 ): Promise<LineEstimateResult> {
+  const compliant = beta != null;
   // Can't be listed on eBay at all (needles, Rx devices — see ebayBanned),
   // so it's worth $0 whatever the comps say. Skipped before any lookup:
   // live listings exist for some of these and would otherwise price them.
@@ -1008,7 +1175,10 @@ async function estimateLine(
     };
   }
 
-  if (group.strictPricing) return estimateOtherSupplierLine(group, receiveRate, limits, calibration);
+  if (group.strictPricing) {
+    if (!compliant) return estimateOtherSupplierLine(group, receiveRate, limits, calibration);
+    group = perBoxGroup(group);
+  }
 
   // Own-history: exact UPC, across every manifest ever sold, not just this one.
   let ownSalesCount = 0;
@@ -1214,9 +1384,11 @@ async function estimateLine(
   let freshComps: ActiveListingComp[] | null = null;
   let snapshotId: string | null = null;
 
-  const latestSnapshot = group.upc
-    ? await prisma.marketCompSnapshot.findFirst({ where: { upc: group.upc }, orderBy: { capturedAt: "desc" } })
-    : null;
+  // The beta never reads, searches or stores eBay listing data.
+  const latestSnapshot =
+    group.upc && !compliant
+      ? await prisma.marketCompSnapshot.findFirst({ where: { upc: group.upc }, orderBy: { capturedAt: "desc" } })
+      : null;
   const snapshotAgeHours = latestSnapshot ? (Date.now() - latestSnapshot.capturedAt.getTime()) / (1000 * 60 * 60) : Infinity;
 
   if (latestSnapshot && snapshotAgeHours < MARKET_SNAPSHOT_FRESHNESS_HOURS) {
@@ -1233,7 +1405,7 @@ async function estimateLine(
     }
     marketMedian = latestSnapshot.medianPrice != null ? Number(latestSnapshot.medianPrice) : 0;
     packStats = parsePackStats(latestSnapshot.packStats);
-  } else {
+  } else if (!compliant) {
     try {
       const comps = await searchActiveListings({ upc: group.upc, keywords: group.description, excludeListingId: null });
       const summary = summarizeComps(comps);
@@ -1301,6 +1473,16 @@ async function estimateLine(
   marketMedian *= manifestUnitPackSize;
   historicalAvgSalePrice *= manifestUnitPackSize;
 
+  // Beta: the manifest's own retail (already per manifest unit) times the
+  // share of retail Cristian's own sales recover fills the slot live comps
+  // have in the blend below.
+  let retailEstimate = 0;
+  if (beta && group.retailPrice > 0) {
+    retailEstimate =
+      group.retailPrice * (group.category ? (beta.recovery.byCategory.get(group.category) ?? beta.recovery.overall) : beta.recovery.overall);
+    marketMedian = retailEstimate;
+  }
+
   // Best pack size to sell in — only for a manifest unit that's a single
   // (a line that's already a multi-pack is listed as-is).
   const packRecommendation = manifestUnitPackSize === 1 ? recommendPackSize(packStats, group.retailPrice) : null;
@@ -1328,43 +1510,46 @@ async function estimateLine(
   const ownScore = Math.min(ownSalesCount, 8) * 3;
   const historicalScore = Math.min(historicalSalesCount, 10) * 2;
   const categoryScore = Math.min(categorySalesCount, 15) * 1.5;
-  const marketScore = Math.min(activeCompCount, 10) * 1;
+  const marketScore = compliant ? (retailEstimate > 0 ? RETAIL_ESTIMATE_WEIGHT : 0) : Math.min(activeCompCount, 10) * 1;
   const totalScore = ownScore + historicalScore + categoryScore + marketScore;
 
-  if (totalScore === 0) {
-    // Nothing to go on at all — no comps, no history. Normally that's a
-    // fair "can't responsibly estimate, treat as a dud" call. But if the
-    // REASON there are no comps is that the market check itself errored
-    // (marketCheckFailed) rather than genuinely finding zero listings,
-    // that's an unknown, not a confirmed dead item — don't confidently
-    // flag it a dud on an API outage (see marketCheckFailed above for the
-    // real case this caught live).
-    return {
-      upc: group.upc,
-      description: group.description,
-      extendedRetail: group.extendedRetail,
-      estimatedUnitSalePrice: null,
-      estimatedUnitFees: null,
-      estimatedUnitShipping: null,
-      estimatedNetPerUnit: null,
-      effectiveUnits,
-      typicalPackSize,
-      recommendedPackSize: packRecommendation?.packSize ?? null,
-      recommendedPackBasis: packRecommendation?.basis ?? null,
-      dataConfidence: "market_only",
-      flaggedDud: !marketCheckFailed,
-      marketCheckFailed,
-      marketTrend,
-      eventEnded: false,
-      postHolidayFiller: isPostHolidayFiller(group.description),
-      trendNudge: null,
-      seasonal: await seasonalNote(group.category, group.description),
-      // ownSalesCount and categorySalesCount are both necessarily 0 here
-      // (totalScore === 0), so there's nothing to compute a rate from.
-      slowMover: false,
-      monthsToSellThrough: null,
-    };
-  }
+  // Beta, no retail and no sales of ours: a deep line still gets its web
+  // price check below before giving up. Anything left unpriced is an
+  // unknown, not a dud: the beta never asked eBay whether it sells.
+  // Nothing to go on at all — no comps, no history. Normally that's a
+  // fair "can't responsibly estimate, treat as a dud" call. But if the
+  // REASON there are no comps is that the market check itself errored
+  // (marketCheckFailed) rather than genuinely finding zero listings,
+  // that's an unknown, not a confirmed dead item — don't confidently
+  // flag it a dud on an API outage (see marketCheckFailed above for the
+  // real case this caught live). The beta never checks the market, so its
+  // version is always an unknown ("unpriced").
+  const nothingToGoOn = async (): Promise<LineEstimateResult> => ({
+    upc: group.upc,
+    description: group.description,
+    extendedRetail: group.extendedRetail,
+    estimatedUnitSalePrice: null,
+    estimatedUnitFees: null,
+    estimatedUnitShipping: null,
+    estimatedNetPerUnit: null,
+    effectiveUnits,
+    typicalPackSize,
+    recommendedPackSize: packRecommendation?.packSize ?? null,
+    recommendedPackBasis: packRecommendation?.basis ?? null,
+    dataConfidence: compliant ? "unpriced" : "market_only",
+    flaggedDud: !compliant && !marketCheckFailed,
+    marketCheckFailed: compliant || marketCheckFailed,
+    marketTrend,
+    eventEnded: false,
+    postHolidayFiller: isPostHolidayFiller(group.description),
+    trendNudge: null,
+    seasonal: await seasonalNote(group.category, group.description),
+    // ownSalesCount and categorySalesCount are both necessarily 0 here
+    // (totalScore === 0), so there's nothing to compute a rate from.
+    slowMover: false,
+    monthsToSellThrough: null,
+  });
+  if (totalScore === 0 && !beta?.deepResearch) return nothingToGoOn();
 
   const preliminaryConfidence: LineEstimateResult["dataConfidence"] =
     ownScore >= historicalScore && ownScore >= categoryScore && ownScore >= marketScore && ownSalesCount >= 3
@@ -1373,7 +1558,9 @@ async function estimateLine(
         ? "historical_match"
         : categoryScore > marketScore || ownSalesCount > 0 || historicalSalesCount > 0
           ? "category_fallback"
-          : "market_only";
+          : compliant
+            ? "retail_estimate"
+            : "market_only";
 
   // Only worth spending a web-search call where it can actually change the
   // outcome: a line that would otherwise be priced off nothing more
@@ -1384,8 +1571,13 @@ async function estimateLine(
   // empty (a web search is unlikely to do better where a direct comp
   // search didn't). Uncapped by design — Cristian's call: check every line
   // that actually needs it, not an arbitrary count.
-  const rawWebCheckPrice =
-    preliminaryConfidence === "category_fallback" ? await getWebPriceCheck(group, evaluationId) : null;
+  // The beta has no comps, so the check is its main per-product signal:
+  // every deep line gets one unless our own sales of the UPC already decide
+  // it (historical_match is only a brand match, so those get one too).
+  const wantsWebCheck = beta
+    ? beta.deepResearch && preliminaryConfidence !== "own_history"
+    : preliminaryConfidence === "category_fallback";
+  const rawWebCheckPrice = wantsWebCheck ? await getWebPriceCheck(group, evaluationId, compliant) : null;
   // Same last-resort sanity cap as the market_only path below — a
   // web-search-derived number is still a guess, not a real sale, so it
   // shouldn't be trusted past a implausible multiple of the manifest's own
@@ -1409,6 +1601,7 @@ async function estimateLine(
   // totalScore (no shipping/fee data comes out of a price-only web check) —
   // only the sale-price blend gets the extra webCheckScore term.
   const priceTotalScore = totalScore + webCheckScore;
+  if (priceTotalScore === 0) return nothingToGoOn();
   const blendedSalePrice =
     (ownScore * ownAvgSalePrice +
       historicalScore * historicalAvgSalePrice +
@@ -1469,7 +1662,9 @@ async function estimateLine(
   // an 855-line manifest checking everything blew the 5,000/day limit.
   let sellRateSource: "own" | "ebay_listings" | "category" | null = null;
   let monthsToSellThroughEstimate: number | null = null;
-  if (ownSalesCount === 0 && rawNet > 0 && activeCompCount > 0) {
+  // Never in the beta: other sellers' sold counts are seller performance
+  // data (license 8.1(d)), so it goes own sales, then category, then none.
+  if (!compliant && ownSalesCount === 0 && rawNet > 0 && activeCompCount > 0) {
     sellRate ??= await measureMarketSpeed();
   }
   const marketMonths = monthsAtMarketRate(sellRate, effectiveUnits * manifestUnitPackSize, calibration.speed);
@@ -1506,11 +1701,11 @@ async function estimateLine(
   // the occasion itself has passed.
   let eventEnded = false;
   if (!postHolidayFiller && OCCASION_MERCH_PATTERN.test(group.description)) {
-    eventEnded = await isOccasionOutOfSeason(group, evaluationId, eventCheckBudget);
+    eventEnded = await isOccasionOutOfSeason(group, evaluationId, eventCheckBudget, compliant);
     if (eventEnded) flaggedDud = true;
   }
 
-  const trendNudge = runTrendCheck ? await getTrendNudge(group, evaluationId) : null;
+  const trendNudge = runTrendCheck ? await getTrendNudge(group, evaluationId, compliant) : null;
 
   // The pack-size agent (see src/lib/packAdvisor.ts) only for lines worth
   // listing; a dud keeps the free formula answer. Its decision is saved
@@ -1524,6 +1719,7 @@ async function estimateLine(
           category: group.category,
           packStats,
           evaluationId,
+          compliant,
         })
       : packRecommendation;
 
@@ -1564,8 +1760,13 @@ async function getSupplierReceiveRate(supplier: ManifestSupplier): Promise<numbe
   const [damaged, expected] = await Promise.all([
     // Arrival damage only: units a customer return wrote off weren't the
     // supplier's doing.
-    prisma.manifestDamagedEntry.aggregate({ _sum: { quantity: true }, where: { manifest: { supplier }, ...NOT_RETURN_ENTRY } }),
-    prisma.manifestLine.aggregate({ _sum: { expectedQuantity: true }, where: { manifest: { supplier } } }),
+    // Beta copies (analyzerBeta) repeat another manifest's lines, so they'd
+    // count its units twice.
+    prisma.manifestDamagedEntry.aggregate({
+      _sum: { quantity: true },
+      where: { manifest: { supplier, analyzerBeta: false }, ...NOT_RETURN_ENTRY },
+    }),
+    prisma.manifestLine.aggregate({ _sum: { expectedQuantity: true }, where: { manifest: { supplier, analyzerBeta: false } } }),
   ]);
   const damagedSum = damaged._sum.quantity ?? 0;
   const expectedSum = expected._sum.expectedQuantity ?? 0;
@@ -1730,8 +1931,14 @@ export async function evaluateManifestChunk(
 
   const remainingDeep = deepGroups.filter((g) => !doneKeys.has(g.groupKey));
   const remainingShallow = shallowGroups.filter((g) => !doneKeys.has(g.groupKey));
+
+  // Analyzer Beta: priced inside eBay's API License (see BetaPricing).
+  const compliant = manifest.analyzerBeta;
+  const recovery = compliant ? await ownRetailRecovery() : null;
+
   let budgetResetsAt: Date | null = null;
   async function checkBrowseBudget() {
+    if (compliant) return; // no Browse calls to budget for
     const budget = await getBrowseCallsRemaining().catch(() => null);
     if (budget && budget.remaining < BROWSE_CALLS_RESERVE) budgetResetsAt = budget.resetsAt;
   }
@@ -1754,7 +1961,8 @@ export async function evaluateManifestChunk(
       runTrendCheck,
       eventCheckBudget,
       { fullValueMonths: maxMonthsToSellThrough, longTailMonths },
-      calibration
+      calibration,
+      recovery ? { deepResearch: deepIndex != null, recovery } : null
     );
     await prisma.sourcingLineEstimate.create({
       data: {
@@ -1900,6 +2108,7 @@ export async function evaluateManifestChunk(
 
   const reasoning = await writeReasoning({
     evaluationId,
+    retailRecovery: recovery,
     manifestTitle: manifest.title,
     supplier: manifest.supplier,
     consignmentSupplierPct: manifest.consignment ? (manifest.consignmentSupplierPct ?? 50) : null,
@@ -2012,6 +2221,8 @@ const SELL_RATE_SOURCE_LABELS = {
 
 async function writeReasoning(input: {
   evaluationId: string;
+  // Set for an Analyzer Beta run, which never looked at eBay listings.
+  retailRecovery: RetailRecovery | null;
   manifestTitle: string;
   // Set for a consignment load (src/lib/consignment.ts): no bid at all.
   consignmentSupplierPct: number | null;
@@ -2040,8 +2251,15 @@ async function writeReasoning(input: {
   trendNudges: string[];
   marketTrends: string[];
 }): Promise<string> {
+  const beta = input.retailRecovery;
   const prompt = `You are explaining a liquidation manifest sourcing decision that has ALREADY been computed. Do not redo the math or change the call — just write a clear, plain-language explanation a busy reseller can read in 10 seconds and trust.
-
+${
+  beta
+    ? `
+How prices were estimated (this is the beta version of the analysis): from our own past sales, the manifest's retail price times the share of retail our own sales actually bring in (currently ${(beta.overall * 100).toFixed(0)}%, from ${beta.sampleSize} matched sale${beta.sampleSize === 1 ? "" : "s"} of ours, leaning on a 50% rule of thumb until there are more), and web research of store prices for the most valuable items. It does not look at other sellers' eBay listings, prices or sales at all, so never mention live comps, eBay listings or eBay demand. Sell speed comes only from our own sales.
+`
+    : ""
+}
 Manifest: "${input.manifestTitle}" from ${input.supplier}
 ${
   input.consignmentSupplierPct != null
@@ -2051,7 +2269,7 @@ Max recommended bid: $${input.maxBid.toFixed(2)}`
 }
 Expected net contribution before bid cost: $${input.totalExpectedNetContribution.toFixed(2)}
 Target margin used: ${input.targetMarginPct}%
-Expected net from lines bid cheap: $${input.unprovenNetContribution.toFixed(2)}. Two kinds: lines with NO sell-speed evidence at all (never sold by us, too few live listings to measure, no similar sales), and non-expiring lines that sell too slowly for full value but within a year. The owner is growing by reinvesting profit into more inventory and is fine holding slow, non-expiring stock, but only when it's cheap, since fast sellers free up cash sooner. These were bid at a ${input.unprovenMarginPct}% margin instead. Describe the slow ones as bonus profit the buy doesn't depend on: the fast sellers are what pay for the load.${input.unprovenLines.length > 0 ? ` Biggest ones:\n${input.unprovenLines.join("\n")}` : ""}
+Expected net from lines bid cheap: $${input.unprovenNetContribution.toFixed(2)}. Two kinds: lines with NO sell-speed evidence at all (${beta ? "never sold by us, no similar sales of ours" : "never sold by us, too few live listings to measure, no similar sales"}), and non-expiring lines that sell too slowly for full value but within a year. The owner is growing by reinvesting profit into more inventory and is fine holding slow, non-expiring stock, but only when it's cheap, since fast sellers free up cash sooner. These were bid at a ${input.unprovenMarginPct}% margin instead. Describe the slow ones as bonus profit the buy doesn't depend on: the fast sellers are what pay for the load.${input.unprovenLines.length > 0 ? ` Biggest ones:\n${input.unprovenLines.join("\n")}` : ""}
 Learned corrections from past bought loads (actual vs guessed, 1.00 = none yet): price ${input.calibration.price.toFixed(2)}, sell speed ${input.calibration.speed.toFixed(2)}.
 Supplier's real historical receive rate (after damage/expired): ${(input.receiveRate * 100).toFixed(0)}%
 Share of lines flagged as likely duds: ${(input.dudShare * 100).toFixed(0)}%
@@ -2066,7 +2284,11 @@ ${input.dudLines.map((l) => `- ${l.description} (UPC ${l.upc ?? "n/a"})`).join("
 Lines eBay doesn't allow listing at all (needles, prescription devices, COVID tests), valued at $0 and counted as duds (${input.bannedLineCount} total${input.bannedLineCount > 10 ? ", first 10 shown" : ""}):
 ${input.bannedLines.join("\n") || "none"}
 
-Lines where live eBay market data couldn't be checked at all right now (API outage/rate limit, not a confirmed lack of demand — NOT counted as duds, but genuinely unpriced): ${input.marketDataUnavailableCount}${input.marketDataUnavailableCount > 0 ? " — mention this as a real caveat (worth a re-run later for a fuller read), don't imply these items don't sell." : ""}
+${
+  beta
+    ? `Lines we couldn't price at all (no retail price on the manifest, no sales of ours, no web research for them): ${input.marketDataUnavailableCount}${input.marketDataUnavailableCount > 0 ? " — NOT counted as duds, just unpriced. Mention this as a real caveat, don't imply these items don't sell." : ""}`
+    : `Lines where live eBay market data couldn't be checked at all right now (API outage/rate limit, not a confirmed lack of demand — NOT counted as duds, but genuinely unpriced): ${input.marketDataUnavailableCount}${input.marketDataUnavailableCount > 0 ? " — mention this as a real caveat (worth a re-run later for a fuller read), don't imply these items don't sell." : ""}`
+}
 
 Lines flagged as licensed merch for an event that has already concluded (treated as dead stock regardless of live comps):
 ${input.expiredEventLines.join("\n") || "none"}
@@ -2085,10 +2307,14 @@ ${input.seasonalNotes.join("\n") || "none notable"}
 
 Trend signals (directional only, from live web search):
 ${input.trendNudges.join("\n") || "none notable"}
-
+${
+  beta
+    ? ""
+    : `
 Real measured market movement since we last checked these UPCs ourselves (our own repeated live comp checks over time — more reliable than the web-search signal above, since it's an actual price change we observed, not an LLM's read of outside chatter):
 ${input.marketTrends.join("\n") || "none notable — either no prior check to compare against yet, or nothing moved enough to be worth mentioning"}
-
+`
+}
 Write 3-6 sentences: which items drove the call, any supplier/category patterns applied, seasonal timing if relevant, any trend signal factored in (the measured market movement above and the web-search trend signal are different kinds of evidence — don't conflate them if both are mentioned). Never cite how much stock we already have on hand as a reason; the call is about whether these items sell. If any lines are ones eBay doesn't allow, say so plainly as its own reason (they can't be sold on eBay at any price, which is different from a weak market). If any slow movers were flagged, mention that plainly too — it's a different kind of caution from a plain margin/dud problem (a genuinely slow seller, not necessarily an unprofitable one) and worth calling out as its own reason, not lumped in with the other dud reasons. Plain language, no bullet points, no restating the raw numbers verbatim.`;
 
   try {

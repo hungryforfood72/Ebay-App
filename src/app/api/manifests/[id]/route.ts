@@ -35,6 +35,51 @@ function allocateSequentially(
   return allocated;
 }
 
+// For an Analyzer Beta copy: the manifest it was copied from and that
+// manifest's latest finished standard evaluation, so the beta page can put
+// the two side by side.
+async function betaComparison(sourceId: string | null) {
+  if (!sourceId) return { source: null, evaluation: null };
+  const source = await prisma.manifest.findUnique({ where: { id: sourceId }, select: { id: true, title: true } });
+  if (!source) return { source: null, evaluation: null };
+  const evaluation = await prisma.sourcingEvaluation.findFirst({
+    where: { manifestId: sourceId, status: "complete" },
+    orderBy: { startedAt: "desc" },
+    include: {
+      lineEstimates: {
+        select: {
+          upc: true,
+          description: true,
+          estimatedUnitSalePrice: true,
+          estimatedNetPerUnit: true,
+          effectiveUnits: true,
+          dataConfidence: true,
+          flaggedDud: true,
+        },
+      },
+    },
+  });
+  return {
+    source,
+    evaluation: evaluation && {
+      recommendation: evaluation.recommendation,
+      maxBid: evaluation.maxBid != null ? Number(evaluation.maxBid) : null,
+      expectedNetContribution: evaluation.expectedNetContribution != null ? Number(evaluation.expectedNetContribution) : null,
+      dudShare: evaluation.dudShare,
+      startedAt: evaluation.startedAt,
+      lineEstimates: evaluation.lineEstimates.map((e) => ({
+        upc: e.upc,
+        description: e.description,
+        estimatedUnitSalePrice: e.estimatedUnitSalePrice != null ? Number(e.estimatedUnitSalePrice) : null,
+        estimatedNetPerUnit: e.estimatedNetPerUnit != null ? Number(e.estimatedNetPerUnit) : null,
+        effectiveUnits: e.effectiveUnits,
+        dataConfidence: e.dataConfidence,
+        flaggedDud: e.flaggedDud,
+      })),
+    },
+  };
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -369,6 +414,8 @@ export async function GET(
     title: manifest.title,
     supplier: manifest.supplier,
     purchased: manifest.purchased,
+    analyzerBeta: manifest.analyzerBeta,
+    ...(isOwner && manifest.analyzerBeta ? { betaComparison: await betaComparison(manifest.betaSourceId) } : {}),
     ...(isOwner
       ? {
           bidStatus: manifest.bidStatus,
@@ -497,6 +544,15 @@ export async function PATCH(
     if (denied) return denied;
   }
 
+  // A beta copy is only for comparing evaluations: it's never bought, bid
+  // on or taken on consignment (it would turn into a duplicate real load).
+  if (["purchased", "bidStatus", "bidAmount", "consignment"].some((k) => k in body)) {
+    const current = await prisma.manifest.findUnique({ where: { id }, select: { analyzerBeta: true } });
+    if (current?.analyzerBeta) {
+      return NextResponse.json({ error: "Analyzer Beta copies can't be bought or bid on." }, { status: 400 });
+    }
+  }
+
   const data: Prisma.ManifestUpdateInput = {};
   if ("title" in body) data.title = String(body.title).trim();
   if ("totalLandedCost" in body) {
@@ -561,4 +617,19 @@ export async function PATCH(
     return NextResponse.json({ id: manifest.id, title: manifest.title });
   }
   return NextResponse.json(manifest);
+}
+
+// Deletes an Analyzer Beta copy (its lines and evaluations go with it).
+// Real manifests and Analyzer candidates are never deleted here.
+export async function DELETE(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const denied = ownerOnly(request);
+  if (denied) return denied;
+  const { id } = await params;
+  const manifest = await prisma.manifest.findUnique({ where: { id }, select: { analyzerBeta: true } });
+  if (!manifest) return NextResponse.json({ error: "Manifest not found." }, { status: 404 });
+  if (!manifest.analyzerBeta) {
+    return NextResponse.json({ error: "Only Analyzer Beta copies can be deleted." }, { status: 400 });
+  }
+  await prisma.manifest.delete({ where: { id } });
+  return NextResponse.json({ ok: true });
 }

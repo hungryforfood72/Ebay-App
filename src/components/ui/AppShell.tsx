@@ -7,6 +7,7 @@ import {
   ClipboardCheck,
   Ellipsis,
   FileSpreadsheet,
+  FlaskConical,
   History,
   House,
   LogOut,
@@ -81,6 +82,7 @@ const NAV: NavEntry[] = [
     label: "Insights",
     items: [
       { href: "/analyzer", label: "Analyzer", icon: ChartColumn, ownerOnly: true },
+      { href: "/analyzer/beta", label: "Analyzer Beta", icon: FlaskConical, ownerOnly: true },
       { href: "/reports/scan-speed", label: "Scan speed", icon: Timer, ownerOnly: true },
       { href: "/reports/analyzer-accuracy", label: "Analyzer accuracy", icon: Target, ownerOnly: true },
       { href: "/activity", label: "Activity log", icon: History, ownerOnly: true },

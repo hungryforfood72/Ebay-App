@@ -69,10 +69,15 @@ export async function advisePackSize(input: {
   // only found under Liquidation.com shorthand) showed no card at all. The
   // Analyzer leaves it off, keeping its "no listings, no call" behavior.
   allowNoListings?: boolean;
+  // Analyzer Beta (eBay API License, see compliant in sourcingAgent.ts):
+  // decides without other sellers' listings, and stays out of PackDecision
+  // both ways. Saved calls were made from live listings, and a beta call
+  // saved there would replace what the scan page shows Lizvet.
+  compliant?: boolean;
 }): Promise<PackAdvice | null> {
-  if (input.packStats.length === 0 && !input.allowNoListings) return null;
+  if (input.packStats.length === 0 && !input.allowNoListings && !input.compliant) return null;
 
-  if (input.upc) {
+  if (input.upc && !input.compliant) {
     const saved = await savedPackDecision(input.upc);
     if (saved) return saved;
   }
@@ -99,6 +104,8 @@ export async function advisePackSize(input: {
   ]);
   const prompt = buildPrompt({
     ...input,
+    packStats: input.compliant ? [] : input.packStats,
+    compliant: input.compliant ?? false,
     lessons: lessons?.notes ?? null,
     examples,
     ownHistory,
@@ -143,7 +150,7 @@ export async function advisePackSize(input: {
     if (!Number.isInteger(packSize) || packSize < 1 || packSize > MAX_RECOMMENDED_PACK || !reason) {
       throw new Error(`unusable answer: ${JSON.stringify(parsed)}`);
     }
-    if (input.upc) {
+    if (input.upc && !input.compliant) {
       await prisma.packDecision
         .create({ data: { upc: input.upc, packSize, reason, unitWeightOz } })
         .catch((e) => console.error(`[packAdvisor] failed to save decision for ${input.upc}`, e));
@@ -288,6 +295,7 @@ function buildPrompt(input: {
   retailPrice: number | null;
   category: string | null;
   packStats: PackStat[];
+  compliant: boolean;
   lessons: string | null;
   shipping: { typicalLabel: number; unitWeightOz: number | null };
   examples: { description: string; suggestedPackSize: number | null; chosenPackSize: number; reason: string }[];
@@ -337,8 +345,12 @@ Product: "${input.description}"
 Store retail per unit (from the liquidation manifest): ${input.retailPrice != null && input.retailPrice > 0 ? money(input.retailPrice) : "unknown"}
 Category: ${input.category ?? "unknown"}
 
-Live eBay listings by pack size:
-${market || "None. Nobody has this exact product listed on eBay right now (searched by UPC and by name), so there's nothing to compare against. Decide from what the product is, its store retail price and the costs below, and say in the reason that there were no eBay listings to go by."}
+${
+  input.compliant
+    ? "Other sellers' eBay listings: not used. This call is made without looking at other sellers' listings or prices. Decide from what the product is, its store retail price, Cristian's own history and the costs below. Don't mention other listings in the reason."
+    : `Live eBay listings by pack size:
+${market || "None. Nobody has this exact product listed on eBay right now (searched by UPC and by name), so there's nothing to compare against. Decide from what the product is, its store retail price and the costs below, and say in the reason that there were no eBay listings to go by."}`
+}
 
 Cost assumptions behind "keep about": eBay fees ~${(FALLBACK_FEE_RATE * 100).toFixed(2)}% + ${money(FALLBACK_FEE_FIXED)}, ${shippingLine}. When a bigger pack ships for the same label, it usually keeps much more per listing, so weigh that against how much slower a bigger pack might sell. You can pick a pack size nobody lists yet if your reasoning supports it.
 
