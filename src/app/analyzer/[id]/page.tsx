@@ -40,7 +40,7 @@ type SourcingLineEstimate = {
   flaggedDud: boolean;
   slowMover: boolean;
   monthsToSellThrough: number | null;
-  sellRateSource: "own" | "ebay_listings" | "web_demand" | "category" | null;
+  sellRateSource: "own" | "ebay_listings" | "web_demand" | "quick_demand" | "category" | null;
   longTail: boolean;
 };
 

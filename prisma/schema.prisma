@@ -733,6 +733,10 @@ model SourcingEvaluation {
   // SourcingCalibration), so every chunk uses the same correction.
   priceCalibration           Float?
   speedCalibration           Float?
+  // Same, for the quick no-search demand read on lines past the top 150
+  // (sellRateSource "quick_demand"). Learned separately: it's a weaker read
+  // than the searched one, so it gets its own correction.
+  quickSpeedCalibration      Float?
   // Soft per-evaluation cap on live web-search event-status checks (see
   // MAX_EVENT_CHECKS) — tracked across chunks so a manifest heavy on
   // occasion-tied merch can't re-earn a fresh budget on every continuation.
@@ -849,7 +853,7 @@ model SourcingKnowledge {
 // web-search calls.
 model ResearchObservation {
   id             String   @id @default(uuid())
-  kind           String // "price" | "event" | "trend"
+  kind           String // "price" | "event" | "trend" | "quick"
   // Matched by UPC when the item has one, else by descriptionKey (the
   // description lowercased with punctuation/whitespace collapsed).
   upc            String?
@@ -860,7 +864,11 @@ model ResearchObservation {
   // couldn't price it.
   price          Decimal? @db.Decimal(10, 2)
   // kind "event": "YES" | "NO" | "UNSURE". kind "trend": the one-line
-  // signal, or "NONE".
+  // signal, or "NONE". kind "price" (compliant) and "quick": the demand
+  // tier, FAST | NORMAL | SLOW | DEAD | UNKNOWN.
+  // kind "quick": the Analyzer's no-search read on lines past the top 150,
+  // many products per call, from the model's own knowledge. price is its
+  // rough guess, kept as data only (nothing prices off it yet).
   verdict        String?
   // One short line on what the model found, shown back to it next time.
   note           String?

@@ -309,7 +309,10 @@ export async function updateCalibration(): Promise<{ price: number; speed: numbe
 // The live (compliant) Analyzer's own corrections ("compliant_price",
 // "compliant_speed"): its prices come from retail and store research and
 // its speed from the outside-eBay demand read (web_demand), so the legacy
-// Analyzer's corrections for live comps don't fit it.
+// Analyzer's corrections for live comps don't fit it. The quick no-search
+// read on lines past the top 150 (quick_demand) gets its own speed
+// correction ("compliant_quick_speed"): it's a weaker read, so it may be
+// off in its own direction.
 async function updateCompliantCalibration(): Promise<void> {
   const outcomes = await prisma.predictionOutcome.findMany({
     where: { variant: "compliant", OR: [{ priceRatio: { not: null } }, { speedRatio: { not: null } }] },
@@ -319,28 +322,39 @@ async function updateCompliantCalibration(): Promise<void> {
     outcomes.filter((o) => o.priceRatio != null && o.dataConfidence !== "own_history").map((o) => o.priceRatio!),
     PRICE_FACTOR_BOUNDS
   );
-  const speed = correction(
-    outcomes
-      .filter(
-        (o) =>
-          o.speedRatio != null &&
-          o.sellRateSource === "web_demand" &&
-          ((o.monthsActive ?? 0) >= MIN_MONTHS_FOR_SPEED_CALIBRATION || o.soldUnits >= o.listedUnits)
-      )
-      .map((o) => Math.min(o.speedRatio!, 10)),
-    SPEED_FACTOR_BOUNDS
-  );
+  const speedFor = (source: string) =>
+    correction(
+      outcomes
+        .filter(
+          (o) =>
+            o.speedRatio != null &&
+            o.sellRateSource === source &&
+            ((o.monthsActive ?? 0) >= MIN_MONTHS_FOR_SPEED_CALIBRATION || o.soldUnits >= o.listedUnits)
+        )
+        .map((o) => Math.min(o.speedRatio!, 10)),
+      SPEED_FACTOR_BOUNDS
+    );
+  const speed = speedFor("web_demand");
+  const quickSpeed = speedFor("quick_demand");
   await prisma.$transaction([
     prisma.sourcingCalibration.upsert({ where: { kind: "compliant_price" }, create: { kind: "compliant_price", ...price }, update: price }),
     prisma.sourcingCalibration.upsert({ where: { kind: "compliant_speed" }, create: { kind: "compliant_speed", ...speed }, update: speed }),
+    prisma.sourcingCalibration.upsert({
+      where: { kind: "compliant_quick_speed" },
+      create: { kind: "compliant_quick_speed", ...quickSpeed },
+      update: quickSpeed,
+    }),
   ]);
 }
 
-export async function getCalibration(variant: "legacy" | "compliant" = "compliant"): Promise<{ price: number; speed: number }> {
+export async function getCalibration(
+  variant: "legacy" | "compliant" = "compliant"
+): Promise<{ price: number; speed: number; quickSpeed: number }> {
   const rows = await prisma.sourcingCalibration.findMany();
   const prefix = variant === "compliant" ? "compliant_" : "";
   const factor = (kind: string) => rows.find((r) => r.kind === `${prefix}${kind}`)?.factor ?? 1;
-  return { price: factor("price"), speed: factor("speed") };
+  // quickSpeed only exists for the live Analyzer; the legacy one reads 1.
+  return { price: factor("price"), speed: factor("speed"), quickSpeed: factor("quick_speed") };
 }
 
 function describeOutcome(o: {

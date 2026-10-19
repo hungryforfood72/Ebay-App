@@ -240,7 +240,7 @@ type MarketSellRate = { unitsPerMonth: number | null; sampled: number };
 
 // Corrections learned by the prediction tracker (src/lib/predictionTracker.ts)
 // from bought manifests: actual / guessed, 1 = none.
-type Calibration = { price: number; speed: number };
+type Calibration = { price: number; speed: number; quickSpeed: number };
 
 async function marketSellRate(comps: ActiveListingComp[]): Promise<MarketSellRate> {
   const sample = comps.filter((c) => !isResellerLot(c.title, detectPackSize(c.title))).slice(0, SALES_SAMPLE_SIZE);
@@ -541,7 +541,7 @@ function webSearchTool(compliant: boolean) {
 // copied, since a price from 6 months ago may no longer be right.
 // ---------------------------------------------------------------------------
 
-type ResearchKind = "price" | "event" | "trend";
+type ResearchKind = "price" | "event" | "trend" | "quick";
 type ResearchSubject = { upc: string | null; description: string };
 
 // Web data younger than this is reused with no API call at all. Also what
@@ -872,6 +872,150 @@ PRICE: 17.50 (a plain number, no currency symbol) or PRICE: UNKNOWN`;
 }
 
 // ---------------------------------------------------------------------------
+// Quick demand read for the lines past the top MAX_DEEP_RESEARCH_LINES.
+// Those used to get no product-specific "will it sell" check at all, and on
+// a big manifest that was half the units (855-product Pallet 2: the top 150
+// covered 60% of retail, 50% of units). A web check on every one would cost
+// ~$20 a manifest, so these go QUICK_BATCH_SIZE products per call with no
+// web search: the model rates demand from what it already knows, which
+// catches the obvious duds (discontinued, seasonal leftovers, junk) for
+// pennies. Cristian, 2026-10-19: collect as much data as possible so the
+// agents keep learning. Every answer is kept (ResearchObservation kind
+// "quick", with its rough price as data), and lines priced off it carry
+// sellRateSource "quick_demand", so the prediction tracker scores this read
+// on its own and learns its own speed correction (compliant_quick_speed).
+// ---------------------------------------------------------------------------
+const QUICK_BATCH_SIZE = 25;
+const QUICK_REUSE_DAYS = 14;
+
+type QuickDemandRead = { demand: DemandTier | null; price: number | null; note: string | null };
+
+// Fresh research on file wins over asking again: a searched price check
+// (kind "price", which also rates demand) beats a quick read.
+async function freshQuickReads(groups: LineGroup[]): Promise<Map<string, QuickDemandRead>> {
+  const out = new Map<string, QuickDemandRead>();
+  if (groups.length === 0) return out;
+  const since = new Date(Date.now() - QUICK_REUSE_DAYS * 24 * 60 * 60 * 1000);
+  const upcs = groups.map((g) => g.upc).filter((u): u is string => Boolean(u));
+  const keys = groups.filter((g) => !g.upc).map((g) => descriptionKey(g.description));
+  const rows = await prisma.researchObservation.findMany({
+    where: {
+      kind: { in: ["price", "quick"] },
+      compliant: true,
+      verdict: { not: null },
+      basisAt: { gte: since },
+      OR: [{ upc: { in: upcs } }, { upc: null, descriptionKey: { in: keys } }],
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  for (const g of groups) {
+    const key = g.upc ? null : descriptionKey(g.description);
+    const mine = rows.filter((r) => (g.upc ? r.upc === g.upc : r.descriptionKey === key));
+    const best = mine.find((r) => r.kind === "price") ?? mine[0];
+    if (best) {
+      out.set(g.groupKey, {
+        demand: parseDemandTier(best.verdict),
+        price: best.price != null ? Number(best.price) : null,
+        note: best.note,
+      });
+    }
+  }
+  return out;
+}
+
+async function quickReadBatch(batch: LineGroup[], evaluationId: string): Promise<Map<string, QuickDemandRead>> {
+  const out = new Map<string, QuickDemandRead>();
+  const list = batch
+    .map(
+      (g, i) =>
+        `${i + 1}. ${g.description}${g.upc ? ` (UPC ${g.upc})` : ""}${g.retailPrice > 0 ? `, retail $${g.retailPrice.toFixed(2)}` : ""}`
+    )
+    .join("\n");
+  try {
+    const response = await anthropic.messages.create(
+      {
+        model: "claude-haiku-4-5",
+        max_tokens: 3000,
+        messages: [
+          {
+            role: "user",
+            content: `You're helping a liquidation reseller decide which products from a pallet are worth listing online. For each product below, judge from what you already know (no searching) how well it sells right now as a new, unused item, and roughly what a reseller would get for one (liquidation goods usually go for 40-70% of the usual store price).
+
+Rate demand:
+- FAST: clearly popular, a well-known best seller
+- NORMAL: a steady seller people still buy
+- SLOW: niche, fading, very specialized, or easy to grab cheaply at any store
+- DEAD: discontinued with no following, a seasonal or event item whose moment has passed, or junk nobody looks for
+- UNKNOWN: you don't recognize it well enough to judge
+Be honest: UNKNOWN is better than a guess. Judge demand for the product itself, not its price. Today is ${new Date().toISOString().slice(0, 10)}.
+
+Products:
+${list}
+
+Answer with exactly one line per product, in order, and nothing else:
+<number> | <DEMAND> | <price as one plain number like 12.50, not a range, or UNKNOWN> | <a few words on why>`,
+          },
+        ],
+      },
+      { timeout: 60_000, maxRetries: 1 }
+    );
+    await logAiUsage("sourcing.quick_demand", response, { evaluationId });
+    for (const line of extractText(response.content).split("\n")) {
+      const parts = line.split("|").map((p) => p.trim());
+      if (parts.length < 3) continue;
+      const g = batch[Number(parts[0].replace(/[^\d]/g, "")) - 1];
+      if (!g || out.has(g.groupKey)) continue;
+      // Asked for one number, but a range ("9-11") still comes back
+      // sometimes: take its midpoint.
+      const nums = (parts[2].replace(/[$,]/g, "").match(/\d+(?:\.\d+)?/g) ?? []).slice(0, 2).map(Number);
+      const parsedPrice = nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : NaN;
+      const read: QuickDemandRead = {
+        demand: parseDemandTier(parts[1].toUpperCase()),
+        price: Number.isFinite(parsedPrice) && parsedPrice > 0 ? Math.round(parsedPrice * 100) / 100 : null,
+        note: parts.slice(3).join(" | ").slice(0, 300) || null,
+      };
+      out.set(g.groupKey, read);
+      await recordResearch(
+        "quick",
+        g,
+        { price: read.price, verdict: read.demand ?? "UNKNOWN", note: read.note, searched: false, basisAt: new Date() },
+        evaluationId,
+        true
+      );
+    }
+  } catch (e) {
+    console.error(`[sourcingAgent] quick demand batch failed (${batch.length} lines)`, e);
+  }
+  return out;
+}
+
+// complete: every batch ran (a failed one counts: retrying it forever isn't
+// worth stalling the run). false only when the deadline stopped batches
+// from starting, so the caller waits for the next chunk, which reuses
+// everything saved here, instead of pricing lines without their read.
+async function quickDemandReads(
+  groups: LineGroup[],
+  evaluationId: string,
+  shouldStop: () => boolean
+): Promise<{ reads: Map<string, QuickDemandRead>; complete: boolean }> {
+  const reads = await freshQuickReads(groups);
+  const todo = groups.filter((g) => !reads.has(g.groupKey));
+  const batches: LineGroup[][] = [];
+  for (let i = 0; i < todo.length; i += QUICK_BATCH_SIZE) batches.push(todo.slice(i, i + QUICK_BATCH_SIZE));
+  let ran = 0;
+  await mapWithConcurrency(
+    batches,
+    4,
+    async (batch) => {
+      for (const [k, v] of await quickReadBatch(batch, evaluationId)) reads.set(k, v);
+      ran++;
+    },
+    shouldStop
+  );
+  return { reads, complete: ran === batches.length };
+}
+
+// ---------------------------------------------------------------------------
 // Occasion-tied merchandise not covered by the cheap deterministic checks
 // above — either a one-time event (World Cup, Super Bowl, Olympics — never
 // recurs the same way) or a named holiday/observance not in
@@ -1005,12 +1149,13 @@ type LineEstimateResult = {
   // slowSellerTier).
   longTail?: boolean;
   // Where monthsToSellThrough came from, and the market rate when measured.
-  // web_demand: Analyzer Beta only (see DemandTier).
+  // web_demand: Analyzer Beta only (see DemandTier). quick_demand: the
+  // no-search read on lines past the top 150 (see quickDemandReads).
   sellRateSource?: SellRateSource | null;
   listingUnitsPerMonth?: number | null;
 };
 
-type SellRateSource = "own" | "ebay_listings" | "web_demand" | "category";
+type SellRateSource = "own" | "ebay_listings" | "web_demand" | "quick_demand" | "category";
 
 // Other-supplier manifests (supplier "unknown", uploaded through the
 // column mapper). Cristian's call 2026-10-15: these three fixes apply ONLY
@@ -1195,7 +1340,14 @@ export async function ownRetailRecovery(): Promise<RetailRecovery> {
 // the line is in the top MAX_DEEP_RESEARCH_LINES by value, so it gets a web
 // price check (the beta's main per-product signal, about $0.04 each).
 // savePackDecisions: hand the pack-size call to the scan page (PackDecision).
-type BetaPricing = { deepResearch: boolean; recovery: RetailRecovery; savePackDecisions: boolean } | null;
+// quickDemand: a line past the top 150's no-search demand read (see
+// quickDemandReads); null for deep lines and when the read had no answer.
+type BetaPricing = {
+  deepResearch: boolean;
+  recovery: RetailRecovery;
+  savePackDecisions: boolean;
+  quickDemand: DemandTier | null;
+} | null;
 
 // Other-supplier lines in the beta: the standard path prices them off exact
 // eBay listings per box, which the beta can't use, so they're priced like
@@ -1613,7 +1765,9 @@ async function estimateLine(
     recommendedPackSize: packRecommendation?.packSize ?? null,
     recommendedPackBasis: packRecommendation?.basis ?? null,
     dataConfidence: compliant ? "unpriced" : "market_only",
-    flaggedDud: !compliant && !marketCheckFailed,
+    // The beta can't price it, but a quick read that says nobody buys it
+    // is still a dud call.
+    flaggedDud: compliant ? beta?.quickDemand === "DEAD" : !marketCheckFailed,
     marketCheckFailed: compliant || marketCheckFailed,
     marketTrend,
     eventEnded: false,
@@ -1741,7 +1895,8 @@ async function estimateLine(
   let monthsToSellThroughEstimate: number | null = null;
   // Never in the beta: other sellers' sold counts are seller performance
   // data (license 8.1(d)). It goes own sales, then its outside-eBay demand
-  // read (web_demand, deep lines only), then category, then none.
+  // read (web_demand, deep lines only), then the quick no-search read
+  // (quick_demand, lines past the top 150), then category, then none.
   if (!compliant && ownSalesCount === 0 && rawNet > 0 && activeCompCount > 0) {
     sellRate ??= await measureMarketSpeed();
   }
@@ -1755,6 +1910,11 @@ async function estimateLine(
   } else if (webCheck?.demand) {
     sellRateSource = "web_demand";
     monthsToSellThroughEstimate = monthsAtDemandTier(webCheck.demand, effectiveUnits, calibration.speed);
+  } else if (beta?.quickDemand) {
+    // A read on this exact product, even unsearched, says more than the
+    // average of everything we've sold in its category.
+    sellRateSource = "quick_demand";
+    monthsToSellThroughEstimate = monthsAtDemandTier(beta.quickDemand, effectiveUnits, calibration.quickSpeed);
   } else if (categorySalesCount > 0) {
     sellRateSource = "category";
     monthsToSellThroughEstimate = computeMonthsToSellThrough(categoryRecentUnits, effectiveUnits);
@@ -1933,7 +2093,11 @@ export async function evaluateManifestChunk(
     // Evaluations started before these existed resume with the defaults.
     longTailMonths = evaluation.longTailMonths ?? maxMonthsToSellThrough;
     unprovenMarginPct = evaluation.unprovenMarginPct ?? targetMarginPct;
-    calibration = { price: evaluation.priceCalibration ?? 1, speed: evaluation.speedCalibration ?? 1 };
+    calibration = {
+      price: evaluation.priceCalibration ?? 1,
+      speed: evaluation.speedCalibration ?? 1,
+      quickSpeed: evaluation.quickSpeedCalibration ?? 1,
+    };
   } else {
     targetMarginPct = await getTargetMarginPct();
     receiveRate = await getSupplierReceiveRate(manifest.supplier);
@@ -1952,6 +2116,7 @@ export async function evaluateManifestChunk(
         longTailMonths,
         priceCalibration: calibration.price,
         speedCalibration: calibration.speed,
+        quickSpeedCalibration: calibration.quickSpeed,
       },
     });
   }
@@ -2038,6 +2203,9 @@ export async function evaluateManifestChunk(
     used: 0,
   };
 
+  // Filled just before the shallow pass (see quickDemandReads).
+  let quickReads = new Map<string, QuickDemandRead>();
+
   async function runAndPersist(group: LineGroup): Promise<void> {
     const deepIndex = deepIndexByKey.get(group.groupKey);
     const runTrendCheck = deepIndex != null && deepIndex < MAX_TREND_CHECKS;
@@ -2049,7 +2217,14 @@ export async function evaluateManifestChunk(
       eventCheckBudget,
       { fullValueMonths: maxMonthsToSellThrough, longTailMonths },
       calibration,
-      recovery ? { deepResearch: deepIndex != null, recovery, savePackDecisions } : null
+      recovery
+        ? {
+            deepResearch: deepIndex != null,
+            recovery,
+            savePackDecisions,
+            quickDemand: deepIndex == null ? (quickReads.get(group.groupKey)?.demand ?? null) : null,
+          }
+        : null
     );
     await prisma.sourcingLineEstimate.create({
       data: {
@@ -2097,7 +2272,20 @@ export async function evaluateManifestChunk(
   // actually done — if the deadline cut deep research short, the next chunk
   // should pick up the rest of THAT first, not skip ahead to cheaper lines.
   if (deepDone && !pastDeadline()) {
-    await mapWithConcurrency(remainingShallow, 5, runAndPersist, pastDeadline);
+    // The live Analyzer gives every line past the top 150 a quick demand
+    // read first, batched (see quickDemandReads). Banned lines are $0
+    // whatever it says, so they're not asked about.
+    let quickComplete = true;
+    if (compliant) {
+      const quick = await quickDemandReads(
+        remainingShallow.filter((g) => !ebayBanReason(g.description)),
+        evaluationId,
+        pastDeadline
+      );
+      quickReads = quick.reads;
+      quickComplete = quick.complete;
+    }
+    if (quickComplete) await mapWithConcurrency(remainingShallow, 5, runAndPersist, pastDeadline);
   }
 
   if (eventCheckBudget.used > 0) {
@@ -2247,7 +2435,7 @@ export async function evaluateManifestChunk(
               ? `~${e.monthsToSellThrough.toFixed(1)} months to sell through`
               : e.sellRateSource === "ebay_listings"
                 ? "live eBay listings of it show essentially no sales"
-                : e.sellRateSource === "web_demand"
+                : e.sellRateSource === "web_demand" || e.sellRateSource === "quick_demand"
                   ? "demand signals outside eBay show essentially no one buying it"
                   : "no recent sales at all despite real history — effectively stalled"
           } (${SELL_RATE_SOURCE_LABELS[e.sellRateSource ?? "own"]})`
@@ -2306,6 +2494,7 @@ const SELL_RATE_SOURCE_LABELS = {
   own: "based on our own recent sales",
   ebay_listings: "based on how fast other sellers' live listings of it sell",
   web_demand: "based on demand signals outside eBay, like Amazon sales",
+  quick_demand: "based on a quick read of the product, no search",
   category: "based on our sales of similar items",
 } as const;
 

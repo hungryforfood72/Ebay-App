@@ -167,6 +167,10 @@ export default function AnalyzerAccuracyPage() {
   const dudsThatSold = dudCalls.filter((o) => o.soldUnits > 0).length;
   const price = correctionText(report?.calibration.find((c) => c.kind === "price"), "price");
   const speed = correctionText(report?.calibration.find((c) => c.kind === "speed"), "sell-speed");
+  // The live Analyzer's quick no-search read (lines past the top 150) learns
+  // its own speed correction.
+  const quickRow = report?.calibration.find((c) => c.kind === "quick_speed");
+  const quickSpeed = quickRow ? correctionText(quickRow, "quick-read speed") : null;
 
   return (
     <AppShell
@@ -189,10 +193,11 @@ export default function AnalyzerAccuracyPage() {
 
         {report && (
           <>
-            <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <section className={cn("grid grid-cols-2 gap-3", quickSpeed ? "lg:grid-cols-5" : "lg:grid-cols-4")}>
               <Stat label="Products tracked" value={outcomes.length} hint={`${withSales} with sales so far`} />
               <Stat label="Price correction" value={price.value} hint={price.hint} />
               <Stat label="Sell-speed correction" value={speed.value} hint={speed.hint} />
+              {quickSpeed && <Stat label="Quick-read speed correction" value={quickSpeed.value} hint={quickSpeed.hint} />}
               <Stat
                 label="Dud calls that sold"
                 value={dudCalls.length ? `${dudsThatSold} of ${dudCalls.length}` : "—"}
