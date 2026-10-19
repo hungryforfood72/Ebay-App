@@ -14,6 +14,7 @@ import { useCurrentUser } from "@/components/UserNav";
 import { Pencil, ScanBarcode } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState, use as usePromise } from "react";
+import { SortingSection, type SortingSummary, type SortStatus } from "./SortingSection";
 
 // retailPrice/extendedRetail/weightedCogsPerUnit/soldRevenue/soldFees/profit
 // are all financial fields the API omits for an employee (see
@@ -45,6 +46,9 @@ type Line = {
   soldCogs?: number | null;
   // Revenue − fees − shipping − refunds − COGS.
   profit?: number | null;
+  // Sort station count (see SortingSection).
+  sortedGood?: number;
+  sortStatus?: SortStatus;
 };
 
 type SourcingLineEstimate = {
@@ -91,6 +95,8 @@ type ManifestDetail = {
   unmatchedDud: { upc: string | null; units: number }[];
   unmatchedSold: { upc: string | null; units: number; revenue?: number; fees?: number }[];
   sourcingEvaluation?: SourcingEvaluation | null;
+  sorting?: SortingSummary;
+  sortExtras?: { upc: string; units: number }[];
   summary: {
     totalExpectedUnits: number;
     totalReceivedUnits: number;
@@ -307,6 +313,16 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
       }
     >
       <div className="flex flex-col gap-6">
+        {/* Only for loads that went through the sort station. */}
+        {manifest.sorting && (manifest.sorting.started || manifest.sorting.sortedAt) && (
+          <SortingSection
+            sorting={manifest.sorting}
+            lines={manifest.lines}
+            extras={manifest.sortExtras ?? []}
+            isOwner={isOwner}
+          />
+        )}
+
         <section>
           <SectionHeader title="Reconciliation" />
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">

@@ -45,6 +45,7 @@ import type { RelistPart, RelistPlan } from "@/lib/relist";
 import { upcMatchKeys } from "@/lib/upcMatch";
 import { classifyScan, normalizeCode } from "@/lib/warehouse/codes";
 import type { ReturnListingPlan } from "@/lib/warehouse/returns";
+import type { SortLocation } from "@/lib/warehouse/sortBoxes";
 import { Suspense, useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
 
 type Photo = {
@@ -311,6 +312,15 @@ function ScanPageInner() {
   // DB label). Every item saved this way is Shopify & Whatnot only and on
   // the box's manifest; the lister isn't asked about channels.
   const [dudBox, setDudBox] = useState<DudBoxInfo | null>(null);
+  // Warehouse mode, listing into a manifest: the load was sorted into sort
+  // boxes first. Scanning a product pulls every unit of it out of its boxes
+  // to the table (POST /api/sort-boxes/pull); this is what to go grab, for
+  // the UPC it was pulled for.
+  const [sortPull, setSortPull] = useState<{
+    upc: string;
+    pulled: { boxCode: string; units: number }[];
+    locations: SortLocation[];
+  } | null>(null);
   const [dudBoxScan, setDudBoxScan] = useState("");
   const preDudManifest = useRef<string | null | undefined>(undefined);
 
@@ -792,6 +802,7 @@ function ScanPageInner() {
     setBoxScan("");
     setTypedWeight(false);
     setWeightIsFresh(false);
+    setSortPull(null);
     // Shelf location, box size, weight, and isBundle are left as-is — items
     // are usually scanned in batches from the same bin into the same box
     // type (and often the same mode), so keeping the selection saves
@@ -1101,7 +1112,45 @@ function ScanPageInner() {
         return;
       }
     }
+    if (step === "upc") pullFromSortBoxes(upc.trim());
     if (stepIndex < steps.length - 1) setStep(steps[stepIndex + 1]);
+  }
+
+  // Warehouse mode, listing into a manifest: every unit of this product
+  // still in a sort box is now at the table (Cristian: no box-by-box
+  // scanning). Doesn't hold up the next step; scanning the same product
+  // again pulls nothing new. Not for dud box listing (those were never
+  // sorted as good). Off mode: never called.
+  function pullFromSortBoxes(code: string) {
+    if (!warehouseMode || !activeManifestId || !code || dudBox || relist || returnPlan) return;
+    const manifestId = activeManifestId;
+    fetch("/api/sort-boxes/pull", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ manifestId, upc: code }),
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data || !Array.isArray(data.pulled)) return;
+        setSortPull({ upc: code, pulled: data.pulled, locations: data.locations ?? [] });
+      })
+      .catch(() => {
+        // No sort box info is fine: the lister has the product in hand.
+      });
+  }
+
+  // "Left some here": puts units back on that box's count.
+  async function putBackInBox(boxCode: string, units: number): Promise<string | null> {
+    if (!sortPull || !activeManifestId) return "Scan the product again.";
+    const r = await fetch("/api/sort-boxes/put-back", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ manifestId: activeManifestId, upc: sortPull.upc, boxCode, units }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) return data.error ?? "Couldn't put them back.";
+    setSortPull((prev) => (prev ? { ...prev, locations: data.locations ?? prev.locations } : prev));
+    return null;
   }
 
   // overrides: warehouse mode's box scan saving in the same moment it
@@ -1780,6 +1829,10 @@ function ScanPageInner() {
               )}
             </div>
           </div>
+        )}
+
+        {warehouseMode && sortPull && sortPull.upc === upc.trim() && step !== "mode" && step !== "upc" && (
+          <SortBoxesCard pull={sortPull} onPutBack={putBackInBox} />
         )}
 
         <StepProgress current={stepIndex} total={steps.length} />
@@ -2685,6 +2738,93 @@ function ModeTile({
       </span>
       {label}
     </button>
+  );
+}
+
+// Where this product's units were in the sort boxes, so the lister (or a
+// helper) can grab them all at once. "Left some here" fixes a box's count
+// when not every unit got taken out.
+function SortBoxesCard({
+  pull,
+  onPutBack,
+}: {
+  pull: { pulled: { boxCode: string; units: number }[]; locations: SortLocation[] };
+  onPutBack: (boxCode: string, units: number) => Promise<string | null>;
+}) {
+  const [openBox, setOpenBox] = useState<string | null>(null);
+  const [units, setUnits] = useState("1");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  if (pull.locations.length === 0) {
+    return <p className="text-xs text-muted-foreground">Not sorted into boxes.</p>;
+  }
+  const total = pull.pulled.reduce((sum, p) => sum + p.units, 0);
+  const pulledBefore = pull.locations.reduce((sum, l) => sum + l.pulled, 0);
+  const pulledBoxes = pull.locations.filter((l) => l.pulled > 0);
+
+  async function save(boxCode: string) {
+    const n = Number(units);
+    if (!Number.isInteger(n) || n < 1) return setNote("Enter how many are still in the box.");
+    setBusy(true);
+    const error = await onPutBack(boxCode, n);
+    setBusy(false);
+    setNote(error ?? `Put ${n} back in ${boxCode}.`);
+    if (!error) setOpenBox(null);
+  }
+
+  return (
+    <div className="rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2.5 text-sm text-indigo-950">
+      <p className="font-semibold">
+        {total > 0
+          ? `${total} here: ${pull.pulled.map((p) => `${p.boxCode} x${p.units}`).join(", ")}. Grab them all.`
+          : `Already pulled to the table: ${pulledBefore}.`}
+      </p>
+      {pulledBoxes.length > 0 && (
+        <ul className="mt-1.5 flex flex-col gap-1">
+          {pulledBoxes.map((l) => (
+            <li key={l.boxCode}>
+              <div className="flex items-center justify-between gap-2">
+                <span className="tabular-nums">
+                  {l.boxCode}: {l.pulled} pulled
+                  {l.inBox > 0 ? `, ${l.inBox} left in the box` : ""}
+                </span>
+                <button
+                  type="button"
+                  className="shrink-0 text-xs font-medium underline"
+                  onClick={() => {
+                    setOpenBox(openBox === l.boxCode ? null : l.boxCode);
+                    setUnits("1");
+                    setNote(null);
+                  }}
+                >
+                  Left some here
+                </button>
+              </div>
+              {openBox === l.boxCode && (
+                <div className="mt-1.5 flex items-center gap-2">
+                  <Input
+                    type="number"
+                    min={1}
+                    max={l.pulled}
+                    inputMode="numeric"
+                    aria-label={`How many are still in ${l.boxCode}`}
+                    className="w-24"
+                    value={units}
+                    onChange={(e) => setUnits(e.target.value)}
+                    onWheel={(e) => e.currentTarget.blur()}
+                  />
+                  <Button size="sm" variant="outline" onClick={() => save(l.boxCode)} disabled={busy}>
+                    {busy ? "Saving…" : "Put back"}
+                  </Button>
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {note && <p className="mt-1 text-xs">{note}</p>}
+    </div>
   );
 }
 

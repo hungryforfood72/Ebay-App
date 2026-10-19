@@ -4,6 +4,7 @@ import { parseBundleComponentUnits, unitsFor } from "../itemUnits";
 import { prisma } from "../prisma";
 import { upcMatchKeys } from "../upcMatch";
 import { returnedUnitsByUpc } from "./returnReconcile";
+import { sortedByUpc } from "./sortBoxes";
 
 // The sort station's "is this a dud?" call, and the per-product counts it
 // shows. The call itself was already made before the load was bought: the
@@ -105,7 +106,32 @@ export function matchLineUpc(lineUpcs: (string | null)[], scanned: string): stri
   return best;
 }
 
-export type ProductCounts = { received: number; damaged: number; dud: number };
+export type ProductCounts = {
+  received: number;
+  damaged: number;
+  dud: number;
+  // The sort station's own physical count: good units boxed (sort boxes)
+  // and every dud unit put in a dud box, listed since or not.
+  sorted: number;
+  dudLogged: number;
+};
+
+// Units in sortedByUpc that are this product, matched loosely (an extra's
+// stored code is whatever was scanned). onlyExtra: just the "not on the
+// manifest" ones.
+export function sortedUnitsFor(
+  sorted: Map<string, { sorted: number; extra: boolean }>,
+  upc: string,
+  onlyExtra = false
+): number {
+  const keys = new Set(upcMatchKeys(upc));
+  let total = 0;
+  for (const [stored, s] of sorted) {
+    if (onlyExtra && !s.extra) continue;
+    if (stored === upc || upcMatchKeys(stored).some((k) => keys.has(k))) total += s.sorted;
+  }
+  return total;
+}
 
 // One product's counts on a manifest, the same buckets the manifest page
 // reconciles with (GET /api/manifests/[id]): received = listed units, on
@@ -114,7 +140,7 @@ export type ProductCounts = { received: number; damaged: number; dud: number };
 // the units since listed from a dud box (those are Items now, already in
 // received). Exact UPC, like the manifest page.
 export async function productCounts(manifestId: string, upc: string): Promise<ProductCounts> {
-  const [items, bundles, walkups, damaged, duds, returned] = await Promise.all([
+  const [items, bundles, walkups, damaged, duds, returned, sorted] = await Promise.all([
     prisma.item.findMany({
       where: { manifestId, upc, isBundle: false },
       select: { quantity: true, isMultipack: true, packSize: true },
@@ -124,6 +150,7 @@ export async function productCounts(manifestId: string, upc: string): Promise<Pr
     prisma.manifestDamagedEntry.aggregate({ where: { manifestId, upc }, _sum: { quantity: true } }),
     prisma.manifestDudEntry.aggregate({ where: { manifestId, upc }, _sum: { quantity: true, listedUnits: true } }),
     returnedUnitsByUpc(manifestId),
+    sortedByUpc(manifestId),
   ]);
   const inBundles = bundles.reduce(
     (sum, b) =>
@@ -145,5 +172,7 @@ export async function productCounts(manifestId: string, upc: string): Promise<Pr
     ),
     damaged: damaged._sum.quantity ?? 0,
     dud: (duds._sum.quantity ?? 0) - (duds._sum.listedUnits ?? 0),
+    sorted: sortedUnitsFor(sorted, upc),
+    dudLogged: duds._sum.quantity ?? 0,
   };
 }

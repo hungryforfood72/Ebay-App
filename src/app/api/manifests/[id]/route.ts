@@ -7,6 +7,8 @@ import { parseBundleComponentUnits, soldUnitsFor, unitsFor } from "@/lib/itemUni
 import { landedCostWeights } from "@/lib/cogs";
 import { buildConsignmentPickList, DEFAULT_CONSIGNMENT_SUPPLIER_PCT } from "@/lib/consignment";
 import { returnedUnitsByUpc } from "@/lib/warehouse/returnReconcile";
+import { sortedByUpc } from "@/lib/warehouse/sortBoxes";
+import { matchLineUpc } from "@/lib/warehouse/sortCheck";
 
 // Fills each line's expected quantity in order before spilling into the
 // next — a UPC can legitimately appear on more than one manifest line (e.g.
@@ -255,6 +257,42 @@ export async function GET(
     lineIndexesByUpc.set(line.upc, list);
   });
 
+  // Sort station counts (warehouse mode: the whole load is sorted before
+  // listing). A separate view from the listing reconciliation above, which
+  // stays as it was (received = listed items): this one is the physical
+  // count at the sort station. Good units are in sort boxes (stored under
+  // the line's UPC, or the scanned code for extras; matched loosely here),
+  // damaged/expired as logged, and dud = every unit put in a dud box, even
+  // ones listed from it since (they were still counted at sorting).
+  const sorted = await sortedByUpc(id);
+  const lineUpcList = manifest.lines.map((l) => l.upc);
+  const sortedByLineUpc = new Map<string, number>();
+  const sortExtras: { upc: string; units: number }[] = [];
+  for (const [stored, s] of sorted) {
+    const match = matchLineUpc(lineUpcList, stored);
+    if (match) sortedByLineUpc.set(match, (sortedByLineUpc.get(match) ?? 0) + s.sorted);
+    else sortExtras.push({ upc: stored, units: s.sorted });
+  }
+  const dudLoggedByUpc = new Map<string, number>();
+  for (const d of manifest.duds) dudLoggedByUpc.set(d.upc, (dudLoggedByUpc.get(d.upc) ?? 0) + d.quantity);
+  const sortGoodAllocation = new Array(manifest.lines.length).fill(0);
+  const sortCountedAllocation = new Array(manifest.lines.length).fill(0);
+  for (const [upc, indexes] of lineIndexesByUpc) {
+    const expectedQuantities = indexes.map((i) => manifest.lines[i].expectedQuantity);
+    const zeros = expectedQuantities.map(() => 0);
+    const good = allocateSequentially(expectedQuantities, sortedByLineUpc.get(upc) ?? 0, zeros);
+    const damaged = allocateSequentially(expectedQuantities, damagedByUpc.get(upc) ?? 0, good);
+    const dud = allocateSequentially(
+      expectedQuantities,
+      dudLoggedByUpc.get(upc) ?? 0,
+      good.map((g, i) => g + damaged[i])
+    );
+    indexes.forEach((lineIdx, j) => {
+      sortGoodAllocation[lineIdx] = good[j];
+      sortCountedAllocation[lineIdx] = good[j] + damaged[j] + dud[j];
+    });
+  }
+
   const receivedAllocation = new Array(manifest.lines.length).fill(0);
   const damagedAllocation = new Array(manifest.lines.length).fill(0);
   const dudAllocation = new Array(manifest.lines.length).fill(0);
@@ -318,6 +356,31 @@ export async function GET(
     const profit =
       soldUnits > 0 && soldCogs != null ? soldRevenue - soldFees - soldShipping - soldRefunds - soldCogs : null;
 
+    // Sorting status: "not_sorted" until the load is marked sorted or
+    // something of this line was counted; then matches / short / over by
+    // the physical count. Lines with no UPC can't be scanned (null).
+    const sortedGood = sortGoodAllocation[index];
+    const sortCounted = sortCountedAllocation[index];
+    const sortDiff = sortCounted - line.expectedQuantity;
+    const sortStatus: { kind: "not_sorted" | "matches" | "short" | "over"; units: number } | null = !line.upc
+      ? null
+      : !manifest.sortedAt && sortCounted === 0
+        ? { kind: "not_sorted", units: 0 }
+        : sortDiff === 0
+          ? { kind: "matches", units: 0 }
+          : sortDiff < 0
+            ? { kind: "short", units: -sortDiff }
+            : { kind: "over", units: sortDiff };
+    const shortUnits = sortStatus?.kind === "short" ? sortStatus.units : 0;
+    // Owner only (stripped below): what the short units cost (their share
+    // of the landed cost per expected unit) and their retail value.
+    const costPerExpectedUnit =
+      totalLandedCost != null && line.expectedQuantity > 0
+        ? (valueShare * totalLandedCost) / line.expectedQuantity
+        : null;
+    const shortCost = shortUnits > 0 && costPerExpectedUnit != null ? shortUnits * costPerExpectedUnit : null;
+    const shortRetail = shortUnits > 0 && Number(line.retailPrice) > 0 ? shortUnits * Number(line.retailPrice) : null;
+
     return {
       id: line.id,
       supplierSku: line.supplierSku,
@@ -342,8 +405,29 @@ export async function GET(
       soldRefunds,
       soldCogs,
       profit,
+      sortedGood,
+      sortStatus,
+      shortCost,
+      shortRetail,
     };
   });
+
+  const sorting = {
+    sortedAt: manifest.sortedAt,
+    sortedBy: manifest.sortedBy,
+    expectedUnits: manifest.lines.reduce((sum, l) => sum + l.expectedQuantity, 0),
+    sortedGood: lines.reduce((sum, l) => sum + l.sortedGood, 0),
+    damaged: [...damagedByUpc.values()].reduce((sum, n) => sum + n, 0),
+    dud: [...dudLoggedByUpc.values()].reduce((sum, n) => sum + n, 0),
+    short: lines.reduce((sum, l) => sum + (l.sortStatus?.kind === "short" ? l.sortStatus.units : 0), 0),
+    over: lines.reduce((sum, l) => sum + (l.sortStatus?.kind === "over" ? l.sortStatus.units : 0), 0),
+    extras: sortExtras.reduce((sum, e) => sum + e.units, 0),
+    started: sorted.size > 0,
+  };
+  const sortingMoney = {
+    shortCost: lines.reduce((sum, l) => sum + (l.shortCost ?? 0), 0),
+    shortRetail: lines.reduce((sum, l) => sum + (l.shortRetail ?? 0), 0),
+  };
 
   const matchedUpcs = new Set(lineIndexesByUpc.keys());
 
@@ -474,8 +558,14 @@ export async function GET(
             accountedUnits: l.accountedUnits,
             missingUnits: l.missingUnits,
             soldUnits: l.soldUnits,
+            sortedGood: l.sortedGood,
+            sortStatus: l.sortStatus,
           }
     ),
+    // Sort station view (see the sorting comment above): summary, and the
+    // products boxed that aren't on the manifest.
+    sorting: isOwner ? { ...sorting, ...sortingMoney } : sorting,
+    sortExtras,
     unmatchedReceived,
     unmatchedDamaged,
     unmatchedDud,

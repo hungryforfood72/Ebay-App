@@ -6,7 +6,7 @@ import { barcodeSvg } from "./barcode";
 // or React; LabelPreview renders the same strings on screen. Plain inline
 // CSS in inches and points only, black on white, no Tailwind.
 
-export const LABEL_KINDS: PrintJobKind[] = ["item", "bin", "shelf", "box", "dud"];
+export const LABEL_KINDS: PrintJobKind[] = ["item", "bin", "shelf", "box", "dud", "sort"];
 
 export function isLabelKind(v: unknown): v is PrintJobKind {
   return typeof v === "string" && (LABEL_KINDS as string[]).includes(v);
@@ -190,11 +190,12 @@ function codeLabelHtml(kind: PrintJobKind, p: CodeLabelPayload): string {
   );
 }
 
-// Dud box label: read from across the floor, so the box code is the big
-// line (like a bin label) and the manifest it belongs to sits under it,
-// small, up to two lines ("DUDS · 10/14/26 Pallet 2 ...").
-function dudLabelHtml(p: CodeLabelPayload): string {
-  const caption = p.caption?.trim() || "DUDS";
+// Dud and sort box labels: read from across the floor, so the box code is
+// the big line (like a bin label) and the caption sits under it, small, up
+// to two lines: the load for a dud box ("DUDS · 10/14/26 Pallet 2 ..."),
+// just "SORT BOX" for a sort box (they're reused load to load).
+function boxLabelHtml(p: CodeLabelPayload, fallbackCaption: string): string {
+  const caption = p.caption?.trim() || fallbackCaption;
   // 0.32" of bars + 16pt code + two 8.5pt caption lines fits inside 1"
   // with the padding (about 0.85").
   const bars = barcodeSvg(p.code, 0.32);
@@ -211,7 +212,8 @@ function dudLabelHtml(p: CodeLabelPayload): string {
 // One label's markup.
 export function labelHtml(kind: PrintJobKind, payload: PrintJobPayload): string {
   if (kind === "item") return itemLabelHtml(payload as ItemLabelPayload);
-  if (kind === "dud") return dudLabelHtml(payload as CodeLabelPayload);
+  if (kind === "dud") return boxLabelHtml(payload as CodeLabelPayload, "DUDS");
+  if (kind === "sort") return boxLabelHtml(payload as CodeLabelPayload, "SORT BOX");
   return codeLabelHtml(kind, payload as CodeLabelPayload);
 }
 

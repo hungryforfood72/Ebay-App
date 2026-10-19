@@ -2,10 +2,11 @@
 
 import { ScanField } from "@/components/ScanField";
 import { StationPicker, useChosenStation } from "@/components/StationPicker";
+import { useCurrentUser } from "@/components/UserNav";
 import { Alert } from "@/components/ui/Alert";
 import { AppShell } from "@/components/ui/AppShell";
 import { Badge } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
+import { Button, buttonClasses } from "@/components/ui/Button";
 import { Card, SectionHeader } from "@/components/ui/Card";
 import { cn } from "@/components/ui/cn";
 import { Input } from "@/components/ui/Input";
@@ -13,11 +14,13 @@ import type { DudBoxDetail, DudBoxSummary } from "@/lib/warehouse/dudBoxTypes";
 import { classifyScan, normalizeCode } from "@/lib/warehouse/codes";
 import {
   Ban,
+  Boxes,
   ChevronRight,
   CircleCheck,
   FileSpreadsheet,
   LoaderCircle,
   Minus,
+  PackageCheck,
   PackageOpen,
   PackageX,
   Plus,
@@ -25,27 +28,36 @@ import {
   SearchX,
   ThumbsUp,
   TriangleAlert,
+  Undo2,
 } from "lucide-react";
+import Link from "next/link";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-// Sort station: one person goes through a load before it's listed and
-// pulls the units that won't be listed, so listers only get good stock.
-// Cristian: "take the thinking away from the sorter." Scan a UPC and the
-// screen gives one big answer:
+// Sort station. Cristian (2026-10-18): sort the WHOLE load before listing,
+// so the lister never waits on a unit buried at the bottom of the pallet
+// and the real counts (short, over, extras) are known up front. And "take
+// the thinking away from the sorter": scan a UPC and the screen gives one
+// big answer.
 //   - DUD (the Analyzer already called it before the load was bought, or
-//     eBay doesn't allow it): it goes in the load's dud box. One tap.
-//   - otherwise: good, pass it to the lister. One tap.
+//     eBay doesn't allow it): it goes in the dud box. One tap.
+//   - otherwise: good, into the sort box. One tap.
 // Damaged and expired are the second choice either way, logged with the
 // manifest's damaged tally (note "damaged" / "expired" so both stay
-// countable). "I have X of these" logs a stack in one go.
+// countable). "I have this many" logs a stack in one go. Not on the
+// manifest: "Box it as extra" (good, counted separately).
 //
-// Dud boxes (DudBox): each load's duds go in a box with its own printed
-// label (DB0001), so nobody tracks by hand which load they came from.
-// Someone processes the box later on /duds. This device remembers the
-// box it's filling for each load.
+// The handheld holds TWO active boxes at once, so the sorter never switches:
+//   - a sort box (SB0001, reusable, printed ahead of time): every good unit
+//     goes in it; the List page later says which boxes hold a product.
+//     Scanning an SB label makes it the good box.
+//   - a dud box (DB0001, one load's duds, label printed when started):
+//     scanning a DB label makes it the dud box, or start a new one here.
+// Each has its own "full" button that only clears that one. Both are
+// remembered per load on this device and re-checked when the page loads.
 //
-// Several people can sort the same load at once: counts come from the
-// server (/api/sort/check), fetched on every scan and after every log.
+// Several people can sort the same load at once, each with their own boxes:
+// counts come from the server (/api/sort/check), fetched on every scan and
+// after every log.
 
 type ManifestSummary = {
   id: string;
@@ -56,43 +68,65 @@ type ManifestSummary = {
 
 // GET /api/sort/check
 type CheckResult = {
-  manifest: { id: string; title: string };
+  manifest: { id: string; title: string; sortedAt: string | null; sortedBy: string | null };
   evaluated: boolean;
   line: {
     upc: string;
     description: string;
     expected: number;
-    received: number;
+    sorted: number;
     damaged: number;
-    dud: number;
+    dudLogged: number;
     leftToSort: number;
+    over: number;
   } | null;
+  extraSorted: number;
   dud: boolean;
   dudReason: string | null;
 };
 
 type Scan = { code: string; loading: boolean; result: CheckResult | null; error: string | null };
 
-type Kind = "good" | "dud" | "damaged" | "expired";
+type Kind = "good" | "extra" | "dud" | "damaged" | "expired";
 
-type LogEntry = { id: number; kind: Kind; quantity: number; description: string; failed?: boolean };
+// What /api/sort/undo needs to take a log back.
+type LogRef = { kind: "good" | "dud" | "damaged"; id: string; boxCode: string | null };
 
-type ActiveBox = { code: string; units: number };
+type LogEntry = {
+  id: number;
+  kind: Kind;
+  quantity: number;
+  description: string;
+  failed?: boolean;
+  ref?: LogRef;
+  undone?: boolean;
+};
+
+type SortBoxState = { code: string; unitsLeft: number };
+type DudBoxState = { code: string; units: number };
+
+// GET /api/sort-boxes/{code}
+type SortBoxSummary = { code: string; manifestId: string | null; unitsLeft: number };
+
+// A tap made before the matching box was active; logged as soon as it is.
+type Pending = { code: string; upc: string; quantity: number; description: string; extra: boolean };
 
 type Message = { tone: "success" | "warning" | "danger"; text: string };
 
 const SORT_MANIFEST_KEY = "ebay-tool.sortManifestId";
-// The dud box this device is filling, per load.
+// The boxes this device is filling, per load.
 const dudBoxKey = (manifestId: string) => `ebay-tool.sortDudBox.${manifestId}`;
+const goodBoxKey = (manifestId: string) => `ebay-tool.sortGoodBox.${manifestId}`;
 
-const KIND_TEXT: Record<Kind, string> = {
-  good: "good, to the lister",
-  dud: "into the dud box",
-  damaged: "damaged",
-  expired: "expired",
+const KIND_SHORT: Record<Kind, string> = {
+  good: "Good",
+  extra: "Extra",
+  dud: "Dud",
+  damaged: "Damaged",
+  expired: "Expired",
 };
 
-const KIND_SHORT: Record<Kind, string> = { good: "Good", dud: "Dud", damaged: "Damaged", expired: "Expired" };
+const EMPTY_TALLY: Record<Kind, number> = { good: 0, extra: 0, dud: 0, damaged: 0, expired: 0 };
 
 // localStorage can throw (private window, storage blocked). Not remembering
 // is fine: the page just asks again.
@@ -115,7 +149,7 @@ function writeStored(key: string, value: string | null) {
 
 // Short tone so the answer registers without looking at the screen. Same
 // idea as the pick page: one high beep = good, falling two-tone = dud, two
-// low = not on the manifest.
+// low = not on the manifest (or refused).
 function beep(kind: "good" | "dud" | "missing") {
   try {
     const ctx = new AudioContext();
@@ -141,7 +175,7 @@ function focusScan() {
 }
 
 // The API's own message, plus the status so callers can tell "that box
-// was closed" (409/404) from a dropped connection.
+// can't take it" (409/404) from a dropped connection.
 class ApiError extends Error {
   constructor(
     message: string,
@@ -157,16 +191,31 @@ async function readJson<T>(res: Response, fallback: string): Promise<T> {
   return data as T;
 }
 
+function postJson(url: string, body: unknown, method = "POST") {
+  return fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+}
+
 function boxUnits(detail: DudBoxDetail): number {
   return detail.entries.reduce((sum, e) => sum + e.quantity, 0);
 }
 
+function errorText(e: unknown, fallback: string): string {
+  return e instanceof Error ? e.message : fallback;
+}
+
 export default function SortPage() {
+  const user = useCurrentUser();
+  const isOwner = user?.role === "owner";
   const [manifestId, setManifestId] = useState<string | null>(() =>
     typeof window === "undefined" ? null : readStored(SORT_MANIFEST_KEY)
   );
   const [manifests, setManifests] = useState<ManifestSummary[] | null>(null);
-  const [info, setInfo] = useState<{ title: string; evaluated: boolean } | null>(null);
+  const [info, setInfo] = useState<{
+    title: string;
+    evaluated: boolean;
+    sortedAt: string | null;
+    sortedBy: string | null;
+  } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [code, setCode] = useState("");
@@ -175,35 +224,40 @@ export default function SortPage() {
   const [quantity, setQuantity] = useState("1");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<Message | null>(null);
-  // This device's sorting so far on this load. Good units are only counted
-  // here (they're logged when a lister saves them); the rest are saved.
-  const [tally, setTally] = useState<Record<Kind, number>>({ good: 0, dud: 0, damaged: 0, expired: 0 });
+  // This device's sorting so far on this load (the server has the real
+  // totals; this is "what I did").
+  const [tally, setTally] = useState<Record<Kind, number>>(EMPTY_TALLY);
   const [log, setLog] = useState<LogEntry[]>([]);
   const logId = useRef(0);
 
-  // Dud box this device is filling for the load. boxChecked = the
+  // The good (sort) box and dud box this device is filling. *Checked = the
   // remembered one has been re-checked with the server.
-  const [box, setBox] = useState<ActiveBox | null>(null);
-  const [boxChecked, setBoxChecked] = useState(false);
-  // Other open boxes for this load (another sorter's, or one this device
-  // forgot), offered instead of starting yet another.
-  const [openBoxes, setOpenBoxes] = useState<DudBoxSummary[]>([]);
+  const [goodBox, setGoodBox] = useState<SortBoxState | null>(null);
+  const [goodChecked, setGoodChecked] = useState(false);
+  const [pendingGood, setPendingGood] = useState<Pending | null>(null);
+  const [dudBox, setDudBox] = useState<DudBoxState | null>(null);
+  const [dudChecked, setDudChecked] = useState(false);
+  const [pendingDud, setPendingDud] = useState<Pending | null>(null);
+  // Other open dud boxes for this load (another sorter's, or one this
+  // device forgot), offered instead of starting yet another.
+  const [openDudBoxes, setOpenDudBoxes] = useState<DudBoxSummary[]>([]);
   const [starting, setStarting] = useState(false);
   const [pickingStation, setPickingStation] = useState(false);
-  const [confirmClose, setConfirmClose] = useState(false);
-  // A closed box of this load was scanned: offer to reopen it.
+  // What a station pick is for: starting a dud box, or reprinting a label.
+  const [stationFor, setStationFor] = useState<"start" | "reprint-good" | "reprint-dud">("start");
+  const [confirmCloseDud, setConfirmCloseDud] = useState(false);
+  // A closed dud box of this load was scanned: offer to reopen it.
   const [reopenCode, setReopenCode] = useState<string | null>(null);
-  // A dud tapped before any box was open: logged as soon as one starts.
-  const [pendingDud, setPendingDud] = useState<{ upc: string; quantity: number; description: string } | null>(null);
   const [boxBusy, setBoxBusy] = useState(false);
+  const [confirmDone, setConfirmDone] = useState(false);
 
   const stations = useChosenStation(true);
 
-  // Starting a box (or picking a station for it) happens in the box card
-  // below the scan answer; bring it on screen on the handheld.
+  // Starting a dud box (or picking a station) happens in a card below the
+  // scan answer; bring it on screen on the handheld.
   useEffect(() => {
     if (starting || pickingStation) {
-      document.getElementById("dud-box-card")?.scrollIntoView({ behavior: "smooth", block: "center" });
+      document.getElementById("sort-box-panel")?.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }, [starting, pickingStation]);
 
@@ -222,35 +276,57 @@ export default function SortPage() {
       .then((r) => readJson<CheckResult>(r, "Couldn't load that load."))
       .then((d) => {
         if (cancelled) return;
-        setInfo({ title: d.manifest.title, evaluated: d.evaluated });
+        setInfo({
+          title: d.manifest.title,
+          evaluated: d.evaluated,
+          sortedAt: d.manifest.sortedAt,
+          sortedBy: d.manifest.sortedBy,
+        });
         setLoadError(null);
       })
-      .catch((e) => !cancelled && setLoadError(e instanceof Error ? e.message : "Couldn't load that load."));
+      .catch((e) => !cancelled && setLoadError(errorText(e, "Couldn't load that load.")));
     return () => {
       cancelled = true;
     };
   }, [manifestId]);
 
-  // Re-check the remembered dud box: someone may have closed it, or it may
-  // be from an old visit. Also finds other open boxes for this load.
+  // Re-check the remembered boxes: a sort box may have been emptied and
+  // taken by another load, a dud box closed from another device.
   useEffect(() => {
     if (!manifestId) return;
     let cancelled = false;
     (async () => {
-      const stored = readStored(dudBoxKey(manifestId));
-      let active: ActiveBox | null = null;
-      if (stored) {
+      const storedGood = readStored(goodBoxKey(manifestId));
+      let good: SortBoxState | null = null;
+      if (storedGood) {
         try {
-          const detail = await readJson<DudBoxDetail>(await fetch(`/api/dud-boxes/${encodeURIComponent(stored)}`), "");
+          const b = await readJson<SortBoxSummary>(
+            await fetch(`/api/sort-boxes/${encodeURIComponent(storedGood)}`),
+            ""
+          );
+          if (b.manifestId === manifestId) good = { code: b.code, unitsLeft: b.unitsLeft };
+        } catch (e) {
+          // No connection: keep using it, the next log re-checks it.
+          if (!(e instanceof ApiError)) good = { code: storedGood, unitsLeft: 0 };
+        }
+        if (!good) writeStored(goodBoxKey(manifestId), null);
+      }
+
+      const storedDud = readStored(dudBoxKey(manifestId));
+      let dud: DudBoxState | null = null;
+      if (storedDud) {
+        try {
+          const detail = await readJson<DudBoxDetail>(
+            await fetch(`/api/dud-boxes/${encodeURIComponent(storedDud)}`),
+            ""
+          );
           if (detail.box.manifestId === manifestId && detail.box.status === "open") {
-            active = { code: detail.box.code, units: boxUnits(detail) };
+            dud = { code: detail.box.code, units: boxUnits(detail) };
           }
         } catch (e) {
-          // No connection: keep using it, the next log re-checks it. Gone
-          // (or refused): forget it below.
-          if (!(e instanceof ApiError)) active = { code: stored, units: 0 };
+          if (!(e instanceof ApiError)) dud = { code: storedDud, units: 0 };
         }
-        if (!active) writeStored(dudBoxKey(manifestId), null);
+        if (!dud) writeStored(dudBoxKey(manifestId), null);
       }
       let others: DudBoxSummary[] = [];
       try {
@@ -258,14 +334,16 @@ export default function SortPage() {
           await fetch(`/api/dud-boxes?status=open&manifestId=${encodeURIComponent(manifestId)}`),
           ""
         );
-        others = list.boxes.filter((b) => b.code !== active?.code);
+        others = list.boxes.filter((b) => b.code !== dud?.code);
       } catch {
         // Just no suggestions.
       }
       if (cancelled) return;
-      setBox(active);
-      setOpenBoxes(others);
-      setBoxChecked(true);
+      setGoodBox(good);
+      setGoodChecked(true);
+      setDudBox(dud);
+      setOpenDudBoxes(others);
+      setDudChecked(true);
     })();
     return () => {
       cancelled = true;
@@ -279,22 +357,31 @@ export default function SortPage() {
     setLoadError(null);
     setScan(null);
     setMessage(null);
-    setTally({ good: 0, dud: 0, damaged: 0, expired: 0 });
+    setTally(EMPTY_TALLY);
     setLog([]);
-    setBox(null);
-    setBoxChecked(false);
-    setOpenBoxes([]);
-    setStarting(false);
-    setConfirmClose(false);
-    setReopenCode(null);
+    setGoodBox(null);
+    setGoodChecked(false);
+    setPendingGood(null);
+    setDudBox(null);
+    setDudChecked(false);
     setPendingDud(null);
+    setOpenDudBoxes([]);
+    setStarting(false);
+    setConfirmCloseDud(false);
+    setReopenCode(null);
+    setConfirmDone(false);
     if (!id) setManifests(null);
   }
 
-  function rememberBox(next: ActiveBox | null) {
+  function rememberGood(next: SortBoxState | null) {
+    if (manifestId) writeStored(goodBoxKey(manifestId), next?.code ?? null);
+    setGoodBox(next);
+  }
+
+  function rememberDud(next: DudBoxState | null) {
     if (manifestId) writeStored(dudBoxKey(manifestId), next?.code ?? null);
-    setBox(next);
-    if (next) setOpenBoxes((list) => list.filter((b) => b.code !== next.code));
+    setDudBox(next);
+    if (next) setOpenDudBoxes((list) => list.filter((b) => b.code !== next.code));
   }
 
   // quiet = a refresh after logging: no beep, keep the quantity.
@@ -316,12 +403,7 @@ export default function SortPage() {
     } catch (e) {
       if (id !== checkId.current) return;
       if (quiet) return; // keeps the last counts; the next scan tries again
-      setScan({
-        code: raw,
-        loading: false,
-        result: null,
-        error: e instanceof Error ? e.message : "Couldn't check that one.",
-      });
+      setScan({ code: raw, loading: false, result: null, error: errorText(e, "Couldn't check that one.") });
     }
   }
 
@@ -331,17 +413,97 @@ export default function SortPage() {
     if (!raw) return;
     setMessage(null);
     setReopenCode(null);
-    if (classifyScan(raw) === "dudbox") {
-      void activateScannedBox(normalizeCode(raw));
-    } else {
-      void runCheck(raw);
-    }
+    const kind = classifyScan(raw);
+    if (kind === "sortbox") void activateGoodBox(normalizeCode(raw));
+    else if (kind === "dudbox") void activateDudBox(normalizeCode(raw));
+    else void runCheck(raw);
     focusScan();
   }
 
-  // Scanned a dud box label: make it this device's box for the load, if
+  function addToLog(entry: Omit<LogEntry, "id">) {
+    const id = ++logId.current;
+    setLog((prev) => [{ id, ...entry }, ...prev].slice(0, 12));
+  }
+
+  // ---- Good (sort) box -------------------------------------------------
+
+  // Scanned a sort box label: make it this device's good box for the load.
+  // An empty box is tied to this load; one still holding another load's
+  // units is refused (the server says which load).
+  async function activateGoodBox(boxCode: string) {
+    if (!manifestId) return;
+    try {
+      const data = await readJson<{ box: SortBoxSummary }>(
+        await postJson("/api/sort/activate", { boxCode, manifestId }),
+        "Couldn't use that sort box."
+      );
+      rememberGood({ code: data.box.code, unitsLeft: data.box.unitsLeft });
+      beep("good");
+      if (pendingGood) {
+        const p = pendingGood;
+        setPendingGood(null);
+        await saveGood(data.box.code, p);
+      } else {
+        setMessage({ tone: "success", text: `Good box is ${data.box.code} now. Scan the next item.` });
+      }
+    } catch (e) {
+      beep("missing");
+      setMessage({ tone: "danger", text: errorText(e, "Couldn't use that sort box.") });
+    }
+  }
+
+  // Puts good units (or an extra) in the sort box. Returns false if it
+  // didn't save.
+  async function saveGood(boxCode: string, p: Pending): Promise<boolean> {
+    setSaving(true);
+    try {
+      const data = await readJson<{ entry: { id: string }; box: SortBoxSummary }>(
+        await postJson("/api/sort/log", { boxCode, manifestId, code: p.code, quantity: p.quantity, extra: p.extra }),
+        "Save failed."
+      );
+      rememberGood({ code: data.box.code, unitsLeft: data.box.unitsLeft });
+      const kind: Kind = p.extra ? "extra" : "good";
+      setTally((t) => ({ ...t, [kind]: t[kind] + p.quantity }));
+      addToLog({
+        kind,
+        quantity: p.quantity,
+        description: p.description,
+        ref: { kind: "good", id: data.entry.id, boxCode: data.box.code },
+      });
+      setMessage({ tone: "success", text: `Put ${p.quantity} in ${data.box.code}. Scan the next one.` });
+      setQuantity("1");
+      if (scan) void runCheck(scan.code, true);
+      return true;
+    } catch (e) {
+      addToLog({ kind: p.extra ? "extra" : "good", quantity: p.quantity, description: p.description, failed: true });
+      // The box got tied to another load (emptied and reused elsewhere):
+      // stop using it and keep these for the next box scanned.
+      if (e instanceof ApiError && (e.status === 409 || e.status === 404)) {
+        rememberGood(null);
+        setPendingGood(p);
+        setMessage({ tone: "danger", text: `${e.message} Scan a sort box for this load; these go in it.` });
+      } else {
+        setMessage({ tone: "danger", text: errorText(e, "Something went wrong. Try again.") });
+      }
+      return false;
+    } finally {
+      setSaving(false);
+      focusScan();
+    }
+  }
+
+  function goodBoxFull() {
+    if (!goodBox) return;
+    setMessage({ tone: "success", text: `${goodBox.code} is full. Scan the next empty sort box.` });
+    rememberGood(null);
+    focusScan();
+  }
+
+  // ---- Dud box ---------------------------------------------------------
+
+  // Scanned a dud box label: make it this device's dud box for the load, if
   // it belongs to this load and is still open.
-  async function activateScannedBox(boxCode: string) {
+  async function activateDudBox(boxCode: string) {
     if (!manifestId) return;
     try {
       const detail = await readJson<DudBoxDetail>(
@@ -366,70 +528,160 @@ export default function SortPage() {
         setReopenCode(detail.box.code);
         return;
       }
-      rememberBox({ code: detail.box.code, units: boxUnits(detail) });
+      rememberDud({ code: detail.box.code, units: boxUnits(detail) });
       setStarting(false);
       beep("good");
-      setMessage({ tone: "success", text: `Using dud box ${detail.box.code}. Scan the next item.` });
+      if (pendingDud) {
+        const p = pendingDud;
+        setPendingDud(null);
+        await saveDud(detail.box.code, p);
+      } else {
+        setMessage({ tone: "success", text: `Dud box is ${detail.box.code} now. Scan the next item.` });
+      }
     } catch (e) {
       beep("missing");
-      setMessage({ tone: "danger", text: e instanceof Error ? e.message : "Couldn't read that dud box." });
+      setMessage({ tone: "danger", text: errorText(e, "Couldn't read that dud box.") });
     }
   }
 
-  async function reopenBox(boxCode: string) {
+  async function reopenDudBox(boxCode: string) {
     setBoxBusy(true);
     try {
       await readJson(
-        await fetch(`/api/dud-boxes/${encodeURIComponent(boxCode)}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status: "open" }),
-        }),
+        await postJson(`/api/dud-boxes/${encodeURIComponent(boxCode)}`, { status: "open" }, "PATCH"),
         "Couldn't reopen that box."
       );
       setReopenCode(null);
-      await activateScannedBox(boxCode);
+      await activateDudBox(boxCode);
     } catch (e) {
-      setMessage({ tone: "danger", text: e instanceof Error ? e.message : "Couldn't reopen that box." });
+      setMessage({ tone: "danger", text: errorText(e, "Couldn't reopen that box.") });
     } finally {
       setBoxBusy(false);
       focusScan();
     }
   }
 
-  function addToLog(entry: Omit<LogEntry, "id">) {
-    const id = ++logId.current;
-    setLog((prev) => [{ id, ...entry }, ...prev].slice(0, 12));
-  }
-
   // Puts units in a dud box. Returns false if it didn't save.
-  async function logDud(boxCode: string, upc: string, qty: number, description: string): Promise<boolean> {
+  async function saveDud(boxCode: string, p: Pending): Promise<boolean> {
+    setSaving(true);
     try {
-      const res = await fetch(`/api/dud-boxes/${encodeURIComponent(boxCode)}/entries`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ manifestId, upc, quantity: qty }),
+      const data = await readJson<{ entry: { id: string }; box: { code: string; units: number } }>(
+        await postJson(`/api/dud-boxes/${encodeURIComponent(boxCode)}/entries`, {
+          manifestId,
+          upc: p.upc,
+          quantity: p.quantity,
+        }),
+        "Save failed."
+      );
+      rememberDud({ code: data.box.code, units: data.box.units });
+      setTally((t) => ({ ...t, dud: t.dud + p.quantity }));
+      addToLog({
+        kind: "dud",
+        quantity: p.quantity,
+        description: p.description,
+        ref: { kind: "dud", id: data.entry.id, boxCode: data.box.code },
       });
-      const data = await readJson<{ box: { code: string; units: number } }>(res, "Save failed.");
-      rememberBox({ code: data.box.code, units: data.box.units });
-      setTally((t) => ({ ...t, dud: t.dud + qty }));
-      addToLog({ kind: "dud", quantity: qty, description });
-      setMessage({ tone: "success", text: `Put ${qty} in dud box ${data.box.code}. Scan the next one.` });
+      setMessage({ tone: "success", text: `Put ${p.quantity} in dud box ${data.box.code}. Scan the next one.` });
+      setQuantity("1");
+      if (scan) void runCheck(scan.code, true);
       return true;
     } catch (e) {
-      const text = e instanceof Error ? e.message : "Something went wrong. Try again.";
-      addToLog({ kind: "dud", quantity: qty, description, failed: true });
+      addToLog({ kind: "dud", quantity: p.quantity, description: p.description, failed: true });
       // The box was closed (or processed) from another device: stop using
       // it and offer a new one, keeping this dud to log into it.
       if (e instanceof ApiError && (e.status === 409 || e.status === 404)) {
-        rememberBox(null);
-        setPendingDud({ upc, quantity: qty, description });
+        rememberDud(null);
+        setPendingDud(p);
         setStarting(true);
       }
-      setMessage({ tone: "danger", text });
+      setMessage({ tone: "danger", text: errorText(e, "Something went wrong. Try again.") });
       return false;
+    } finally {
+      setSaving(false);
+      focusScan();
     }
   }
+
+  async function startDudBox(print: boolean, pending = pendingDud) {
+    if (!manifestId || boxBusy) return;
+    setBoxBusy(true);
+    try {
+      const data = await readJson<{ box: { code: string }; printed: boolean; printError: string | null }>(
+        await postJson("/api/dud-boxes", { manifestId, stationId: print ? stations.station?.id : null }),
+        "Couldn't start a dud box."
+      );
+      rememberDud({ code: data.box.code, units: 0 });
+      setStarting(false);
+      setPickingStation(false);
+      const where = data.printed
+        ? `Its label is printing at ${stations.station?.name ?? "the station"}. Stick it on the box.`
+        : data.printError
+          ? `The label didn't print: ${data.printError}`
+          : "No label printed. Reprint it when you're at a station.";
+      setMessage({ tone: data.printError ? "warning" : "success", text: `Dud box ${data.box.code} started. ${where}` });
+      if (pending) {
+        setPendingDud(null);
+        await saveDud(data.box.code, pending);
+      }
+    } catch (e) {
+      setMessage({ tone: "danger", text: errorText(e, "Couldn't start a dud box.") });
+    } finally {
+      setBoxBusy(false);
+      focusScan();
+    }
+  }
+
+  async function closeDudBox() {
+    if (!dudBox || boxBusy) return;
+    setBoxBusy(true);
+    try {
+      await readJson(
+        await postJson(`/api/dud-boxes/${encodeURIComponent(dudBox.code)}`, { status: "closed" }, "PATCH"),
+        "Couldn't close the box."
+      );
+      setMessage({
+        tone: "success",
+        text: `${dudBox.code} closed. Set it aside for processing and start the next dud box.`,
+      });
+      rememberDud(null);
+      setConfirmCloseDud(false);
+      setStationFor("start");
+      setStarting(true);
+    } catch (e) {
+      setMessage({ tone: "danger", text: errorText(e, "Couldn't close the box.") });
+    } finally {
+      setBoxBusy(false);
+      focusScan();
+    }
+  }
+
+  // Reprint the good or dud box's label at this handheld's station.
+  async function reprint(which: "good" | "dud", stationId = stations.station?.id) {
+    const boxCode = which === "good" ? goodBox?.code : dudBox?.code;
+    if (!boxCode || boxBusy) return;
+    if (!stationId) {
+      setStationFor(which === "good" ? "reprint-good" : "reprint-dud");
+      setPickingStation(true);
+      return;
+    }
+    setBoxBusy(true);
+    try {
+      const url =
+        which === "good"
+          ? `/api/sort-boxes/${encodeURIComponent(boxCode)}/print`
+          : `/api/dud-boxes/${encodeURIComponent(boxCode)}/print`;
+      await readJson(await postJson(url, { stationId }), "Couldn't print the label.");
+      const name = stations.stations?.find((s) => s.id === stationId)?.name ?? "the station";
+      setMessage({ tone: "success", text: `Label for ${boxCode} is printing at ${name}.` });
+    } catch (e) {
+      setMessage({ tone: "danger", text: errorText(e, "Couldn't print the label.") });
+    } finally {
+      setBoxBusy(false);
+      focusScan();
+    }
+  }
+
+  // ---- Logging ---------------------------------------------------------
 
   async function record(kind: Kind) {
     if (!scan || !manifestId || saving) return;
@@ -441,162 +693,132 @@ export default function SortPage() {
     const line = scan.result?.line ?? null;
     // The manifest's own UPC when it matched, so the count lands on that
     // line even if the scan reads the barcode a little differently.
-    const upc = line?.upc ?? scan.code;
-    const description = line?.description ?? `UPC ${scan.code}`;
+    const p: Pending = {
+      code: scan.code,
+      upc: line?.upc ?? scan.code,
+      quantity: qty,
+      description: line?.description ?? `UPC ${scan.code}`,
+      extra: kind === "extra",
+    };
     setMessage(null);
 
-    if (kind === "good") {
-      setTally((t) => ({ ...t, good: t.good + qty }));
-      addToLog({ kind, quantity: qty, description });
-      setQuantity("1");
-      setMessage({ tone: "success", text: `Logged ${qty} ${KIND_TEXT.good}. Scan the next one.` });
-      focusScan();
+    if (kind === "good" || kind === "extra") {
+      if (!goodBox) {
+        // One more scan: the sort box label. These go in as soon as it's
+        // active.
+        setPendingGood(p);
+        setMessage({ tone: "warning", text: "Scan a sort box first. These go in as soon as you scan one." });
+        focusScan();
+        return;
+      }
+      await saveGood(goodBox.code, p);
       return;
     }
 
-    if (kind === "dud" && !box) {
+    if (kind === "dud") {
+      if (dudBox) {
+        await saveDud(dudBox.code, p);
+        return;
+      }
       // No box yet: the same tap starts one (label at this handheld's
       // station) and puts the dud in it. Without a station, it asks for
-      // one first and the dud waits.
-      const pending = { upc, quantity: qty, description };
+      // one first and the dud waits (scanning a DB label works too).
       if (stations.station) {
-        void startBox(true, pending);
+        void startDudBox(true, p);
       } else {
-        setPendingDud(pending);
+        setPendingDud(p);
+        setStationFor("start");
         setStarting(true);
-        setMessage({ tone: "warning", text: "Start a dud box first. This one goes in as soon as it's started." });
+        setMessage({
+          tone: "warning",
+          text: "Start a dud box (or scan one). This one goes in as soon as there is one.",
+        });
       }
       return;
     }
 
     setSaving(true);
-    let ok = true;
-    if (kind === "dud") {
-      ok = await logDud(box!.code, upc, qty, description);
-    } else {
-      try {
-        // Damaged and expired share the manifest's damaged tally; the note
-        // keeps them apart for the numbers.
-        const res = await fetch(`/api/manifests/${manifestId}/damaged`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ upc, quantity: qty, note: kind }),
-        });
-        await readJson(res, "Save failed.");
-        setTally((t) => ({ ...t, [kind]: t[kind] + qty }));
-        addToLog({ kind, quantity: qty, description });
-        setMessage({ tone: "success", text: `Logged ${qty} ${KIND_TEXT[kind]}. Scan the next one.` });
-      } catch (e) {
-        ok = false;
-        addToLog({ kind, quantity: qty, description, failed: true });
-        setMessage({ tone: "danger", text: e instanceof Error ? e.message : "Something went wrong. Try again." });
-      }
-    }
-    setSaving(false);
-    if (ok) {
+    try {
+      // Damaged and expired share the manifest's damaged tally; the note
+      // keeps them apart for the numbers.
+      const entry = await readJson<{ id: string }>(
+        await postJson(`/api/manifests/${manifestId}/damaged`, { upc: p.upc, quantity: qty, note: kind }),
+        "Save failed."
+      );
+      setTally((t) => ({ ...t, [kind]: t[kind] + qty }));
+      addToLog({
+        kind,
+        quantity: qty,
+        description: p.description,
+        ref: { kind: "damaged", id: entry.id, boxCode: null },
+      });
+      setMessage({ tone: "success", text: `Logged ${qty} ${kind}. Scan the next one.` });
       setQuantity("1");
       void runCheck(scan.code, true);
+    } catch (e) {
+      addToLog({ kind, quantity: qty, description: p.description, failed: true });
+      setMessage({ tone: "danger", text: errorText(e, "Something went wrong. Try again.") });
+    } finally {
+      setSaving(false);
+      focusScan();
     }
-    focusScan();
   }
 
-  async function startBox(print: boolean, pending = pendingDud) {
-    if (!manifestId || boxBusy) return;
-    setBoxBusy(true);
+  async function undo(entry: LogEntry) {
+    if (!entry.ref || saving) return;
+    setSaving(true);
     try {
-      const res = await fetch("/api/dud-boxes", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ manifestId, stationId: print ? stations.station?.id : null }),
-      });
-      const data = await readJson<{ box: { code: string }; printed: boolean; printError: string | null }>(
-        res,
-        "Couldn't start a dud box."
+      await readJson(
+        await postJson("/api/sort/undo", { kind: entry.ref.kind, id: entry.ref.id }),
+        "Couldn't undo that."
       );
-      rememberBox({ code: data.box.code, units: 0 });
-      setStarting(false);
-      setPickingStation(false);
-      const where = data.printed
-        ? `Its label is printing at ${stations.station?.name ?? "the station"}. Stick it on the box.`
-        : data.printError
-          ? `The label didn't print: ${data.printError}`
-          : "No label printed. Reprint it when you're at a station.";
-      setMessage({ tone: data.printError ? "warning" : "success", text: `Dud box ${data.box.code} started. ${where}` });
-      if (pending) {
-        const p = pending;
-        setPendingDud(null);
-        setSaving(true);
-        const ok = await logDud(data.box.code, p.upc, p.quantity, p.description);
-        setSaving(false);
-        if (ok) {
-          setQuantity("1");
-          if (scan) void runCheck(scan.code, true);
-        }
+      setLog((prev) => prev.map((e) => (e.id === entry.id ? { ...e, undone: true } : e)));
+      setTally((t) => ({ ...t, [entry.kind]: Math.max(0, t[entry.kind] - entry.quantity) }));
+      const back = entry.ref.boxCode ? ` Take ${entry.quantity} back out of ${entry.ref.boxCode}.` : "";
+      setMessage({ tone: "success", text: `Undone.${back}` });
+      if (scan) void runCheck(scan.code, true);
+      // Box unit counts on the bar.
+      if (entry.ref.kind === "good" && goodBox?.code === entry.ref.boxCode) {
+        const b = await readJson<SortBoxSummary>(
+          await fetch(`/api/sort-boxes/${encodeURIComponent(goodBox.code)}`),
+          ""
+        );
+        setGoodBox({ code: b.code, unitsLeft: b.unitsLeft });
+      } else if (entry.ref.kind === "dud" && dudBox?.code === entry.ref.boxCode) {
+        setDudBox({ code: dudBox.code, units: Math.max(0, dudBox.units - entry.quantity) });
       }
     } catch (e) {
-      setMessage({ tone: "danger", text: e instanceof Error ? e.message : "Couldn't start a dud box." });
+      setMessage({ tone: "danger", text: errorText(e, "Couldn't undo that.") });
     } finally {
-      setBoxBusy(false);
+      setSaving(false);
       focusScan();
     }
   }
 
-  async function closeBox() {
-    if (!box || boxBusy) return;
-    setBoxBusy(true);
+  async function markDone(reopen: boolean) {
+    if (!manifestId) return;
+    setSaving(true);
     try {
-      await readJson(
-        await fetch(`/api/dud-boxes/${encodeURIComponent(box.code)}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status: "closed" }),
-        }),
-        "Couldn't close the box."
+      const d = await readJson<{ sortedAt: string | null; sortedBy: string | null }>(
+        await postJson("/api/sort/done", { manifestId, undo: reopen }),
+        "Couldn't save that."
       );
-      setMessage({ tone: "success", text: `${box.code} closed. Set it aside for processing and start the next box.` });
-      rememberBox(null);
-      setConfirmClose(false);
-      setStarting(true);
+      setInfo((i) => (i ? { ...i, sortedAt: d.sortedAt, sortedBy: d.sortedBy } : i));
+      setConfirmDone(false);
+      setMessage({
+        tone: "success",
+        text: reopen ? "Sorting is open again." : "Sorting done. The manifest page now shows what's short or over.",
+      });
     } catch (e) {
-      setMessage({ tone: "danger", text: e instanceof Error ? e.message : "Couldn't close the box." });
+      setMessage({ tone: "danger", text: errorText(e, "Couldn't save that.") });
     } finally {
-      setBoxBusy(false);
-      focusScan();
-    }
-  }
-
-  async function reprint() {
-    if (!box || boxBusy) return;
-    if (!stations.station) {
-      setPickingStation(true);
-      return;
-    }
-    setBoxBusy(true);
-    try {
-      await readJson(
-        await fetch(`/api/dud-boxes/${encodeURIComponent(box.code)}/print`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ stationId: stations.station.id }),
-        }),
-        "Couldn't print the label."
-      );
-      setMessage({ tone: "success", text: `Label for ${box.code} is printing at ${stations.station.name}.` });
-    } catch (e) {
-      setMessage({ tone: "danger", text: e instanceof Error ? e.message : "Couldn't print the label." });
-    } finally {
-      setBoxBusy(false);
-      focusScan();
+      setSaving(false);
     }
   }
 
   if (!manifestId) {
     return (
-      <AppShell
-        width="narrow"
-        title="Sort"
-        subtitle="Pull duds, damaged and expired units before listing. Pick the load."
-      >
+      <AppShell width="narrow" title="Sort" subtitle="Sort the whole load into boxes before listing. Pick the load.">
         {manifests === null && <p className="text-sm text-muted-foreground">Loading…</p>}
         {manifests && manifests.length === 0 && (
           <Card>
@@ -627,6 +849,10 @@ export default function SortPage() {
             ))}
           </ul>
         )}
+        <Link href="/sort/boxes" className={cn(buttonClasses({ variant: "ghost" }), "mt-4")}>
+          <Boxes className="size-4" aria-hidden />
+          Sort boxes
+        </Link>
       </AppShell>
     );
   }
@@ -639,6 +865,8 @@ export default function SortPage() {
   // Unknown while loading counts as "has stations" so the no-label button
   // doesn't flash; a failed load counts as none so a box can still start.
   const hasStations = stations.error ? false : stationList == null || stationList.length > 0;
+  const showStationPicker = pickingStation || (starting && stations.needsStation && hasStations);
+  const undoable = log.find((e) => e.ref && !e.failed && !e.undone);
 
   return (
     <AppShell
@@ -666,8 +894,27 @@ export default function SortPage() {
           </Alert>
         )}
 
-        <div className="grid grid-cols-4 gap-2 text-center">
+        <ActiveBoxesBar
+          goodBox={goodBox}
+          goodChecked={goodChecked}
+          dudBox={dudBox}
+          dudChecked={dudChecked}
+          busy={boxBusy}
+          confirmCloseDud={confirmCloseDud}
+          onGoodFull={goodBoxFull}
+          onDudFull={() => setConfirmCloseDud(true)}
+          onCancelCloseDud={() => setConfirmCloseDud(false)}
+          onCloseDud={closeDudBox}
+          onStartDud={() => {
+            setStationFor("start");
+            setStarting(true);
+          }}
+          onReprint={(which) => reprint(which)}
+        />
+
+        <div className="grid grid-cols-5 gap-1.5 text-center">
           <TallyTile label="Good" value={tally.good} tone="success" />
+          <TallyTile label="Extra" value={tally.extra} tone="primary" />
           <TallyTile label="Dud" value={tally.dud} tone="warning" />
           <TallyTile label="Damaged" value={tally.damaged} tone="danger" />
           <TallyTile label="Expired" value={tally.expired} tone="danger" />
@@ -690,7 +937,7 @@ export default function SortPage() {
             value={code}
             onChange={setCode}
             onScan={handleScan}
-            hint="Scan a dud box label to fill that box instead."
+            hint="Scan a sort box (SB) or dud box (DB) label to switch boxes."
           />
         </Card>
 
@@ -712,7 +959,10 @@ export default function SortPage() {
               <div className="min-w-0">
                 <p className="text-lg font-semibold">Not on this manifest</p>
                 <p className="mt-0.5 break-all text-sm tabular-nums text-red-900/80">Scanned: {scan.code}</p>
-                <p className="mt-1 text-sm">Check the barcode, or set it aside. You can still log it below.</p>
+                <p className="mt-1 text-sm">If it&apos;s good, box it as an extra. Otherwise log it below.</p>
+                {result.extraSorted > 0 && (
+                  <p className="mt-1 text-sm font-medium">Already boxed as extra on this load: {result.extraSorted}</p>
+                )}
               </div>
             </div>
           </div>
@@ -726,9 +976,9 @@ export default function SortPage() {
                 <p className="text-2xl font-bold leading-tight">DUD: put it in the dud box</p>
                 {result?.dudReason && <p className="mt-1 text-sm font-medium">{result.dudReason}</p>}
                 <p className="mt-2 text-sm">
-                  {box ? (
+                  {dudBox ? (
                     <>
-                      Dud box <span className="font-mono font-bold">{box.code}</span>
+                      Dud box <span className="font-mono font-bold">{dudBox.code}</span>
                     </>
                   ) : (
                     "No dud box yet. Tapping below starts one."
@@ -745,17 +995,22 @@ export default function SortPage() {
             <p className="mt-0.5 text-xs tabular-nums text-muted-foreground">UPC {line.upc}</p>
             <div className="mt-3 grid grid-cols-4 gap-2 text-center">
               <Count label="Expected" value={line.expected} />
-              <Count label="Listed" value={line.received} />
+              <Count label="Sorted" value={line.sorted} />
               <Count label="Damaged" value={line.damaged} />
-              <Count label="Dud" value={line.dud} />
+              <Count label="Dud" value={line.dudLogged} />
             </div>
-            <p className={cn("mt-2 text-sm font-medium", line.leftToSort > 0 ? "text-foreground" : "text-warning")}>
-              {line.leftToSort > 0
-                ? `${line.leftToSort} still to sort or list`
-                : line.leftToSort === 0
-                  ? "All accounted for already. This one may be extra."
-                  : `${-line.leftToSort} more than the manifest listed.`}
-            </p>
+            {line.over > 0 ? (
+              <p className="mt-2 flex items-center gap-1.5 text-sm font-semibold text-danger">
+                <TriangleAlert className="size-4 shrink-0" aria-hidden />
+                Over by {line.over}: more than the manifest listed.
+              </p>
+            ) : (
+              <p className={cn("mt-2 text-sm font-medium", line.leftToSort > 0 ? "text-foreground" : "text-warning")}>
+                {line.leftToSort > 0
+                  ? `${line.leftToSort} left to sort`
+                  : "All of these are sorted. Any more would be over."}
+              </p>
+            )}
             {!isDud && result?.dudReason && <p className="mt-1 text-xs text-muted-foreground">{result.dudReason}</p>}
           </Card>
         )}
@@ -798,12 +1053,17 @@ export default function SortPage() {
               {isDud ? (
                 <Button variant="warning" size="xl" block onClick={() => record("dud")} disabled={saving || boxBusy}>
                   <PackageX className="size-5" aria-hidden />
-                  {box ? `Put in dud box ${box.code}` : "Start a dud box"}
+                  {dudBox ? `Put in dud box ${dudBox.code}` : "Start a dud box"}
                 </Button>
-              ) : (
+              ) : line ? (
                 <Button variant="success" size="xl" block onClick={() => record("good")} disabled={saving}>
                   <ThumbsUp className="size-5" aria-hidden />
-                  Good, pass to lister
+                  {goodBox ? `Good, into ${goodBox.code}` : "Good, pass to lister"}
+                </Button>
+              ) : (
+                <Button variant="success" size="xl" block onClick={() => record("extra")} disabled={saving}>
+                  <PackageCheck className="size-5" aria-hidden />
+                  {goodBox ? `Box it as extra, into ${goodBox.code}` : "Box it as extra"}
                 </Button>
               )}
               <div className="grid grid-cols-2 gap-2">
@@ -865,7 +1125,7 @@ export default function SortPage() {
             title={`${reopenCode} is closed`}
             action={
               <div className="flex flex-wrap gap-2">
-                <Button variant="warning" size="sm" onClick={() => reopenBox(reopenCode)} disabled={boxBusy}>
+                <Button variant="warning" size="sm" onClick={() => reopenDudBox(reopenCode)} disabled={boxBusy}>
                   Reopen it and fill it
                 </Button>
                 <Button variant="outline" size="sm" onClick={() => setReopenCode(null)}>
@@ -878,44 +1138,46 @@ export default function SortPage() {
           </Alert>
         )}
 
-        <div id="dud-box-card">
-          <DudBoxCard
-            box={box}
-            checked={boxChecked}
-            openBoxes={openBoxes}
-            starting={starting}
-            busy={boxBusy}
-            confirmClose={confirmClose}
-            stationName={stations.station?.name ?? null}
-            hasStations={hasStations}
-            pickingStation={pickingStation || (starting && stations.needsStation && hasStations)}
-            stationPicker={
-              <StationPicker
-                stations={stations.stations}
-                selectedId={stations.station?.id ?? null}
-                error={stations.error}
-                onPick={(s) => {
-                  stations.choose(s.id);
-                  setPickingStation(false);
+        <div id="sort-box-panel">
+          {showStationPicker ? (
+            <StationPicker
+              stations={stations.stations}
+              selectedId={stations.station?.id ?? null}
+              error={stations.error}
+              onPick={(s) => {
+                stations.choose(s.id);
+                setPickingStation(false);
+                if (stationFor === "reprint-good") void reprint("good", s.id);
+                if (stationFor === "reprint-dud") void reprint("dud", s.id);
+              }}
+              onCancel={() => {
+                setPickingStation(false);
+                if (!stations.station) setStarting(false);
+              }}
+              onReload={stations.reload}
+            />
+          ) : (
+            starting &&
+            !dudBox && (
+              <StartDudBoxCard
+                openBoxes={openDudBoxes}
+                busy={boxBusy}
+                stationName={stations.station?.name ?? null}
+                hasStations={hasStations}
+                pendingDud={pendingDud != null}
+                onUse={(c) => activateDudBox(c)}
+                onChangeStation={() => {
+                  setStationFor("start");
+                  setPickingStation(true);
                 }}
-                onCancel={stations.station ? () => setPickingStation(false) : undefined}
-                onReload={stations.reload}
+                onConfirmStart={(print) => startDudBox(print)}
+                onCancel={() => {
+                  setStarting(false);
+                  setPendingDud(null);
+                }}
               />
-            }
-            onStart={() => setStarting(true)}
-            onCancelStart={() => {
-              setStarting(false);
-              setPendingDud(null);
-            }}
-            onConfirmStart={(print) => startBox(print)}
-            onUse={(c) => activateScannedBox(c)}
-            onChangeStation={() => setPickingStation(true)}
-            onAskClose={() => setConfirmClose(true)}
-            onCancelClose={() => setConfirmClose(false)}
-            onClose={closeBox}
-            onReprint={reprint}
-            pendingDud={pendingDud != null}
-          />
+            )
+          )}
         </div>
 
         {log.length > 0 && (
@@ -927,9 +1189,9 @@ export default function SortPage() {
                   <span
                     className={cn(
                       "w-20 shrink-0 text-xs font-semibold",
-                      e.failed
+                      e.failed || e.undone
                         ? "text-muted-foreground line-through"
-                        : e.kind === "good"
+                        : e.kind === "good" || e.kind === "extra"
                           ? "text-success"
                           : e.kind === "dud"
                             ? "text-warning"
@@ -940,115 +1202,175 @@ export default function SortPage() {
                   </span>
                   <span className="min-w-0 flex-1 truncate text-foreground">{e.description}</span>
                   {e.failed && <span className="shrink-0 text-xs text-danger">Not saved</span>}
+                  {e.undone && <span className="shrink-0 text-xs text-muted-foreground">Undone</span>}
+                  {undoable?.id === e.id && (
+                    <Button variant="ghost" size="sm" onClick={() => undo(e)} disabled={saving}>
+                      <Undo2 className="size-4" aria-hidden />
+                      Undo
+                    </Button>
+                  )}
                 </li>
               ))}
             </ul>
           </section>
         )}
+
+        <SortingDoneCard
+          sortedAt={info?.sortedAt ?? null}
+          sortedBy={info?.sortedBy ?? null}
+          confirming={confirmDone}
+          busy={saving}
+          isOwner={isOwner}
+          onAsk={() => setConfirmDone(true)}
+          onCancel={() => setConfirmDone(false)}
+          onDone={() => markDone(false)}
+          onReopen={() => markDone(true)}
+        />
+
+        <Link href="/sort/boxes" className={buttonClasses({ variant: "ghost" })}>
+          <Boxes className="size-4" aria-hidden />
+          Sort boxes
+        </Link>
       </div>
     </AppShell>
   );
 }
 
-// The load's dud box on this device: which one is being filled, starting a
-// new one (label prints at this handheld's station), closing a full one.
-function DudBoxCard(props: {
-  box: ActiveBox | null;
-  checked: boolean;
-  openBoxes: DudBoxSummary[];
-  starting: boolean;
+// The two boxes the sorter is filling, side by side, always on screen. Each
+// has its own "full" button that leaves the other alone.
+function ActiveBoxesBar(props: {
+  goodBox: SortBoxState | null;
+  goodChecked: boolean;
+  dudBox: DudBoxState | null;
+  dudChecked: boolean;
   busy: boolean;
-  confirmClose: boolean;
+  confirmCloseDud: boolean;
+  onGoodFull: () => void;
+  onDudFull: () => void;
+  onCancelCloseDud: () => void;
+  onCloseDud: () => void;
+  onStartDud: () => void;
+  onReprint: (which: "good" | "dud") => void;
+}) {
+  return (
+    <Card padded={false}>
+      <div className="grid grid-cols-2 divide-x divide-border">
+        <BoxSlot
+          label="Good"
+          icon={<PackageCheck className="size-4 text-success" aria-hidden />}
+          code={props.goodBox?.code ?? null}
+          units={props.goodBox?.unitsLeft ?? 0}
+          checked={props.goodChecked}
+          emptyText="None. Scan a sort box."
+          busy={props.busy}
+          onFull={props.onGoodFull}
+          onReprint={() => props.onReprint("good")}
+        />
+        <BoxSlot
+          label="Dud"
+          icon={<PackageX className="size-4 text-amber-600" aria-hidden />}
+          code={props.dudBox?.code ?? null}
+          units={props.dudBox?.units ?? 0}
+          checked={props.dudChecked}
+          emptyText="None. Scan one or start one."
+          busy={props.busy}
+          onFull={props.onDudFull}
+          onReprint={() => props.onReprint("dud")}
+          onStart={props.onStartDud}
+        />
+      </div>
+      {props.confirmCloseDud && props.dudBox && (
+        <div className="border-t border-amber-200 bg-amber-50 p-3">
+          <p className="text-sm font-medium text-amber-950">
+            Close {props.dudBox.code}? It goes aside for processing and you start a new dud box.
+          </p>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <Button variant="warning" onClick={props.onCloseDud} disabled={props.busy}>
+              Yes, it&apos;s full
+            </Button>
+            <Button variant="outline" onClick={props.onCancelCloseDud} disabled={props.busy}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function BoxSlot(props: {
+  label: string;
+  icon: ReactNode;
+  code: string | null;
+  units: number;
+  checked: boolean;
+  emptyText: string;
+  busy: boolean;
+  onFull: () => void;
+  onReprint: () => void;
+  onStart?: () => void;
+}) {
+  return (
+    <div className="flex min-w-0 flex-col gap-2 p-3">
+      <p className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+        {props.icon}
+        {props.label}
+      </p>
+      {!props.checked ? (
+        <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
+          <LoaderCircle className="size-4 animate-spin" aria-hidden />
+          Checking…
+        </p>
+      ) : props.code ? (
+        <>
+          <div className="flex items-baseline justify-between gap-2">
+            <p className="font-mono text-xl font-bold leading-none text-foreground">{props.code}</p>
+            <p className="shrink-0 text-xs tabular-nums text-muted-foreground">{props.units} in it</p>
+          </div>
+          <div className="flex gap-1">
+            <Button variant="outline" size="sm" className="flex-1 px-2" onClick={props.onFull} disabled={props.busy}>
+              Full, new one
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="px-2"
+              aria-label={`Reprint ${props.code} label`}
+              onClick={props.onReprint}
+              disabled={props.busy}
+            >
+              <Printer className="size-4" aria-hidden />
+            </Button>
+          </div>
+        </>
+      ) : (
+        <>
+          <p className="text-sm font-medium text-warning">{props.emptyText}</p>
+          {props.onStart && (
+            <Button variant="outline" size="sm" onClick={props.onStart} disabled={props.busy}>
+              <PackageOpen className="size-4" aria-hidden />
+              Start one
+            </Button>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// Starting a new dud box: use an open one of this load, or start one with
+// its label printed at this handheld's station.
+function StartDudBoxCard(props: {
+  openBoxes: DudBoxSummary[];
+  busy: boolean;
   stationName: string | null;
   hasStations: boolean;
-  pickingStation: boolean;
-  stationPicker: ReactNode;
   pendingDud: boolean;
-  onStart: () => void;
-  onCancelStart: () => void;
-  onConfirmStart: (print: boolean) => void;
   onUse: (code: string) => void;
   onChangeStation: () => void;
-  onAskClose: () => void;
-  onCancelClose: () => void;
-  onClose: () => void;
-  onReprint: () => void;
+  onConfirmStart: (print: boolean) => void;
+  onCancel: () => void;
 }) {
-  const { box } = props;
-
-  if (box && props.pickingStation) return <>{props.stationPicker}</>;
-
-  if (box) {
-    return (
-      <Card>
-        <div className="flex items-center gap-3">
-          <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-amber-50 text-amber-700">
-            <PackageOpen className="size-5" aria-hidden />
-          </span>
-          <div className="min-w-0 flex-1">
-            <p className="text-xs font-medium text-muted-foreground">Dud box</p>
-            <p className="font-mono text-xl font-bold leading-tight text-foreground">{box.code}</p>
-          </div>
-          <p className="shrink-0 text-sm tabular-nums text-muted-foreground">
-            {box.units} {box.units === 1 ? "unit" : "units"}
-          </p>
-        </div>
-        {props.confirmClose ? (
-          <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
-            <p className="text-sm font-medium text-amber-950">Close {box.code}? You&apos;ll start a new box next.</p>
-            <div className="mt-2 grid grid-cols-2 gap-2">
-              <Button variant="warning" onClick={props.onClose} disabled={props.busy}>
-                Yes, it&apos;s full
-              </Button>
-              <Button variant="outline" onClick={props.onCancelClose} disabled={props.busy}>
-                Cancel
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <Button variant="outline" onClick={props.onAskClose} disabled={props.busy}>
-              Box is full, close it
-            </Button>
-            <Button variant="outline" onClick={props.onReprint} disabled={props.busy}>
-              <Printer className="size-4" aria-hidden />
-              Reprint label
-            </Button>
-          </div>
-        )}
-      </Card>
-    );
-  }
-
-  if (!props.checked) {
-    return (
-      <Card>
-        <p className="flex items-center gap-2 text-sm text-muted-foreground">
-          <LoaderCircle className="size-4 animate-spin" aria-hidden />
-          Checking this load&apos;s dud box…
-        </p>
-      </Card>
-    );
-  }
-
-  if (!props.starting) {
-    return (
-      <Card>
-        <SectionHeader
-          title="No dud box open"
-          description="Duds from this load go in a labeled box. Start one, or scan a box's label."
-        />
-        <OpenBoxList boxes={props.openBoxes} onUse={props.onUse} busy={props.busy} />
-        <Button variant="outline" block onClick={props.onStart}>
-          <PackageOpen className="size-4" aria-hidden />
-          Start a dud box
-        </Button>
-      </Card>
-    );
-  }
-
-  if (props.pickingStation) return <>{props.stationPicker}</>;
-
   return (
     <Card className="border-amber-300">
       <SectionHeader
@@ -1056,10 +1378,32 @@ function DudBoxCard(props: {
         description={
           props.pendingDud
             ? "The dud you just scanned goes in it right away."
-            : "Grab an empty box. Its label prints now."
+            : "Grab an empty box. Its label prints now. Or scan a dud box label."
         }
       />
-      <OpenBoxList boxes={props.openBoxes} onUse={props.onUse} busy={props.busy} />
+      {props.openBoxes.length > 0 && (
+        <div className="mb-3">
+          <p className="mb-1.5 text-xs font-medium text-muted-foreground">Already open for this load</p>
+          <ul className="flex flex-col gap-2">
+            {props.openBoxes.map((b) => (
+              <li key={b.code}>
+                <Button
+                  variant="outline"
+                  block
+                  onClick={() => props.onUse(b.code)}
+                  disabled={props.busy}
+                  className="justify-between"
+                >
+                  <span className="font-mono font-bold">{b.code}</span>
+                  <span className="text-sm text-muted-foreground">
+                    {b.units} {b.units === 1 ? "unit" : "units"} · Use it
+                  </span>
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {props.stationName && (
         <p className="mb-3 text-sm text-muted-foreground">
           Label prints at <span className="font-medium text-foreground">{props.stationName}</span>.{" "}
@@ -1080,7 +1424,7 @@ function DudBoxCard(props: {
             Start box without a label
           </Button>
         )}
-        <Button variant="ghost" onClick={props.onCancelStart} disabled={props.busy}>
+        <Button variant="ghost" onClick={props.onCancel} disabled={props.busy}>
           Cancel
         </Button>
       </div>
@@ -1088,38 +1432,73 @@ function DudBoxCard(props: {
   );
 }
 
-function OpenBoxList({ boxes, onUse, busy }: { boxes: DudBoxSummary[]; onUse: (code: string) => void; busy: boolean }) {
-  if (boxes.length === 0) return null;
+// "Sorting done": the whole load has been through. After that, lines with
+// nothing sorted count as short on the manifest page. Only the owner can
+// reopen it.
+function SortingDoneCard(props: {
+  sortedAt: string | null;
+  sortedBy: string | null;
+  confirming: boolean;
+  busy: boolean;
+  isOwner: boolean;
+  onAsk: () => void;
+  onCancel: () => void;
+  onDone: () => void;
+  onReopen: () => void;
+}) {
+  if (props.sortedAt) {
+    return (
+      <Card>
+        <p className="flex items-center gap-2 text-sm font-medium text-success">
+          <CircleCheck className="size-5 shrink-0" aria-hidden />
+          Sorting finished {new Date(props.sortedAt).toLocaleString()}
+          {props.sortedBy ? ` by ${props.sortedBy}` : ""}
+        </p>
+        {props.isOwner && (
+          <Button variant="ghost" size="sm" className="mt-2" onClick={props.onReopen} disabled={props.busy}>
+            Reopen sorting
+          </Button>
+        )}
+      </Card>
+    );
+  }
+  if (props.confirming) {
+    return (
+      <Card className="border-amber-300">
+        <p className="text-sm font-medium text-foreground">
+          Is the whole load sorted? Anything not sorted yet will count as short.
+        </p>
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <Button variant="primary" onClick={props.onDone} disabled={props.busy}>
+            Yes, sorting is done
+          </Button>
+          <Button variant="outline" onClick={props.onCancel} disabled={props.busy}>
+            Cancel
+          </Button>
+        </div>
+      </Card>
+    );
+  }
   return (
-    <div className="mb-3">
-      <p className="mb-1.5 text-xs font-medium text-muted-foreground">Already open for this load</p>
-      <ul className="flex flex-col gap-2">
-        {boxes.map((b) => (
-          <li key={b.code}>
-            <Button variant="outline" block onClick={() => onUse(b.code)} disabled={busy} className="justify-between">
-              <span className="font-mono font-bold">{b.code}</span>
-              <span className="text-sm text-muted-foreground">
-                {b.units} {b.units === 1 ? "unit" : "units"} · Use it
-              </span>
-            </Button>
-          </li>
-        ))}
-      </ul>
-    </div>
+    <Button variant="outline" size="lg" block onClick={props.onAsk}>
+      <CircleCheck className="size-5" aria-hidden />
+      Sorting done
+    </Button>
   );
 }
 
 const TALLY_TONES = {
   success: "border-green-200 bg-green-50 text-green-800",
+  primary: "border-blue-200 bg-blue-50 text-blue-800",
   danger: "border-red-200 bg-red-50 text-red-800",
   warning: "border-amber-200 bg-amber-50 text-amber-800",
 } as const;
 
 function TallyTile({ label, value, tone }: { label: string; value: number; tone: keyof typeof TALLY_TONES }) {
   return (
-    <div className={cn("rounded-lg border px-1 py-2", TALLY_TONES[tone])}>
-      <p className="text-xs font-medium">{label}</p>
-      <p className="text-2xl font-semibold tabular-nums">{value}</p>
+    <div className={cn("rounded-lg border px-0.5 py-1.5", TALLY_TONES[tone])}>
+      <p className="truncate text-[11px] font-medium">{label}</p>
+      <p className="text-xl font-semibold tabular-nums">{value}</p>
     </div>
   );
 }

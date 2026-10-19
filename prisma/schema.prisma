@@ -630,6 +630,12 @@ model Manifest {
   damaged ManifestDamagedEntry[]
   duds    ManifestDudEntry[]
   dudBoxes DudBox[]
+  sortBoxes       SortBox[]
+  sortBoxEntries  SortBoxEntry[]
+  // Sort station: when someone tapped "Sorting done" for this load. Before
+  // that, products not boxed yet are "not sorted yet"; after, they're short.
+  sortedAt        DateTime?
+  sortedBy        String?
   items   Item[]
 
   sourcingEvaluations SourcingEvaluation[]
@@ -1608,4 +1614,48 @@ model ActivityLog {
   @@index([username, at])
   @@index([targetType, targetId])
   @@index([action, at])
+}
+
+// A reusable sort box with a printed barcode ("SB0001"). Cristian's flow
+// (2026-10-18): the whole load gets sorted into boxes first, so the lister
+// never waits on a unit buried at the bottom of the pallet, and the real
+// counts (short / extra) are known before anything is listed. manifestId is
+// the load it currently holds; null = empty, and its next sort scan ties it
+// to whatever load is being sorted (labels are printed once, boxes reused).
+model SortBox {
+  id         String    @id @default(uuid())
+  code       String    @unique
+  manifest   Manifest? @relation(fields: [manifestId], references: [id], onDelete: SetNull)
+  manifestId String?
+  assignedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  entries SortBoxEntry[]
+
+  @@index([manifestId])
+}
+
+// Good units the sorter put in a sort box: one row per sort scan (with the
+// "I have X of these" count). pulledUnits = how many the listing station has
+// taken out (scanning the product at the List page pulls every unit of it to
+// the table; "put back" lowers it again). manifestId stays on the row even
+// after the box moves on to another load, so the load's sorted count never
+// changes. extra = the product isn't on the manifest at all.
+model SortBoxEntry {
+  id          String    @id @default(uuid())
+  box         SortBox   @relation(fields: [boxId], references: [id], onDelete: Restrict)
+  boxId       String
+  manifest    Manifest  @relation(fields: [manifestId], references: [id], onDelete: Cascade)
+  manifestId  String
+  upc         String
+  quantity    Int
+  pulledUnits Int       @default(0)
+  pulledAt    DateTime?
+  pulledBy    String?
+  extra       Boolean   @default(false)
+  recordedBy  String?
+  createdAt   DateTime  @default(now())
+
+  @@index([manifestId, upc])
+  @@index([boxId])
 }

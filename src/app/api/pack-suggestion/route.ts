@@ -22,6 +22,8 @@ import { prisma } from "@/lib/prisma";
 import { getShopifyConfig } from "@/lib/shopify";
 import { getShopifyPricing, shopifyPriceFor } from "@/lib/shopifySync";
 import { NOT_RETURN_ENTRY, returnedUnitsByUpc } from "@/lib/warehouse/returnReconcile";
+import { isWarehouseMode } from "@/lib/warehouse/settings";
+import { sortedLeft } from "@/lib/warehouse/sortCount";
 import { Prisma } from "@/generated/prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -144,8 +146,18 @@ export async function GET(request: NextRequest) {
   // match the manifest (Cristian, 2026-10-15: 5 Hawaiian Tropic in hand,
   // manifest said 3 left), less what she's saved of it since.
   const hand = await handCountLeft(upc, manifestId);
-  const alreadyScannedIn = hand == null && unitsLeft === 0;
-  const available = hand?.left ?? (unitsLeft == null ? null : Math.max(unitsLeft, 1));
+  // Warehouse mode: the load was sorted into sort boxes first, so the real
+  // count is what the sorter put in boxes (good units), less what's been
+  // listed of it since. Beats the manifest's expected count, which is
+  // often off. Only for the load being listed into; null = no sort data,
+  // and everything works off the manifest as before.
+  const sort = manifestId && countManifestId === manifestId && (await isWarehouseMode()) ? await sortedLeft(manifestId, upc) : null;
+  // A count typed on the card still wins when it's newer than the sorting.
+  const handWins = hand != null && (sort == null || hand.createdAt >= sort.latestAt);
+  const countedBySort = !handWins && sort != null;
+  const left = countedBySort ? sort.left : unitsLeft;
+  const alreadyScannedIn = !handWins && left === 0;
+  const available = handWins ? hand.left : left == null ? null : Math.max(left, 1);
 
   // Units that shouldn't be listed at the size they'd have to go in. They
   // come out of the plan and Lizvet sets them aside for Cristian to decide
@@ -292,9 +304,13 @@ export async function GET(request: NextRequest) {
     manifestPackSize,
     available,
     // available is the count typed on the card, not the manifest's.
-    countedByHand: hand != null,
+    countedByHand: handWins,
     // The count she typed (available is what's left of it).
-    handCount: hand?.count ?? null,
+    handCount: handWins ? hand.count : null,
+    // available is what was sorted into sort boxes less what's been listed
+    // since (warehouse mode); sorted = every good unit sorted.
+    countedBySort,
+    sorted: countedBySort ? sort.sorted : null,
     // What the manifest says is left, for "the manifest says 3".
     manifestLeft: unitsLeft,
     // Counted against a load other than the one being scanned into (or none
@@ -365,7 +381,10 @@ const HAND_COUNT_MAX_AGE_DAYS = 3;
 // unit of it saved since it was typed: listed, inside a bundle, sold at a
 // walk-up, or marked damaged or dud. Used up = cleared, and the card goes
 // back to the manifest's own count.
-async function handCountLeft(upc: string, manifestId: string | null): Promise<{ count: number; left: number } | null> {
+async function handCountLeft(
+  upc: string,
+  manifestId: string | null
+): Promise<{ count: number; left: number; createdAt: Date } | null> {
   const hc = await prisma.handCount.findFirst({
     where: { upc, manifestId, createdAt: { gte: new Date(Date.now() - HAND_COUNT_MAX_AGE_DAYS * 24 * 60 * 60 * 1000) } },
     orderBy: { createdAt: "desc" },
@@ -409,8 +428,9 @@ async function handCountLeft(upc: string, manifestId: string | null): Promise<{ 
     await prisma.handCount.delete({ where: { id: hc.id } }).catch(() => {});
     return null;
   }
-  return { count: hc.count, left };
+  return { count: hc.count, left, createdAt: hc.createdAt };
 }
+
 
 const LINE_SELECT = { description: true, expectedQuantity: true, retailPrice: true, category: true } as const;
 type ManifestLineInfo = { description: string; expectedQuantity: number; retailPrice: Prisma.Decimal; category: string | null };
