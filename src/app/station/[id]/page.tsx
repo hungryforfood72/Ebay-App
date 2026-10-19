@@ -40,6 +40,8 @@ const POLL_IDLE_MS = 5_000;
 const ACTIVE_WINDOW_MS = 2 * 60_000;
 // A weight change at least this big counts as someone working here.
 const ACTIVITY_OZ = 0.2;
+// The Print automatically switch, remembered on this PC.
+const AUTO_PRINT_KEY = (stationId: string) => `station-auto-print:${stationId}`;
 
 type ServerState = "connecting" | "online" | "offline" | "signed-out" | "deleted";
 
@@ -65,6 +67,11 @@ export default function StationPage() {
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [pollActive, setPollActive] = useState(true);
+  // Off: nothing prints, jobs wait in the queue until it's back on. For
+  // swapping paper, or switching the default printer to print something
+  // else (Cristian, 2026-10-19: a scan form on the regular printer).
+  const [autoPrint, setAutoPrint] = useState(true);
+  const autoPrintRef = useRef(true);
 
   const weightOz = scale.connection === "connected" ? (scale.reading?.weightOz ?? null) : null;
   const stable = weightOz !== null && Boolean(scale.reading?.stable);
@@ -104,6 +111,32 @@ export default function StationPage() {
       if (res.ok) setLog(await res.json());
     } catch {
       // The next print or reload tries again.
+    }
+  }
+
+  useEffect(() => {
+    let saved: string | null = null;
+    try {
+      saved = window.localStorage.getItem(AUTO_PRINT_KEY(id));
+    } catch {
+      // Storage blocked: it just starts on.
+    }
+    autoPrintRef.current = saved !== "off";
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setAutoPrint(saved !== "off");
+  }, [id]);
+
+  function changeAutoPrint(on: boolean) {
+    autoPrintRef.current = on;
+    setAutoPrint(on);
+    try {
+      window.localStorage.setItem(AUTO_PRINT_KEY(id), on ? "on" : "off");
+    } catch {
+      // Still works until the page reloads.
+    }
+    if (on) {
+      lastActivityAt.current = Date.now();
+      poll.current.lastAt = 0; // print what's waiting right away
     }
   }
 
@@ -208,7 +241,13 @@ export default function StationPage() {
     const p = poll.current;
     const active = t - lastActivityAt.current < ACTIVE_WINDOW_MS;
     setPollActive(active);
-    if (!p.busy && t - p.lastAt >= (active ? POLL_ACTIVE_MS : POLL_IDLE_MS)) void pollJobs();
+    if (!autoPrintRef.current) {
+      // Paused: don't take any jobs, just keep the log's Waiting rows fresh.
+      if (!p.busy && t - p.lastAt >= POLL_IDLE_MS) {
+        p.lastAt = t;
+        void loadLog();
+      }
+    } else if (!p.busy && t - p.lastAt >= (active ? POLL_ACTIVE_MS : POLL_IDLE_MS)) void pollJobs();
 
     // Re-render once a second for "last reading 12s ago".
     if (Math.floor(t / 1000) !== Math.floor(now / 1000)) setNow(t);
@@ -277,6 +316,7 @@ export default function StationPage() {
   }
 
   const latest = log?.find((j) => isLabelKind(j.kind));
+  const waiting = log?.filter((j) => j.status === "queued").length ?? 0;
   const stopped = server === "signed-out" || server === "deleted";
 
   if (loadError) {
@@ -317,6 +357,39 @@ export default function StationPage() {
                 </Button>
               }
             />
+            <label className="mb-3 flex items-start gap-2 text-sm text-foreground">
+              <input
+                type="checkbox"
+                className="mt-0.5 size-4"
+                checked={autoPrint}
+                disabled={stopped}
+                onChange={(e) => changeAutoPrint(e.target.checked)}
+              />
+              <span>
+                Print automatically
+                <span className="block text-xs text-muted-foreground">
+                  Turn off to swap paper or print something else on another printer. Labels and packing slips wait here
+                  and print when you turn it back on.
+                </span>
+              </span>
+            </label>
+            {!autoPrint && (
+              <Alert
+                tone="warning"
+                title="Printing is paused"
+                className="mb-3"
+                action={
+                  <Button size="sm" onClick={() => changeAutoPrint(true)}>
+                    <Printer className="size-4" aria-hidden />
+                    Turn printing back on
+                  </Button>
+                }
+              >
+                {waiting > 0
+                  ? `${waiting} waiting to print. They print as soon as it's back on.`
+                  : "Nothing's waiting. Anything sent here waits until it's back on."}
+              </Alert>
+            )}
             <label className="mb-3 flex items-start gap-2 text-sm text-foreground">
               <input
                 type="checkbox"
@@ -372,9 +445,13 @@ export default function StationPage() {
                 text={scale.connection === "connected" ? (scale.deviceName ?? "Connected") : scaleConnectionText(scale.connection)}
               />
               <StatusRow
-                ok={server === "online"}
+                ok={server === "online" && autoPrint}
                 label="Printer"
-                text={`Checking for labels every ${(pollActive ? POLL_ACTIVE_MS : POLL_IDLE_MS) / 1000}s`}
+                text={
+                autoPrint
+                  ? `Checking for labels every ${(pollActive ? POLL_ACTIVE_MS : POLL_IDLE_MS) / 1000}s`
+                  : "Paused. Labels wait until printing is back on."
+              }
               />
             </ul>
           </Card>
@@ -564,7 +641,10 @@ function SetupHelp({ stationId }: { stationId: string }) {
     setOrigin(window.location.origin);
   }, []);
 
-  const shortcut = `"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --kiosk-printing --app=${origin}/station/${stationId}`;
+  // Its own Chrome profile (--user-data-dir): --kiosk-printing covers every
+  // window of the Chrome it starts, so without one, a scan form printed from
+  // the normal Chrome would also go straight to the Rollo with no dialog.
+  const shortcut = `"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --user-data-dir=C:\\ChromeStation --kiosk-printing --app=${origin}/station/${stationId}`;
   // Chrome policy that always lets this site use the DYMO M25 (USB ids
   // 0x0922 / 0x8004 = 2338 / 32772), for when Chrome forgets the scale
   // every time it powers off.
@@ -609,8 +689,9 @@ function SetupHelp({ stationId }: { stationId: string }) {
               </Button>
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
-              Close every Chrome window before opening the shortcut. Chrome ignores --kiosk-printing if it&apos;s
-              already running.
+              This opens a separate Chrome just for the station, so only it prints with no pop-up. Your normal Chrome
+              keeps the regular print dialog, so print scan forms and anything else from there and pick the printer.
+              The first time, sign in and connect the scale again in the new window.
             </p>
           </li>
           <li>Open the shortcut, sign in, press Connect scale and pick the DYMO. Then press Test print.</li>

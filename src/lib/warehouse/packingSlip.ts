@@ -1,5 +1,7 @@
 import type { Prisma } from "@/generated/prisma/client";
 import { code128Bits } from "@/components/labels/barcode";
+import { getOrderShipTo } from "../ebay";
+import { shopifyGraphql } from "../shopify";
 import { deliveryForOrder, getShipFrom, markLabelPrinted } from "../delivery/deliveries";
 import { deliveryLabelsDocument } from "../delivery/label";
 import { prisma } from "../prisma";
@@ -45,7 +47,58 @@ const HANDOFF_BANNER: Record<string, string | null> = {
 
 const CHICAGO_DAY = new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", month: "short", day: "numeric", year: "numeric" });
 
-export function packingSlipHtml(order: OrderForSlip, by: string | null): string {
+// The buyer's full name and address (Cristian, 2026-10-19). Read from the
+// store at print time, never kept: once the station says the slip printed,
+// the address comes back out of the saved job (stripShipTo), and a Reprint
+// reads it fresh again.
+export type ShipTo = { name: string; lines: string[] };
+
+const SHIP_TO_START = "<!--shipto-->";
+const SHIP_TO_END = "<!--/shipto-->";
+
+export function stripShipTo(html: string): string {
+  return html.replace(/<!--shipto-->[\s\S]*?<!--\/shipto-->/g, "");
+}
+
+// null = no address to show: a pickup or counter sale, or the store didn't
+// give one (Shopify sends none until the store app has protected customer
+// data access).
+export async function shipToForSlip(order: OrderForSlip): Promise<ShipTo | null> {
+  if (order.handoff === "pickup" || order.handoff === "counter") return null;
+  try {
+    if (order.channel === "ebay") return await getOrderShipTo(order.orderId);
+    const data = await shopifyGraphql<{
+      order: {
+        shippingAddress: {
+          name: string | null;
+          address1: string | null;
+          address2: string | null;
+          city: string | null;
+          provinceCode: string | null;
+          zip: string | null;
+          countryCodeV2: string | null;
+        } | null;
+      } | null;
+    }>(`query($id: ID!) { order(id: $id) { shippingAddress { name address1 address2 city provinceCode zip countryCodeV2 } } }`, {
+      id: order.orderId,
+    });
+    const a = data.order?.shippingAddress;
+    if (!a?.name && !a?.address1) return null;
+    const cityLine = [a.city, [a.provinceCode, a.zip].filter(Boolean).join(" ")].filter(Boolean).join(", ");
+    return {
+      name: a.name?.trim() ?? "",
+      lines: [a.address1, a.address2, cityLine, a.countryCodeV2 && a.countryCodeV2 !== "US" ? a.countryCodeV2 : null]
+        .map((l) => l?.trim())
+        .filter((l): l is string => Boolean(l)),
+    };
+  } catch (e) {
+    // The slip still prints, just without the address.
+    console.error(`[packingSlip] couldn't read the ship-to for ${order.channel} order ${order.orderNumber}`, e);
+    return null;
+  }
+}
+
+export function packingSlipHtml(order: OrderForSlip, by: string | null, shipTo: ShipTo | null = null): string {
   const banner = HANDOFF_BANNER[order.handoff];
   const units = order.lines.reduce((sum, l) => sum + l.quantity, 0);
   const rows = order.lines
@@ -65,6 +118,9 @@ h1 { font-size: 13pt; letter-spacing: 1px; }
 .source { font-size: 11pt; font-weight: 900; border: 2px solid #000; padding: 0.01in 0.06in; }
 .order { font-size: 20pt; font-weight: 900; line-height: 1.05; word-break: break-all; }
 .meta { font-size: 9pt; }
+.shipto { border: 1.5px solid #000; padding: 0.05in 0.08in; font-size: 10pt; line-height: 1.25; }
+.shipto .label { font-size: 7pt; letter-spacing: 1px; font-weight: 700; }
+.shipto .name { font-size: 12pt; font-weight: 900; }
 .banner { background: #000; color: #fff; font-weight: 900; font-size: 11pt; padding: 0.05in 0.08in; text-align: center; }
 table { width: 100%; border-collapse: collapse; font-size: 9.5pt; }
 th { text-align: left; font-size: 7pt; letter-spacing: 1px; border-bottom: 1px solid #000; padding-bottom: 0.02in; }
@@ -76,7 +132,12 @@ footer { margin-top: auto; font-size: 7.5pt; text-align: center; border-top: 1px
 </style></head><body><section class="slip">
   <header><h1>PACKING SLIP</h1><span class="source">${esc(order.source.toUpperCase())}</span></header>
   <p class="order">${esc(order.orderNumber)}</p>
-  <p class="meta">${order.buyer ? `${esc(order.buyer)} · ` : ""}Ordered ${CHICAGO_DAY.format(new Date(order.orderedAt))} · ${units} item${units === 1 ? "" : "s"}</p>
+  <p class="meta">${order.buyer && !shipTo ? `${esc(order.buyer)} · ` : ""}Ordered ${CHICAGO_DAY.format(new Date(order.orderedAt))} · ${units} item${units === 1 ? "" : "s"}</p>
+  ${
+    shipTo
+      ? `${SHIP_TO_START}<div class="shipto"><p class="label">SHIP TO</p>${shipTo.name ? `<p class="name">${esc(shipTo.name)}</p>` : ""}${shipTo.lines.map((l) => `<p>${esc(l)}</p>`).join("")}</div>${SHIP_TO_END}`
+      : ""
+  }
   ${banner ? `<p class="banner">${esc(banner)}</p>` : ""}
   ${barcode(number)}
   <table><thead><tr><th></th><th>QTY</th><th>ITEM</th></tr></thead><tbody>${rows}</tbody></table>
@@ -104,6 +165,22 @@ export type SlipResult =
   // button on Ready to pack prints it).
   | { status: "already" | "not_ready" | "not_found" | "counter" | "no_station" };
 
+async function slipPayload(order: OrderForSlip, by: string | null): Promise<PageJobPayload> {
+  return {
+    code: `Slip ${order.orderNumber}`,
+    html: packingSlipHtml(order, by, await shipToForSlip(order)),
+    order: { channel: order.channel, orderId: order.orderId },
+  };
+}
+
+// The station log's Reprint on a packing slip: the slip built again, so
+// the address (stripped once it printed) is back on it. null = the order
+// isn't open anymore (already shipped); reprint the saved copy instead.
+export async function rebuildSlipPayload(channel: PickChannel, orderId: string, by: string | null): Promise<PageJobPayload | null> {
+  const order = await orderForSlip(channel, orderId).catch(() => null);
+  return order ? slipPayload(order, by) : null;
+}
+
 async function queuePage(tx: Prisma.TransactionClient | typeof prisma, stationId: string, kind: PageJobKind, payload: PageJobPayload, by: string | null) {
   await tx.printJob.create({ data: { stationId, kind, payload: payload as Prisma.InputJsonValue, copies: 1, createdBy: by } });
 }
@@ -123,7 +200,7 @@ export async function printPackingSlip(input: { channel: PickChannel; orderId: s
   // Cheap check first: no station and not a reprint means nothing to do.
   if (!input.force && !(await packingStation())) return { status: "no_station" };
   const pages: { kind: PageJobKind; payload: PageJobPayload }[] = [
-    { kind: "packing_slip", payload: { code: `Slip ${order.orderNumber}`, html: packingSlipHtml(order, input.by) } },
+    { kind: "packing_slip", payload: await slipPayload(order, input.by) },
   ];
   let delivery: boolean | null = null;
   let deliveryId: string | null = null;

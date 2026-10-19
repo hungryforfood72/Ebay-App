@@ -1,6 +1,7 @@
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import type { PrintJobKind, PrintJobPayload } from "@/lib/warehouse/types";
+import { rebuildSlipPayload } from "@/lib/warehouse/packingSlip";
+import type { PageJobPayload, PrintJobKind, PrintJobPayload } from "@/lib/warehouse/types";
 import { queuePrintJob } from "@/lib/warehouse/printJobs";
 import { errorResponse, toPrintJobRow } from "@/lib/warehouse/stations";
 import { NextRequest, NextResponse } from "next/server";
@@ -17,10 +18,20 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const original = await prisma.printJob.findUnique({ where: { id } });
     if (!original) return NextResponse.json({ error: "That print job is gone." }, { status: 404 });
 
+    // A packing slip is built again so the buyer's address is back on it
+    // (it's stripped from the saved copy once it prints). An order that's
+    // already shipped reprints the saved copy, address and all gone.
+    let payload = original.payload as PrintJobPayload;
+    const slipOrder = original.kind === "packing_slip" ? (original.payload as PageJobPayload | null)?.order : undefined;
+    if (slipOrder) {
+      const rebuilt = await rebuildSlipPayload(slipOrder.channel, slipOrder.orderId, user.username);
+      if (rebuilt) payload = rebuilt as unknown as PrintJobPayload;
+    }
+
     const job = await queuePrintJob({
       stationId: typeof body.stationId === "string" && body.stationId ? body.stationId : original.stationId,
       kind: original.kind as PrintJobKind,
-      payload: original.payload as PrintJobPayload,
+      payload,
       copies: body.copies == null ? original.copies : Number(body.copies),
       by: user.username,
     });

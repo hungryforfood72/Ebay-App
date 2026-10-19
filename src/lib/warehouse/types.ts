@@ -34,7 +34,9 @@ export type PrintJobPayload = ItemLabelPayload | CodeLabelPayload;
 // html is the complete printable page; code is what the station's log shows.
 export const PAGE_JOB_KINDS = ["packing_slip", "delivery_label"] as const;
 export type PageJobKind = (typeof PAGE_JOB_KINDS)[number];
-export type PageJobPayload = { code: string; html: string };
+// order: which order a packing slip is for, so Reprint can build it again
+// with the buyer's address (stripped from the saved copy once it prints).
+export type PageJobPayload = { code: string; html: string; order?: { channel: "ebay" | "shopify"; orderId: string } };
 
 export function isPageKind(v: unknown): v is PageJobKind {
   return (PAGE_JOB_KINDS as readonly unknown[]).includes(v);

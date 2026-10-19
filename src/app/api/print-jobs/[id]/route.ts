@@ -1,4 +1,6 @@
+import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
+import { stripShipTo } from "@/lib/warehouse/packingSlip";
 import { toPrintJobRow } from "@/lib/warehouse/stations";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -18,6 +20,16 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     data: { status: body.status, error, printedAt: body.status === "printed" ? new Date() : null },
   });
   if (count === 0) return NextResponse.json({ error: "That print job is gone." }, { status: 404 });
-  const job = await prisma.printJob.findUnique({ where: { id } });
+  let job = await prisma.printJob.findUnique({ where: { id } });
+  // A packing slip's buyer address is only needed until it's on paper (or
+  // the print failed and Reprint will read it fresh). Out of the saved copy
+  // it comes, so the app doesn't keep buyer addresses.
+  const payload = job?.payload as { html?: unknown } | null;
+  if (job && job.kind === "packing_slip" && typeof payload?.html === "string" && payload.html.includes("<!--shipto-->")) {
+    job = await prisma.printJob.update({
+      where: { id },
+      data: { payload: { ...(payload as object), html: stripShipTo(payload.html) } as Prisma.InputJsonValue },
+    });
+  }
   return NextResponse.json(job ? toPrintJobRow(job) : { ok: true });
 }

@@ -1079,6 +1079,41 @@ export async function getOrder(orderId: string): Promise<EbayOrder> {
   };
 }
 
+// Where an order ships: the buyer's name and address, for the packing slip
+// only. Read fresh each time and never saved (the app keeps no eBay buyer
+// addresses). null = no ship-to on the order (local pickup).
+export type EbayShipTo = { name: string; lines: string[] };
+
+export async function getOrderShipTo(orderId: string): Promise<EbayShipTo | null> {
+  const o = (await ebayFetch(`/sell/fulfillment/v1/order/${encodeURIComponent(orderId)}`)) as {
+    fulfillmentStartInstructions?: {
+      shippingStep?: {
+        shipTo?: {
+          fullName?: string;
+          contactAddress?: {
+            addressLine1?: string;
+            addressLine2?: string;
+            city?: string;
+            stateOrProvince?: string;
+            postalCode?: string;
+            countryCode?: string;
+          };
+        };
+      };
+    }[];
+  };
+  const shipTo = o.fulfillmentStartInstructions?.find((f) => f.shippingStep?.shipTo)?.shippingStep?.shipTo;
+  const a = shipTo?.contactAddress;
+  if (!shipTo?.fullName && !a?.addressLine1) return null;
+  const cityLine = [a?.city, [a?.stateOrProvince, a?.postalCode].filter(Boolean).join(" ")].filter(Boolean).join(", ");
+  return {
+    name: shipTo?.fullName?.trim() ?? "",
+    lines: [a?.addressLine1, a?.addressLine2, cityLine, a?.countryCode && a.countryCode !== "US" ? a.countryCode : null]
+      .map((l) => l?.trim())
+      .filter((l): l is string => Boolean(l)),
+  };
+}
+
 // Pages through GET /sell/fulfillment/v1/order for orders last-modified in
 // [from, to). Vercel Cron's own bearer-token check happens one layer up in
 // the route handler — this just does the paging.
