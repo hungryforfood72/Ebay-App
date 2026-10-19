@@ -15,9 +15,9 @@ export const USERNAME_HEADER = "x-username";
 
 const PUBLIC_WEBHOOK_PATHS = ["/api/shopify/webhook", "/api/ebay/notifications", "/api/ebay/account-deletion"];
 
-// Public pages anyone can open signed-out: the privacy policy eBay's API
-// License requires. Exact paths only.
-const PUBLIC_PAGES = ["/privacy"];
+// Public pages anyone can open signed-out: the landing page and the privacy
+// policy eBay's API License requires. Exact paths only.
+const PUBLIC_PAGES = ["/about", "/privacy"];
 
 // A consignment supplier's read-only report (src/lib/supplierShare.ts):
 // exactly /s/{token} and /api/share/{token}, with a token shaped like
@@ -57,6 +57,11 @@ export async function proxy(request: NextRequest, event: NextFetchEvent) {
     }
     if (PUBLIC_PAGES.includes(pathname)) {
       return NextResponse.next();
+    }
+    // The site's front door: signed-out visitors get the landing page at
+    // the bare address (staff are sent to the dashboard as before).
+    if (pathname === "/") {
+      return NextResponse.rewrite(new URL("/about", request.url));
     }
     // The Shopify app proxy (the store's /apps/deals/*, deal alerts): the
     // route checks Shopify's signature on every request.

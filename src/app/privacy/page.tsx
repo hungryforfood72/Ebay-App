@@ -1,12 +1,12 @@
+import { BUSINESS, CONTACT_EMAIL as CONTACT } from "@/lib/publicInfo";
 import type { Metadata } from "next";
+import Link from "next/link";
 
 // The public privacy policy eBay's API License requires (sec. 8.2). Open
 // signed-out (proxy.ts, exact path), no app chrome. Keep it true to what the
 // app actually does: if data handling changes (new buyer data kept, a new
 // service provider), update this page and EFFECTIVE in the same change.
 
-const BUSINESS = "Summit Trade Group LLC";
-const CONTACT = "summittradegroupllc@gmail.com";
 const EFFECTIVE = "October 19, 2026";
 
 export const metadata: Metadata = {
@@ -17,7 +17,10 @@ export const metadata: Metadata = {
 export default function PrivacyPage() {
   return (
     <main className="mx-auto w-full max-w-2xl px-4 py-10 text-[15px] leading-relaxed text-foreground">
-      <h1 className="text-2xl font-bold tracking-tight">Privacy Policy</h1>
+      <Link href="/about" className="text-sm font-medium text-primary underline">
+        {BUSINESS}
+      </Link>
+      <h1 className="mt-3 text-2xl font-bold tracking-tight">Privacy Policy</h1>
       <p className="mt-1 text-sm text-muted-foreground">
         {BUSINESS} · Effective {EFFECTIVE}
       </p>
