@@ -1114,6 +1114,58 @@ export async function getOrderShipTo(orderId: string): Promise<EbayShipTo | null
   };
 }
 
+// Labels bought on eBay in the last few days: each order's tracking
+// numbers, for matching the pages of a bulk label PDF to their orders
+// (warehouse/shippingLabels.ts). The ship-to name and ZIP come along as a
+// fallback match; they're only held in memory, never saved.
+export type EbayShipment = {
+  orderId: string;
+  trackingNumbers: string[];
+  carrier: string | null;
+  shipToName: string | null;
+  shipToZip: string | null;
+};
+
+export async function getRecentShipments(days: number): Promise<EbayShipment[]> {
+  const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const filter = `lastmodifieddate:[${from}..],orderfulfillmentstatus:{FULFILLED|IN_PROGRESS}`;
+  type RawOrder = {
+    orderId: string;
+    fulfillmentStartInstructions?: { shippingStep?: { shipTo?: { fullName?: string; contactAddress?: { postalCode?: string } } } }[];
+  };
+  const orders: RawOrder[] = [];
+  for (let offset = 0; offset < 1000; offset += 50) {
+    const page = (await ebayFetch(`/sell/fulfillment/v1/order?filter=${encodeURIComponent(filter)}&limit=50&offset=${offset}`)) as {
+      orders?: RawOrder[];
+    };
+    orders.push(...(page.orders ?? []));
+    if ((page.orders ?? []).length < 50) break;
+  }
+  const out: EbayShipment[] = [];
+  // A few at a time: one call per order.
+  for (let i = 0; i < orders.length; i += 8) {
+    const chunk = orders.slice(i, i + 8);
+    const results = await Promise.all(
+      chunk.map(async (o) => {
+        const f = (await ebayFetch(`/sell/fulfillment/v1/order/${encodeURIComponent(o.orderId)}/shipping_fulfillment`).catch(() => null)) as {
+          fulfillments?: { shipmentTrackingNumber?: string; shippingCarrierCode?: string }[];
+        } | null;
+        const fulfillments = (f?.fulfillments ?? []).filter((x) => x.shipmentTrackingNumber);
+        const shipTo = o.fulfillmentStartInstructions?.find((x) => x.shippingStep?.shipTo)?.shippingStep?.shipTo;
+        return {
+          orderId: o.orderId,
+          trackingNumbers: fulfillments.map((x) => x.shipmentTrackingNumber!.replace(/\s+/g, "").toUpperCase()),
+          carrier: fulfillments[0]?.shippingCarrierCode ?? null,
+          shipToName: shipTo?.fullName?.trim() || null,
+          shipToZip: shipTo?.contactAddress?.postalCode?.trim().slice(0, 5) || null,
+        };
+      })
+    );
+    out.push(...results.filter((r) => r.trackingNumbers.length > 0));
+  }
+  return out;
+}
+
 // Pages through GET /sell/fulfillment/v1/order for orders last-modified in
 // [from, to). Vercel Cron's own bearer-token check happens one layer up in
 // the route handler — this just does the paging.

@@ -32,7 +32,7 @@ export type PrintJobPayload = ItemLabelPayload | CodeLabelPayload;
 // Whole 4x6 pages rather than 2x1 labels: they only go to the station
 // marked for packing slips (its PC's default printer is a 4x6 Rollo). The
 // html is the complete printable page; code is what the station's log shows.
-export const PAGE_JOB_KINDS = ["packing_slip", "delivery_label"] as const;
+export const PAGE_JOB_KINDS = ["packing_slip", "delivery_label", "shipping_label"] as const;
 export type PageJobKind = (typeof PAGE_JOB_KINDS)[number];
 // order: which order a packing slip is for, so Reprint can build it again
 // with the buyer's address (stripped from the saved copy once it prints).

@@ -96,6 +96,10 @@ const QUIET_REQUESTS: RegExp[] = [
   /^\/api\/items\/[^/]+\/category-lookup$/,
   /^\/api\/returns\/advice$/,
   /^\/api\/auth$/, // logged by the route itself, with the outcome
+  // Shipping label uploads carry buyer addresses (page text, page images):
+  // the upload route logs its own row without them.
+  /^\/api\/ship\/labels\/match$/,
+  /^\/api\/ship\/labels$/,
 ];
 
 // proxy.ts: one "request" row per data-changing API call by a signed-in

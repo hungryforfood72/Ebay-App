@@ -147,7 +147,7 @@ footer { margin-top: auto; font-size: 7.5pt; text-align: center; border-top: 1px
 
 // The station marked for packing slips, if its page is open right now (or
 // was recently: a job queued while it reloads still prints).
-async function packingStation() {
+export async function packingStation() {
   const station = await prisma.station.findFirst({ where: { packingSlips: true }, orderBy: { lastSeenAt: "desc" } });
   if (!station) return null;
   const online = station.lastSeenAt != null && Date.now() - station.lastSeenAt.getTime() <= STATION_ONLINE_MS;

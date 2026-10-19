@@ -1659,3 +1659,36 @@ model SortBoxEntry {
   @@index([manifestId, upc])
   @@index([boxId])
 }
+
+// One page of a bulk shipping-label PDF bought on eBay (Cristian,
+// 2026-10-19). Flow: pick (packing slip prints), pack and enter weights in
+// eBay, buy every label at once (one scan form), download the PDF, upload
+// it on Pick orders. Each page is matched to its order(s) by the tracking
+// number on it; scanning a package's packing slip then prints its label at
+// the packing station. image holds the buyer's address, so it's deleted a
+// few days after printing (warehouse/shippingLabels.ts).
+model ShippingLabel {
+  id             String    @id @default(uuid())
+  // One upload.
+  batchId        String
+  // 1-based page in the uploaded PDF.
+  page           Int
+  trackingNumber String?
+  carrier        String?
+  // eBay order ids this label ships. Several = combined shipping, one box.
+  // Empty = couldn't match it; it's assigned by scanning the slip.
+  orderIds       String[]
+  // The page as a PNG, at print size. null once deleted.
+  image          Bytes?
+  // Page shape in inches, to warn when it isn't a 4x6 label.
+  widthIn        Float
+  heightIn       Float
+  uploadedBy     String?
+  createdAt      DateTime  @default(now())
+  printedAt      DateTime?
+  printedBy      String?
+  printCount     Int       @default(0)
+
+  @@index([trackingNumber])
+  @@index([createdAt])
+}

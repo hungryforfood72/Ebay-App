@@ -1,6 +1,7 @@
 "use client";
 
 import { ScanField } from "@/components/ScanField";
+import { ShippingLabelsCard } from "@/components/ShippingLabelsCard";
 import { useCurrentUser } from "@/components/UserNav";
 import { Alert } from "@/components/ui/Alert";
 import { AppShell } from "@/components/ui/AppShell";
@@ -12,6 +13,7 @@ import { upcMatchKeys } from "@/lib/upcMatch";
 import { classifyScan, normalizeCode } from "@/lib/warehouse/codes";
 import { printPage } from "@/lib/warehouse/labelPrint";
 import type { SlipResult } from "@/lib/warehouse/packingSlip";
+import type { LabelPrintResult, LabelRow } from "@/lib/warehouse/shippingLabels";
 import type {
   ExpectedItem,
   PickLine,
@@ -39,7 +41,13 @@ type Result = {
   note?: string | null;
   // The line a successful pick went to, for the Undo button.
   undoLine?: PickLine;
+  // Another button (Print again on a label that already printed).
+  action?: { label: string; run: () => void };
 };
+
+// What the packing slip's barcode holds for an eBay order: its order
+// number. Scanning one prints that order's shipping label.
+const EBAY_ORDER_RE = /^\d{2}-\d{5}-\d{5}$/;
 
 // Short tone so the answer registers without looking at the screen. Same
 // pattern as the consignment pick page: one high beep for right, two low
@@ -183,6 +191,86 @@ export default function ShipPage() {
   const [showDone, setShowDone] = useState(false);
   const [showVa, setShowVa] = useState(false);
   const busyRef = useRef(false);
+  const [labels, setLabels] = useState<LabelRow[] | null>(null);
+  const [assigningLabel, setAssigningLabel] = useState<string | null>(null);
+
+  const loadLabels = useCallback(async () => {
+    try {
+      const res = await fetch("/api/ship/labels");
+      if (res.ok) setLabels(((await res.json()) as { labels: LabelRow[] }).labels);
+    } catch {
+      // The next refresh tries again.
+    }
+  }, []);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    loadLabels();
+    const timer = setInterval(() => {
+      if (!document.hidden && !busyRef.current) loadLabels();
+    }, AUTO_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [loadLabels]);
+
+  // A packing slip scanned (or Reprint tapped): that order's shipping label
+  // prints at the packing station. With a label being assigned, the slip
+  // says which order it's for first.
+  async function printShippingLabel(orderId: string, force: boolean) {
+    busyRef.current = true;
+    setBusy(true);
+    const assign = assigningLabel;
+    try {
+      const res = await fetch("/api/ship/labels/print", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orderId, force, assignLabelId: assign }),
+      });
+      const json = (await res.json()) as LabelPrintResult | { error: string };
+      if (!res.ok || "error" in json) throw new Error("error" in json ? json.error : "Couldn't print the label.");
+      if (assign) setAssigningLabel(null);
+      const sameBox =
+        "others" in json && json.others.length > 0
+          ? `Same label as order ${json.others.join(", ")}: they go in one box.`
+          : null;
+      if (json.status === "queued") {
+        show({
+          tone: "good",
+          headline: json.reprint ? "Label printing again" : "Label printing",
+          detail: json.online
+            ? `Order ${orderId} at ${json.station}. Stick it on and toss the slip.`
+            : `Order ${orderId} sent to ${json.station}, but its page isn't open. It prints when it is.`,
+          note: sameBox,
+        });
+      } else if (json.status === "print_here") {
+        await printPage(json.html, { width: "4in", height: "6in" });
+        show({ tone: "good", headline: "Label sent to this device's printer", detail: `Order ${orderId}. No packing station is set up.`, note: sameBox });
+      } else if (json.status === "already") {
+        show({
+          tone: "info",
+          headline: "Label already printed",
+          detail: `Order ${orderId}, ${new Date(json.printedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}${json.printedBy ? ` by ${json.printedBy}` : ""}.`,
+          note: "Jammed or lost? Print it again.",
+          action: { label: "Print again", run: () => void printShippingLabel(orderId, true) },
+        });
+      } else if (json.status === "image_gone") {
+        show({ tone: "bad", headline: "Label not kept anymore", detail: `Order ${orderId}'s label was deleted. Upload the label PDF again, or reprint it from eBay.` });
+      } else {
+        show({
+          tone: "bad",
+          headline: "No label for this order",
+          detail: `Order ${orderId} has no uploaded label yet.`,
+          note: "Upload eBay's label PDF below. If it's uploaded but didn't match, tap Assign on that label, then scan this slip.",
+        });
+      }
+      void loadLabels();
+    } catch (e) {
+      show({ tone: "bad", headline: "Label didn't print", detail: e instanceof Error ? e.message : "Try again." });
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+      focusScan();
+    }
+  }
 
   const load = useCallback(async (fresh: boolean) => {
     setRefreshing(true);
@@ -348,6 +436,17 @@ export default function ShipPage() {
     if (!scanned || busyRef.current || !data) return;
     const kind = classifyScan(scanned);
 
+    // A packing slip on a packed box: print its shipping label.
+    if (EBAY_ORDER_RE.test(scanned)) {
+      await printShippingLabel(scanned, false);
+      return;
+    }
+    if (assigningLabel) {
+      show({ tone: "bad", headline: "Scan the packing slip", detail: "That's not a packing slip. Scan the barcode on the slip clipped to the box." });
+      focusScan();
+      return;
+    }
+
     // A bin label says where you're standing: picks come off that bin first.
     if (kind === "bin") {
       setCurrentBin(scanned);
@@ -439,7 +538,9 @@ export default function ShipPage() {
     focusScan();
   }
 
-  const scanPrompt = selected
+  const scanPrompt = assigningLabel
+    ? "Scan the packing slip for that label"
+    : selected
     ? selected.verifyBy === "label"
       ? `Scan ${selected.item?.code}`
       : selected.verifyBy === "upc"
@@ -491,7 +592,7 @@ export default function ShipPage() {
 
             <ScanField
               id={SCAN_ID}
-              label={selected ? `Checking for order ${selected.orderNumber}` : "Item label"}
+              label={assigningLabel ? "Assigning a label" : selected ? `Checking for order ${selected.orderNumber}` : "Item label or packing slip"}
               prompt={scanPrompt}
               autoFocus
               value={code}
@@ -506,7 +607,7 @@ export default function ShipPage() {
                     </button>
                   </span>
                 ) : (
-                  "Scan a label and it finds the order. Tap a line to check just that one."
+                  "Scan an item label and it finds the order. Scan a packing slip to print its shipping label."
                 )
               }
             />
@@ -518,6 +619,19 @@ export default function ShipPage() {
                 <p className="text-sm text-foreground">Nothing left to pick right now.</p>
               </Card>
             )}
+
+            <ShippingLabelsCard
+              labels={labels}
+              onChanged={() => void loadLabels()}
+              assigningId={assigningLabel}
+              onAssign={(id) => {
+                setAssigningLabel(id);
+                setResult(null);
+                focusScan();
+              }}
+              onReprint={(orderId) => void printShippingLabel(orderId, true)}
+              busy={busy}
+            />
 
             {openLines.length > 0 && (
               <section>
@@ -884,6 +998,16 @@ function ResultPanel({
       </div>
       {result.detail && <p className="mt-3 text-lg font-semibold leading-snug">{result.detail}</p>}
       {result.note && <p className="mt-1 text-sm opacity-90">{result.note}</p>}
+      {result.action && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={result.action.run}
+          className="mt-3 mr-2 inline-flex items-center gap-1.5 rounded-lg bg-white/15 px-3 py-2 text-sm font-medium hover:bg-white/25 disabled:opacity-50"
+        >
+          {result.action.label}
+        </button>
+      )}
       {result.undoLine && (
         <button
           type="button"
