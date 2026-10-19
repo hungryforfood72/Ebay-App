@@ -24,7 +24,7 @@ import {
 import type { Metadata } from "next";
 import Link from "next/link";
 
-// The app's public landing page (Cristian, 2026-10-19): Turnstock presented
+// The app's public landing page (Cristian, 2026-10-19): Restock OS presented
 // like a real software product, since it may become one. Signed-out
 // visitors to / see this (proxy.ts rewrites it); signed-in staff get the
 // dashboard.
@@ -36,7 +36,7 @@ import Link from "next/link";
 
 export const metadata: Metadata = {
   title: `${PRODUCT} · From pallet to sold, fast`,
-  description: `${PRODUCT} is the all-in-one workspace for liquidation resellers: check loads, list items fast with Rapid List, track every unit, and ship without mistakes.`,
+  description: `${PRODUCT} is the operating system for liquidation resellers: check loads, list items fast with Rapid List, track every unit, and ship without mistakes.`,
 };
 
 export default function AboutPage() {
@@ -129,7 +129,7 @@ function Hero() {
             <span className="bg-gradient-to-r from-blue-400 to-indigo-300 bg-clip-text text-transparent">fast.</span>
           </h1>
           <p className="mx-auto mt-5 max-w-2xl text-lg leading-relaxed text-zinc-400">
-            {PRODUCT} is the all-in-one workspace for liquidation resellers. Check a load before you buy it, list items fast
+            {PRODUCT} is the operating system for liquidation resellers. Check a load before you buy it, list items fast
             with Rapid List, track every unit down to the bin, and pick, pack and ship without mistakes.
           </p>
           <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
