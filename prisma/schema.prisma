@@ -1678,6 +1678,9 @@ model ShippingLabel {
   // eBay order ids this label ships. Several = combined shipping, one box.
   // Empty = couldn't match it; it's assigned by scanning the slip.
   orderIds       String[]
+  // The buyers' eBay usernames, only so an eBay account-deletion notice
+  // (/api/ebay/account-deletion) can find and delete their labels.
+  buyerUsernames String[]  @default([])
   // The page as a PNG, at print size. null once deleted.
   image          Bytes?
   // Page shape in inches, to warn when it isn't a 4x6 label.

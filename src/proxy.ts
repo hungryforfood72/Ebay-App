@@ -13,7 +13,11 @@ export const USER_ID_HEADER = "x-user-id";
 export const USER_ROLE_HEADER = "x-user-role";
 export const USERNAME_HEADER = "x-username";
 
-const PUBLIC_WEBHOOK_PATHS = ["/api/shopify/webhook", "/api/ebay/notifications"];
+const PUBLIC_WEBHOOK_PATHS = ["/api/shopify/webhook", "/api/ebay/notifications", "/api/ebay/account-deletion"];
+
+// Public pages anyone can open signed-out: the privacy policy eBay's API
+// License requires. Exact paths only.
+const PUBLIC_PAGES = ["/privacy"];
 
 // A consignment supplier's read-only report (src/lib/supplierShare.ts):
 // exactly /s/{token} and /api/share/{token}, with a token shaped like
@@ -49,6 +53,9 @@ export async function proxy(request: NextRequest, event: NextFetchEvent) {
     // the sender's own signature instead. Exact paths only, so nothing
     // under them (like the alert setup route) slips through signed-out.
     if (PUBLIC_WEBHOOK_PATHS.includes(pathname)) {
+      return NextResponse.next();
+    }
+    if (PUBLIC_PAGES.includes(pathname)) {
       return NextResponse.next();
     }
     // The Shopify app proxy (the store's /apps/deals/*, deal alerts): the

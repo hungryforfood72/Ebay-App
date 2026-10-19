@@ -46,6 +46,7 @@ export type PageMatch = {
   trackingNumber: string | null;
   carrier: string | null;
   orderIds: string[];
+  buyerUsernames: string[];
   // "tracking": the page shows a tracking number eBay has for the order.
   // "address": no tracking number found, but the ship-to name and ZIP
   // match exactly one order. null: no match, assign it by hand.
@@ -67,7 +68,13 @@ export async function matchPages(pages: PageRead[]): Promise<PageMatch[]> {
     const tracking = trackingNumbers.find((t) => haystacks.some((h) => h.includes(t)));
     if (tracking) {
       const list = byTracking.get(tracking)!;
-      return { trackingNumber: tracking, carrier: list[0].carrier, orderIds: [...new Set(list.map((s) => s.orderId))], matchedBy: "tracking" };
+      return {
+        trackingNumber: tracking,
+        carrier: list[0].carrier,
+        orderIds: [...new Set(list.map((s) => s.orderId))],
+        buyerUsernames: usernames(list),
+        matchedBy: "tracking",
+      };
     }
     // Fallback: the ship-to block. Name and ZIP must both be on the page,
     // and only one order may fit.
@@ -77,11 +84,19 @@ export async function matchPages(pages: PageRead[]): Promise<PageMatch[]> {
     );
     const tracked = new Set(byAddress.flatMap((s) => s.trackingNumbers));
     if (byAddress.length > 0 && tracked.size === 1) {
-      return { trackingNumber: [...tracked][0], carrier: byAddress[0].carrier, orderIds: byAddress.map((s) => s.orderId), matchedBy: "address" };
+      return {
+        trackingNumber: [...tracked][0],
+        carrier: byAddress[0].carrier,
+        orderIds: byAddress.map((s) => s.orderId),
+        buyerUsernames: usernames(byAddress),
+        matchedBy: "address",
+      };
     }
-    return { trackingNumber: null, carrier: null, orderIds: [], matchedBy: null };
+    return { trackingNumber: null, carrier: null, orderIds: [], buyerUsernames: [], matchedBy: null };
   });
 }
+
+const usernames = (list: EbayShipment[]) => [...new Set(list.map((s) => s.buyerUsername).filter((u): u is string => Boolean(u)))];
 
 // ---------------------------------------------------------------------------
 // Saving uploaded pages
@@ -95,6 +110,7 @@ export async function saveLabelPage(input: {
   trackingNumber: string | null;
   carrier: string | null;
   orderIds: string[];
+  buyerUsernames: string[];
   imageBase64: string;
   widthIn: number;
   heightIn: number;
@@ -110,6 +126,7 @@ export async function saveLabelPage(input: {
     trackingNumber: input.trackingNumber ? compact(input.trackingNumber) : null,
     carrier: input.carrier,
     orderIds,
+    buyerUsernames: input.buyerUsernames.map((u) => u.slice(0, 64)).slice(0, 20),
     image: new Uint8Array(image),
     widthIn: input.widthIn,
     heightIn: input.heightIn,
@@ -282,6 +299,14 @@ export async function printLabelForOrder(input: {
 export async function labelImage(id: string): Promise<Uint8Array | null> {
   const row = await prisma.shippingLabel.findUnique({ where: { id }, select: { image: true } });
   return row?.image ?? null;
+}
+
+// eBay says this user closed their account: their labels go, row and all.
+// It's the only place the app keeps an eBay buyer's details (packing slip
+// addresses are stripped once printed, see stripShipTo).
+export async function deleteEbayUserData(username: string): Promise<number> {
+  const { count } = await prisma.shippingLabel.deleteMany({ where: { buyerUsernames: { has: username } } });
+  return count;
 }
 
 // A bad upload (wrong PDF): take the whole batch back out.

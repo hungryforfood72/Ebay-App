@@ -41,6 +41,7 @@ export async function POST(request: NextRequest) {
       trackingNumber: typeof b.trackingNumber === "string" ? b.trackingNumber : null,
       carrier: typeof b.carrier === "string" ? b.carrier.slice(0, 40) : null,
       orderIds: b.orderIds.filter((x: unknown): x is string => typeof x === "string"),
+      buyerUsernames: Array.isArray(b.buyerUsernames) ? b.buyerUsernames.filter((x: unknown): x is string => typeof x === "string") : [],
       imageBase64: b.image,
       widthIn: b.widthIn,
       heightIn: b.heightIn,

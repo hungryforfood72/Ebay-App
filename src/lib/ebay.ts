@@ -1122,6 +1122,8 @@ export type EbayShipment = {
   orderId: string;
   trackingNumbers: string[];
   carrier: string | null;
+  // For eBay account-deletion notices (see ShippingLabel.buyerUsernames).
+  buyerUsername: string | null;
   shipToName: string | null;
   shipToZip: string | null;
 };
@@ -1131,6 +1133,7 @@ export async function getRecentShipments(days: number): Promise<EbayShipment[]> 
   const filter = `lastmodifieddate:[${from}..],orderfulfillmentstatus:{FULFILLED|IN_PROGRESS}`;
   type RawOrder = {
     orderId: string;
+    buyer?: { username?: string };
     fulfillmentStartInstructions?: { shippingStep?: { shipTo?: { fullName?: string; contactAddress?: { postalCode?: string } } } }[];
   };
   const orders: RawOrder[] = [];
@@ -1156,6 +1159,7 @@ export async function getRecentShipments(days: number): Promise<EbayShipment[]> 
           orderId: o.orderId,
           trackingNumbers: fulfillments.map((x) => x.shipmentTrackingNumber!.replace(/\s+/g, "").toUpperCase()),
           carrier: fulfillments[0]?.shippingCarrierCode ?? null,
+          buyerUsername: o.buyer?.username ?? null,
           shipToName: shipTo?.fullName?.trim() || null,
           shipToZip: shipTo?.contactAddress?.postalCode?.trim().slice(0, 5) || null,
         };

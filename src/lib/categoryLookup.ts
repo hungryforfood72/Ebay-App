@@ -118,10 +118,8 @@ export async function lookupCategoryForItem(
   }
 
   if (suggested.length > 0) {
-    // Claude turned everything down, but eBay's top suggestion has been
-    // right far more often than the web search below, which on 2026-10-05
-    // came back empty 3 times out of 3 (17-38s each) on a title eBay placed
-    // instantly. Applied without saving a keyword rule, since nothing
+    // Claude turned everything down, but eBay's top suggestion is usually
+    // right. Applied without saving a keyword rule, since nothing
     // double-checked it.
     const top = suggested[0];
     console.log(`[categoryLookup] ${itemId}: no pick, using eBay's top suggestion ${top.id} (${top.path})`);
@@ -129,8 +127,12 @@ export async function lookupCategoryForItem(
     return { categoryId: top.id, categoryName: top.name, sourceUrl: null, fromExistingRule: false };
   }
 
-  // Only when eBay's suggestion service is down or had nothing.
-  return searchWebForCategory(itemId, productDescription);
+  // eBay's suggestion service was down or had nothing: picked by hand in
+  // review. There used to be a web search of ebay.com here; it came out
+  // 2026-10-19 (eBay's User Agreement bars automated reading of its site,
+  // and on 2026-10-05 it came back empty 3 times out of 3 anyway).
+  console.log(`[categoryLookup] ${itemId}: no category found, left for review`);
+  return { categoryId: null, categoryName: null, sourceUrl: null, fromExistingRule: false };
 }
 
 // eBay's suggestions as rows from our own tree, in eBay's order, leaves
@@ -224,21 +226,6 @@ async function filterToLeaves<T extends { path: string }>(candidates: T[]): Prom
 
   return candidates.filter(
     (c) => !children.some((child) => child.path.startsWith(`${c.path} > `))
-  );
-}
-
-// Loose overlap check, not exact match — web search's phrasing of a
-// category name won't always exactly match our tree's (e.g. "Chips" vs.
-// "Potato Chips"), but a genuine match still shares real words with either
-// the leaf name or its full breadcrumb path.
-function categoryNameRoughlyMatches(claimed: string, actual: { name: string; path: string }): boolean {
-  const claimedLower = claimed.trim().toLowerCase();
-  const nameLower = actual.name.toLowerCase();
-  const pathLower = actual.path.toLowerCase();
-  return (
-    nameLower.includes(claimedLower) ||
-    claimedLower.includes(nameLower) ||
-    pathLower.includes(claimedLower)
   );
 }
 
@@ -399,119 +386,4 @@ async function applyCategory(
       update: { categoryId, categoryName },
     });
   }
-}
-
-// Last resort, only when eBay's suggestion service was down or had nothing.
-// Weak on its own: on 2026-10-05 it came back empty 3 times out of 3
-// (17-38s each) on a title eBay's suggestions placed instantly.
-async function searchWebForCategory(
-  itemId: string,
-  productDescription: string
-): Promise<CategoryLookupResult> {
-  console.log(`[categoryLookup] ${itemId}: no local match, falling back to web search`);
-
-  let response;
-  try {
-    response = await anthropic.messages.create(
-      {
-        // Web search + interpreting real results needs decent judgment, but
-        // this is also the priciest path (tool use, slow) — Sonnet handles
-        // it well for a fraction of Opus's cost.
-        model: "claude-sonnet-5",
-        max_tokens: 1024,
-        output_config: { effort: "low" },
-        tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 1 }],
-        messages: [
-          {
-            role: "user",
-            content: `Find the real, current eBay category ID for this product: "${productDescription}".
-
-Search eBay's own site (ebay.com). The category ID is embedded in eBay's live browse/search URLs — either as the numeric segment in a "/b/Name/123456/bn_..." browse URL, or as "_sacat=123456" on a search results page. Pick the most specific matching category, not an overly broad parent category.
-
-Also suggest a short, reusable keyword (1-3 words, lowercase, no brand names) that identifies this general product type — this gets saved so future items of the same type skip the search. E.g. "hair dye", "vinyl sticker", "action figure".
-
-Once you've found it, respond with exactly one JSON object as your final line, no other text after it:
-{"categoryId": "123456", "categoryName": "Category Name", "sourceUrl": "https://...", "keyword": "short keyword"}
-
-If you can't find a confident match, respond with:
-{"categoryId": null, "categoryName": null, "sourceUrl": null, "keyword": null}`,
-          },
-        ],
-      },
-      { timeout: 35_000, maxRetries: 0 }
-    );
-    await logAiUsage("category.web_search", response, { itemId });
-  } catch (e) {
-    console.error(`[categoryLookup] ${itemId}: web search call failed/timed out`, e);
-    return { categoryId: null, categoryName: null, sourceUrl: null, fromExistingRule: false };
-  }
-
-  const textBlocks = response.content.filter(
-    (b): b is Extract<typeof b, { type: "text" }> => b.type === "text"
-  );
-  const lastText = textBlocks[textBlocks.length - 1]?.text ?? "";
-  const match = lastText.match(/\{[\s\S]*\}\s*$/);
-
-  let parsed: {
-    categoryId: string | null;
-    categoryName: string | null;
-    sourceUrl: string | null;
-    keyword: string | null;
-  } = { categoryId: null, categoryName: null, sourceUrl: null, keyword: null };
-  if (match) {
-    try {
-      parsed = JSON.parse(match[0]);
-    } catch {
-      // Fall through with the "not found" default.
-    }
-  }
-
-  if (!parsed.categoryId) {
-    return { categoryId: null, categoryName: null, sourceUrl: null, fromExistingRule: false };
-  }
-
-  // Web search free-forms both an ID and a name from what it reads on
-  // ebay.com, unlike the local pick (which only ever chooses from real
-  // (id, name, path) rows already in our own tree) — so it can return an ID
-  // that's flat-out wrong in ways the local pick can't: retired/nonexistent,
-  // or a real leaf that just isn't what it claims. Our local tree is a full,
-  // current snapshot of eBay's real category list (~20,571 categories,
-  // re-verified byte-identical against eBay's own live export) — trust it
-  // over the web search's own claim rather than the other way around.
-  const localMatch = await prisma.ebayCategory.findUnique({ where: { id: parsed.categoryId } });
-
-  if (!localMatch) {
-    console.warn(
-      `[categoryLookup] ${itemId}: web search returned category ${parsed.categoryId}, not found in our local tree at all — rejecting`
-    );
-    return { categoryId: null, categoryName: null, sourceUrl: null, fromExistingRule: false };
-  }
-
-  const [leafMatch] = await filterToLeaves([localMatch]);
-  if (!leafMatch) {
-    console.warn(
-      `[categoryLookup] ${itemId}: web search returned non-leaf category ${parsed.categoryId} (${localMatch.name}), rejecting`
-    );
-    return { categoryId: null, categoryName: null, sourceUrl: null, fromExistingRule: false };
-  }
-
-  if (parsed.categoryName && !categoryNameRoughlyMatches(parsed.categoryName, localMatch)) {
-    // The ID exists and is a real leaf, but for something else entirely —
-    // e.g. web search once claimed an ID was "Chips & Crisps" when our tree
-    // (matching eBay's own real export) says it's actually "Uganda" under
-    // Stamps. A technically-valid-but-wrong ID is worse than no category.
-    console.warn(
-      `[categoryLookup] ${itemId}: web search claimed ${parsed.categoryId} was "${parsed.categoryName}" but it's actually "${localMatch.path}" — rejecting`
-    );
-    return { categoryId: null, categoryName: null, sourceUrl: null, fromExistingRule: false };
-  }
-
-  await applyCategory(itemId, parsed.categoryId, parsed.categoryName ?? parsed.categoryId, parsed.keyword ?? "");
-
-  return {
-    categoryId: parsed.categoryId,
-    categoryName: parsed.categoryName,
-    sourceUrl: parsed.sourceUrl,
-    fromExistingRule: false,
-  };
 }

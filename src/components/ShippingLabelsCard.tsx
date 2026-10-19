@@ -65,6 +65,7 @@ export function ShippingLabelsCard({
             trackingNumber: m?.trackingNumber ?? null,
             carrier: m?.carrier ?? null,
             orderIds: m?.orderIds ?? [],
+            buyerUsernames: m?.buyerUsernames ?? [],
             widthIn: p.widthIn,
             heightIn: p.heightIn,
             image: p.png,
