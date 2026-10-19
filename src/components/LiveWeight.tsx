@@ -151,7 +151,9 @@ export function LiveWeightReadout({
         )}
       </div>
       {reading == null && (
-        <p className="mt-2 text-sm text-muted-foreground">Is the scale on and plugged into the station PC?</p>
+        <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-base font-semibold text-amber-950">
+          Scale is off? Press its power button. It turns itself off after 3 idle minutes.
+        </p>
       )}
       <Button
         variant="outline"

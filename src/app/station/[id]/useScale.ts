@@ -9,10 +9,12 @@ import { DYMO_VENDOR_ID, HID_POS_SCALE_USAGE_PAGE, SCALE_HID_FILTERS, parseScale
 //   Chrome's device list (requestDevice only works from a click).
 // - After that, Chrome remembers the permission, so on page load we just
 //   reopen it from getDevices().
-// - The DYMO M25 turns itself off after a few idle minutes, which looks
-//   exactly like being unplugged. We show "Scale is off" and reopen it on
-//   the HID "connect" event the moment someone presses its power button,
-//   no click needed.
+// - The DYMO M25 turns itself off after 3 idle minutes, and nothing we send
+//   over USB stops that (tested, see scale.ts). On USB power it stays
+//   connected and reports unit 0, which we show as "Scale is off"; it flips
+//   back to connected on the next real reading. If it does drop off USB
+//   (on batteries), we reopen it on the HID "connect" event the moment
+//   someone presses its power button. No click needed either way.
 //
 // TypeScript's DOM types don't include WebHID yet, so the bits we use are
 // declared here.
@@ -68,7 +70,7 @@ export type ScaleConnection =
   | "checking" // page just loaded
   | "unsupported" // no WebHID in this browser
   | "not-set-up" // never connected on this PC: show the Connect button
-  | "off" // was connected, now gone: the DYMO powered itself off
+  | "off" // the DYMO powered itself off (reports unit 0, or dropped off USB)
   | "connected"
   | "error"; // found it but couldn't open it
 
@@ -97,6 +99,8 @@ export function useScale(): ScaleState {
     const r = parseScaleReport(ev.data, ev.reportId);
     if (!r) return;
     const now = Date.now();
+    // Off but still on USB: the same screen as being unplugged.
+    setConnection(r.status === "off" ? "off" : "connected");
     // The scale streams several reports a second; only re-render when the
     // reading changes (or once a second, to keep "last reading" fresh).
     const key = `${r.status}|${r.weightOz}`;

@@ -8,26 +8,39 @@
 //   byte 1  status   1 fault, 2 stable at zero, 3 in motion, 4 stable,
 //                    5 under zero, 6 over weight, 7 needs calibration,
 //                    8 needs re-zeroing
-//   byte 2  unit     2 grams, 3 kilograms, 11 ounces, 12 pounds (others rare)
+//   byte 2  unit     2 grams, 3 kilograms, 11 ounces, 12 pounds (others rare);
+//                    0 = the display is off (see below)
 //   byte 3  exponent signed int8, weight = raw * 10^exponent
 //   byte 4-5 raw weight, little-endian
 // WebHID usually hands the report id over separately (event.reportId) and
 // leaves it out of event.data, so the parser accepts both shapes.
+//
+// Powered off: on USB power the M25 does NOT drop off USB when it turns
+// itself off. It stays connected and keeps sending [3, 2, 0, 0, 0, 0]
+// (status "zero", unit 0), so unit 0 is how we know it's off. Tested on a
+// real M25 2026-10-19, along with trying to keep it awake: reading its
+// feature reports, sending an empty control report, and sending Zero Scale
+// every 30s all failed. It shuts off after 3 idle minutes no matter what the
+// computer sends, and nothing sent over USB turns it back on.
 
 // USB ids for the filters passed to navigator.hid.requestDevice. The DYMO
 // ids first; the usage page catches other brands' HID scales.
 export const DYMO_VENDOR_ID = 0x0922;
 export const DYMO_M25_PRODUCT_ID = 0x8004;
+// Newer M25s ("M25 25 lb Digittable Digital S"), what's on the floor.
+export const DYMO_M25_NEW_PRODUCT_ID = 0x8009;
 export const DYMO_M10_PRODUCT_ID = 0x8003;
 export const HID_POS_SCALE_USAGE_PAGE = 0x8d;
 
 export const SCALE_HID_FILTERS = [
   { vendorId: DYMO_VENDOR_ID, productId: DYMO_M25_PRODUCT_ID },
+  { vendorId: DYMO_VENDOR_ID, productId: DYMO_M25_NEW_PRODUCT_ID },
   { vendorId: DYMO_VENDOR_ID, productId: DYMO_M10_PRODUCT_ID },
   { usagePage: HID_POS_SCALE_USAGE_PAGE },
 ];
 
 export type ScaleStatus =
+  | "off" // display off (auto power-off), still on USB
   | "fault"
   | "zero"
   | "moving"
@@ -95,6 +108,8 @@ export function parseScaleReport(data: DataView | ArrayLike<number>, reportId?: 
   const [statusCode, unitCode, expByte, lo, hi] = bytes;
   const status = STATUS_BY_CODE[statusCode];
   if (!status) return null;
+
+  if (unitCode === 0) return { status: "off", weightOz: null, stable: false };
 
   const exponent = expByte > 127 ? expByte - 256 : expByte;
   const raw = lo | (hi << 8);

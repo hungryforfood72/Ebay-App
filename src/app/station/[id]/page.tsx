@@ -8,10 +8,10 @@ import { Badge, type BadgeTone } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, SectionHeader } from "@/components/ui/Card";
 import { printLabels, printPage } from "@/lib/warehouse/labelPrint";
-import { formatOunces, formatPoundsOunces, scaleStatusMessage } from "@/lib/warehouse/scale";
+import { DYMO_M25_NEW_PRODUCT_ID, DYMO_M25_PRODUCT_ID, DYMO_VENDOR_ID, formatOunces, formatPoundsOunces, scaleStatusMessage } from "@/lib/warehouse/scale";
 import type { PrintJobRow } from "@/lib/warehouse/stations";
 import { isPageKind, type CodeLabelPayload, type ItemLabelPayload, type PageJobPayload, type PrintJobKind, type PrintJobPayload, type StationStatus } from "@/lib/warehouse/types";
-import { Copy, Printer, RotateCcw, Scale, Usb } from "lucide-react";
+import { Copy, Power, Printer, RotateCcw, Scale, Usb } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useScale } from "./useScale";
@@ -42,6 +42,33 @@ const ACTIVE_WINDOW_MS = 2 * 60_000;
 const ACTIVITY_OZ = 0.2;
 // The Print automatically switch, remembered on this PC.
 const AUTO_PRINT_KEY = (stationId: string) => `station-auto-print:${stationId}`;
+
+// Two short beeps when the scale turns itself off, so whoever's weighing
+// presses its power button before the next item instead of after. Chrome
+// only lets a page make sound once someone has clicked on it since it
+// loaded (or with --autoplay-policy=no-user-gesture-required, which the
+// station shortcut has); otherwise this stays silent and the big card on
+// screen still says it.
+let beepAudio: AudioContext | null = null;
+function beepScaleOff() {
+  try {
+    beepAudio ??= new AudioContext();
+    const ctx = beepAudio;
+    if (ctx.state === "suspended") void ctx.resume();
+    [0, 0.25].forEach((at) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.frequency.value = 880;
+      gain.gain.setValueAtTime(0.25, ctx.currentTime + at);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + at + 0.18);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(ctx.currentTime + at);
+      osc.stop(ctx.currentTime + at + 0.2);
+    });
+  } catch {
+    // No audio on this PC: the card is enough.
+  }
+}
 
 type ServerState = "connecting" | "online" | "offline" | "signed-out" | "deleted";
 
@@ -75,6 +102,14 @@ export default function StationPage() {
 
   const weightOz = scale.connection === "connected" ? (scale.reading?.weightOz ?? null) : null;
   const stable = weightOz !== null && Boolean(scale.reading?.stable);
+
+  // Beep on the change from on to off, not when the page opens to a scale
+  // that's already off.
+  const prevConnection = useRef(scale.connection);
+  useEffect(() => {
+    if (prevConnection.current === "connected" && scale.connection === "off") beepScaleOff();
+    prevConnection.current = scale.connection;
+  }, [scale.connection]);
 
   // Latest values for the tick, which runs outside React's render cycle.
   const readingRef = useRef({ weightOz, stable });
@@ -535,18 +570,19 @@ function ScaleCard({
           </div>
         )
       ) : scale.connection === "off" ? (
-        <Alert
-          tone="warning"
-          title="Scale is off, press its power button"
-          action={
-            <Button variant="outline" size="sm" onClick={scale.connect}>
-              <Usb className="size-4" aria-hidden />
-              Still not working? Connect scale
-            </Button>
-          }
-        >
-          It turns itself off after a few idle minutes. It reconnects here on its own once it&apos;s on.
-        </Alert>
+        <div className="flex flex-col items-center gap-3 rounded-xl border-2 border-amber-300 bg-amber-50 px-4 py-8 text-center text-amber-950">
+          <Power className="size-14 text-amber-600" aria-hidden />
+          <p className="text-3xl font-bold tracking-tight sm:text-4xl">Scale is off</p>
+          <p className="text-lg font-medium">Press the power button on the scale.</p>
+          <p className="max-w-sm text-sm">
+            It turns itself off after 3 idle minutes, and that can&apos;t be changed. It shows up here again on its
+            own once it&apos;s on.
+          </p>
+          <Button variant="outline" size="sm" onClick={scale.connect}>
+            <Usb className="size-4" aria-hidden />
+            Still not working? Connect scale
+          </Button>
+        </div>
       ) : scale.connection === "unsupported" ? (
         <Alert tone="danger" title="This browser can't read the scale">
           Open this page in Chrome or Edge on the station PC. Phones and tablets can&apos;t connect a USB scale.
@@ -644,15 +680,20 @@ function SetupHelp({ stationId }: { stationId: string }) {
   // Its own Chrome profile (--user-data-dir): --kiosk-printing covers every
   // window of the Chrome it starts, so without one, a scan form printed from
   // the normal Chrome would also go straight to the Rollo with no dialog.
-  const shortcut = `"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --user-data-dir=C:\\ChromeStation --kiosk-printing --app=${origin}/station/${stationId}`;
-  // Chrome policy that always lets this site use the DYMO M25 (USB ids
-  // 0x0922 / 0x8004 = 2338 / 32772), for when Chrome forgets the scale
-  // every time it powers off.
+  // --autoplay-policy lets it beep when the scale turns off without anyone
+  // clicking the page first.
+  const shortcut = `"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --user-data-dir=C:\\ChromeStation --kiosk-printing --autoplay-policy=no-user-gesture-required --app=${origin}/station/${stationId}`;
+  // Chrome policy that always lets this site use the DYMO M25 (both USB
+  // product ids it ships with), for when Chrome forgets the scale every time
+  // it powers off.
+  const devices = [DYMO_M25_PRODUCT_ID, DYMO_M25_NEW_PRODUCT_ID]
+    .map((pid) => `{\\"vendor_id\\":${DYMO_VENDOR_ID},\\"product_id\\":${pid}}`)
+    .join(",");
   const policy = [
     "Windows Registry Editor Version 5.00",
     "",
     "[HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Google\\Chrome]",
-    `"WebHidAllowDevicesForUrls"="[{\\"devices\\":[{\\"vendor_id\\":2338,\\"product_id\\":32772}],\\"urls\\":[\\"${origin}\\"]}]"`,
+    `"WebHidAllowDevicesForUrls"="[{\\"devices\\":[${devices}],\\"urls\\":[\\"${origin}\\"]}]"`,
   ].join("\n");
 
   async function copy(what: string, text: string) {
