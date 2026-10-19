@@ -1,4 +1,4 @@
-import { BUSINESS, CONTACT_EMAIL as CONTACT } from "@/lib/publicInfo";
+import { BUSINESS, CONTACT_EMAIL as CONTACT, PRODUCT } from "@/lib/publicInfo";
 import type { Metadata } from "next";
 import Link from "next/link";
 
@@ -11,14 +11,14 @@ const EFFECTIVE = "October 19, 2026";
 
 export const metadata: Metadata = {
   title: "Privacy Policy",
-  description: `How ${BUSINESS}'s internal selling tool handles data.`,
+  description: `How ${PRODUCT}, ${BUSINESS}'s internal selling tool, handles data.`,
 };
 
 export default function PrivacyPage() {
   return (
     <main className="mx-auto w-full max-w-2xl px-4 py-10 text-[15px] leading-relaxed text-foreground">
       <Link href="/about" className="text-sm font-medium text-primary underline">
-        {BUSINESS}
+        {PRODUCT}
       </Link>
       <h1 className="mt-3 text-2xl font-bold tracking-tight">Privacy Policy</h1>
       <p className="mt-1 text-sm text-muted-foreground">
@@ -27,7 +27,7 @@ export default function PrivacyPage() {
 
       <Section title="What this app is">
         <p>
-          This is a private, internal tool that {BUSINESS} uses to run its own online stores, including its eBay seller
+          {PRODUCT} is a private, internal tool that {BUSINESS} uses to run its own online stores, including its eBay seller
           account. Only our own staff can sign in. It isn&apos;t offered to the public or to other sellers. We use it to
           list our inventory, track our own sales, answer offers, and pick, pack and ship our orders.
         </p>
