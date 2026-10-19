@@ -1,3 +1,4 @@
+import { EBAY_DATA_DOMAINS } from "./ebayDataDomains";
 import { prisma } from "./prisma";
 import {
   detectPackSize,
@@ -518,20 +519,6 @@ function extractText(content: Array<{ type: string; text?: string }>): string {
 // web research with eBay's sites (and sites that resell eBay sold data)
 // blocked. The standard Analyzer is unchanged.
 // ---------------------------------------------------------------------------
-const EBAY_DATA_DOMAINS = [
-  "ebay.com",
-  "ebay.ca",
-  "ebay.co.uk",
-  "ebay.com.au",
-  "ebay.de",
-  "ebay.fr",
-  "ebay.it",
-  "ebay.es",
-  "ebayimg.com",
-  "terapeak.com",
-  "worthpoint.com",
-  "130point.com",
-];
 
 function webSearchTool(compliant: boolean) {
   return {
@@ -592,7 +579,8 @@ async function recordResearch(
   kind: ResearchKind,
   subject: ResearchSubject,
   finding: { price?: number | null; verdict?: string; note?: string | null; searched: boolean; basisAt: Date },
-  evaluationId: string,
+  // null = not part of an Analyzer run (a scan-page check).
+  evaluationId: string | null,
   compliant: boolean
 ): Promise<void> {
   try {
@@ -685,9 +673,9 @@ async function getTrendNudge(subject: ResearchSubject, evaluationId: string, com
 // ---------------------------------------------------------------------------
 // demand: the beta's outside-eBay read of how well it sells (see
 // DemandTier). Always null for the standard Analyzer.
-type WebCheck = { price: number | null; demand: DemandTier | null };
+type WebCheck = { price: number | null; demand: DemandTier | null; note?: string | null };
 
-async function getWebPriceCheck(subject: ResearchSubject, evaluationId: string, compliant: boolean): Promise<WebCheck> {
+async function getWebPriceCheck(subject: ResearchSubject, evaluationId: string | null, compliant: boolean): Promise<WebCheck> {
   const prior = await priorResearch("price", subject, compliant);
   const latest = prior[0];
   // A beta finding from before the demand read existed (verdict null) is
@@ -696,6 +684,7 @@ async function getWebPriceCheck(subject: ResearchSubject, evaluationId: string, 
     return {
       price: latest.price != null ? Number(latest.price) : null,
       demand: compliant ? parseDemandTier(latest.verdict) : null,
+      note: latest.note,
     };
   }
 
@@ -754,7 +743,7 @@ PRICE: 17.50 (a plain number, no currency symbol) or PRICE: UNKNOWN`,
       },
       { timeout: 30_000, maxRetries: 0 }
     );
-    await logAiUsage("sourcing.price_check", response, { evaluationId });
+    await logAiUsage(evaluationId ? "sourcing.price_check" : "scan.price_check", response, { evaluationId: evaluationId ?? undefined });
     // Confirmed live: the model sometimes echoes a retail price it found
     // earlier using the same "PRICE:" phrasing while reasoning toward its
     // real answer, and a plain (non-global) match grabs that FIRST
@@ -793,12 +782,38 @@ PRICE: 17.50 (a plain number, no currency symbol) or PRICE: UNKNOWN`,
       evaluationId,
       compliant
     );
-    return { price, demand: compliant ? parseDemandTier(demandWord) : null };
+    return { price, demand: compliant ? parseDemandTier(demandWord) : null, note };
   } catch (e) {
     console.error(`[sourcingAgent] web price check failed for "${subject.description}"`, e);
     return { price: null, demand: null };
   }
 }
+
+// The scan page's read on a product nobody's decided yet (scanned with no
+// manifest, or a manifest line the Analyzer never got to). Same eBay-free
+// check as the live Analyzer: store prices and demand signals from outside
+// eBay (Cristian, 2026-10-19: replaces the scan page's search of other
+// sellers' eBay listings, which the API License doesn't allow). Shares the
+// Analyzer's research memory, so a product either one already checked in
+// the last 14 days costs nothing.
+export type ScanMarketCheck = { pricePerUnit: number | null; demand: DemandTier | null; note: string | null };
+
+// cachedOnly: answer from research already on file (fresh enough to reuse)
+// and never search; null when there's none.
+export async function scanMarketCheck(
+  subject: { upc: string; description: string },
+  opts: { cachedOnly?: boolean } = {}
+): Promise<ScanMarketCheck | null> {
+  if (opts.cachedOnly) {
+    const [latest] = await priorResearch("price", subject, true);
+    if (!latest || latest.verdict == null || daysSince(latest.basisAt) > PRICE_REUSE_DAYS) return null;
+    return { pricePerUnit: latest.price != null ? Number(latest.price) : null, demand: parseDemandTier(latest.verdict), note: latest.note };
+  }
+  const check = await getWebPriceCheck(subject, null, true);
+  return { pricePerUnit: check.price, demand: check.demand, note: check.note ?? null };
+}
+
+export type { DemandTier };
 
 // ---------------------------------------------------------------------------
 // The beta's "will it sell" read (Cristian, 2026-10-18: that's what the

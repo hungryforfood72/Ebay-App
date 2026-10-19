@@ -1,8 +1,7 @@
 import { getRequestUser } from "@/lib/auth";
 import { unitCostForScan } from "@/lib/cogs";
-import { getTargetMarginPct } from "@/lib/sourcingAgent";
+import { getTargetMarginPct, scanMarketCheck, type DemandTier, type ScanMarketCheck } from "@/lib/sourcingAgent";
 import { typicalSingleLabelCost } from "@/lib/shippingCost";
-import { EbayApiError, searchActiveListings } from "@/lib/ebay";
 import { parseBundleComponentUnits, unitsFor } from "@/lib/itemUnits";
 import { advisePackSize, readableProductName, savedPackDecision, unitShippingWeightOz } from "@/lib/packAdvisor";
 import {
@@ -11,34 +10,32 @@ import {
   detectPackSize,
   listingWorth,
   netPerUnit,
-  parsePackStats,
   shopChannelWorth,
   splitIntoPacks,
-  summarizeComps,
   type ListingWorth,
   type PackStat,
 } from "@/lib/packSize";
 import { prisma } from "@/lib/prisma";
+import { lookupUpc } from "@/lib/upcLookup";
 import { getShopifyConfig } from "@/lib/shopify";
 import { getShopifyPricing, shopifyPriceFor } from "@/lib/shopifySync";
 import { NOT_RETURN_ENTRY, returnedUnitsByUpc } from "@/lib/warehouse/returnReconcile";
 import { isWarehouseMode } from "@/lib/warehouse/settings";
 import { sortedLeft } from "@/lib/warehouse/sortCount";
-import { Prisma } from "@/generated/prisma/client";
+import type { Prisma } from "@/generated/prisma/client";
 import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 60;
 
-// Pack-size pricing barely moves day to day — a week-old check (the
-// Analyzer's, usually) is plenty for a suggestion, and reusing it keeps
-// scanning from spending eBay Browse API calls.
-const PACK_STATS_MAX_AGE_DAYS = 7;
-
-// GET ?upc=&manifestId= — for the scan page: the best pack size to sell a
-// product in (see src/lib/packSize.ts), and, when scanning into a manifest,
-// how many units of it are still left to list and how to split them. So
-// whoever's scanning doesn't have to go look it up on eBay themselves.
-// Dollar figures are for the owner only.
+// GET ?upc=&manifestId= — for the scan page: whether it's worth listing,
+// the best pack size to sell a product in (see src/lib/packSize.ts), and,
+// when scanning into a manifest, how many units of it are still left to
+// list and how to split them. Dollar figures are for the owner only.
+//
+// Never looks at other sellers' eBay listings (Cristian, 2026-10-19, eBay
+// API License). The price and demand come from the same eBay-free web
+// check the live Analyzer uses (scanMarketCheck): store prices plus signs
+// it's selling outside eBay (Amazon's bought-past-month, rank, reviews).
 export async function GET(request: NextRequest) {
   const isOwner = getRequestUser(request)?.role === "owner";
   const upc = request.nextUrl.searchParams.get("upc")?.trim();
@@ -81,64 +78,44 @@ export async function GET(request: NextRequest) {
   // The real name looked up for manifest shorthand, when one was needed.
   let productName: string | null = null;
   let stats: PackStat[] = [];
+  let market: ScanMarketCheck | null = null;
   // The Analyzer (or an earlier scan) already decided this UPC: use that
-  // with no eBay lookup at all, so the card shows instantly. The owner's
-  // dollar figures come from the newest saved snapshot, however old.
+  // with no new search, so the card shows instantly. Its price and demand
+  // come from research already on file, when there is some.
   const saved = alreadyMultipack ? null : await savedPackDecision(upc);
   if (saved) {
     recommendation = saved;
     reason = saved.reason;
-    const snapshot = await prisma.marketCompSnapshot.findFirst({
-      where: { upc, packStats: { not: Prisma.DbNull } },
-      orderBy: { capturedAt: "desc" },
-    });
-    stats = snapshot ? parsePackStats(snapshot.packStats) : [];
+    market = await scanMarketCheck({ upc, description: description ?? `UPC ${upc}` }, { cachedOnly: true });
   } else if (!alreadyMultipack) {
-    const since = new Date(Date.now() - PACK_STATS_MAX_AGE_DAYS * 24 * 60 * 60 * 1000);
-    const snapshot = await prisma.marketCompSnapshot.findFirst({
-      where: { upc, capturedAt: { gte: since }, packStats: { not: Prisma.DbNull } },
-      orderBy: { capturedAt: "desc" },
-    });
-    // A cached "no listings" isn't trusted: it may just be a search on
-    // manifest shorthand that a real product name would fix.
-    let packStats = snapshot && snapshot.activeCompCount > 0 ? parsePackStats(snapshot.packStats) : null;
-    if (!packStats) {
-      try {
-        let comps = await searchActiveListings({ upc, keywords: description ?? upc, excludeListingId: null });
-        if (comps.length === 0) {
-          productName = await readableProductName(upc, description);
-          if (productName) comps = await searchActiveListings({ upc, keywords: productName, excludeListingId: null });
-        }
-        const summary = summarizeComps(comps);
-        packStats = summary.packStats;
-        await prisma.marketCompSnapshot.create({
-          data: {
-            upc,
-            activeCompCount: summary.activeCompCount,
-            medianPrice: summary.medianPerUnit > 0 ? summary.medianPerUnit : null,
-            packStats,
-          },
-        });
-      } catch (e) {
-        if (!(e instanceof EbayApiError)) throw e;
-        console.error(`[pack-suggestion] comp search failed for UPC ${upc}`, e);
-        packStats = [];
-      }
-    }
-    stats = packStats;
-    // Scanned outside a manifest there's no manifest description; the
-    // cheapest listing's title tells the agent what the product is.
-    const advice = await advisePackSize({
-      upc,
-      description: productName ?? description ?? packStats.find((s) => s.cheapestTitle)?.cheapestTitle ?? `UPC ${upc}`,
-      retailPrice: lines[0] ? Number(lines[0].retailPrice) : null,
-      category: lines[0]?.category ?? null,
-      packStats,
-      allowNoListings: true,
-    });
+    // Scanned with no manifest there's no description: find out what the
+    // product is first, so the checks know what they're looking at.
+    if (!description) productName = await productNameForUpc(upc);
+    const name = productName ?? description ?? `UPC ${upc}`;
+    // Independent, so side by side: the agent never sees the price.
+    const [check, advice] = await Promise.all([
+      scanMarketCheck({ upc, description: name }),
+      advisePackSize({
+        upc,
+        description: name,
+        retailPrice: lines[0] ? Number(lines[0].retailPrice) : null,
+        category: lines[0]?.category ?? null,
+        packStats: [],
+        allowNoListings: true,
+        compliant: true,
+        saveDecision: true,
+      }),
+    ]);
+    market = check;
     recommendation = advice;
     reason = advice?.reason ?? null;
   }
+  // The web check's realistic resale price for one unit stands in for "the
+  // typical single listing": listingWorth prices bigger packs off it.
+  if (market?.pricePerUnit != null && market.pricePerUnit > 0) {
+    stats = [{ packSize: 1, count: 1, medianTotal: market.pricePerUnit }];
+  }
+  const demand: DemandTier | null = market?.demand ?? null;
 
   // Everything the manifest listed is already scanned in, but someone's
   // holding one: plan for that one, and say it looks extra.
@@ -178,7 +155,9 @@ export async function GET(request: NextRequest) {
   // (one label over more units) takes over if one clears the bar; if none
   // up to MAX_RECOMMENDED_PACK does, the whole lot is set aside, and the
   // card points to Shopify & Whatnot, where the buyer pays the label.
-  type SetAsideWhy = "slow_single" | "low_return";
+  // "no_demand" (2026-10-19): the web check found no sign anyone buys it
+  // now (DEMAND: DEAD), so none of it goes on eBay, whatever the math says.
+  type SetAsideWhy = "slow_single" | "low_return" | "no_demand";
   let setAside: {
     units: number | null;
     packSize: number;
@@ -194,7 +173,7 @@ export async function GET(request: NextRequest) {
       typicalSingleLabelCost(),
       countManifestId ? unitCostForScan(countManifestId, upc) : Promise.resolve(null),
       getTargetMarginPct(),
-      unitShippingWeightOz(upc, productName ?? description ?? stats.find((s) => s.cheapestTitle)?.cheapestTitle ?? `UPC ${upc}`),
+      unitShippingWeightOz(upc, productName ?? description ?? `UPC ${upc}`),
     ]);
     targetReturnPct = target;
     const retailPrice = lines[0] ? Number(lines[0].retailPrice) : null;
@@ -241,10 +220,17 @@ export async function GET(request: NextRequest) {
     }
 
     const recommended = recommendation.packSize;
-    if (notWorthOnEbay) {
+    if (notWorthOnEbay || demand === "DEAD") {
       const shopPlan = available != null ? splitIntoPacks(available, recommended) : null;
       plan = available != null ? [] : null;
-      setAside = { units: available, packSize: recommended, why: "low_return", worth: calledWorth, everything: true, shopPlan };
+      setAside = {
+        units: available,
+        packSize: recommended,
+        why: demand === "DEAD" ? "no_demand" : "low_return",
+        worth: worthAt(recommended),
+        everything: true,
+        shopPlan,
+      };
     } else {
       plan = available != null ? splitIntoPacks(available, recommended) : null;
       const verdict = (packSize: number): { why: SetAsideWhy; worth: ListingWorth | null } | null => {
@@ -291,10 +277,24 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // Dollar figures from the listings at the chosen pack size, when there
-  // are any (the agent can pick a size nobody lists yet).
-  const chosenStat = recommendation ? stats.find((s) => s.packSize === recommendation.packSize) : undefined;
-  const singleStat = stats.find((s) => s.packSize === 1);
+  // The card's headline: sell it, it'll be slow, or don't list it on eBay.
+  // null = nothing to judge from (no research on file for a saved call).
+  const verdict: "sell" | "slow" | "dont_list" | null = setAside?.everything
+    ? "dont_list"
+    : demand === "SLOW"
+      ? "slow"
+      : demand === "FAST" || demand === "NORMAL" || stats.length > 0
+        ? "sell"
+        : null;
+
+  // Owner dollar figures at the chosen size, priced off the web check.
+  const retailForWorth = lines[0] ? Number(lines[0].retailPrice) : null;
+  const priceAt = (packSize: number) =>
+    stats.length > 0
+      ? (listingWorth({ packSize, stats, retailPrice: retailForWorth, unitCost: null, labelCost: 0, targetReturnPct: 0 })?.price ?? null)
+      : null;
+  const chosenPrice = recommendation ? priceAt(recommendation.packSize) : null;
+  const singlePrice = recommendation && recommendation.packSize > 1 ? priceAt(1) : null;
 
   return NextResponse.json({
     upc,
@@ -341,16 +341,20 @@ export async function GET(request: NextRequest) {
         ...(isOwner ? { price: shopChannel.price, profit: shopChannel.profit } : {}),
       },
     },
+    verdict,
+    // FAST / NORMAL / SLOW / DEAD, judged from outside eBay. note = what it's
+    // based on (owner only, it has store prices in it).
+    market: market && { demand: market.demand, ...(isOwner ? { note: market.note, pricePerUnit: market.pricePerUnit } : {}) },
     recommendation: recommendation && {
       packSize: recommendation.packSize,
       basis: recommendation.basis,
       reason,
-      compCount: chosenStat?.count ?? 0,
+      compCount: 0,
       ...(isOwner
         ? {
-            perPackPrice: chosenStat?.medianTotal ?? null,
-            netPerUnit: chosenStat ? netPerUnit(chosenStat.medianTotal, chosenStat.packSize) : null,
-            singleNetPerUnit: singleStat ? netPerUnit(singleStat.medianTotal, 1) : null,
+            perPackPrice: chosenPrice,
+            netPerUnit: chosenPrice != null ? netPerUnit(chosenPrice, recommendation.packSize) : null,
+            singleNetPerUnit: singlePrice != null ? netPerUnit(singlePrice, 1) : null,
           }
         : {}),
     },
@@ -431,6 +435,25 @@ async function handCountLeft(
   return { count: hc.count, left, createdAt: hc.createdAt };
 }
 
+
+// What a UPC is, cheapest way first: our own listing of it, the UPC
+// database (a second), then a web search (eBay's sites blocked; slow).
+async function productNameForUpc(upc: string): Promise<string | null> {
+  const own = await prisma.item.findFirst({
+    where: { upc, finalTitle: { not: null } },
+    orderBy: { createdAt: "desc" },
+    select: { finalTitle: true },
+  });
+  if (own?.finalTitle) return own.finalTitle;
+  try {
+    const found = (await lookupUpc(upc)) as { items?: { title?: string }[] };
+    const title = found.items?.find((i) => i.title?.trim())?.title?.trim();
+    if (title) return title;
+  } catch {
+    // Not in the database, or its free daily limit is used up.
+  }
+  return readableProductName(upc, null);
+}
 
 const LINE_SELECT = { description: true, expectedQuantity: true, retailPrice: true, category: true } as const;
 type ManifestLineInfo = { description: string; expectedQuantity: number; retailPrice: Prisma.Decimal; category: string | null };

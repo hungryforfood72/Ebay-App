@@ -1,3 +1,4 @@
+import { EBAY_DATA_DOMAINS } from "./ebayDataDomains";
 import { prisma } from "./prisma";
 import { anthropic } from "./anthropic";
 import { logAiUsage } from "./aiUsage";
@@ -179,7 +180,8 @@ export async function readableProductName(upc: string, description: string | nul
         model: "claude-sonnet-5",
         max_tokens: 1024,
         output_config: { effort: "low" },
-        tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 2 }],
+        // eBay blocked: the name feeds the scan page's price check.
+        tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 2, blocked_domains: EBAY_DATA_DOMAINS }],
         messages: [
           {
             role: "user",

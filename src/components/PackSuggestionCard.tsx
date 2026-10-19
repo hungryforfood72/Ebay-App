@@ -3,7 +3,7 @@
 import { Button } from "@/components/ui/Button";
 import { Field, Select, Textarea } from "@/components/ui/Input";
 import { MAX_RECOMMENDED_PACK, splitIntoPacks } from "@/lib/packSize";
-import { Boxes, LoaderCircle, PackageMinus } from "lucide-react";
+import { Boxes, CircleCheck, CircleX, Hourglass, LoaderCircle, PackageMinus } from "lucide-react";
 import { useEffect, useState } from "react";
 
 type PackPlanGroup = { packSize: number; listings: number };
@@ -38,7 +38,8 @@ type PackSuggestion = {
     packSize: number;
     // "slow_single": a lone single of something meant for multi-packs.
     // "low_return": wouldn't make Cristian's target profit on its cost.
-    why: "slow_single" | "low_return";
+    // "no_demand": no sign anyone buys it now, judged from outside eBay.
+    why: "slow_single" | "low_return" | "no_demand";
     // No pack size up to the max makes Cristian's target on eBay, so the
     // whole lot is set aside, and shopPlan is how it'd split for
     // Shopify & Whatnot instead (null off a manifest).
@@ -52,10 +53,14 @@ type PackSuggestion = {
     targetReturnPct?: number | null;
     requiredProfit?: number;
     // Sold on Shopify/Whatnot instead, where the buyer pays the label. Only
-    // there once the store is connected. worthIt null: no eBay listings to
-    // price it from. Dollar figures owner only.
+    // there once the store is connected. worthIt null: no price found for
+    // it. Dollar figures owner only.
     shopChannel?: { worthIt: boolean | null; price?: number | null; profit?: number | null } | null;
   } | null;
+  // Worth listing? From the eBay-free web check (store prices, Amazon
+  // demand). null = nothing to judge from yet.
+  verdict?: "sell" | "slow" | "dont_list" | null;
+  market?: { demand: "FAST" | "NORMAL" | "SLOW" | "DEAD" | null; note?: string | null; pricePerUnit?: number | null } | null;
   recommendation: {
     packSize: number;
     // "agent": the pack-size agent's call (src/lib/packAdvisor.ts), with a
@@ -98,8 +103,8 @@ const allScannedIn = (d: PackSuggestion) =>
     ? `All ${d.sorted} sorted ${d.sorted === 1 ? "is" : "are"} already listed, so this one looks extra.`
     : `All ${d.expected ?? ""} on ${manifestLabel(d)} ${d.expected === 1 ? "is" : "are"} already scanned in, so this one looks extra.`;
 
-// On the scan page's quantity step: what pack size this UPC sells best in
-// (from live eBay listings, see /api/pack-suggestion) and, on a manifest,
+// On the scan page's quantity step: whether it's worth listing, what pack
+// size this UPC sells best in (see /api/pack-suggestion) and, on a manifest,
 // how to split what's left of it. "Fill in" sets the pack size and quantity
 // for the first group; after saving, scanning the same UPC again shows the
 // plan for whatever's still left.
@@ -151,7 +156,7 @@ export function PackSuggestionCard({
     return (
       <div className="flex items-center gap-2 rounded-xl border border-border bg-background p-3 text-sm text-muted-foreground">
         <LoaderCircle className="size-4 animate-spin" aria-hidden />
-        Working out the best pack size…
+        Checking if it&apos;s worth listing and the best pack size…
       </div>
     );
   }
@@ -174,17 +179,20 @@ export function PackSuggestionCard({
 
   return (
     <div className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-950">
+      <VerdictLine data={data} />
       <div className="flex gap-2">
         <Boxes className="mt-0.5 size-5 shrink-0 text-primary" aria-hidden />
         <div className="min-w-0">
           <p className="font-semibold">
             {notForEbay
-              ? "Not worth listing on eBay"
+              ? data.verdict === "dont_list" ? "Set it aside" : "Not worth listing on eBay"
               : `Suggested: sell as ${rec.packSize > 1 ? `${rec.packSize}-packs` : "singles"}`}
           </p>
           <p className="mt-0.5 text-blue-900/80">
             {notForEbay
-              ? `Shipping eats the whole sale: even bundled up to ${MAX_RECOMMENDED_PACK}-packs, or as one lot, it wouldn't make enough profit on eBay after fees and a label.`
+              ? data.setAside?.why === "no_demand"
+                ? "There's no sign anyone is buying this right now, so it would just sit on eBay."
+                : `Shipping eats the whole sale: even bundled up to ${MAX_RECOMMENDED_PACK}-packs, or as one lot, it wouldn't make enough profit on eBay after fees and a label.`
               : rec.reason
               ? rec.reason
               : rec.basis === "estimate"
@@ -275,6 +283,32 @@ export function PackSuggestionCard({
             />
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// The headline: OK to sell, slow seller, or don't list on eBay. Demand is
+// judged from outside eBay (Amazon's bought-past-month, rank, reviews,
+// whether stores carry it), never other sellers' eBay listings.
+function VerdictLine({ data }: { data: PackSuggestion }) {
+  const v = data.verdict;
+  if (!v) return null;
+  const note = data.isOwner && data.market?.note ? data.market.note : null;
+  const price = data.isOwner && data.market?.pricePerUnit != null ? `about ${money(data.market.pricePerUnit)} each` : null;
+  const detail = [price, note].filter(Boolean).join(" · ");
+  const style =
+    v === "sell"
+      ? { box: "border-green-200 bg-green-50 text-green-950", icon: <CircleCheck className="size-5 shrink-0 text-green-600" aria-hidden />, text: "OK to sell" }
+      : v === "slow"
+        ? { box: "border-amber-200 bg-amber-50 text-amber-950", icon: <Hourglass className="size-5 shrink-0 text-amber-600" aria-hidden />, text: "Slow seller: list it, but it may sit a while" }
+        : { box: "border-red-200 bg-red-50 text-red-950", icon: <CircleX className="size-5 shrink-0 text-red-600" aria-hidden />, text: "Don't list on eBay" };
+  return (
+    <div className={`mb-3 flex items-start gap-2 rounded-lg border px-3 py-2 ${style.box}`}>
+      {style.icon}
+      <div className="min-w-0">
+        <p className="font-semibold">{style.text}</p>
+        {detail && <p className="text-xs opacity-80">{detail}</p>}
       </div>
     </div>
   );
@@ -402,7 +436,9 @@ function SetAsideNote({
         : `Set these ${n} aside.`;
   const what = setAside.packSize > 1 ? `a ${setAside.packSize}-pack` : "a single";
   const why =
-    setAside.why === "slow_single"
+    setAside.why === "no_demand"
+      ? "Nobody seems to be buying this right now."
+      : setAside.why === "slow_single"
       ? `Singles of this don't sell well on their own, it's meant to go out as ${recommendedPackSize}-packs.`
       : setAside.everything
         ? `Even as ${what} it wouldn't make enough profit after shipping and fees.`
@@ -451,7 +487,7 @@ function ShopChannelLine({
   if (shop.worthIt === null) {
     return (
       <p className="mt-1.5 text-xs text-amber-900/80">
-        No eBay listings to price it from. It can still go to Shopify &amp; Whatnot, priced by hand in review.
+        Couldn&apos;t find a price for it. It can still go to Shopify &amp; Whatnot, priced by hand in review.
       </p>
     );
   }
