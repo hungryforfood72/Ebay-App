@@ -169,6 +169,79 @@ export function totalsFor(scans: TimedScan[]): SpeedTotals {
   return t;
 }
 
+// Sort station scans: good/extra into sort boxes, duds, damaged/expired,
+// consignment units set aside for the supplier. who: undefined = everyone,
+// null = before who was recorded. manifestId: one load only.
+export async function loadSortEvents(filter: {
+  who?: string | null;
+  createdAt?: { gte: Date };
+  manifestId?: string;
+}): Promise<(ScanEvent & { extra: boolean })[]> {
+  const where = { recordedBy: filter.who, createdAt: filter.createdAt, manifestId: filter.manifestId };
+  const key = (by: string | null) => by ?? UNKNOWN_PERSON;
+  const [sorted, damaged, duds, returns] = await Promise.all([
+    prisma.sortBoxEntry.findMany({
+      where,
+      select: { createdAt: true, recordedBy: true, upc: true, quantity: true, extra: true },
+    }),
+    prisma.manifestDamagedEntry.findMany({
+      // Spelled out with note: null — a bare NOT(note = …) is NULL in SQL
+      // for a null note, which would silently drop every note-less scan.
+      where: {
+        ...where,
+        OR: [{ note: null }, { note: { not: AUTO_EXPIRED_NOTE } }],
+        // Units a customer return wrote off aren't sort-station scans.
+        AND: [NOT_RETURN_ENTRY],
+      },
+      select: { createdAt: true, recordedBy: true, upc: true, quantity: true },
+    }),
+    prisma.manifestDudEntry.findMany({
+      where: { ...where, ...NOT_RETURN_ENTRY },
+      select: { createdAt: true, recordedBy: true, upc: true, quantity: true },
+    }),
+    prisma.consignmentReturnEntry.findMany({
+      where,
+      select: { createdAt: true, recordedBy: true, upc: true, description: true, quantity: true },
+    }),
+  ]);
+  const base = { station: "sort" as const, extra: false };
+  return [
+    ...sorted.map((e) => ({
+      ...base,
+      at: e.createdAt,
+      person: key(e.recordedBy),
+      kind: e.extra ? ("extra" as const) : ("good" as const),
+      extra: e.extra,
+      units: e.quantity,
+      label: `UPC ${e.upc}`,
+    })),
+    ...damaged.map((d) => ({
+      ...base,
+      at: d.createdAt,
+      person: key(d.recordedBy),
+      kind: "damaged" as const,
+      units: d.quantity,
+      label: `UPC ${d.upc}`,
+    })),
+    ...duds.map((d) => ({
+      ...base,
+      at: d.createdAt,
+      person: key(d.recordedBy),
+      kind: "dud" as const,
+      units: d.quantity,
+      label: `UPC ${d.upc}`,
+    })),
+    ...returns.map((r) => ({
+      ...base,
+      at: r.createdAt,
+      person: key(r.recordedBy),
+      kind: "return" as const,
+      units: r.quantity,
+      label: r.description || `UPC ${r.upc}`,
+    })),
+  ];
+}
+
 // Every scan at every station since `since` (null = all time), by everyone
 // or one person, plus the scan sessions each person started, ready for
 // computeStretches (group by person first).
@@ -178,7 +251,7 @@ export async function loadScanEvents(since: Date | null, person?: string) {
   const createdAt = since ? { gte: since } : undefined;
   const key = (by: string | null) => by ?? UNKNOWN_PERSON;
 
-  const [items, sorted, damaged, duds, returns, binMoves, picks, labels, sessions] = await Promise.all([
+  const [items, sorted, binMoves, picks, labels, sessions] = await Promise.all([
     prisma.item.findMany({
       where: { scannedBy: who, createdAt },
       select: {
@@ -194,30 +267,7 @@ export async function loadScanEvents(since: Date | null, person?: string) {
         aiTitle: true,
       },
     }),
-    prisma.sortBoxEntry.findMany({
-      where: { recordedBy: who, createdAt },
-      select: { createdAt: true, recordedBy: true, upc: true, quantity: true, extra: true },
-    }),
-    prisma.manifestDamagedEntry.findMany({
-      // Spelled out with note: null — a bare NOT(note = …) is NULL in SQL
-      // for a null note, which would silently drop every note-less scan.
-      where: {
-        recordedBy: who,
-        createdAt,
-        OR: [{ note: null }, { note: { not: AUTO_EXPIRED_NOTE } }],
-        // Units a customer return wrote off aren't sort-station scans.
-        AND: [NOT_RETURN_ENTRY],
-      },
-      select: { createdAt: true, recordedBy: true, upc: true, quantity: true },
-    }),
-    prisma.manifestDudEntry.findMany({
-      where: { recordedBy: who, createdAt, ...NOT_RETURN_ENTRY },
-      select: { createdAt: true, recordedBy: true, upc: true, quantity: true },
-    }),
-    prisma.consignmentReturnEntry.findMany({
-      where: { recordedBy: who, createdAt },
-      select: { createdAt: true, recordedBy: true, upc: true, description: true, quantity: true },
-    }),
+    loadSortEvents({ who, createdAt }),
     // Bin station scans (one bag = one unit), put-aways and shelving. Not
     // the place a listing makes when it's saved straight into a bin (that's
     // the listing scan itself) or picks/undos.
@@ -262,38 +312,7 @@ export async function loadScanEvents(since: Date | null, person?: string) {
       }
       return { ...base, kind: i.isMultipack ? "multipack" : "item", units: unitsFor(i) };
     }),
-    ...sorted.map((e): ScanEvent => ({
-      at: e.createdAt,
-      person: key(e.recordedBy),
-      station: "sort",
-      kind: e.extra ? "extra" : "good",
-      units: e.quantity,
-      label: `UPC ${e.upc}`,
-    })),
-    ...damaged.map((d): ScanEvent => ({
-      at: d.createdAt,
-      person: key(d.recordedBy),
-      station: "sort",
-      kind: "damaged",
-      units: d.quantity,
-      label: `UPC ${d.upc}`,
-    })),
-    ...duds.map((d): ScanEvent => ({
-      at: d.createdAt,
-      person: key(d.recordedBy),
-      station: "sort",
-      kind: "dud",
-      units: d.quantity,
-      label: `UPC ${d.upc}`,
-    })),
-    ...returns.map((r): ScanEvent => ({
-      at: r.createdAt,
-      person: key(r.recordedBy),
-      station: "sort",
-      kind: "return",
-      units: r.quantity,
-      label: r.description || `UPC ${r.upc}`,
-    })),
+    ...sorted,
     ...binMoves.map((m): ScanEvent =>
       m.kind === "shelve"
         ? {
@@ -338,4 +357,107 @@ export async function loadScanEvents(since: Date | null, person?: string) {
     else sessionStarts.set(key(s.startedBy), [s.startedAt]);
   }
   return { events, sessionStarts };
+}
+
+// How fast one load is getting sorted, everyone together, for the "Sorting
+// a load" card. Team time is wall-clock time with anyone scanning on the
+// load (a gap with nobody scanning longer than the cutoff is a break), so
+// 4 people at 100/hr each show as a 400/hr team. Progress counts units the
+// manifest expects (good, dud, damaged, set aside), not extras.
+const RECENT_PACE_MINUTES = 15;
+
+export async function sortSpeedForLoad(manifestId: string, idleCutoffSeconds: number) {
+  const [manifest, expected, events] = await Promise.all([
+    prisma.manifest.findUnique({
+      where: { id: manifestId },
+      select: { id: true, title: true, sortedAt: true, sortedBy: true, consignment: true },
+    }),
+    prisma.manifestLine.aggregate({ where: { manifestId }, _sum: { expectedQuantity: true } }),
+    loadSortEvents({ manifestId }),
+  ]);
+  if (!manifest) return null;
+  const sorted = [...events].sort((a, b) => a.at.getTime() - b.at.getTime());
+  const cutoffMs = idleCutoffSeconds * 1000;
+  const now = Date.now();
+
+  let activeSeconds = 0;
+  let timedUnits = 0;
+  for (let i = 1; i < sorted.length; i++) {
+    const gap = sorted[i].at.getTime() - sorted[i - 1].at.getTime();
+    if (gap > cutoffMs) continue;
+    activeSeconds += gap / 1000;
+    timedUnits += sorted[i].units;
+  }
+  const teamPerHour = activeSeconds > 0 ? timedUnits / (activeSeconds / 3600) : null;
+
+  const expectedUnits = expected._sum.expectedQuantity ?? 0;
+  const countedUnits = sorted.filter((e) => !e.extra).reduce((sum, e) => sum + e.units, 0);
+  const extraUnits = sorted.filter((e) => e.extra).reduce((sum, e) => sum + e.units, 0);
+  const leftUnits = Math.max(0, expectedUnits - countedUnits);
+  const recentSince = now - RECENT_PACE_MINUTES * 60 * 1000;
+  const recentUnits = sorted.filter((e) => e.at.getTime() >= recentSince).reduce((sum, e) => sum + e.units, 0);
+
+  const byPerson = new Map<string, ScanEvent[]>();
+  for (const e of sorted) {
+    const list = byPerson.get(e.person);
+    if (list) list.push(e);
+    else byPerson.set(e.person, [e]);
+  }
+  const people = [...byPerson.entries()]
+    .map(([person, evs]) => {
+      const totals = totalsFor(computeStretches(evs, [], idleCutoffSeconds).flatMap((s) => s.scans));
+      const lastAt = evs[evs.length - 1].at;
+      return {
+        person,
+        label: person === UNKNOWN_PERSON ? "Unknown" : person,
+        ...totals,
+        perHour: totals.timedSeconds > 0 ? totals.timedUnits / (totals.timedSeconds / 3600) : null,
+        lastAt: lastAt.toISOString(),
+        active: now - lastAt.getTime() <= cutoffMs,
+      };
+    })
+    .sort((a, b) => b.units - a.units);
+
+  return {
+    manifest: {
+      id: manifest.id,
+      title: manifest.title,
+      sortedAt: manifest.sortedAt?.toISOString() ?? null,
+      sortedBy: manifest.sortedBy,
+      consignment: manifest.consignment,
+    },
+    expectedUnits,
+    countedUnits,
+    extraUnits,
+    leftUnits,
+    firstAt: sorted[0]?.at.toISOString() ?? null,
+    lastAt: sorted[sorted.length - 1]?.at.toISOString() ?? null,
+    activeSeconds,
+    teamPerHour,
+    recentMinutes: RECENT_PACE_MINUTES,
+    recentUnits,
+    // Time still to go at the team's pace so far, while it's not done.
+    etaSeconds: !manifest.sortedAt && teamPerHour && leftUnits > 0 ? (leftUnits / teamPerHour) * 3600 : null,
+    people,
+  };
+}
+
+// Loads with sort station scans, newest activity first, for the picker.
+export async function loadsWithSorting(limit = 25) {
+  const rows = await prisma.sortBoxEntry.groupBy({
+    by: ["manifestId"],
+    _max: { createdAt: true },
+    orderBy: { _max: { createdAt: "desc" } },
+    take: limit,
+  });
+  const titles = await prisma.manifest.findMany({
+    where: { id: { in: rows.map((r) => r.manifestId) } },
+    select: { id: true, title: true },
+  });
+  const byId = new Map(titles.map((m) => [m.id, m.title]));
+  return rows.map((r) => ({
+    id: r.manifestId,
+    title: byId.get(r.manifestId) ?? "Load",
+    lastAt: r._max?.createdAt?.toISOString() ?? null,
+  }));
 }

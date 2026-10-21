@@ -162,3 +162,34 @@ export async function sortBoxCodesInRange(fromRaw: string, toRaw: string): Promi
     .filter((c) => num(c) >= lo && num(c) <= hi)
     .sort((a, b) => num(a) - num(b));
 }
+
+// Who else logged anything on this load at the sort station lately (good,
+// dud, damaged/expired, set aside for the supplier), newest first, for the
+// "Is everyone done?" popup before marking sorting done. Not the asker.
+export async function recentSorters(args: { manifestId: string; exclude: string; minutes: number }) {
+  const where = {
+    manifestId: args.manifestId,
+    createdAt: { gte: new Date(Date.now() - args.minutes * 60 * 1000) },
+    recordedBy: { not: args.exclude },
+  };
+  // Half an hour of one load's scans: small enough to just read.
+  const select = { recordedBy: true, createdAt: true } as const;
+  const rows = (
+    await Promise.all([
+      prisma.sortBoxEntry.findMany({ where, select }),
+      prisma.manifestDudEntry.findMany({ where, select }),
+      prisma.manifestDamagedEntry.findMany({ where, select }),
+      prisma.consignmentReturnEntry.findMany({ where, select }),
+    ])
+  ).flat();
+  const last = new Map<string, Date>();
+  for (const r of rows) {
+    const at = r.createdAt;
+    if (!r.recordedBy) continue;
+    const prev = last.get(r.recordedBy);
+    if (!prev || at > prev) last.set(r.recordedBy, at);
+  }
+  return [...last.entries()]
+    .sort((a, b) => b[1].getTime() - a[1].getTime())
+    .map(([username, at]) => ({ username, lastAt: at.toISOString() }));
+}

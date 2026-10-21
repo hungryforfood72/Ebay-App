@@ -209,6 +209,8 @@ export default function ScanSpeedPage() {
           </p>
         </Card>
 
+        <SortLoadCard idleMinutes={idleMinutes} />
+
         {error && <Alert tone="danger">{error}</Alert>}
 
         {!report && loading && (
@@ -356,6 +358,158 @@ export default function ScanSpeedPage() {
         )}
       </div>
     </AppShell>
+  );
+}
+
+type SortLoad = {
+  manifest: { id: string; title: string; sortedAt: string | null; sortedBy: string | null; consignment: boolean };
+  expectedUnits: number;
+  countedUnits: number;
+  extraUnits: number;
+  leftUnits: number;
+  firstAt: string | null;
+  lastAt: string | null;
+  activeSeconds: number;
+  teamPerHour: number | null;
+  recentMinutes: number;
+  recentUnits: number;
+  etaSeconds: number | null;
+  people: {
+    person: string;
+    label: string;
+    units: number;
+    perHour: number | null;
+    lastAt: string;
+    active: boolean;
+  }[];
+};
+
+// One load, everyone sorting it together: how far along, the team's pace,
+// how long is left, and each sorter's share. Refreshes every minute while
+// someone is sorting it.
+function SortLoadCard({ idleMinutes }: { idleMinutes: number }) {
+  const [manifestId, setManifestId] = useState<string | null>(null);
+  const [data, setData] = useState<{ loads: { id: string; title: string }[]; load: SortLoad | null } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
+  const load = data?.load ?? null;
+  const live = !!load && !load.manifest.sortedAt && load.people.some((p) => p.active);
+
+  useEffect(() => {
+    const params = new URLSearchParams({ idle: String(idleMinutes) });
+    if (manifestId) params.set("manifestId", manifestId);
+    let cancelled = false;
+    fetch(`/api/reports/sort-speed?${params}`)
+      .then(async (res) => {
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error ?? "Couldn't load sorting.");
+        return body;
+      })
+      .then((body) => {
+        if (cancelled) return;
+        setData(body);
+        setError(null);
+      })
+      .catch((e) => !cancelled && setError(e instanceof Error ? e.message : "Couldn't load sorting."));
+    return () => {
+      cancelled = true;
+    };
+  }, [manifestId, idleMinutes, tick]);
+
+  useEffect(() => {
+    if (!live) return;
+    const id = setInterval(() => setTick((t) => t + 1), 60_000);
+    return () => clearInterval(id);
+  }, [live]);
+
+  if (error) return <Alert tone="danger">{error}</Alert>;
+  if (!data || data.loads.length === 0 || !load) return null;
+
+  const pct = load.expectedUnits > 0 ? Math.min(100, Math.round((load.countedUnits / load.expectedUnits) * 100)) : null;
+  const recentPerHour = load.recentUnits * (60 / load.recentMinutes);
+
+  return (
+    <Card>
+      <SectionHeader
+        title="Sorting a load"
+        description="Everyone sorting one load together. Team pace counts the time anyone was scanning on it."
+      />
+      <Field label="Load">
+        <Select value={load.manifest.id} onChange={(e) => setManifestId(e.target.value)}>
+          {data.loads.map((l) => (
+            <option key={l.id} value={l.id}>
+              {l.title}
+            </option>
+          ))}
+        </Select>
+      </Field>
+
+      <div className="mt-4">
+        <div className="flex items-baseline justify-between gap-3 text-sm">
+          <span className="font-medium text-foreground">
+            {load.countedUnits} of {load.expectedUnits} sorted{pct != null && ` (${pct}%)`}
+          </span>
+          <span className="text-muted-foreground">
+            {load.manifest.sortedAt
+              ? `Done ${new Date(load.manifest.sortedAt).toLocaleDateString()}${load.manifest.sortedBy ? ` by ${load.manifest.sortedBy}` : ""}`
+              : `${load.leftUnits} left`}
+          </span>
+        </div>
+        <div className="mt-1.5 h-2.5 overflow-hidden rounded-full bg-muted">
+          <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${pct ?? 0}%` }} />
+        </div>
+        {load.extraUnits > 0 && (
+          <p className="mt-1 text-xs text-muted-foreground">Plus {load.extraUnits} extras that weren&apos;t on the manifest.</p>
+        )}
+        {load.manifest.consignment && (
+          <p className="mt-1 text-xs text-muted-foreground">
+            Consignment load: the expected count is the whole manifest, including what was left at the supplier.
+          </p>
+        )}
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Stat
+          label="Team pace"
+          value={load.teamPerHour != null ? `${Math.round(load.teamPerHour)}/hr` : "—"}
+          hint="Units, everyone together"
+        />
+        <Stat
+          label={`Last ${load.recentMinutes} min`}
+          value={load.recentUnits}
+          hint={load.recentUnits > 0 ? `≈${Math.round(recentPerHour)}/hr right now` : "Nobody sorting right now"}
+        />
+        <Stat
+          label="Time sorting"
+          value={formatDuration(load.activeSeconds)}
+          hint={load.firstAt ? `Started ${new Date(load.firstAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${formatTime(new Date(load.firstAt))}` : undefined}
+        />
+        <Stat
+          label="Time left"
+          value={load.etaSeconds != null ? `≈${formatDuration(load.etaSeconds)}` : load.manifest.sortedAt ? "Done" : "—"}
+          hint={load.etaSeconds != null ? "At the team's pace so far" : undefined}
+        />
+      </div>
+
+      <ul className="mt-4 divide-y divide-border rounded-xl border border-border">
+        {load.people.map((p) => (
+          <li key={p.person} className="flex items-center justify-between gap-3 px-3 py-2.5 text-sm">
+            <span className="flex min-w-0 items-center gap-1.5 font-medium text-foreground">
+              {p.active && <span className="size-2 shrink-0 rounded-full bg-success" aria-label="Sorting now" />}
+              <span className="truncate">{p.label}</span>
+            </span>
+            <span className="shrink-0 text-right tabular-nums">
+              <span className="font-semibold text-foreground">{p.perHour != null ? `${Math.round(p.perHour)}/hr` : "—"}</span>
+              <span className="block text-xs text-muted-foreground">
+                {p.units} units
+                {load.countedUnits + load.extraUnits > 0 &&
+                  ` · ${Math.round((p.units / (load.countedUnits + load.extraUnits)) * 100)}%`}
+              </span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </Card>
   );
 }
 

@@ -31,7 +31,7 @@ import {
   Undo2,
 } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react";
 
 // Sort station. Cristian (2026-10-18): sort the WHOLE load before listing,
 // so the lister never waits on a unit buried at the bottom of the pallet
@@ -263,6 +263,9 @@ export default function SortPage() {
   const [reopenCode, setReopenCode] = useState<string | null>(null);
   const [boxBusy, setBoxBusy] = useState(false);
   const [confirmDone, setConfirmDone] = useState(false);
+  // Who else logged on this load lately, for the "Is everyone done?"
+  // popup (null = still checking).
+  const [otherSorters, setOtherSorters] = useState<OtherSorter[] | null>(null);
 
   const stations = useChosenStation(true);
 
@@ -399,8 +402,8 @@ export default function SortPage() {
   }
 
   // quiet = a refresh after logging: no beep, keep the quantity.
-  async function runCheck(raw: string, quiet = false) {
-    if (!manifestId) return;
+  async function runCheck(raw: string, quiet = false): Promise<CheckResult | null> {
+    if (!manifestId) return null;
     const id = ++checkId.current;
     if (!quiet) {
       setScan({ code: raw, loading: true, result: null, error: null });
@@ -411,17 +414,45 @@ export default function SortPage() {
         `/api/sort/check?manifestId=${encodeURIComponent(manifestId)}&upc=${encodeURIComponent(raw)}`
       );
       const result = await readJson<CheckResult>(res, "Couldn't check that one. Scan it again.");
-      if (id !== checkId.current) return;
+      if (id !== checkId.current) return null;
       setScan({ code: raw, loading: false, result, error: null });
       if (!quiet) {
         beep(!result.line ? "missing" : result.dud || result.consignmentCall?.decision === "leave" ? "dud" : "good");
       }
+      return result;
     } catch (e) {
-      if (id !== checkId.current) return;
-      if (quiet) return; // keeps the last counts; the next scan tries again
+      if (id !== checkId.current) return null;
+      if (quiet) return null; // keeps the last counts; the next scan tries again
       setScan({ code: raw, loading: false, result: null, error: errorText(e, "Couldn't check that one.") });
+      return null;
     }
   }
+
+  // After a save: refresh the counts, and if they went over when this save
+  // alone couldn't have (another sorter logged the same product at the
+  // same moment, so both saw "1 left"), say so.
+  async function refreshAfterSave(quantity: number) {
+    if (!scan) return;
+    const before = scan.result?.line ?? null;
+    const after = (await runCheck(scan.code, true))?.line ?? null;
+    if (!before || !after || before.over > 0 || before.leftToSort < quantity || after.over === 0) return;
+    setMessage({
+      tone: "warning",
+      text: `Saved. Heads up: someone else sorted this at the same time, so it's ${after.over} over the manifest now.`,
+    });
+  }
+
+  // Other sorters work the same load, so keep the product on screen
+  // current: re-check it quietly every 5 seconds while it's showing.
+  const liveCode = scan && !scan.loading && scan.result?.line ? scan.code : null;
+  const pollCheck = useEffectEvent((code: string) => {
+    if (document.visibilityState === "visible") void runCheck(code, true);
+  });
+  useEffect(() => {
+    if (!liveCode || saving) return;
+    const id = setInterval(() => pollCheck(liveCode), 5000);
+    return () => clearInterval(id);
+  }, [liveCode, saving]);
 
   function handleScan() {
     const raw = code.trim();
@@ -488,7 +519,7 @@ export default function SortPage() {
       });
       setMessage({ tone: "success", text: `Put ${p.quantity} in ${data.box.code}. Scan the next one.` });
       setQuantity("1");
-      if (scan) void runCheck(scan.code, true);
+      void refreshAfterSave(p.quantity);
       return true;
     } catch (e) {
       addToLog({ kind: p.extra ? "extra" : "good", quantity: p.quantity, description: p.description, failed: true });
@@ -599,7 +630,7 @@ export default function SortPage() {
       });
       setMessage({ tone: "success", text: `Put ${p.quantity} in dud box ${data.box.code}. Scan the next one.` });
       setQuantity("1");
-      if (scan) void runCheck(scan.code, true);
+      void refreshAfterSave(p.quantity);
       return true;
     } catch (e) {
       addToLog({ kind: "dud", quantity: p.quantity, description: p.description, failed: true });
@@ -792,7 +823,7 @@ export default function SortPage() {
       });
       setMessage({ tone: "success", text: `Logged ${qty} ${kind}. Scan the next one.` });
       setQuantity("1");
-      void runCheck(scan.code, true);
+      void refreshAfterSave(qty);
     } catch (e) {
       addToLog({ kind, quantity: qty, description: p.description, failed: true });
       setMessage({ tone: "danger", text: errorText(e, "Something went wrong. Try again.") });
@@ -830,6 +861,23 @@ export default function SortPage() {
     } finally {
       setSaving(false);
       focusScan();
+    }
+  }
+
+  async function askDone() {
+    if (!manifestId) return;
+    setOtherSorters(null);
+    setConfirmDone(true);
+    try {
+      const d = await readJson<{ others: { username: string; lastAt: string }[] }>(
+        await fetch(`/api/sort/done?manifestId=${encodeURIComponent(manifestId)}`),
+        ""
+      );
+      const now = Date.now();
+      setOtherSorters(d.others.map((o) => ({ username: o.username, ago: minutesAgo(now - new Date(o.lastAt).getTime()) })));
+    } catch {
+      // Can't tell: the popup still asks, just without names.
+      setOtherSorters([]);
     }
   }
 
@@ -1323,9 +1371,10 @@ export default function SortPage() {
           sortedAt={info?.sortedAt ?? null}
           sortedBy={info?.sortedBy ?? null}
           confirming={confirmDone}
+          others={otherSorters}
           busy={saving}
           isOwner={isOwner}
-          onAsk={() => setConfirmDone(true)}
+          onAsk={() => void askDone()}
           onCancel={() => setConfirmDone(false)}
           onDone={() => markDone(false)}
           onReopen={() => markDone(true)}
@@ -1547,6 +1596,7 @@ function SortingDoneCard(props: {
   sortedAt: string | null;
   sortedBy: string | null;
   confirming: boolean;
+  others: OtherSorter[] | null;
   busy: boolean;
   isOwner: boolean;
   onAsk: () => void;
@@ -1570,29 +1620,68 @@ function SortingDoneCard(props: {
       </Card>
     );
   }
-  if (props.confirming) {
-    return (
-      <Card className="border-amber-300">
-        <p className="text-sm font-medium text-foreground">
-          Is the whole load sorted? Anything not sorted yet will count as short.
-        </p>
-        <div className="mt-3 grid grid-cols-2 gap-2">
-          <Button variant="primary" onClick={props.onDone} disabled={props.busy}>
-            Yes, sorting is done
-          </Button>
-          <Button variant="outline" onClick={props.onCancel} disabled={props.busy}>
-            Cancel
-          </Button>
-        </div>
-      </Card>
-    );
-  }
   return (
-    <Button variant="outline" size="lg" block onClick={props.onAsk}>
-      <CircleCheck className="size-5" aria-hidden />
-      Sorting done
-    </Button>
+    <>
+      <Button variant="outline" size="lg" block onClick={props.onAsk}>
+        <CircleCheck className="size-5" aria-hidden />
+        Sorting done
+      </Button>
+      {props.confirming && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="sort-done-title"
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-4 sm:items-center"
+        >
+          <div className="w-full max-w-md rounded-2xl bg-surface p-5 shadow-xl">
+            <p id="sort-done-title" className="text-xl font-bold leading-tight text-foreground">
+              Is everyone done sorting this load?
+            </p>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Check with everyone sorting it first. Once it&apos;s marked done, anything not sorted yet counts as short
+              on the manifest.
+            </p>
+            {props.others === null ? (
+              <p className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
+                <LoaderCircle className="size-4 animate-spin" aria-hidden /> Checking who else is sorting…
+              </p>
+            ) : (
+              props.others.length > 0 && (
+                <div className="mt-3 rounded-xl border-2 border-amber-400 bg-amber-50 p-3 text-amber-950">
+                  <p className="flex items-center gap-1.5 text-sm font-semibold">
+                    <TriangleAlert className="size-4 shrink-0" aria-hidden />
+                    Still scanning this load lately:
+                  </p>
+                  <ul className="mt-1 text-sm">
+                    {props.others.map((o) => (
+                      <li key={o.username}>
+                        <span className="font-semibold">{o.username}</span> · {o.ago}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )
+            )}
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <Button variant="primary" size="lg" onClick={props.onDone} disabled={props.busy || props.others === null}>
+                Yes, everyone&apos;s done
+              </Button>
+              <Button variant="outline" size="lg" onClick={props.onCancel} disabled={props.busy}>
+                Not yet
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
+}
+
+type OtherSorter = { username: string; ago: string };
+
+function minutesAgo(ms: number): string {
+  const m = Math.floor(ms / 60_000);
+  return m < 1 ? "just now" : `${m} min ago`;
 }
 
 const TALLY_TONES = {
