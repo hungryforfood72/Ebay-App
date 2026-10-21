@@ -21,7 +21,7 @@ import { normalizeCode } from "./warehouse/codes";
 // Payment: cash (sold right away), or a Shopify invoice from the Epic
 // Steals store: a draft order with the item as a custom line (so Shopify's
 // own stock and the order sync leave it alone; this app records the sale),
-// no shipping (a $0 "Local pickup" line), tagged IN_PERSON_TAG, emailed to the
+// no shipping (local pickup), tagged IN_PERSON_TAG, emailed to the
 // customer. Stock only comes off once Shopify says it's paid, checked by
 // the seller's screen, the owner's page and the 10-minute cron. Then the
 // Shopify order is marked fulfilled (they walked out with it).
@@ -292,16 +292,15 @@ async function createInvoice(sale: CounterSale): Promise<{ id: string; invoiceUr
         email: sale.customerEmail,
         tags: [IN_PERSON_TAG],
         note: `In-person sale, picked up at the warehouse. Sold by ${sale.soldBy ?? "staff"}.`,
-        // Marked as local pickup on the order too, at $0, so no shipping
-        // is ever charged.
-        shippingLine: { title: "Local pickup", priceWithCurrency: money(0) },
         lineItems: [
           {
             title: `${sale.description}${unit}`.slice(0, 255),
             quantity: sale.quantity,
             originalUnitPriceWithCurrency: money(Number(sale.pricePerUnit)),
             // Local pickup: nothing to ship, so checkout asks for no
-            // address and charges no shipping.
+            // address and charges no shipping. (A $0 "Local pickup"
+            // shippingLine was tried: Shopify drops it when nothing
+            // ships. Tested live 2026-10-21, shipping total $0.)
             requiresShipping: false,
           },
         ],
