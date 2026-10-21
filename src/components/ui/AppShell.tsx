@@ -20,6 +20,7 @@ import {
   Settings,
   SplitSquareHorizontal,
   Target,
+  Tag,
   Timer,
   Truck,
   Undo2,
@@ -62,6 +63,8 @@ const NAV: NavEntry[] = [
       { href: "/sort", label: "Sort", icon: SplitSquareHorizontal, warehouseOnly: true },
       { href: "/bins", label: "Bins", icon: Archive, warehouseOnly: true },
       { href: "/ship", label: "Pick orders", icon: PackageCheck, warehouseOnly: true },
+      // Scan a box's pick slip, its shipping label prints.
+      { href: "/shipping", label: "Shipping", icon: Tag, warehouseOnly: true },
       // Epic Steals local delivery runs; any signed-in user can drive.
       { href: "/deliveries", label: "Deliveries", icon: Truck },
       { href: "/returns", label: "Returns", icon: Undo2, warehouseOnly: true },

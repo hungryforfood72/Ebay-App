@@ -5,8 +5,9 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 30;
 
-// A packing slip scanned on Pick orders: prints that order's shipping label
-// at the packing station. { orderId, force?, assignLabelId? }
+// A pick slip scanned on the Shipping page: prints that order's shipping
+// label at the station the shipper picked (stationId), or the packing
+// station. { orderId, stationId?, force?, assignLabelId? }
 export async function POST(request: NextRequest) {
   try {
     const user = requireUser(request);
@@ -20,6 +21,7 @@ export async function POST(request: NextRequest) {
         by: user.username,
         force: body.force === true,
         assignLabelId: typeof body.assignLabelId === "string" ? body.assignLabelId : null,
+        stationId: typeof body.stationId === "string" && body.stationId ? body.stationId : null,
       })
     );
   } catch (e) {

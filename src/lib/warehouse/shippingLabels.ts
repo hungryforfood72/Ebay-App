@@ -3,6 +3,7 @@ import { getRecentShipments, type EbayShipment } from "../ebay";
 import { prisma } from "../prisma";
 import { WarehouseError } from "./bins";
 import { packingStation } from "./packingSlip";
+import { STATION_ONLINE_MS } from "./settings";
 
 // Shipping labels bought on eBay, printed by scanning the packing slip
 // (Cristian, 2026-10-19). His flow:
@@ -253,8 +254,11 @@ export async function printLabelForOrder(input: {
   by: string | null;
   // The Reprint button: print it again even though it already printed.
   force: boolean;
-  // Unmatched label to give this order first (Assign on Pick orders).
+  // Unmatched label to give this order first (Assign on the Shipping page).
   assignLabelId?: string | null;
+  // The station the shipper picked on the Shipping page; null = the
+  // packing station.
+  stationId?: string | null;
 }): Promise<LabelPrintResult> {
   const orderId = input.orderId.trim();
   if (input.assignLabelId) {
@@ -278,7 +282,7 @@ export async function printLabelForOrder(input: {
 
   const others = label.orderIds.filter((id) => id !== orderId);
   const reprint = label.printedAt != null;
-  const station = await packingStation();
+  const station = input.stationId ? await chosenStation(input.stationId) : await packingStation();
   await prisma.shippingLabel.update({
     where: { id: label.id },
     data: { printedAt: label.printedAt ?? new Date(), printedBy: label.printedBy ?? input.by, printCount: { increment: 1 } },
@@ -294,6 +298,14 @@ export async function printLabelForOrder(input: {
     },
   });
   return { status: "queued", station: station.name, online: station.online, orderId, others, reprint, labelId: label.id };
+}
+
+// A station picked on the Shipping page, in packingStation()'s shape.
+async function chosenStation(id: string) {
+  const s = await prisma.station.findUnique({ where: { id }, select: { id: true, name: true, lastSeenAt: true, helperSeenAt: true, printerName: true } });
+  if (!s) throw new WarehouseError("That station doesn't exist anymore. Pick the station again.", 404);
+  const fresh = (d: Date | null) => d != null && Date.now() - d.getTime() <= STATION_ONLINE_MS;
+  return { id: s.id, name: s.name, online: fresh(s.lastSeenAt) || (s.printerName != null && fresh(s.helperSeenAt)) };
 }
 
 export async function labelImage(id: string): Promise<Uint8Array | null> {

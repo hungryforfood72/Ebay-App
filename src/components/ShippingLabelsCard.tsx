@@ -10,8 +10,8 @@ import type { LabelRow, PageMatch } from "@/lib/warehouse/shippingLabels";
 import { ChevronDown, FileUp, LoaderCircle, Printer, Trash2 } from "lucide-react";
 import { useRef, useState } from "react";
 
-// Pick orders: upload eBay's bulk shipping-label PDF, then scan each box's
-// packing slip and its label prints (see warehouse/shippingLabels.ts).
+// Shipping page: upload eBay's bulk shipping-label PDF, then scan each
+// box's pick slip and its label prints (see warehouse/shippingLabels.ts).
 export function ShippingLabelsCard({
   labels,
   onChanged,

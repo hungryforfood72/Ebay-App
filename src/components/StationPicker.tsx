@@ -84,6 +84,8 @@ export function useChosenStation(enabled: boolean) {
 }
 
 export function StationPicker({
+  title = "Which station are you at?",
+  description = "The weight comes from its scale and the labels print there. This handheld remembers it.",
   stations,
   selectedId,
   error,
@@ -91,6 +93,8 @@ export function StationPicker({
   onCancel,
   onReload,
 }: {
+  title?: string;
+  description?: string;
   stations: StationStatus[] | null;
   selectedId: string | null;
   error?: string | null;
@@ -100,10 +104,7 @@ export function StationPicker({
 }) {
   return (
     <Card>
-      <SectionHeader
-        title="Which station are you at?"
-        description="The weight comes from its scale and the labels print there. This handheld remembers it."
-      />
+      <SectionHeader title={title} description={description} />
       {error ? (
         <div className="flex flex-col gap-3">
           <p className="text-sm text-danger">{error}</p>
