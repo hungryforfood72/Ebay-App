@@ -133,8 +133,17 @@ type OrderGroup = {
   source: string;
   pickup: boolean;
   delivery: boolean;
+  // Other open orders that ship in the same box (same eBay buyer, same
+  // address).
+  combineWith: string[];
   lines: PickLine[];
 };
+
+// One box on Ready to pack: an order, or a ship-together group of them.
+// waitingOn: orders in the group not picked yet, so the box waits.
+type PackCard = { key: string; orders: OrderGroup[]; waitingOn: string[] };
+
+const orderList = (numbers: string[]) => numbers.join(" and ");
 
 // One line for the pick result about the order's packing slip.
 function slipNote(slip: SlipResult | null | undefined): string | null {
@@ -145,6 +154,9 @@ function slipNote(slip: SlipResult | null | undefined): string | null {
     return `Packing slip ${where}.${label}`;
   }
   if (slip.status === "no_station") return "No packing station is set up: tap Packing slip under Ready to pack to print it.";
+  if (slip.status === "hold_for_combine") {
+    return `Same buyer has order ${orderList(slip.waitingOn)} still to pick. One packing slip prints once that's picked too.`;
+  }
   return null;
 }
 
@@ -159,7 +171,7 @@ export default function ShipPage() {
 
   // Packing slip button on Ready to pack: to the packing station, or
   // printed right here when there isn't one.
-  async function reprintSlip(order: OrderGroup) {
+  async function reprintSlip(order: Pick<OrderGroup, "key" | "lines">) {
     const line = order.lines[0];
     if (!line) return;
     setSlipBusy(order.key);
@@ -336,7 +348,16 @@ export default function ShipPage() {
       if (l.status === "va" || l.handoff === "counter") continue;
       const key = `${l.channel}:${l.orderId}`;
       if (!map.has(key)) {
-        map.set(key, { key, orderNumber: l.orderNumber, buyer: l.buyer, source: l.source, pickup: l.handoff === "pickup", delivery: l.handoff === "delivery", lines: [] });
+        map.set(key, {
+          key,
+          orderNumber: l.orderNumber,
+          buyer: l.buyer,
+          source: l.source,
+          pickup: l.handoff === "pickup",
+          delivery: l.handoff === "delivery",
+          combineWith: l.combineWith,
+          lines: [],
+        });
       }
       map.get(key)!.lines.push(l);
     }
@@ -346,6 +367,25 @@ export default function ShipPage() {
     const checkable = o.lines.filter((l) => l.item != null);
     return checkable.length > 0 && checkable.every((l) => l.picked >= l.quantity);
   });
+  // Ship-together orders share one card, shown once any of them is picked.
+  // An order with nothing the app can check never holds the others up.
+  const packCards: PackCard[] = [];
+  {
+    const ready = new Set(readyToPack.map((o) => o.key));
+    const byNumber = new Map(orders.map((o) => [o.orderNumber, o]));
+    const seen = new Set<string>();
+    for (const o of readyToPack) {
+      if (seen.has(o.key)) continue;
+      const members = [o.orderNumber, ...o.combineWith]
+        .map((n) => byNumber.get(n))
+        .filter((m): m is OrderGroup => m != null)
+        .sort((a, b) => (a.lines[0]?.orderedAt ?? "").localeCompare(b.lines[0]?.orderedAt ?? ""));
+      for (const m of members) seen.add(m.key);
+      const waitingOn = members.filter((m) => !ready.has(m.key) && m.lines.some((l) => l.item != null)).map((m) => m.orderNumber);
+      packCards.push({ key: members.map((m) => m.key).join("+"), orders: members, waitingOn });
+    }
+  }
+  const boxesReady = packCards.filter((c) => c.waitingOn.length === 0).length;
 
   function updateLine(key: string, patch: Partial<PickLine>) {
     setData((d) => (d ? { ...d, lines: d.lines.map((l) => (l.key === key ? { ...l, ...patch } : l)) } : d));
@@ -379,6 +419,7 @@ export default function ShipPage() {
         updateLine(line.key, { picked: json.picked, pickedBy });
         const orderLines = lines.filter((l) => l.orderId === line.orderId && l.channel === line.channel && l.item != null);
         const orderDone = orderLines.every((l) => (l.key === line.key ? json.picked : l.picked) >= l.quantity);
+        const holdFor = json.slip?.status === "hold_for_combine" ? json.slip.waitingOn : null;
         const more = json.quantity - json.picked;
         setSelectedKey(null);
         const count =
@@ -401,7 +442,9 @@ export default function ShipPage() {
                   ? `Order ${line.orderNumber} is ready for pickup.`
                   : line.handoff === "delivery"
                     ? `Order ${line.orderNumber} is ready for local delivery. No label needed.`
-                    : `Order ${line.orderNumber} is ready to pack.`
+                    : holdFor
+                      ? `Order ${line.orderNumber} is picked. Don't pack it yet: it ships with order ${orderList(holdFor)}.`
+                      : `Order ${line.orderNumber} is ready to pack.`
                 : count,
           note: [json.manual ? "Confirmed by tap, not a scan." : null, json.binNote, slipNote(json.slip)].filter(Boolean).join(" ") || null,
           undoLine: { ...line, picked: json.picked },
@@ -577,7 +620,7 @@ export default function ShipPage() {
                   {unitsLeft} to pick, {unitsDone} done
                 </span>
                 <span className="text-muted-foreground">
-                  {readyToPack.length} {readyToPack.length === 1 ? "order" : "orders"} ready
+                  {boxesReady} {boxesReady === 1 ? "box" : "boxes"} ready to pack
                 </span>
               </div>
               <div className="h-2.5 w-full overflow-hidden rounded-full bg-muted">
@@ -644,55 +687,86 @@ export default function ShipPage() {
               </section>
             )}
 
-            {readyToPack.length > 0 && (
+            {packCards.length > 0 && (
               <section>
-                <SectionHeader title={`Ready to pack (${readyToPack.length})`} description="Pickups go to the hand-over spot, not the shipping pile." />
+                <SectionHeader
+                  title={`Ready to pack (${boxesReady})`}
+                  description="One card per box. Pickups go to the hand-over spot, not the shipping pile."
+                />
                 <ul className="flex flex-col gap-2">
-                  {readyToPack.map((o) => (
-                    <li key={o.key}>
-                      <Card className="border-green-300 bg-green-50/50">
-                        <p className="flex items-center gap-2 font-semibold text-foreground">
-                          <PackageCheck className="size-5 text-success" aria-hidden />
-                          {orderLabel(o)}
-                          {o.pickup && <Badge tone="primary">Pickup</Badge>}
-                          {o.delivery && <Badge tone="primary">Local delivery</Badge>}
-                          <Button size="sm" variant="outline" className="ml-auto" onClick={() => reprintSlip(o)} disabled={slipBusy === o.key}>
-                            {slipBusy === o.key ? "Sending…" : "Packing slip"}
-                          </Button>
-                        </p>
-                        {slipMessage?.key === o.key && <p className="mt-1 text-xs text-foreground">{slipMessage.text}</p>}
-                        {o.lines[0]?.orderUrl && !o.delivery && (
-                          <a
-                            href={o.lines[0].orderUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="mt-2 inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground"
-                          >
-                            <ExternalLink className="size-4" aria-hidden />
-                            {o.lines[0].channel === "ebay" ? "Open in eBay" : "Open in Shopify"}
-                            {o.pickup ? "" : " to buy the label"}
-                          </a>
-                        )}
-                        <ul className="mt-2 flex flex-col gap-1 text-sm">
-                          {o.lines.map((l) => (
-                            <li key={l.key} className="text-foreground">
-                              {l.item ? (
-                                <>
-                                  {l.quantity > 1 ? `${l.quantity} × ` : ""}
-                                  {short(l.item.title, 60)}
-                                </>
-                              ) : (
-                                <span className="text-amber-800">
-                                  Also grab {l.quantity > 1 ? `${l.quantity} × ` : ""}
-                                  {short(l.listing.title, 60)} (find it yourself)
-                                </span>
+                  {packCards.map((card) => {
+                    const first = card.orders[0];
+                    const combined = card.orders.length > 1;
+                    const holding = card.waitingOn.length > 0;
+                    return (
+                      <li key={card.key}>
+                        <Card className={holding ? "border-amber-300 bg-amber-50/50" : "border-green-300 bg-green-50/50"}>
+                          <p className="flex items-center gap-2 font-semibold text-foreground">
+                            <PackageCheck className={cn("size-5", holding ? "text-amber-700" : "text-success")} aria-hidden />
+                            {combined ? `Combine ${card.orders.length} orders${first.buyer ? ` · ${first.buyer}` : ""}` : orderLabel(first)}
+                            {first.pickup && <Badge tone="primary">Pickup</Badge>}
+                            {first.delivery && <Badge tone="primary">Local delivery</Badge>}
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="ml-auto"
+                              onClick={() => reprintSlip({ key: card.key, lines: first.lines })}
+                              disabled={slipBusy === card.key}
+                            >
+                              {slipBusy === card.key ? "Sending…" : "Packing slip"}
+                            </Button>
+                          </p>
+                          {combined && (
+                            <p className="mt-1 text-sm text-foreground">
+                              {holding
+                                ? `Hold: order ${orderList(card.waitingOn)} isn't picked yet. Same buyer, same address, so it all goes in one box.`
+                                : "Same buyer, same address: pack them in one box and buy one combined label in eBay."}
+                            </p>
+                          )}
+                          {slipMessage?.key === card.key && <p className="mt-1 text-xs text-foreground">{slipMessage.text}</p>}
+                          {first.lines[0]?.orderUrl && !first.delivery && !holding && (
+                            <a
+                              href={first.lines[0].orderUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="mt-2 inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground"
+                            >
+                              <ExternalLink className="size-4" aria-hidden />
+                              {first.lines[0].channel === "ebay" ? "Open in eBay" : "Open in Shopify"}
+                              {first.pickup ? "" : combined ? " to combine and buy the label" : " to buy the label"}
+                            </a>
+                          )}
+                          {card.orders.map((o) => (
+                            <div key={o.key} className="mt-2">
+                              {combined && (
+                                <p className="text-xs font-semibold text-muted-foreground">
+                                  Order {o.orderNumber}
+                                  {card.waitingOn.includes(o.orderNumber) ? " · not picked yet" : " · picked"}
+                                </p>
                               )}
-                            </li>
+                              <ul className="flex flex-col gap-1 text-sm">
+                                {o.lines.map((l) => (
+                                  <li key={l.key} className="text-foreground">
+                                    {l.item ? (
+                                      <>
+                                        {l.quantity > 1 ? `${l.quantity} × ` : ""}
+                                        {short(l.item.title, 60)}
+                                      </>
+                                    ) : (
+                                      <span className="text-amber-800">
+                                        Also grab {l.quantity > 1 ? `${l.quantity} × ` : ""}
+                                        {short(l.listing.title, 60)} (find it yourself)
+                                      </span>
+                                    )}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
                           ))}
-                        </ul>
-                      </Card>
-                    </li>
-                  ))}
+                        </Card>
+                      </li>
+                    );
+                  })}
                 </ul>
               </section>
             )}
@@ -727,6 +801,11 @@ export default function ShipPage() {
                           {l.handoff === "delivery" && (
                             <Badge tone="primary" className="mt-1.5">
                               Local delivery: no label
+                            </Badge>
+                          )}
+                          {l.combineWith.length > 0 && (
+                            <Badge tone="primary" className="mt-1.5">
+                              Ships with order {orderList(l.combineWith)}: one box
                             </Badge>
                           )}
                         </div>
@@ -866,6 +945,7 @@ function VerifyBadges({ line }: { line: PickLine }) {
       {line.verifyBy === "upc" && <Badge tone="warning">No label, scan the UPC</Badge>}
       {line.verifyBy === "tap" && <Badge tone="warning">No barcode on record</Badge>}
       {line.cancelRequested && <Badge tone="danger">Buyer asked to cancel</Badge>}
+      {line.combineWith.length > 0 && <Badge tone="primary">Ships with order {orderList(line.combineWith)}</Badge>}
     </div>
   );
 }

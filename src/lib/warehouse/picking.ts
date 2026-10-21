@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { ItemCondition } from "@/generated/prisma/client";
 import { itemDisplayTitle } from "./itemTitle";
 import { getOrdersAwaitingShipment } from "../ebay";
@@ -99,6 +100,11 @@ export type PickLine = {
   // The order's page on its own store (eBay Seller Hub or Shopify admin),
   // where the shipping label gets bought once it's packed.
   orderUrl: string | null;
+  // Other open eBay orders from the same buyer to the same address
+  // (Cristian, 2026-10-21): eBay lets those ship in one box on one label,
+  // so they're packed together and get one packing slip. Order numbers,
+  // oldest first. Empty for most orders.
+  combineWith: string[];
 };
 
 export type ShipOrdersResponse = {
@@ -132,6 +138,9 @@ type RawLine = {
   shopifyVariantId: string | null;
   cancelRequested: boolean;
   handoff: Handoff;
+  // Same value = same buyer, same address (see shipGroupKey). Only for
+  // eBay orders that ship. A hash, so no address leaves this module.
+  shipGroup: string | null;
 };
 
 type EbayRawOrder = {
@@ -142,7 +151,13 @@ type EbayRawOrder = {
   buyer?: { username?: string };
   fulfillmentStartInstructions?: {
     fulfillmentInstructionsType?: string;
-    shippingStep?: { shippingServiceCode?: string; shipTo?: { fullName?: string } };
+    shippingStep?: {
+      shippingServiceCode?: string;
+      shipTo?: {
+        fullName?: string;
+        contactAddress?: { addressLine1?: string; addressLine2?: string; postalCode?: string; countryCode?: string };
+      };
+    };
   }[];
   lineItems?: {
     lineItemId: string;
@@ -174,6 +189,19 @@ function firstName(full: string | null | undefined): string | null {
   return first || null;
 }
 
+// eBay combines shipping for orders from one buyer to one address, so
+// that's the match: the username plus the street, unit, ZIP and country,
+// with case, spacing and punctuation ignored. Hashed right away; only the
+// hash is kept, in memory.
+function shipGroupKey(o: EbayRawOrder): string | null {
+  const a = o.fulfillmentStartInstructions?.find((f) => f.shippingStep?.shipTo)?.shippingStep?.shipTo?.contactAddress;
+  const who = o.buyer?.username?.trim().toLowerCase();
+  if (!who || !a?.addressLine1 || !a.postalCode) return null;
+  const norm = (v: string | undefined) => (v ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const parts = [who, norm(a.addressLine1), norm(a.addressLine2), norm(a.postalCode).slice(0, 5), norm(a.countryCode)];
+  return createHash("sha256").update(parts.join("|")).digest("hex").slice(0, 16);
+}
+
 function ebayLines(orders: EbayRawOrder[]): RawLine[] {
   const out: RawLine[] = [];
   for (const o of orders) {
@@ -182,6 +210,7 @@ function ebayLines(orders: EbayRawOrder[]): RawLine[] {
     if (EBAY_SKIP_PAYMENT.includes(o.orderPaymentStatus ?? "")) continue;
     const handoff: Handoff = isEbayPickup(o) ? "pickup" : "ship";
     const shipTo = o.fulfillmentStartInstructions?.[0]?.shippingStep?.shipTo;
+    const shipGroup = handoff === "ship" ? shipGroupKey(o) : null;
     for (const li of o.lineItems ?? []) {
       // A split shipment can mark one line shipped while the rest wait. A
       // multi-unit line shipped in part reads IN_PROGRESS and stays, with
@@ -204,6 +233,7 @@ function ebayLines(orders: EbayRawOrder[]): RawLine[] {
         shopifyVariantId: null,
         cancelRequested: cancelState === "CANCEL_REQUESTED",
         handoff,
+        shipGroup,
       });
     }
   }
@@ -326,6 +356,7 @@ function shopifyLines(orders: ShopifyOpenOrder[]): RawLine[] {
         shopifyVariantId: li.variant?.id ?? null,
         cancelRequested: false,
         handoff,
+        shipGroup: null,
       });
     }
   }
@@ -563,6 +594,8 @@ export async function getPickList(options?: { fresh?: boolean }): Promise<ShipOr
       })
     : [];
 
+  const combine = combineGroups(raw.filter((l) => !isVaLine(l, matched)));
+
   const lines: PickLine[] = raw.map((l) => {
     const key = lineKey(l.channel, l.lineItemId);
     const item = matched.get(key) ?? null;
@@ -604,10 +637,37 @@ export async function getPickList(options?: { fresh?: boolean }): Promise<ShipOr
           },
       listing: { title: l.title, customLabel: l.sku, shelfHint: shelfFromSku(l.sku), image: l.image },
       orderUrl: orderUrl(l),
+      combineWith: (combine.get(l.orderId) ?? []).filter((o) => o.orderId !== l.orderId).map((o) => o.orderNumber),
     };
   });
 
   return { lines: sortWalkingPath(lines), fetchedAt: new Date().toISOString(), shopify, warnings };
+}
+
+// The old VA's lines: nobody here picks or packs those, so they never make
+// an order part of a ship-together group.
+function isVaLine(l: RawLine, matched: Map<string, MatchedItem>): boolean {
+  return !matched.has(lineKey(l.channel, l.lineItemId)) && isVaSku(l.sku);
+}
+
+// orderId -> every open order in its ship-together group (itself included),
+// oldest first. Only groups of two or more orders.
+type GroupOrder = { orderId: string; orderNumber: string; orderedAt: string };
+function combineGroups(lines: RawLine[]): Map<string, GroupOrder[]> {
+  const byGroup = new Map<string, Map<string, GroupOrder>>();
+  for (const l of lines) {
+    if (!l.shipGroup) continue;
+    const orders = byGroup.get(l.shipGroup) ?? new Map<string, GroupOrder>();
+    orders.set(l.orderId, { orderId: l.orderId, orderNumber: l.orderNumber, orderedAt: l.orderedAt });
+    byGroup.set(l.shipGroup, orders);
+  }
+  const out = new Map<string, GroupOrder[]>();
+  for (const orders of byGroup.values()) {
+    if (orders.size < 2) continue;
+    const list = [...orders.values()].sort((a, b) => a.orderedAt.localeCompare(b.orderedAt));
+    for (const o of list) out.set(o.orderId, list);
+  }
+  return out;
 }
 
 // Walking order: the binning table first, then shelves (A2 before A10),
@@ -881,16 +941,35 @@ export type OrderForSlip = {
   // Same rule as "Ready to pack" on /ship: every line the app can check is
   // picked (and there's at least one).
   fullyPicked: boolean;
+  // Has a line the app can check. An order that's all "find it yourself"
+  // can't be scanned complete, so it never holds up the orders it ships with.
+  checkable: boolean;
 };
 
-export async function orderForSlip(channel: PickChannel, orderId: string): Promise<OrderForSlip | null> {
-  const match = (lines: RawLine[]) => lines.filter((l) => l.channel === channel && l.orderId === orderId);
-  let lines = match((await getOpenLines()).lines);
-  if (lines.length === 0) lines = match((await getOpenLines(true)).lines);
-  if (lines.length === 0) return null;
+// The order plus any open orders it ships with (same buyer, same address),
+// oldest first. Just [order] when it ships alone; [] when it isn't open.
+export async function ordersShippingTogether(channel: PickChannel, orderId: string): Promise<OrderForSlip[]> {
+  const read = async (fresh: boolean) => {
+    const all = (await getOpenLines(fresh)).lines;
+    return { all, mine: all.filter((l) => l.channel === channel && l.orderId === orderId) };
+  };
+  let { all, mine } = await read(false);
+  if (mine.length === 0) ({ all, mine } = await read(true));
+  if (mine.length === 0) return [];
+  const group = mine[0].shipGroup;
+  if (!group) return [await buildOrderForSlip(mine)];
+  const inGroup = all.filter((l) => l.shipGroup === group);
+  const matched = await matchItems(inGroup);
+  const ids = (combineGroups(inGroup.filter((l) => !isVaLine(l, matched))).get(orderId) ?? []).map((o) => o.orderId);
+  if (ids.length < 2) return [await buildOrderForSlip(mine)];
+  return Promise.all(ids.map((id) => buildOrderForSlip(inGroup.filter((l) => l.orderId === id))));
+}
+
+async function buildOrderForSlip(lines: RawLine[]): Promise<OrderForSlip> {
+  const first = lines[0];
   const [items, picks] = await Promise.all([
     matchItems(lines),
-    prisma.orderPick.groupBy({ by: ["lineItemId"], where: { channel, orderId }, _count: { _all: true } }),
+    prisma.orderPick.groupBy({ by: ["lineItemId"], where: { channel: first.channel, orderId: first.orderId }, _count: { _all: true } }),
   ]);
   const checkable: { picked: number; quantity: number }[] = [];
   const out = lines.map((l) => {
@@ -899,10 +978,9 @@ export async function orderForSlip(channel: PickChannel, orderId: string): Promi
     if (item) checkable.push({ picked, quantity: l.quantity });
     return { title: item ? itemTitle(item) : l.title, quantity: l.quantity, picked, code: item?.sku ?? l.sku };
   });
-  const first = lines[0];
   return {
-    channel,
-    orderId,
+    channel: first.channel,
+    orderId: first.orderId,
     orderNumber: first.orderNumber,
     source: first.source,
     buyer: first.buyer,
@@ -910,6 +988,7 @@ export async function orderForSlip(channel: PickChannel, orderId: string): Promi
     handoff: first.handoff,
     lines: out,
     fullyPicked: checkable.length > 0 && checkable.every((l) => l.picked >= l.quantity),
+    checkable: checkable.length > 0,
   };
 }
 

@@ -5,7 +5,7 @@ import { shopifyGraphql } from "../shopify";
 import { deliveryForOrder, getShipFrom, markLabelPrinted } from "../delivery/deliveries";
 import { deliveryLabelsDocument } from "../delivery/label";
 import { prisma } from "../prisma";
-import { orderForSlip, type OrderForSlip, type PickChannel } from "./picking";
+import { ordersShippingTogether, type OrderForSlip, type PickChannel } from "./picking";
 import { STATION_ONLINE_MS } from "./settings";
 import type { PageJobKind, PageJobPayload } from "./types";
 
@@ -15,12 +15,17 @@ import type { PageJobKind, PageJobPayload } from "./types";
 // sales don't get one. A local delivery order also gets its delivery label
 // in the same go. Shipping labels themselves are still bought in eBay and
 // Shopify. Server only.
+//
+// Ship-together orders (Cristian, 2026-10-21): when one eBay buyer has
+// several open orders to one address, they go in one box, so they get one
+// slip, printed once the last of them is fully picked. It lists every order
+// with its own barcode; scanning any of them prints the combined label.
 
 function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 }
 
-function barcode(code: string): string {
+function barcode(code: string, height = 0.5): string {
   const bits = code128Bits(code);
   if (!bits) return "";
   let rects = "";
@@ -35,7 +40,7 @@ function barcode(code: string): string {
     i = j;
   }
   const width = Math.min(3.4, bits.length * 0.02);
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${bits.length} 1" preserveAspectRatio="none" shape-rendering="crispEdges" style="display:block;margin:0 auto;width:${width}in;height:0.5in">${rects}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${bits.length} 1" preserveAspectRatio="none" shape-rendering="crispEdges" style="display:block;margin:0 auto;width:${width}in;height:${height}in">${rects}</svg>`;
 }
 
 const HANDOFF_BANNER: Record<string, string | null> = {
@@ -98,15 +103,34 @@ export async function shipToForSlip(order: OrderForSlip): Promise<ShipTo | null>
   }
 }
 
-export function packingSlipHtml(order: OrderForSlip, by: string | null, shipTo: ShipTo | null = null): string {
-  const banner = HANDOFF_BANNER[order.handoff];
-  const units = order.lines.reduce((sum, l) => sum + l.quantity, 0);
-  const rows = order.lines
+function itemRows(order: OrderForSlip): string {
+  return order.lines
     .map(
       (l) => `<tr><td class="box"></td><td class="qty">${l.quantity}</td><td>${esc(l.title)}${l.code ? `<div class="sku">${esc(l.code)}</div>` : ""}</td></tr>`
     )
     .join("");
-  const number = order.orderNumber.replace(/^#/, "");
+}
+
+const unitCount = (orders: OrderForSlip[]) => orders.reduce((sum, o) => sum + o.lines.reduce((n, l) => n + l.quantity, 0), 0);
+
+// orders: one order, or a ship-together group (oldest first). printedBefore:
+// orders in the group whose own slip already printed (it was picked and
+// slipped before the newer order came in), so their box is already made up.
+export function packingSlipHtml(orders: OrderForSlip[], by: string | null, shipTo: ShipTo | null = null, printedBefore: Set<string> = new Set()): string {
+  const order = orders[0];
+  const combined = orders.length > 1;
+  const banner = HANDOFF_BANNER[order.handoff];
+  const units = unitCount(orders);
+  const table = (o: OrderForSlip) => `<table><thead><tr><th></th><th>QTY</th><th>ITEM</th></tr></thead><tbody>${itemRows(o)}</tbody></table>`;
+  const body = combined
+    ? orders
+        .map(
+          (o) => `<div class="part"><p class="partno">${esc(o.orderNumber)}</p>${
+            printedBefore.has(o.orderId) ? `<p class="earlier">Slip printed earlier: find that box and add it in</p>` : ""
+          }${barcode(o.orderNumber.replace(/^#/, ""), 0.38)}${table(o)}</div>`
+        )
+        .join("")
+    : `${barcode(order.orderNumber.replace(/^#/, ""))}${table(order)}`;
   return `<!doctype html><html><head><meta charset="utf-8"><style>
 @page { size: 4in 6in; margin: 0; }
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -122,6 +146,9 @@ h1 { font-size: 13pt; letter-spacing: 1px; }
 .shipto .label { font-size: 7pt; letter-spacing: 1px; font-weight: 700; }
 .shipto .name { font-size: 12pt; font-weight: 900; }
 .banner { background: #000; color: #fff; font-weight: 900; font-size: 11pt; padding: 0.05in 0.08in; text-align: center; }
+.part { border-top: 2px solid #000; padding-top: 0.04in; display: flex; flex-direction: column; gap: 0.04in; }
+.partno { font-size: 13pt; font-weight: 900; word-break: break-all; }
+.earlier { font-size: 8.5pt; font-weight: 700; }
 table { width: 100%; border-collapse: collapse; font-size: 9.5pt; }
 th { text-align: left; font-size: 7pt; letter-spacing: 1px; border-bottom: 1px solid #000; padding-bottom: 0.02in; }
 td { padding: 0.05in 0.04in 0.05in 0; vertical-align: top; border-bottom: 1px solid #bbb; line-height: 1.2; }
@@ -131,16 +158,16 @@ td.qty { width: 0.32in; font-weight: 900; font-size: 12pt; }
 footer { margin-top: auto; font-size: 7.5pt; text-align: center; border-top: 1px solid #000; padding-top: 0.04in; }
 </style></head><body><section class="slip">
   <header><h1>PACKING SLIP</h1><span class="source">${esc(order.source.toUpperCase())}</span></header>
-  <p class="order">${esc(order.orderNumber)}</p>
-  <p class="meta">${order.buyer && !shipTo ? `${esc(order.buyer)} · ` : ""}Ordered ${CHICAGO_DAY.format(new Date(order.orderedAt))} · ${units} item${units === 1 ? "" : "s"}</p>
+  ${combined ? `<p class="order">${orders.length} ORDERS, ONE BOX</p>` : `<p class="order">${esc(order.orderNumber)}</p>`}
+  <p class="meta">${order.buyer && !shipTo ? `${esc(order.buyer)} · ` : ""}${combined ? "Same buyer, same address" : `Ordered ${CHICAGO_DAY.format(new Date(order.orderedAt))}`} · ${units} item${units === 1 ? "" : "s"}</p>
   ${
     shipTo
       ? `${SHIP_TO_START}<div class="shipto"><p class="label">SHIP TO</p>${shipTo.name ? `<p class="name">${esc(shipTo.name)}</p>` : ""}${shipTo.lines.map((l) => `<p>${esc(l)}</p>`).join("")}</div>${SHIP_TO_END}`
       : ""
   }
+  ${combined ? `<p class="banner">COMBINE: one box, one label</p>` : ""}
   ${banner ? `<p class="banner">${esc(banner)}</p>` : ""}
-  ${barcode(number)}
-  <table><thead><tr><th></th><th>QTY</th><th>ITEM</th></tr></thead><tbody>${rows}</tbody></table>
+  ${body}
   <footer>Picked${by ? ` by ${esc(by)}` : ""} · ${CHICAGO_DAY.format(new Date())}${order.handoff === "delivery" ? " · Keep this slip inside the bag" : ""}</footer>
 </section></body></html>`;
 }
@@ -163,12 +190,28 @@ export type SlipResult =
   // no_station: fully picked, but there's no packing station to send it to
   // (the handheld doesn't pop a print dialog mid-pick; the Packing slip
   // button on Ready to pack prints it).
-  | { status: "already" | "not_ready" | "not_found" | "counter" | "no_station" };
+  | { status: "already" | "not_ready" | "not_found" | "counter" | "no_station" }
+  // This order is fully picked, but it ships with other orders that
+  // aren't yet: hold it. The one slip prints when the last one is.
+  | { status: "hold_for_combine"; waitingOn: string[] };
 
-async function slipPayload(order: OrderForSlip, by: string | null): Promise<PageJobPayload> {
+async function slipPayload(orders: OrderForSlip[], by: string | null): Promise<PageJobPayload> {
+  const order = orders[0];
+  const printedBefore = new Set<string>();
+  if (orders.length > 1) {
+    const rows = await prisma.packingSlip.findMany({
+      where: { channel: order.channel, orderId: { in: orders.map((o) => o.orderId) } },
+      select: { orderId: true, createdAt: true },
+    });
+    // Printed on its own, before this group's slip. A group slip writes a
+    // row for every order in it at the same moment, so on a reprint those
+    // match and only an order slipped earlier stands out.
+    const latest = rows.length < orders.length ? Date.now() : Math.max(...rows.map((r) => r.createdAt.getTime()));
+    for (const r of rows) if (latest - r.createdAt.getTime() > 60_000) printedBefore.add(r.orderId);
+  }
   return {
-    code: `Slip ${order.orderNumber}`,
-    html: packingSlipHtml(order, by, await shipToForSlip(order)),
+    code: orders.length > 1 ? `Slip ${order.orderNumber} +${orders.length - 1}` : `Slip ${order.orderNumber}`,
+    html: packingSlipHtml(orders, by, await shipToForSlip(order), printedBefore),
     order: { channel: order.channel, orderId: order.orderId },
   };
 }
@@ -177,30 +220,36 @@ async function slipPayload(order: OrderForSlip, by: string | null): Promise<Page
 // the address (stripped once it printed) is back on it. null = the order
 // isn't open anymore (already shipped); reprint the saved copy instead.
 export async function rebuildSlipPayload(channel: PickChannel, orderId: string, by: string | null): Promise<PageJobPayload | null> {
-  const order = await orderForSlip(channel, orderId).catch(() => null);
-  return order ? slipPayload(order, by) : null;
+  const orders = await ordersShippingTogether(channel, orderId).catch(() => []);
+  return orders.length > 0 ? slipPayload(orders, by) : null;
 }
 
 async function queuePage(tx: Prisma.TransactionClient | typeof prisma, stationId: string, kind: PageJobKind, payload: PageJobPayload, by: string | null) {
   await tx.printJob.create({ data: { stationId, kind, payload: payload as Prisma.InputJsonValue, copies: 1, createdBy: by } });
 }
 
-// After a pick: prints the slip the first time the order is fully picked.
-// force (the Reprint button): prints it again, picked or not.
+// After a pick: prints the slip the first time the order is fully picked
+// (for ship-together orders, once all of them are). force (the Reprint
+// button): prints it again, picked or not, with the whole group on it.
 export async function printPackingSlip(input: { channel: PickChannel; orderId: string; by: string | null; force: boolean }): Promise<SlipResult> {
   if (!input.force) {
     const done = await prisma.packingSlip.findUnique({ where: { channel_orderId: { channel: input.channel, orderId: input.orderId } } });
     if (done) return { status: "already" };
   }
-  const order = await orderForSlip(input.channel, input.orderId);
+  const orders = await ordersShippingTogether(input.channel, input.orderId);
+  const order = orders.find((o) => o.orderId === input.orderId);
   if (!order) return { status: "not_found" };
   if (order.handoff === "counter") return { status: "counter" };
   if (!input.force && !order.fullyPicked) return { status: "not_ready" };
+  if (!input.force) {
+    const waitingOn = orders.filter((o) => o.checkable && !o.fullyPicked).map((o) => o.orderNumber);
+    if (waitingOn.length > 0) return { status: "hold_for_combine", waitingOn };
+  }
 
   // Cheap check first: no station and not a reprint means nothing to do.
   if (!input.force && !(await packingStation())) return { status: "no_station" };
   const pages: { kind: PageJobKind; payload: PageJobPayload }[] = [
-    { kind: "packing_slip", payload: await slipPayload(order, input.by) },
+    { kind: "packing_slip", payload: await slipPayload(orders, input.by) },
   ];
   let delivery: boolean | null = null;
   let deliveryId: string | null = null;
@@ -215,11 +264,13 @@ export async function printPackingSlip(input: { channel: PickChannel; orderId: s
 
   const station = await packingStation();
   if (!station && !input.force) return { status: "no_station" };
-  await prisma.packingSlip.upsert({
-    where: { channel_orderId: { channel: order.channel, orderId: order.orderId } },
-    create: { channel: order.channel, orderId: order.orderId, orderNumber: order.orderNumber, printedBy: input.by },
-    update: { printedBy: input.by },
-  });
+  for (const o of orders) {
+    await prisma.packingSlip.upsert({
+      where: { channel_orderId: { channel: o.channel, orderId: o.orderId } },
+      create: { channel: o.channel, orderId: o.orderId, orderNumber: o.orderNumber, printedBy: input.by },
+      update: { printedBy: input.by },
+    });
+  }
   if (deliveryId) await markLabelPrinted([deliveryId]);
   if (!station) return { status: "print_here", pages: pages.map((p) => p.payload.html) };
   await prisma.$transaction(async (tx) => {
