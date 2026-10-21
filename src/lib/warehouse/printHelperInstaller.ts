@@ -61,7 +61,7 @@ try {
   Write-Host "Python: $python"
 
   Write-Host 'Installing the printing libraries...'
-  & $python -m pip install --user --upgrade --disable-pip-version-check --quiet pymupdf pywin32 pillow
+  & $python -m pip install --user --disable-pip-version-check --no-warn-script-location --quiet pymupdf pywin32 pillow
   if ($LASTEXITCODE -ne 0) { throw 'Installing the libraries (pip) failed.' }
 
   Write-Host 'Downloading the helper...'
