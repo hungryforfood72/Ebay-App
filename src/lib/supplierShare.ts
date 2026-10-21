@@ -9,6 +9,11 @@ import { upcMatchKeys } from "./upcMatch";
 // the only thing the link opens. Live numbers, only for what was taken:
 // products picked as TAKE at his place or scanned into this manifest. No
 // Analyzer estimates and nothing about what was left behind.
+//
+// Once the delivered load has been through the sort station (2026-10-21),
+// that count is what was taken: the pick scans at his place are ignored
+// (the delivery may not match them) and units set aside to go back to him
+// never show.
 // ---------------------------------------------------------------------------
 
 export type SupplierProductStatus = "picked_up" | "being_listed" | "listed" | "sold_out" | "removed";
@@ -77,6 +82,7 @@ export async function getSupplierReport(token: string): Promise<SupplierReport |
       },
       walkupSales: { select: { upc: true, quantity: true } },
       pickScans: { where: { decision: "take" }, select: { code: true } },
+      sortBoxEntries: { select: { upc: true, quantity: true } },
     },
   });
   if (!manifest) return null;
@@ -126,7 +132,16 @@ export async function getSupplierReport(token: string): Promise<SupplierReport |
     return products.get(key)!;
   };
 
-  for (const scan of manifest.pickScans) productFor(scan.code, scan.code).picked = true;
+  const sortedIn = new Map<Product, number>();
+  if (manifest.sortBoxEntries.length > 0) {
+    for (const e of manifest.sortBoxEntries) {
+      const p = productFor(e.upc, `UPC ${e.upc}`);
+      p.picked = true;
+      sortedIn.set(p, (sortedIn.get(p) ?? 0) + e.quantity);
+    }
+  } else {
+    for (const scan of manifest.pickScans) productFor(scan.code, scan.code).picked = true;
+  }
   for (const item of manifest.items) {
     const p = productFor(item.upc, item.finalTitle ?? item.aiTitle ?? "Item");
     p.picked = true;
@@ -146,6 +161,8 @@ export async function getSupplierReport(token: string): Promise<SupplierReport |
     p.soldUnits += w.quantity;
     p.statuses.push("sold");
   }
+  // Counted in at sorting: at least that many were taken, listed or not.
+  for (const [p, units] of sortedIn) p.takenUnits = Math.max(p.takenUnits ?? 0, units);
   for (const sale of ledger.sales) {
     const p = productFor(sale.upc, sale.title);
     p.profit += sale.profit;

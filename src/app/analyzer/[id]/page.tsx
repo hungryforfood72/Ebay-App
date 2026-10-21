@@ -242,7 +242,9 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
       !confirm(
         wonBid
           ? `Won "${candidate?.title}" at $${candidate?.bidAmount?.toFixed(2)}? It'll move to the Manifests list so you can start scanning it in.`
-          : `Mark "${candidate?.title}" as purchased? It'll move to the Manifests list so you can start scanning it in.`
+          : candidate?.consignment
+            ? `Mark "${candidate?.title}" as taken? It'll move to the Manifests list, and your team can count the delivery in at Sort: anything the pick list said to leave gets set aside for the supplier.`
+            : `Mark "${candidate?.title}" as purchased? It'll move to the Manifests list so you can start scanning it in.`
       )
     ) {
       return;

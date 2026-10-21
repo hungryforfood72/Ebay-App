@@ -1,6 +1,7 @@
 import { requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { WarehouseError } from "@/lib/warehouse/bins";
+import { callFor, consignmentCalls, returnedByUpc, returnedUnitsFor } from "@/lib/warehouse/consignmentSort";
 import { errorResponse } from "@/lib/warehouse/stations";
 import {
   DUD_ESTIMATE_SELECT,
@@ -32,6 +33,12 @@ import { NextRequest, NextResponse } from "next/server";
 // are the listing-side reconciliation numbers (manifest page), kept for
 // reference. line is null when the scan isn't on the manifest (dud is then
 // false: there's no Analyzer call for something that wasn't on the load).
+//
+// Consignment loads (consignment: true) swap the dud call for the pick
+// list's take/leave (consignmentCall, see consignmentSort.ts): dud is
+// always false, expected only counts products to take (0 for leave), and
+// line.returned is what's been set aside for the supplier. A scan not on
+// the manifest goes back to the supplier too.
 export async function GET(request: NextRequest) {
   try {
     requireUser(request);
@@ -48,6 +55,7 @@ export async function GET(request: NextRequest) {
               title: true,
               sortedAt: true,
               sortedBy: true,
+              consignment: true,
               lines: {
                 select: { upc: true, description: true, expectedQuantity: true },
                 orderBy: { sortOrder: "asc" },
@@ -62,9 +70,15 @@ export async function GET(request: NextRequest) {
     const base = {
       manifest: { id: manifest.id, title: manifest.title, sortedAt: manifest.sortedAt, sortedBy: manifest.sortedBy },
       evaluated: evaluationId != null,
+      consignment: manifest.consignment,
     };
-    const none = { line: null, extraSorted: 0, dud: false, dudReason: null };
-    if (!scanned) return NextResponse.json({ ...base, ...none });
+    const none = { line: null, extraSorted: 0, dud: false, dudReason: null, consignmentCall: null };
+    if (!scanned) {
+      // Opening a consignment load builds its take/leave list now, so the
+      // first scan doesn't wait on it.
+      if (manifest.consignment) await consignmentCalls(manifest.id);
+      return NextResponse.json({ ...base, ...none });
+    }
 
     const upc = matchLineUpc(
       manifest.lines.map((l) => l.upc),
@@ -80,15 +94,20 @@ export async function GET(request: NextRequest) {
 
     // A UPC can be split across lines (pallets); the product is all of them.
     const lines = manifest.lines.filter((l) => l.upc === upc);
-    const expected = lines.reduce((sum, l) => sum + l.expectedQuantity, 0);
-    const [counts, estimate] = await Promise.all([
+    const [counts, estimate, calls, returned] = await Promise.all([
       productCounts(manifest.id, upc),
-      evaluationId
+      evaluationId && !manifest.consignment
         ? prisma.sourcingLineEstimate.findFirst({ where: { evaluationId, upc }, select: DUD_ESTIMATE_SELECT })
         : null,
+      manifest.consignment ? consignmentCalls(manifest.id) : null,
+      manifest.consignment ? returnedByUpc(manifest.id) : null,
     ]);
+    const consignmentCall = manifest.consignment ? callFor(calls, upc) : null;
+    const expected = consignmentCall?.decision === "leave" ? 0 : lines.reduce((sum, l) => sum + l.expectedQuantity, 0);
     const counted = counts.sorted + counts.damaged + counts.dudLogged;
-    const call = dudCall({ description: lines[0].description, evaluated: evaluationId != null, estimate });
+    const call = manifest.consignment
+      ? { dud: false, reason: null }
+      : dudCall({ description: lines[0].description, evaluated: evaluationId != null, estimate });
     return NextResponse.json({
       ...base,
       line: {
@@ -96,12 +115,14 @@ export async function GET(request: NextRequest) {
         description: lines[0].description,
         expected,
         ...counts,
+        returned: returned ? returnedUnitsFor(returned, upc) : 0,
         leftToSort: Math.max(0, expected - counted),
         over: Math.max(0, counted - expected),
       },
       extraSorted: 0,
       dud: call.dud,
       dudReason: call.reason,
+      consignmentCall,
     });
   } catch (e) {
     return errorResponse(e);

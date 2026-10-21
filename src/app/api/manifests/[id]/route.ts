@@ -8,6 +8,7 @@ import { landedCostWeights } from "@/lib/cogs";
 import { buildConsignmentPickList, DEFAULT_CONSIGNMENT_SUPPLIER_PCT } from "@/lib/consignment";
 import { returnedUnitsByUpc } from "@/lib/warehouse/returnReconcile";
 import { sortedByUpc } from "@/lib/warehouse/sortBoxes";
+import { callFor, consignmentCalls, returnedByUpc, returnList } from "@/lib/warehouse/consignmentSort";
 import { matchLineUpc } from "@/lib/warehouse/sortCheck";
 
 // Fills each line's expected quantity in order before spilling into the
@@ -265,7 +266,20 @@ export async function GET(
   // damaged/expired as logged, and dud = every unit put in a dud box, even
   // ones listed from it since (they were still counted at sorting).
   const sorted = await sortedByUpc(id);
+  // Consignment loads (sorting what the supplier delivered): only products
+  // the pick list said to take are expected; set-aside units going back to
+  // the supplier are counted on their own (consignmentSort.ts).
+  const [consignmentCallMap, returnedStored, consignmentReturns] = manifest.consignment
+    ? await Promise.all([consignmentCalls(id), returnedByUpc(id), returnList(id)])
+    : [null, new Map<string, number>(), []];
+  const leaveLine = (upc: string | null) => manifest.consignment && upc != null && callFor(consignmentCallMap, upc).decision === "leave";
+  const sortExpected = (line: { upc: string | null; expectedQuantity: number }) => (leaveLine(line.upc) ? 0 : line.expectedQuantity);
   const lineUpcList = manifest.lines.map((l) => l.upc);
+  const returnedByLineUpc = new Map<string, number>();
+  for (const [stored, units] of returnedStored) {
+    const match = matchLineUpc(lineUpcList, stored);
+    if (match) returnedByLineUpc.set(match, (returnedByLineUpc.get(match) ?? 0) + units);
+  }
   const sortedByLineUpc = new Map<string, number>();
   const sortExtras: { upc: string; units: number }[] = [];
   for (const [stored, s] of sorted) {
@@ -277,8 +291,9 @@ export async function GET(
   for (const d of manifest.duds) dudLoggedByUpc.set(d.upc, (dudLoggedByUpc.get(d.upc) ?? 0) + d.quantity);
   const sortGoodAllocation = new Array(manifest.lines.length).fill(0);
   const sortCountedAllocation = new Array(manifest.lines.length).fill(0);
+  const sortReturnedAllocation = new Array(manifest.lines.length).fill(0);
   for (const [upc, indexes] of lineIndexesByUpc) {
-    const expectedQuantities = indexes.map((i) => manifest.lines[i].expectedQuantity);
+    const expectedQuantities = indexes.map((i) => sortExpected(manifest.lines[i]));
     const zeros = expectedQuantities.map(() => 0);
     const good = allocateSequentially(expectedQuantities, sortedByLineUpc.get(upc) ?? 0, zeros);
     const damaged = allocateSequentially(expectedQuantities, damagedByUpc.get(upc) ?? 0, good);
@@ -287,9 +302,17 @@ export async function GET(
       dudLoggedByUpc.get(upc) ?? 0,
       good.map((g, i) => g + damaged[i])
     );
+    // A taken product set aside anyway still came in, so it counts toward
+    // the line; a leave product's set-aside units are its own status.
+    const returned = allocateSequentially(
+      expectedQuantities,
+      returnedByLineUpc.get(upc) ?? 0,
+      good.map((g, i) => g + damaged[i] + dud[i])
+    );
     indexes.forEach((lineIdx, j) => {
       sortGoodAllocation[lineIdx] = good[j];
-      sortCountedAllocation[lineIdx] = good[j] + damaged[j] + dud[j];
+      sortReturnedAllocation[lineIdx] = returned[j];
+      sortCountedAllocation[lineIdx] = good[j] + damaged[j] + dud[j] + (leaveLine(upc) ? 0 : returned[j]);
     });
   }
 
@@ -361,16 +384,26 @@ export async function GET(
     // the physical count. Lines with no UPC can't be scanned (null).
     const sortedGood = sortGoodAllocation[index];
     const sortCounted = sortCountedAllocation[index];
-    const sortDiff = sortCounted - line.expectedQuantity;
-    const sortStatus: { kind: "not_sorted" | "matches" | "short" | "over"; units: number } | null = !line.upc
+    const sortDiff = sortCounted - sortExpected(line);
+    const sortReturned = sortReturnedAllocation[index];
+    // Consignment leave lines: "left" (stayed at the supplier's), "going
+    // back" (came anyway, set aside), or over (kept anyway).
+    const sortStatus: {
+      kind: "not_sorted" | "matches" | "short" | "over" | "left" | "going_back";
+      units: number;
+    } | null = !line.upc
       ? null
-      : !manifest.sortedAt && sortCounted === 0
-        ? { kind: "not_sorted", units: 0 }
-        : sortDiff === 0
-          ? { kind: "matches", units: 0 }
-          : sortDiff < 0
-            ? { kind: "short", units: -sortDiff }
-            : { kind: "over", units: sortDiff };
+      : leaveLine(line.upc) && sortCounted === 0
+        ? sortReturned > 0
+          ? { kind: "going_back", units: sortReturned }
+          : { kind: "left", units: 0 }
+        : !manifest.sortedAt && sortCounted === 0
+          ? { kind: "not_sorted", units: 0 }
+          : sortDiff === 0
+            ? { kind: "matches", units: 0 }
+            : sortDiff < 0
+              ? { kind: "short", units: -sortDiff }
+              : { kind: "over", units: sortDiff };
     const shortUnits = sortStatus?.kind === "short" ? sortStatus.units : 0;
     // Owner only (stripped below): what the short units cost (their share
     // of the landed cost per expected unit) and their retail value.
@@ -415,14 +448,17 @@ export async function GET(
   const sorting = {
     sortedAt: manifest.sortedAt,
     sortedBy: manifest.sortedBy,
-    expectedUnits: manifest.lines.reduce((sum, l) => sum + l.expectedQuantity, 0),
+    expectedUnits: manifest.lines.reduce((sum, l) => sum + sortExpected(l), 0),
     sortedGood: lines.reduce((sum, l) => sum + l.sortedGood, 0),
+    consignment: manifest.consignment,
+    returned: consignmentReturns.reduce((sum, r) => sum + r.units, 0),
+    returns: consignmentReturns,
     damaged: [...damagedByUpc.values()].reduce((sum, n) => sum + n, 0),
     dud: [...dudLoggedByUpc.values()].reduce((sum, n) => sum + n, 0),
     short: lines.reduce((sum, l) => sum + (l.sortStatus?.kind === "short" ? l.sortStatus.units : 0), 0),
     over: lines.reduce((sum, l) => sum + (l.sortStatus?.kind === "over" ? l.sortStatus.units : 0), 0),
     extras: sortExtras.reduce((sum, e) => sum + e.units, 0),
-    started: sorted.size > 0,
+    started: sorted.size > 0 || returnedStored.size > 0,
   };
   const sortingMoney = {
     shortCost: lines.reduce((sum, l) => sum + (l.shortCost ?? 0), 0),

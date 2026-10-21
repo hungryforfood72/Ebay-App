@@ -642,6 +642,7 @@ model Manifest {
   predictionOutcomes  PredictionOutcome[]
   consignmentPayments ConsignmentPayment[]
   pickScans           ConsignmentPickScan[]
+  consignmentReturns  ConsignmentReturnEntry[]
   walkupSales         ManifestWalkupSale[]
 }
 
@@ -1346,6 +1347,25 @@ model ConsignmentPickScan {
   scannedAt  DateTime @default(now())
 
   @@index([manifestId, scannedAt])
+}
+
+// Consignment loads (Cristian, 2026-10-21): units that showed up at the
+// sort station that the pick list said to leave at the supplier's, or that
+// weren't on the manifest at all. Set aside to go back to the supplier
+// instead of into a sort box. upc = the manifest line's UPC when it
+// matched, else what was scanned. reason: "leave" | "not_on_manifest".
+model ConsignmentReturnEntry {
+  id          String   @id @default(uuid())
+  manifest    Manifest @relation(fields: [manifestId], references: [id], onDelete: Cascade)
+  manifestId  String
+  upc         String
+  description String
+  quantity    Int
+  reason      String
+  recordedBy  String?
+  createdAt   DateTime @default(now())
+
+  @@index([manifestId, upc])
 }
 
 // ---------------------------------------------------------------------------

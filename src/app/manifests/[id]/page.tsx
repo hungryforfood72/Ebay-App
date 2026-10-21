@@ -364,10 +364,14 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
         )}
 
         {manifest.consignment && (
-          <div>
+          <div className="flex flex-wrap gap-2">
             <Link href={`/pick/${manifest.id}`} className={buttonClasses({ variant: "outline", size: "sm" })}>
               <ScanBarcode className="size-4" aria-hidden />
               Pick mode: scan for take / leave
+            </Link>
+            <Link href="/sort" className={buttonClasses({ variant: "outline", size: "sm" })}>
+              <ScanBarcode className="size-4" aria-hidden />
+              Sort: count the delivery in
             </Link>
           </div>
         )}

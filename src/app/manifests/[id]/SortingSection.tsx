@@ -12,8 +12,14 @@ import { useState } from "react";
 // found against the manifest: short, over, and extras that weren't on it.
 // Money (the short units' cost/retail) only for the owner; the API leaves
 // it out for employees.
+//
+// Consignment loads: expected is only what the pick list said to take, and
+// what came anyway but goes back to the supplier is listed on its own.
 
-export type SortStatus = { kind: "not_sorted" | "matches" | "short" | "over"; units: number } | null;
+export type SortStatus = {
+  kind: "not_sorted" | "matches" | "short" | "over" | "left" | "going_back";
+  units: number;
+} | null;
 
 export type SortingSummary = {
   sortedAt: string | null;
@@ -26,6 +32,10 @@ export type SortingSummary = {
   over: number;
   extras: number;
   started: boolean;
+  consignment?: boolean;
+  // Consignment: set aside to go back to the supplier.
+  returned?: number;
+  returns?: { upc: string; description: string; units: number; notOnManifest: boolean }[];
   shortCost?: number;
   shortRetail?: number;
 };
@@ -44,11 +54,15 @@ const STATUS_TONE: Record<NonNullable<SortStatus>["kind"], BadgeTone> = {
   matches: "success",
   short: "danger",
   over: "warning",
+  left: "neutral",
+  going_back: "warning",
 };
 
 export function sortStatusText(status: NonNullable<SortStatus>): string {
   if (status.kind === "not_sorted") return "Not sorted yet";
   if (status.kind === "matches") return "Matches";
+  if (status.kind === "left") return "Left at supplier";
+  if (status.kind === "going_back") return `Going back ${status.units}`;
   return status.kind === "short" ? `Short ${status.units}` : `Over ${status.units}`;
 }
 
@@ -86,7 +100,11 @@ export function SortingSection({
         <Stat label="Expected units" value={sorting.expectedUnits} />
         <Stat label="Sorted good" value={sorting.sortedGood} />
         <Stat label="Damaged/expired" value={sorting.damaged} />
-        <Stat label="Dud" value={sorting.dud} />
+        {sorting.consignment ? (
+          <Stat label="Back to supplier" value={sorting.returned ?? 0} highlight={(sorting.returned ?? 0) > 0} />
+        ) : (
+          <Stat label="Dud" value={sorting.dud} />
+        )}
         <Stat label="Short" value={sorting.short} highlight={sorting.short > 0} />
         <Stat label="Over" value={sorting.over} highlight={sorting.over > 0} />
         <Stat label="Extras" value={sorting.extras} highlight={sorting.extras > 0} />
@@ -127,6 +145,21 @@ export function SortingSection({
               </li>
             ))}
           </ul>
+        )}
+        {sorting.returns && sorting.returns.length > 0 && (
+          <div className="border-t border-border px-4 py-3">
+            <p className="mb-1 text-sm font-medium text-foreground">
+              Going back to the supplier ({sorting.returned ?? 0} {sorting.returned === 1 ? "unit" : "units"})
+            </p>
+            <ul className="text-sm text-muted-foreground">
+              {sorting.returns.map((r) => (
+                <li key={r.upc} className="tabular-nums">
+                  {r.units} × {r.description}
+                  {r.notOnManifest ? " (not on the manifest)" : ""}
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
         {extras.length > 0 && (
           <div className="border-t border-border px-4 py-3">
