@@ -1512,6 +1512,11 @@ model Station {
   // local delivery labels print here (src/lib/warehouse/packingSlip.ts).
   // One station at a time.
   packingSlips Boolean   @default(false)
+  // Not a PC with a browser: the slip printer helper
+  // (tools/slip-printer) driving a Wi-Fi Rollo. Packing slips (and the
+  // delivery label that goes with one) print here while it's online;
+  // shipping labels and item labels never do. Hidden from station pickers.
+  slipPrinter  Boolean   @default(false)
   createdAt    DateTime  @default(now())
 
   printJobs PrintJob[]

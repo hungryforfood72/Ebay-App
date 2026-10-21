@@ -45,3 +45,9 @@ next-env.d.ts
 
 # pdf.js worker, copied from node_modules on install
 /public/pdf.worker.min.mjs
+
+# Slip printer helper (tools/slip-printer): password + local state stay on the PC
+/tools/slip-printer/config.json
+/tools/slip-printer/*.log*
+/tools/slip-printer/.chrome-profile/
+/tools/slip-printer/__pycache__/

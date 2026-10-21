@@ -173,12 +173,27 @@ footer { margin-top: auto; font-size: 7.5pt; text-align: center; border-top: 1px
 }
 
 // The station marked for packing slips, if its page is open right now (or
-// was recently: a job queued while it reloads still prints).
+// was recently: a job queued while it reloads still prints). Shipping
+// labels go here too.
 export async function packingStation() {
-  const station = await prisma.station.findFirst({ where: { packingSlips: true }, orderBy: { lastSeenAt: "desc" } });
+  const station = await prisma.station.findFirst({
+    where: { packingSlips: true, slipPrinter: false },
+    orderBy: { lastSeenAt: "desc" },
+  });
   if (!station) return null;
   const online = station.lastSeenAt != null && Date.now() - station.lastSeenAt.getTime() <= STATION_ONLINE_MS;
   return { id: station.id, name: station.name, online };
+}
+
+// Where a packing slip goes (Cristian, 2026-10-21): the Wi-Fi Rollo run by
+// the slip printer helper when it's online, otherwise the packing station
+// as before, so slips still print if the helper's PC is off.
+export async function slipStation() {
+  const printer = await prisma.station.findFirst({ where: { slipPrinter: true }, orderBy: { lastSeenAt: "desc" } });
+  if (printer?.lastSeenAt && Date.now() - printer.lastSeenAt.getTime() <= STATION_ONLINE_MS) {
+    return { id: printer.id, name: printer.name, online: true };
+  }
+  return packingStation();
 }
 
 export type SlipResult =
@@ -247,7 +262,7 @@ export async function printPackingSlip(input: { channel: PickChannel; orderId: s
   }
 
   // Cheap check first: no station and not a reprint means nothing to do.
-  if (!input.force && !(await packingStation())) return { status: "no_station" };
+  if (!input.force && !(await slipStation())) return { status: "no_station" };
   const pages: { kind: PageJobKind; payload: PageJobPayload }[] = [
     { kind: "packing_slip", payload: await slipPayload(orders, input.by) },
   ];
@@ -262,7 +277,7 @@ export async function printPackingSlip(input: { channel: PickChannel; orderId: s
     }
   }
 
-  const station = await packingStation();
+  const station = await slipStation();
   if (!station && !input.force) return { status: "no_station" };
   for (const o of orders) {
     await prisma.packingSlip.upsert({

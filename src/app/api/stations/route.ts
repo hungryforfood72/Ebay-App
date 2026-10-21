@@ -10,7 +10,8 @@ import { NextRequest, NextResponse } from "next/server";
 export async function GET(request: NextRequest) {
   try {
     requireUser(request);
-    const rows = await prisma.station.findMany({ select: STATION_STATUS_SELECT });
+    // The slip printer helper isn't somewhere to send labels.
+    const rows = await prisma.station.findMany({ where: { slipPrinter: false }, select: STATION_STATUS_SELECT });
     const now = Date.now();
     // Natural order so "Station 2" comes before "Station 10".
     return NextResponse.json(naturalSort(rows, (s) => s.name).map((s) => toStationStatus(s, now)));
