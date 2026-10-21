@@ -106,6 +106,9 @@ export type PickLine = {
   // so they're packed together and get one packing slip. Order numbers,
   // oldest first. Empty for most orders.
   combineWith: string[];
+  // The order's pick slip has printed (automatically, or from a button on
+  // Pick orders), so Shipping can scan it for the label.
+  slipPrinted: boolean;
 };
 
 export type ShipOrdersResponse = {
@@ -592,12 +595,19 @@ export async function getPickList(options?: { fresh?: boolean }): Promise<ShipOr
   const matched = await matchItems(raw);
   const matchedItems = [...new Map([...matched.values()].map((i) => [i.id, i])).values()];
   const locations = await getItemLocations(matchedItems);
-  const picks = raw.length
-    ? await prisma.orderPick.findMany({
-        where: { lineItemId: { in: raw.map((l) => l.lineItemId) } },
-        select: { channel: true, lineItemId: true, pickedBy: true },
-      })
-    : [];
+  const [picks, slips] = raw.length
+    ? await Promise.all([
+        prisma.orderPick.findMany({
+          where: { lineItemId: { in: raw.map((l) => l.lineItemId) } },
+          select: { channel: true, lineItemId: true, pickedBy: true },
+        }),
+        prisma.packingSlip.findMany({
+          where: { orderId: { in: [...new Set(raw.map((l) => l.orderId))] } },
+          select: { channel: true, orderId: true },
+        }),
+      ])
+    : [[], []];
+  const slipPrinted = new Set(slips.map((s) => `${s.channel}:${s.orderId}`));
 
   const combine = combineGroups(raw.filter((l) => !isVaLine(l, matched)));
 
@@ -643,6 +653,7 @@ export async function getPickList(options?: { fresh?: boolean }): Promise<ShipOr
       listing: { title: l.title, customLabel: l.sku, shelfHint: shelfFromSku(l.sku), image: l.image },
       orderUrl: orderUrl(l),
       combineWith: (combine.get(l.orderId) ?? []).filter((o) => o.orderId !== l.orderId).map((o) => o.orderNumber),
+      slipPrinted: slipPrinted.has(`${l.channel}:${l.orderId}`),
     };
   });
 

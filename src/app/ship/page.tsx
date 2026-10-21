@@ -184,6 +184,12 @@ export default function ShipPage() {
       });
       const json = (await res.json()) as SlipResult | { error: string };
       if (!res.ok || "error" in json) throw new Error("error" in json ? json.error : "Couldn't print the packing slip.");
+      if (json.status === "queued" || json.status === "print_here") {
+        const numbers = new Set([line.orderNumber, ...line.combineWith]);
+        setData((d) =>
+          d ? { ...d, lines: d.lines.map((l) => (l.channel === line.channel && numbers.has(l.orderNumber) ? { ...l, slipPrinted: true } : l)) } : d
+        );
+      }
       if (json.status === "print_here") {
         for (const page of json.pages) await printPage(page, { width: "4in", height: "6in" });
         setSlipMessage({ key: order.key, text: "Sent to this device's printer (no packing station is set up)." });
@@ -254,6 +260,26 @@ export default function ShipPage() {
   const doneLines = inApp.filter((l) => l.picked > 0);
   // A counter sale that isn't in the app has no bin count to clear.
   const findYourself = lines.filter((l) => l.status === "not_in_app" && l.handoff !== "counter");
+  // One card per order (Cristian, 2026-10-21): an order the app can't check
+  // by scanning (listed outside the app or before it) still needs a pick
+  // slip for Shipping to scan, so the picker prints it once it's all found.
+  // An order that also has items the app checks prints its slip by itself
+  // when those are picked.
+  const findYourselfOrders = useMemo(() => {
+    const map = new Map<string, { key: string; first: PickLine; lines: PickLine[]; hasCheckable: boolean }>();
+    for (const l of lines) {
+      if (l.status !== "not_in_app" || l.handoff === "counter") continue;
+      const key = `${l.channel}:${l.orderId}`;
+      if (!map.has(key)) {
+        // Its own items, or a ship-together order's: one slip covers them all.
+        const group = new Set([l.orderNumber, ...l.combineWith]);
+        const hasCheckable = lines.some((x) => x.channel === l.channel && group.has(x.orderNumber) && x.item != null && x.status !== "va");
+        map.set(key, { key, first: l, lines: [], hasCheckable });
+      }
+      map.get(key)!.lines.push(l);
+    }
+    return [...map.values()];
+  }, [lines]);
   const vaLines = lines.filter((l) => l.status === "va");
   const unitsLeft = openLines.reduce((n, l) => n + (l.quantity - l.picked), 0);
   const unitsDone = toPick.reduce((n, l) => n + Math.min(l.picked, l.quantity), 0);
@@ -677,47 +703,72 @@ export default function ShipPage() {
               </section>
             )}
 
-            {findYourself.length > 0 && (
+            {findYourselfOrders.length > 0 && (
               <section>
                 <SectionHeader
-                  title={`Find it yourself (${findYourself.length})`}
-                  description="Not in the app, so these can't be checked by scanning. Match the title."
+                  title={`Find it yourself (${findYourselfOrders.length} ${findYourselfOrders.length === 1 ? "order" : "orders"})`}
+                  description="Not in the app, so these can't be checked by scanning. Match the title, then print the pick slip for Shipping."
                 />
                 <ul className="flex flex-col gap-2">
-                  {findYourself.map((l) => (
-                    <li key={l.key}>
-                      <Card padded={false} className="flex gap-3 border-amber-200 p-3">
-                        <Thumb src={l.listing.image} />
-                        <div className="min-w-0 flex-1 text-sm">
-                          <p className="font-medium text-foreground">
-                            {l.quantity > 1 && <span className="font-bold">{l.quantity} × </span>}
-                            {l.listing.title}
+                  {findYourselfOrders.map((o) => {
+                    const first = o.first;
+                    const slipped = first.slipPrinted;
+                    return (
+                      <li key={o.key}>
+                        <Card padded={false} className={cn("p-3", slipped ? "border-green-300" : "border-amber-200")}>
+                          <p className="flex flex-wrap items-center gap-2 text-sm font-semibold text-foreground">
+                            {orderLabel(first)}
+                            {first.handoff === "pickup" && <Badge tone="primary">Pickup: hand to the customer</Badge>}
+                            {first.handoff === "delivery" && <Badge tone="primary">Local delivery: no label</Badge>}
+                            {first.combineWith.length > 0 && <Badge tone="primary">Ships with order {orderList(first.combineWith)}: one box</Badge>}
                           </p>
-                          <p className="mt-0.5 text-xs text-muted-foreground">
-                            {[l.listing.shelfHint ? `Shelf ${l.listing.shelfHint}` : null, l.listing.customLabel ? `Label ${l.listing.customLabel}` : null]
-                              .filter(Boolean)
-                              .join(" · ") || "No location on record"}
-                          </p>
-                          <p className="mt-0.5 text-xs text-muted-foreground">{orderLabel(l)}</p>
-                          {l.handoff === "pickup" && (
-                            <Badge tone="primary" className="mt-1.5">
-                              Pickup: hand to the customer
-                            </Badge>
+                          <ul className="mt-2 flex flex-col gap-2">
+                            {o.lines.map((l) => (
+                              <li key={l.key} className="flex gap-3">
+                                <Thumb src={l.listing.image} />
+                                <div className="min-w-0 flex-1 text-sm">
+                                  <p className="font-medium text-foreground">
+                                    {l.quantity > 1 && <span className="font-bold">{l.quantity} × </span>}
+                                    {l.listing.title}
+                                  </p>
+                                  <p className="mt-0.5 text-xs text-muted-foreground">
+                                    {[l.listing.shelfHint ? `Shelf ${l.listing.shelfHint}` : null, l.listing.customLabel ? `Label ${l.listing.customLabel}` : null]
+                                      .filter(Boolean)
+                                      .join(" · ") || "No location on record"}
+                                  </p>
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                          {o.hasCheckable ? (
+                            <p className="mt-2 text-xs text-muted-foreground">
+                              Its pick slip prints by itself once the other items{first.combineWith.length > 0 ? " in its box" : ""} are
+                              scanned (see Ready to pack).
+                            </p>
+                          ) : (
+                            <div className="mt-3">
+                              {slipped && (
+                                <p className="mb-2 flex items-center gap-1.5 text-sm font-medium text-success">
+                                  <PackageCheck className="size-4" aria-hidden />
+                                  Pick slip printed. Take it to Shipping with the box.
+                                </p>
+                              )}
+                              <Button
+                                variant={slipped ? "outline" : "success"}
+                                size={slipped ? "sm" : "lg"}
+                                block={!slipped}
+                                disabled={slipBusy === o.key}
+                                onClick={() => reprintSlip({ key: o.key, lines: o.lines })}
+                              >
+                                {slipBusy === o.key ? "Sending…" : slipped ? "Print pick slip again" : "Got it all, print pick slip"}
+                              </Button>
+                            </div>
                           )}
-                          {l.handoff === "delivery" && (
-                            <Badge tone="primary" className="mt-1.5">
-                              Local delivery: no label
-                            </Badge>
-                          )}
-                          {l.combineWith.length > 0 && (
-                            <Badge tone="primary" className="mt-1.5">
-                              Ships with order {orderList(l.combineWith)}: one box
-                            </Badge>
-                          )}
-                        </div>
-                      </Card>
-                    </li>
-                  ))}
+                          {slipMessage?.key === o.key && <p className="mt-2 text-xs text-foreground">{slipMessage.text}</p>}
+                        </Card>
+                      </li>
+                    );
+                  })}
                 </ul>
               </section>
             )}
