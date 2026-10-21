@@ -683,9 +683,16 @@ function SetupHelp({ stationId }: { stationId: string }) {
   // --autoplay-policy lets it beep when the scale turns off without anyone
   // clicking the page first.
   const shortcut = `"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --user-data-dir=C:\\ChromeStation --kiosk-printing --autoplay-policy=no-user-gesture-required --app=${origin}/station/${stationId}`;
-  // Chrome policy that always lets this site use the DYMO M25 (both USB
-  // product ids it ships with), for when Chrome forgets the scale every time
-  // it powers off.
+  // Chrome policies for the station PC:
+  //   PrintPreviewUseSystemDefaultPrinter: without it, Chrome's silent
+  //     printing goes to whatever printer that Chrome profile printed to
+  //     LAST, not the Windows default. Once something printed on the regular
+  //     printer from the station's Chrome (or while the default was switched
+  //     for a scan form), labels kept going there even after the default was
+  //     set back and the shortcut remade (Cristian, 2026-10-21).
+  //   WebHidAllowDevicesForUrls: always lets this site use the DYMO M25
+  //     (both USB product ids it ships with), for when Chrome forgets the
+  //     scale every time it powers off.
   const devices = [DYMO_M25_PRODUCT_ID, DYMO_M25_NEW_PRODUCT_ID]
     .map((pid) => `{\\"vendor_id\\":${DYMO_VENDOR_ID},\\"product_id\\":${pid}}`)
     .join(",");
@@ -693,6 +700,7 @@ function SetupHelp({ stationId }: { stationId: string }) {
     "Windows Registry Editor Version 5.00",
     "",
     "[HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Google\\Chrome]",
+    `"PrintPreviewUseSystemDefaultPrinter"=dword:00000001`,
     `"WebHidAllowDevicesForUrls"="[{\\"devices\\":[${devices}],\\"urls\\":[\\"${origin}\\"]}]"`,
   ].join("\n");
 
@@ -720,6 +728,22 @@ function SetupHelp({ stationId }: { stationId: string }) {
             manage my default printer&quot;). In the Rollo&apos;s Printing preferences, set the paper size to 2 x 1 in.
           </li>
           <li>
+            So Chrome always prints labels on the default printer (not the last printer it used), save this as a .reg
+            file, double-click it, and say Yes. It also stops Chrome forgetting the scale.
+            <div className="mt-2 flex items-start gap-2">
+              <pre className="min-w-0 flex-1 overflow-x-auto rounded-md bg-muted px-2 py-1.5 text-xs">{policy}</pre>
+              <Button variant="outline" size="sm" onClick={() => copy("policy", policy)} className="shrink-0">
+                <Copy className="size-4" aria-hidden />
+                {copied === "policy" ? "Copied" : "Copy"}
+              </Button>
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Then close every Chrome window so it takes effect. In your normal Chrome the print dialog will start on
+              the label printer: for a scan form, pick the regular printer there. Don&apos;t switch the Windows default
+              to print something else.
+            </p>
+          </li>
+          <li>
             So labels print with no pop-up, make a desktop shortcut: right-click the desktop, New, Shortcut, and paste
             this as the location:
             <div className="mt-2 flex items-start gap-2">
@@ -739,17 +763,6 @@ function SetupHelp({ stationId }: { stationId: string }) {
           <li>
             Leave this window open. It&apos;s fine behind other windows. The scale and printer only work in Chrome or
             Edge on a computer.
-          </li>
-          <li>
-            If you have to press Connect scale again every time the scale turns off, Chrome is forgetting it. Save this
-            as a .reg file, double-click it, then restart Chrome:
-            <div className="mt-2 flex items-start gap-2">
-              <pre className="min-w-0 flex-1 overflow-x-auto rounded-md bg-muted px-2 py-1.5 text-xs">{policy}</pre>
-              <Button variant="outline" size="sm" onClick={() => copy("policy", policy)} className="shrink-0">
-                <Copy className="size-4" aria-hidden />
-                {copied === "policy" ? "Copied" : "Copy"}
-              </Button>
-            </div>
           </li>
         </ol>
       </details>
