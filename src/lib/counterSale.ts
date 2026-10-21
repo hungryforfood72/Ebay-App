@@ -22,7 +22,8 @@ import { normalizeCode } from "./warehouse/codes";
 // Steals store: a draft order with the item as a custom line (so Shopify's
 // own stock and the order sync leave it alone; this app records the sale),
 // no shipping (local pickup), tagged IN_PERSON_TAG, emailed to the
-// customer. Stock only comes off once Shopify says it's paid, checked by
+// customer, with a photo of the item (the listing's, or one the seller
+// takes for a walk-up). Stock only comes off once Shopify says it's paid, checked by
 // the seller's screen, the owner's page and the 10-minute cron. Then the
 // Shopify order is marked fulfilled (they walked out with it).
 // ---------------------------------------------------------------------------
@@ -181,9 +182,14 @@ export async function createCounterSale(input: NewSale, soldBy: string | null): 
   }
 
   let email: string | null = null;
+  let invoicePhoto: string | null = null;
   if (input.payment === "invoice") {
     email = input.email?.trim().toLowerCase() ?? "";
     if (!EMAIL_RE.test(email)) throw new CounterSaleError("Enter the customer's email for the invoice.");
+    // The customer sees what they're paying for (Cristian, 2026-10-21):
+    // a listed item's own photo, or the seller takes one.
+    invoicePhoto = invoicePhotoFor(quote.item) ?? photoUrls[0] ?? null;
+    if (!invoicePhoto) throw new CounterSaleError("Take a photo of the item for the invoice.");
     if (!getShopifyConfig()) throw new CounterSaleError("Shopify isn't connected, so invoices can't be sent. Take cash.", 503);
   }
 
@@ -217,7 +223,7 @@ export async function createCounterSale(input: NewSale, soldBy: string | null): 
     data: { ...base, payment: "invoice", customerEmail: email, status: "awaiting_payment" },
   });
   try {
-    const draft = await createInvoice(sale);
+    const draft = await createInvoice(sale, invoicePhoto!);
     return await prisma.counterSale.update({
       where: { id: sale.id },
       data: { shopifyDraftOrderId: draft.id, invoiceUrl: draft.invoiceUrl },
@@ -278,7 +284,24 @@ async function recordStock(s: StockSale): Promise<{ inPersonSaleId?: string; wal
 // Shopify invoice
 // ---------------------------------------------------------------------------
 
-async function createInvoice(sale: CounterSale): Promise<{ id: string; invoiceUrl: string | null }> {
+// A listed item's main photo (the bundle's "everything together" shot for
+// a bundle). null for a walk-up straight off the manifest.
+export function invoicePhotoFor(item: Item | null): string | null {
+  return item?.photoUrls.find((u) => typeof u === "string" && u.startsWith("https://")) ?? null;
+}
+
+// Custom lines can't carry an image, so the photo rides along as the
+// hidden line property _photo (underscore = not shown at checkout) and
+// the Epic Steals "Draft order invoice" email template shows it. Cloudinary
+// resizes it to an email-sized JPEG (phone photos can be HEIC).
+export const INVOICE_PHOTO_KEY = "_photo";
+function emailSized(url: string): string {
+  return url.startsWith("https://res.cloudinary.com/") && url.includes("/upload/")
+    ? url.replace("/upload/", "/upload/c_limit,w_600,h_600,q_auto,f_jpg/")
+    : url;
+}
+
+async function createInvoice(sale: CounterSale, photoUrl: string): Promise<{ id: string; invoiceUrl: string | null }> {
   const money = (n: number) => ({ amount: n.toFixed(2), currencyCode: "USD" });
   const unit = sale.packSize ? ` (pack of ${sale.packSize})` : "";
   const created = await shopifyGraphql<{
@@ -302,6 +325,7 @@ async function createInvoice(sale: CounterSale): Promise<{ id: string; invoiceUr
             // shippingLine was tried: Shopify drops it when nothing
             // ships. Tested live 2026-10-21, shipping total $0.)
             requiresShipping: false,
+            customAttributes: [{ key: INVOICE_PHOTO_KEY, value: emailSized(photoUrl) }],
           },
         ],
       },

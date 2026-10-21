@@ -15,8 +15,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 // that needs a photo and a reason. The server checks the same rules
 // (src/lib/counterSale.ts), so this page can't be talked around.
 // Payment: cash, or a Shopify invoice emailed to the customer (Epic
-// Steals, local pickup, no shipping). An invoice waits here until Shopify
-// says it's paid; only then is it sold.
+// Steals, local pickup, no shipping) with a photo of the item: the
+// listing's, or for a walk-up one the seller takes. An invoice waits here
+// until Shopify says it's paid; only then is it sold.
 
 export type CheckoutTarget = {
   kind: "walkup" | "shelf";
@@ -32,6 +33,9 @@ type Quote = {
   ideal: number | null;
   nearExpiry: number | null;
   source: "manifest" | "listed" | null;
+  // The listed item's photo, shown on the invoice. null = walk-up off the
+  // manifest: the seller takes one before sending an invoice.
+  photoUrl: string | null;
 };
 
 type Photo = { id: string; previewUrl: string; url?: string; status: "uploading" | "done" | "error" };
@@ -98,7 +102,8 @@ export function CounterSaleCheckout({
   const priceNum = Number(price);
   const qtyNum = Number(quantity);
   const below = allowed != null && Number.isFinite(priceNum) && priceNum > 0 && priceNum < allowed - 0.005;
-  const needPhoto = nearExpiry || below;
+  const needInvoicePhoto = payment === "invoice" && !quote?.photoUrl;
+  const needPhoto = nearExpiry || below || needInvoicePhoto;
   const photoUrls = photos.filter((p) => p.status === "done" && p.url).map((p) => p.url!);
   const uploading = photos.some((p) => p.status === "uploading");
 
@@ -124,6 +129,7 @@ export function CounterSaleCheckout({
     if (payment === "invoice" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
       return setMessage("Enter the customer's email for the invoice.");
     }
+    if (needInvoicePhoto && photoUrls.length === 0) return setMessage("Take a photo of the item for the invoice.");
     setSaving(true);
     try {
       const res = await fetch("/api/counter-sales", {
@@ -256,6 +262,11 @@ export function CounterSaleCheckout({
                 ? "Photo of the expiration date"
                 : "Photo of the item"}
           </p>
+          {needInvoicePhoto && (
+            <p className="-mt-2 text-xs text-muted-foreground">
+              {nearExpiry ? "Take the item photo first: the first photo goes on the invoice." : "This goes on the invoice so they see what they're paying for."}
+            </p>
+          )}
           {photos.length > 0 && (
             <div className="flex flex-wrap gap-2">
               {photos.map((p) => (
@@ -320,6 +331,13 @@ export function CounterSaleCheckout({
           <Field label="Customer's email" hint="They get an Epic Steals invoice to pay by card, Apple Pay and more. Local pickup, no shipping." className="mt-3">
             <Input size="lg" type="email" inputMode="email" autoComplete="off" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="name@example.com" />
           </Field>
+        )}
+        {payment === "invoice" && quote.photoUrl && (
+          <div className="mt-3 flex items-center gap-3">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={quote.photoUrl} alt="" className="size-14 rounded-lg border border-border object-cover" />
+            <p className="text-xs text-muted-foreground">The invoice shows the listing photo.</p>
+          </div>
         )}
       </div>
 
