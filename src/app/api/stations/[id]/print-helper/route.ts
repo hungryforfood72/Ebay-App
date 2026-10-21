@@ -11,8 +11,14 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   try {
     requireUser(request);
     const { id } = await params;
-    const { token, name } = await helperTokenFor(id);
-    const body = printHelperInstaller({ baseUrl: request.nextUrl.origin, stationId: id, stationName: name, token });
+    const { token, name, slipPrinter } = await helperTokenFor(id);
+    const body = printHelperInstaller({
+      baseUrl: request.nextUrl.origin,
+      stationId: id,
+      stationName: name,
+      token,
+      browserStation: !slipPrinter,
+    });
     const file = `Install print helper - ${name.replace(/[^A-Za-z0-9 ()_-]/g, "")}.cmd`;
     return new NextResponse(body, {
       headers: {

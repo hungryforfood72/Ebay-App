@@ -36,11 +36,14 @@ export async function stationForHelper(request: Request) {
 // The station's key, made the first time an installer is downloaded.
 // Downloading again reuses it, so a reinstall doesn't cut off a helper
 // that's already running.
-export async function helperTokenFor(stationId: string): Promise<{ token: string; name: string }> {
-  const station = await prisma.station.findUnique({ where: { id: stationId }, select: { helperToken: true, name: true } });
+export async function helperTokenFor(stationId: string): Promise<{ token: string; name: string; slipPrinter: boolean }> {
+  const station = await prisma.station.findUnique({
+    where: { id: stationId },
+    select: { helperToken: true, name: true, slipPrinter: true },
+  });
   if (!station) throw new WarehouseError("That station doesn't exist anymore.", 404);
-  if (station.helperToken) return { token: station.helperToken, name: station.name };
+  if (station.helperToken) return { token: station.helperToken, name: station.name, slipPrinter: station.slipPrinter };
   const token = newHelperToken();
   await prisma.station.update({ where: { id: stationId }, data: { helperToken: token } });
-  return { token, name: station.name };
+  return { token, name: station.name, slipPrinter: station.slipPrinter };
 }

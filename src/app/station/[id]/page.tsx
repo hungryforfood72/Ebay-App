@@ -9,7 +9,8 @@ import { Button, buttonClasses } from "@/components/ui/Button";
 import { Card, SectionHeader } from "@/components/ui/Card";
 import { Select } from "@/components/ui/Input";
 import { printLabels, printPage } from "@/lib/warehouse/labelPrint";
-import { DYMO_M25_NEW_PRODUCT_ID, DYMO_M25_PRODUCT_ID, DYMO_VENDOR_ID, formatOunces, formatPoundsOunces, scaleStatusMessage } from "@/lib/warehouse/scale";
+import { formatOunces, formatPoundsOunces, scaleStatusMessage } from "@/lib/warehouse/scale";
+import { DEFAULT_CHROME_PATH, stationPolicyRegFile, stationShortcutArgs } from "@/lib/warehouse/stationSetup";
 import type { PrintJobRow } from "@/lib/warehouse/stations";
 import { isPageKind, type CodeLabelPayload, type ItemLabelPayload, type PageJobPayload, type PrintJobKind, type PrintJobPayload, type StationStatus } from "@/lib/warehouse/types";
 import { Copy, Download, Power, Printer, RotateCcw, Scale, Usb } from "lucide-react";
@@ -777,32 +778,9 @@ function SetupHelp({ stationId }: { stationId: string }) {
     setOrigin(window.location.origin);
   }, []);
 
-  // Its own Chrome profile (--user-data-dir): --kiosk-printing covers every
-  // window of the Chrome it starts, so without one, a scan form printed from
-  // the normal Chrome would also go straight to the Rollo with no dialog.
-  // --autoplay-policy lets it beep when the scale turns off without anyone
-  // clicking the page first.
-  const shortcut = `"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --user-data-dir=C:\\ChromeStation --kiosk-printing --autoplay-policy=no-user-gesture-required --app=${origin}/station/${stationId}`;
-  // Chrome policies for the station PC:
-  //   PrintPreviewUseSystemDefaultPrinter: without it, Chrome's silent
-  //     printing goes to whatever printer that Chrome profile printed to
-  //     LAST, not the Windows default. Once something printed on the regular
-  //     printer from the station's Chrome (or while the default was switched
-  //     for a scan form), labels kept going there even after the default was
-  //     set back and the shortcut remade (Cristian, 2026-10-21).
-  //   WebHidAllowDevicesForUrls: always lets this site use the DYMO M25
-  //     (both USB product ids it ships with), for when Chrome forgets the
-  //     scale every time it powers off.
-  const devices = [DYMO_M25_PRODUCT_ID, DYMO_M25_NEW_PRODUCT_ID]
-    .map((pid) => `{\\"vendor_id\\":${DYMO_VENDOR_ID},\\"product_id\\":${pid}}`)
-    .join(",");
-  const policy = [
-    "Windows Registry Editor Version 5.00",
-    "",
-    "[HKEY_LOCAL_MACHINE\\SOFTWARE\\Policies\\Google\\Chrome]",
-    `"PrintPreviewUseSystemDefaultPrinter"=dword:00000001`,
-    `"WebHidAllowDevicesForUrls"="[{\\"devices\\":[${devices}],\\"urls\\":[\\"${origin}\\"]}]"`,
-  ].join("\n");
+  // Shared with the print helper installer, which does these steps itself.
+  const shortcut = `"${DEFAULT_CHROME_PATH}" ${stationShortcutArgs(origin, stationId)}`;
+  const policy = stationPolicyRegFile(origin);
 
   async function copy(what: string, text: string) {
     try {
@@ -818,6 +796,12 @@ function SetupHelp({ stationId }: { stationId: string }) {
     <Card>
       <details>
         <summary className="cursor-pointer text-base font-semibold tracking-tight text-foreground">Setting up this PC</summary>
+        <p className="mt-3 text-sm text-foreground">
+          Easiest: plug in the scale and the Rollo, then use <span className="font-medium">Download installer</span> in
+          the Printer card. It does steps 3 and 4 below by itself (the Chrome settings and a desktop shortcut named after
+          this station), turns off &quot;Let Windows manage my default printer&quot;, and sets up the print helper. You
+          still pick the Windows default printer in step 2. These steps are for doing it all by hand.
+        </p>
         <ol className="mt-3 flex list-decimal flex-col gap-3 pl-5 text-sm text-foreground">
           <li>
             Plug the DYMO scale and the Rollo into this PC with USB. Use the Rollo on USB, not Wi-Fi: it&apos;s faster
