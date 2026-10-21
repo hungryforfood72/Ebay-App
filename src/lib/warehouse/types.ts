@@ -54,6 +54,17 @@ export type StationStatus = {
   weightAt: string | null;
   // Packing slips and local delivery labels print here.
   packingSlips: boolean;
+  // The print helper on this station's PC (printHelper.ts): the printers it
+  // reported, the one picked for 4x6 pages, and whether it's running now.
+  // helperActive = online with a printer picked: it prints the 4x6 pages,
+  // the station page only the small code labels.
+  printers: string[];
+  printerName: string | null;
+  helperOnline: boolean;
+  helperSeenAt: string | null;
+  helperActive: boolean;
+  // Print automatically off: nothing is handed out to print.
+  printPaused: boolean;
 };
 
 // One place an item's units physically are.

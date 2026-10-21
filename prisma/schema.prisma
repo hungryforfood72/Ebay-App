@@ -1517,6 +1517,20 @@ model Station {
   // delivery label that goes with one) print here while it's online;
   // shipping labels and item labels never do. Hidden from station pickers.
   slipPrinter  Boolean   @default(false)
+  // The print helper on this station's PC (public/print-helper, installed
+  // from the station page; Cristian, 2026-10-21): the printers that PC has,
+  // which one 4x6 pages go to (picked on the station page), when the helper
+  // last checked in, and its key. While it's online it prints the 4x6 pages
+  // (packing slips, shipping and delivery labels) on printerName, whatever
+  // the Windows default is; the page keeps printing the small code labels.
+  printers      String[]  @default([])
+  printerName   String?
+  helperSeenAt  DateTime?
+  helperVersion String?
+  helperToken   String?
+  // "Print automatically" off on the station page: nothing is handed out to
+  // print, to the page or the helper, until it's back on.
+  printPaused   Boolean   @default(false)
   createdAt    DateTime  @default(now())
 
   printJobs PrintJob[]

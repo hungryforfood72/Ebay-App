@@ -68,6 +68,17 @@ export async function proxy(request: NextRequest, event: NextFetchEvent) {
     if (pathname.startsWith("/api/shopify-proxy/")) {
       return NextResponse.next();
     }
+    // The print helper on a station PC (src/lib/warehouse/printHelper.ts):
+    // its station key, checked by every route under here, is the only way
+    // in. Plus the helper's own script, which it downloads to install and
+    // update itself (no secrets in it).
+    if (pathname.startsWith("/api/print-helper/") || pathname === "/print-helper/print_helper.py") {
+      const headers = new Headers(request.headers);
+      headers.delete(USER_ID_HEADER);
+      headers.delete(USER_ROLE_HEADER);
+      headers.delete(USERNAME_HEADER);
+      return NextResponse.next({ request: { headers } });
+    }
     // The supplier's report: the random token in the URL is the only key,
     // checked against the database by the route.
     if (SHARE_PATHS.some((p) => p.test(pathname))) {

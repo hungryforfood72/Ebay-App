@@ -5,13 +5,14 @@ import { isLabelKind, itemMetaLine } from "@/components/labels/labelMarkup";
 import { Alert } from "@/components/ui/Alert";
 import { AppShell } from "@/components/ui/AppShell";
 import { Badge, type BadgeTone } from "@/components/ui/Badge";
-import { Button } from "@/components/ui/Button";
+import { Button, buttonClasses } from "@/components/ui/Button";
 import { Card, SectionHeader } from "@/components/ui/Card";
+import { Select } from "@/components/ui/Input";
 import { printLabels, printPage } from "@/lib/warehouse/labelPrint";
 import { DYMO_M25_NEW_PRODUCT_ID, DYMO_M25_PRODUCT_ID, DYMO_VENDOR_ID, formatOunces, formatPoundsOunces, scaleStatusMessage } from "@/lib/warehouse/scale";
 import type { PrintJobRow } from "@/lib/warehouse/stations";
 import { isPageKind, type CodeLabelPayload, type ItemLabelPayload, type PageJobPayload, type PrintJobKind, type PrintJobPayload, type StationStatus } from "@/lib/warehouse/types";
-import { Copy, Power, Printer, RotateCcw, Scale, Usb } from "lucide-react";
+import { Copy, Download, Power, Printer, RotateCcw, Scale, Usb } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useScale } from "./useScale";
@@ -21,7 +22,10 @@ import { useTicker } from "./useTicker";
 // jobs, all on its own once it's set up:
 //   1. Reads the USB scale (useScale) and reports the weight to the server
 //      (heartbeat), where the lister's handheld picks it up.
-//   2. Checks for queued labels and prints them on the Rollo.
+//   2. Checks for queued labels and prints them on the Rollo. With the
+//      print helper installed on this PC and a printer picked (Printer
+//      card), the helper prints the 4x6 pages on that printer and this page
+//      only the small code labels (Cristian, 2026-10-21).
 //   3. Shows what's going on, with a print log and Reprint buttons.
 //
 // Timing (all driven by one 250ms worker tick, see useTicker):
@@ -40,8 +44,8 @@ const POLL_IDLE_MS = 5_000;
 const ACTIVE_WINDOW_MS = 2 * 60_000;
 // A weight change at least this big counts as someone working here.
 const ACTIVITY_OZ = 0.2;
-// The Print automatically switch, remembered on this PC.
-const AUTO_PRINT_KEY = (stationId: string) => `station-auto-print:${stationId}`;
+// How often the station's settings and print helper status are re-read.
+const STATION_REFRESH_MS = 10_000;
 
 // Two short beeps when the scale turns itself off, so whoever's weighing
 // presses its power button before the next item instead of after. Chrome
@@ -99,6 +103,10 @@ export default function StationPage() {
   // else (Cristian, 2026-10-19: a scan form on the regular printer).
   const [autoPrint, setAutoPrint] = useState(true);
   const autoPrintRef = useRef(true);
+  // The print helper is printing the 4x6 pages: this page takes only the
+  // small code labels.
+  const helperActiveRef = useRef(false);
+  const stationLoadedAt = useRef(0);
 
   const weightOz = scale.connection === "connected" ? (scale.reading?.weightOz ?? null) : null;
   const stable = weightOz !== null && Boolean(scale.reading?.stable);
@@ -149,25 +157,52 @@ export default function StationPage() {
     }
   }
 
-  useEffect(() => {
-    let saved: string | null = null;
-    try {
-      saved = window.localStorage.getItem(AUTO_PRINT_KEY(id));
-    } catch {
-      // Storage blocked: it just starts on.
-    }
-    autoPrintRef.current = saved !== "off";
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setAutoPrint(saved !== "off");
-  }, [id]);
+  // Print automatically is kept on the server (Station.printPaused), so
+  // the print helper pauses with the page.
+  function applyStation(data: StationStatus) {
+    setStation(data);
+    autoPrintRef.current = !data.printPaused;
+    setAutoPrint(!data.printPaused);
+    helperActiveRef.current = data.helperActive;
+  }
 
-  function changeAutoPrint(on: boolean) {
+  async function loadStation(first = false) {
+    stationLoadedAt.current = Date.now();
+    try {
+      const r = await fetch(`/api/stations/${id}`, { cache: "no-store" });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error ?? "Couldn't load this station.");
+      applyStation(data as StationStatus);
+    } catch (e) {
+      if (first) setLoadError(e instanceof Error ? e.message : "Couldn't load this station.");
+    }
+  }
+
+  async function patchStation(body: Record<string, unknown>): Promise<boolean> {
+    setMessage(null);
+    try {
+      const res = await fetch(`/api/stations/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Couldn't change that.");
+      applyStation(data as StationStatus);
+      return true;
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : "Couldn't change that.");
+      return false;
+    }
+  }
+
+  async function changeAutoPrint(on: boolean) {
     autoPrintRef.current = on;
     setAutoPrint(on);
-    try {
-      window.localStorage.setItem(AUTO_PRINT_KEY(id), on ? "on" : "off");
-    } catch {
-      // Still works until the page reloads.
+    if (!(await patchStation({ printPaused: !on }))) {
+      autoPrintRef.current = !on;
+      setAutoPrint(!on);
+      return;
     }
     if (on) {
       lastActivityAt.current = Date.now();
@@ -177,14 +212,9 @@ export default function StationPage() {
 
   useEffect(() => {
     lastActivityAt.current = Date.now();
-    fetch(`/api/stations/${id}`, { cache: "no-store" })
-      .then(async (r) => {
-        const data = await r.json();
-        if (!r.ok) throw new Error(data.error ?? "Couldn't load this station.");
-        setStation(data as StationStatus);
-      })
-      .catch((e) => setLoadError(e instanceof Error ? e.message : "Couldn't load this station."));
+    // Both set state only after their fetch comes back.
     // eslint-disable-next-line react-hooks/set-state-in-effect
+    void loadStation(true);
     loadLog();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
@@ -240,7 +270,7 @@ export default function StationPage() {
     const state = poll.current;
     state.busy = true;
     try {
-      const res = await fetch(`/api/stations/${id}/jobs`, { cache: "no-store" });
+      const res = await fetch(`/api/stations/${id}/jobs${helperActiveRef.current ? "?kinds=label" : ""}`, { cache: "no-store" });
       if (!res.ok) {
         handleStatus(res.status);
         return;
@@ -284,6 +314,9 @@ export default function StationPage() {
       }
     } else if (!p.busy && t - p.lastAt >= (active ? POLL_ACTIVE_MS : POLL_IDLE_MS)) void pollJobs();
 
+    // The print helper's status and the picked printer.
+    if (t - stationLoadedAt.current >= STATION_REFRESH_MS) void loadStation();
+
     // Re-render once a second for "last reading 12s ago".
     if (Math.floor(t / 1000) !== Math.floor(now / 1000)) setNow(t);
   });
@@ -320,19 +353,7 @@ export default function StationPage() {
   // Makes this the packing station (packing slips + local delivery
   // labels), or stops it being one.
   async function setPackingSlips(on: boolean) {
-    setMessage(null);
-    try {
-      const res = await fetch(`/api/stations/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ packingSlips: on }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Couldn't change that.");
-      setStation(data as StationStatus);
-    } catch (e) {
-      setMessage(e instanceof Error ? e.message : "Couldn't change that.");
-    }
+    await patchStation({ packingSlips: on });
   }
 
   async function reprint(job: PrintJobRow) {
@@ -483,17 +504,96 @@ export default function StationPage() {
                 ok={server === "online" && autoPrint}
                 label="Printer"
                 text={
-                autoPrint
-                  ? `Checking for labels every ${(pollActive ? POLL_ACTIVE_MS : POLL_IDLE_MS) / 1000}s`
-                  : "Paused. Labels wait until printing is back on."
+                !autoPrint
+                  ? "Paused. Labels wait until printing is back on."
+                  : station?.helperActive
+                    ? `4x6 labels: ${station.printerName} (print helper). Small labels: checking every ${(pollActive ? POLL_ACTIVE_MS : POLL_IDLE_MS) / 1000}s`
+                    : `Checking for labels every ${(pollActive ? POLL_ACTIVE_MS : POLL_IDLE_MS) / 1000}s`
               }
               />
             </ul>
           </Card>
+          {station && (
+            <PrinterCard station={station} onPick={(printerName) => void patchStation({ printerName })} disabled={stopped} />
+          )}
           <SetupHelp stationId={id} />
         </div>
       </div>
     </AppShell>
+  );
+}
+
+// Which printer the 4x6 pages (shipping labels, packing slips, delivery
+// labels) go to. Chrome can only print on this PC's default printer and
+// drifts to the last one it used, so the print helper (installed from
+// here) prints them on the printer picked below instead.
+function PrinterCard({
+  station,
+  onPick,
+  disabled,
+}: {
+  station: StationStatus;
+  onPick: (printerName: string | null) => void;
+  disabled: boolean;
+}) {
+  const installer = `/api/stations/${station.id}/print-helper`;
+  const installed = station.helperSeenAt != null;
+  const seen = station.helperSeenAt ? new Date(station.helperSeenAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : null;
+  return (
+    <Card>
+      <SectionHeader title="Printer for 4x6 labels" description="Shipping labels, packing slips and delivery labels." />
+      {!installed ? (
+        <div className="flex flex-col gap-3 text-sm text-foreground">
+          <p>
+            Right now these print on this PC&apos;s Windows default printer. To pick the printer here instead, install the
+            print helper on this PC. One file sets up everything it needs.
+          </p>
+          <a href={installer} className={buttonClasses({ variant: "primary", size: "md" })}>
+            <Download className="size-4" aria-hidden />
+            Download installer
+          </a>
+          <ol className="list-decimal pl-5 text-xs text-muted-foreground">
+            <li>Open the file you just downloaded. If Chrome warns about it, choose Keep.</li>
+            <li>If Windows says it protected your PC, click More info, then Run anyway.</li>
+            <li>Wait for &quot;Done&quot; (the first time can take a couple of minutes), then pick the printer here.</li>
+          </ol>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3 text-sm">
+          <ul className="flex flex-col gap-2">
+            <StatusRow
+              ok={station.helperOnline}
+              label="Print helper"
+              text={station.helperOnline ? "Running on this PC" : `Not running. Last seen ${seen}. Restart the PC or reinstall.`}
+            />
+          </ul>
+          <Select
+            value={station.printerName ?? ""}
+            disabled={disabled}
+            onChange={(e) => onPick(e.target.value || null)}
+            aria-label="Printer for 4x6 labels"
+          >
+            <option value="">Don&apos;t use the helper (Windows default printer)</option>
+            {station.printers.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+            {station.printerName && !station.printers.includes(station.printerName) && (
+              <option value={station.printerName}>{station.printerName} (not on this PC anymore)</option>
+            )}
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            {station.printerName
+              ? "4x6 labels print there no matter what the Windows default is. Small item labels still print on the default printer."
+              : "Pick the 4x6 printer. Until then, everything prints on the Windows default."}
+          </p>
+          <a href={installer} className="text-xs font-medium text-primary underline">
+            Reinstall the print helper
+          </a>
+        </div>
+      )}
+    </Card>
   );
 }
 

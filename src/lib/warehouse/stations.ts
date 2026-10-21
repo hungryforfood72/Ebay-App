@@ -1,3 +1,4 @@
+import { helperOnline } from "./printHelper";
 import { NextResponse } from "next/server";
 import { AuthError } from "../auth";
 import { WarehouseError } from "./bins";
@@ -16,6 +17,10 @@ export const STATION_STATUS_SELECT = {
   weightAt: true,
   lastSeenAt: true,
   packingSlips: true,
+  printers: true,
+  printerName: true,
+  helperSeenAt: true,
+  printPaused: true,
 } as const;
 
 type StationRow = {
@@ -26,6 +31,10 @@ type StationRow = {
   weightAt: Date | null;
   lastSeenAt: Date | null;
   packingSlips: boolean;
+  printers: string[];
+  printerName: string | null;
+  helperSeenAt: Date | null;
+  printPaused: boolean;
 };
 
 export function toStationStatus(row: StationRow, now = Date.now()): StationStatus {
@@ -40,6 +49,12 @@ export function toStationStatus(row: StationRow, now = Date.now()): StationStatu
     weightStable: online && row.weightStable,
     weightAt: row.weightAt ? row.weightAt.toISOString() : null,
     packingSlips: row.packingSlips,
+    printers: row.printers,
+    printerName: row.printerName,
+    helperOnline: helperOnline(row.helperSeenAt, now),
+    helperSeenAt: row.helperSeenAt?.toISOString() ?? null,
+    helperActive: helperOnline(row.helperSeenAt, now) && row.printerName != null,
+    printPaused: row.printPaused,
   };
 }
 

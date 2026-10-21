@@ -181,7 +181,11 @@ export async function packingStation() {
     orderBy: { lastSeenAt: "desc" },
   });
   if (!station) return null;
-  const online = station.lastSeenAt != null && Date.now() - station.lastSeenAt.getTime() <= STATION_ONLINE_MS;
+  // Its page is open, or its print helper is running (it prints the 4x6
+  // pages even with the page closed).
+  const online =
+    (station.lastSeenAt != null && Date.now() - station.lastSeenAt.getTime() <= STATION_ONLINE_MS) ||
+    (station.printerName != null && station.helperSeenAt != null && Date.now() - station.helperSeenAt.getTime() <= STATION_ONLINE_MS);
   return { id: station.id, name: station.name, online };
 }
 
