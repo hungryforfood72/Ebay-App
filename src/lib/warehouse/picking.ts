@@ -4,6 +4,7 @@ import { itemDisplayTitle } from "./itemTitle";
 import { getOrdersAwaitingShipment } from "../ebay";
 import { naturalSort } from "../naturalSort";
 import { prisma } from "../prisma";
+import { IN_PERSON_TAG } from "../counterSale";
 import { getShopifyConfig, shopifyGraphql } from "../shopify";
 import { parseBundleComponentUnits } from "../itemUnits";
 import { upcMatchKeys } from "../upcMatch";
@@ -247,6 +248,7 @@ type ShopifyOpenOrder = {
   cancelledAt: string | null;
   sourceName: string | null;
   displayFinancialStatus: string | null;
+  tags: string[];
   app: { name: string } | null;
   shippingLines: { nodes: { title: string; deliveryCategory: string | null }[] };
   lineItems: {
@@ -281,7 +283,7 @@ async function queryShopifyOrders(query: string): Promise<ShopifyOpenOrder[]> {
           orders(first: 50, after: $after, query: $query, sortKey: CREATED_AT) {
             pageInfo { hasNextPage endCursor }
             nodes {
-              id name createdAt cancelledAt sourceName displayFinancialStatus
+              id name createdAt cancelledAt sourceName displayFinancialStatus tags
               app { name }
               shippingLines(first: 5) { nodes { title deliveryCategory } }
               lineItems(first: 100) {
@@ -319,6 +321,9 @@ function shopifyLines(orders: ShopifyOpenOrder[]): RawLine[] {
   for (const o of orders) {
     if (o.cancelledAt) continue;
     if (SHOPIFY_SKIP_PAYMENT.includes(o.displayFinancialStatus ?? "")) continue;
+    // An in-person sale paid by Shopify invoice: the customer already has
+    // it, and the app recorded the sale itself (counterSale.ts).
+    if (o.tags.includes(IN_PERSON_TAG)) continue;
     const counter = (o.sourceName ?? "").toLowerCase() === "pos";
     // Shopify's deliveryCategory: "local" is Local delivery, "pick-up" is
     // Local pickup. The method name backs it up.

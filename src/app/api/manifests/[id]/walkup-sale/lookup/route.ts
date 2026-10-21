@@ -1,3 +1,4 @@
+import { getRequestUser } from "@/lib/auth";
 import { computeWalkupPrices, getWalkupSaleSettings } from "@/lib/walkupSale";
 import { getLiveAvailableQuantity } from "@/lib/ebay";
 import { prisma } from "@/lib/prisma";
@@ -100,11 +101,15 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     };
   }
 
+  // Cost and the cost-based floor are the owner's (more people have
+  // scanners now): staff get the ideal and near-expiry prices only.
+  const owner = getRequestUser(request)?.role === "owner";
   return NextResponse.json({
     description: line.description,
     retailPrice: Number(line.retailPrice),
-    landedCostPerUnit,
+    landedCostPerUnit: owner ? landedCostPerUnit : null,
     alreadyListed,
     ...prices,
+    floorPrice: owner ? prices.floorPrice : null,
   });
 }

@@ -13,6 +13,8 @@ import { Card, SectionHeader } from "@/components/ui/Card";
 import { cn } from "@/components/ui/cn";
 import { CheckboxRow, Field, Input, Select } from "@/components/ui/Input";
 import { uploadPhoto } from "@/lib/uploadPhoto";
+import { CounterSaleCheckout } from "@/components/CounterSaleCheckout";
+import { useCurrentUser } from "@/components/UserNav";
 import {
   ArrowLeft,
   ArrowRight,
@@ -175,6 +177,9 @@ export default function ScanPage() {
 
 function ScanPageInner() {
   const searchParams = useSearchParams();
+  // Cost and the floor price are the owner's; the lookups leave them out
+  // for everyone else.
+  const isOwner = useCurrentUser()?.role === "owner";
   const router = useRouter();
   const [scanning, setScanning] = useState(false);
   const [savedThisSession, setSavedThisSession] = useState(0);
@@ -225,15 +230,11 @@ function ScanPageInner() {
       packSize: number | null;
     } | null;
   } | null>(null);
-  const [walkupNearExpiry, setWalkupNearExpiry] = useState(false);
   // Defaults to whatever the lookup found (checked when the UPC matches an
   // already-listed Item) — see lookupWalkupUpc. Checked = reduce the live
   // eBay listing and record the sale on that Item directly; unchecked =
   // today's "fresh off the manifest" tally.
   const [walkupAlreadyInventoried, setWalkupAlreadyInventoried] = useState(false);
-  const [walkupQuantity, setWalkupQuantity] = useState("1");
-  const [walkupPricePerUnit, setWalkupPricePerUnit] = useState("");
-  const [walkupSaving, setWalkupSaving] = useState(false);
   // The UPC a lookup just came back empty for — kept for display after the
   // field itself is cleared for the next scan (see lookupWalkupUpc).
   const [walkupMissedUpc, setWalkupMissedUpc] = useState<string | null>(null);
@@ -272,10 +273,6 @@ function ScanPageInner() {
       packSize: number | null;
     };
   } | null>(null);
-  const [shelfSaleNearExpiry, setShelfSaleNearExpiry] = useState(false);
-  const [shelfSaleQuantity, setShelfSaleQuantity] = useState("1");
-  const [shelfSalePricePerUnit, setShelfSalePricePerUnit] = useState("");
-  const [shelfSaleSaving, setShelfSaleSaving] = useState(false);
   // Same as walkupMissedUpc: what the last empty-handed lookup tried.
   const [shelfSaleMissed, setShelfSaleMissed] = useState<{ location: string; upc: string } | null>(null);
 
@@ -543,10 +540,7 @@ function ScanPageInner() {
   function resetWalkupSale() {
     setWalkupUpc("");
     setWalkupLookup(null);
-    setWalkupNearExpiry(false);
     setWalkupAlreadyInventoried(false);
-    setWalkupQuantity("1");
-    setWalkupPricePerUnit("");
     setWalkupMessage(null);
     setWalkupMissedUpc(null);
   }
@@ -567,10 +561,7 @@ function ScanPageInner() {
       setWalkupLookup(data);
       // Finding a matching active listing strongly implies this IS that
       // case — default checked, but let it be unchecked manually.
-      const alreadyInventoried = Boolean(data.alreadyListed);
-      setWalkupAlreadyInventoried(alreadyInventoried);
-      const multiplier = walkupPackMultiplier(data.alreadyListed, alreadyInventoried);
-      setWalkupPricePerUnit((data.idealPrice * multiplier).toFixed(2));
+      setWalkupAlreadyInventoried(Boolean(data.alreadyListed));
     } catch (e) {
       setWalkupLookup(null);
       setWalkupMessage(e instanceof Error ? e.message : "Something went wrong.");
@@ -584,49 +575,10 @@ function ScanPageInner() {
     }
   }
 
-  async function saveWalkupSale() {
-    if (!activeManifestId || !walkupLookup) return;
-    setWalkupMessage(null);
-    const qty = Number(walkupQuantity);
-    if (!qty || qty < 1) return setWalkupMessage("Enter a quantity of at least 1.");
-    const price = Number(walkupPricePerUnit);
-    if (!price || price <= 0) return setWalkupMessage("Enter a price per unit.");
-
-    setWalkupSaving(true);
-    try {
-      const res = await fetch(`/api/manifests/${activeManifestId}/walkup-sale`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          upc: walkupUpc.trim(),
-          quantity: qty,
-          pricePerUnit: price,
-          itemId: walkupAlreadyInventoried ? walkupLookup.alreadyListed?.itemId : undefined,
-        }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error ?? "Save failed.");
-      }
-      const wasInventoried = walkupAlreadyInventoried;
-      resetWalkupSale();
-      setWalkupMessage(
-        wasInventoried ? "Sold — eBay listing updated. Ready for the next one." : "Sold! Ready for the next one."
-      );
-    } catch (e) {
-      setWalkupMessage(e instanceof Error ? e.message : "Something went wrong.");
-    } finally {
-      setWalkupSaving(false);
-    }
-  }
-
   function resetShelfSale() {
     setShelfSaleLocation("");
     setShelfSaleUpc("");
     setShelfSaleLookup(null);
-    setShelfSaleNearExpiry(false);
-    setShelfSaleQuantity("1");
-    setShelfSalePricePerUnit("");
     setShelfSaleMessage(null);
     setShelfSaleMissed(null);
   }
@@ -652,12 +604,6 @@ function ScanPageInner() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Lookup failed.");
       setShelfSaleLookup(data);
-      // Every shelf-sale match is, by definition, already an active
-      // listing — unlike Walk-up Sale there's no "fresh off the manifest"
-      // branch to choose between.
-      const multiplier = walkupPackMultiplier(data.alreadyListed, true);
-      const basePrice = data.manifestId != null ? data.idealPrice : (data.currentListedPrice ?? 0);
-      setShelfSalePricePerUnit((basePrice * multiplier).toFixed(2));
     } catch (e) {
       setShelfSaleLookup(null);
       setShelfSaleMessage(e instanceof Error ? e.message : "Something went wrong.");
@@ -668,50 +614,6 @@ function ScanPageInner() {
       focusScanField("shelf-sale-upc");
     } finally {
       setShelfSaleLooking(false);
-    }
-  }
-
-  async function saveShelfSale() {
-    if (!shelfSaleLookup) return;
-    setShelfSaleMessage(null);
-    const qty = Number(shelfSaleQuantity);
-    if (!qty || qty < 1) return setShelfSaleMessage("Enter a quantity of at least 1.");
-    const price = Number(shelfSalePricePerUnit);
-    if (!price || price <= 0) return setShelfSaleMessage("Enter a price per unit.");
-
-    setShelfSaleSaving(true);
-    try {
-      // A manifest to update means the existing walk-up-sale route (which
-      // also keeps that manifest's sold/profit numbers current); no
-      // manifest means the lighter item-only route instead — see
-      // GET /api/items/shelf-lookup's manifestId: null case.
-      const url = shelfSaleLookup.manifestId
-        ? `/api/manifests/${shelfSaleLookup.manifestId}/walkup-sale`
-        : `/api/items/${shelfSaleLookup.itemId}/shelf-sale`;
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          upc: shelfSaleUpc.trim(),
-          quantity: qty,
-          pricePerUnit: price,
-          itemId: shelfSaleLookup.itemId,
-          // Warehouse mode: take the units from the bin on the shelf that
-          // was scanned, not just the oldest bin. Left out when there's
-          // none, so the request is unchanged for items with no bins.
-          ...(shelfSaleLookup.binCode ? { binCode: shelfSaleLookup.binCode } : {}),
-        }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error ?? "Save failed.");
-      }
-      resetShelfSale();
-      setShelfSaleMessage("Sold — eBay listing updated. Scan the next shelf location.");
-    } catch (e) {
-      setShelfSaleMessage(e instanceof Error ? e.message : "Something went wrong.");
-    } finally {
-      setShelfSaleSaving(false);
     }
   }
 
@@ -1380,12 +1282,19 @@ function ScanPageInner() {
                 ) : shelfSaleLookup.manifestId != null ? (
                   <>
                     <p className="mt-1 text-sm text-muted-foreground">
-                      Retail ${shelfSaleLookup.retailPrice?.toFixed(2)} · COGS{" "}
-                      {shelfSaleLookup.landedCostPerUnit != null
-                        ? `$${shelfSaleLookup.landedCostPerUnit.toFixed(2)}`
-                        : "— enter a landed cost on the manifest to see this"}
+                      Retail ${shelfSaleLookup.retailPrice?.toFixed(2)}
+                      {isOwner && (
+                        <>
+                          {" "}
+                          · COGS{" "}
+                          {shelfSaleLookup.landedCostPerUnit != null
+                            ? `$${shelfSaleLookup.landedCostPerUnit.toFixed(2)}`
+                            : "— enter a landed cost on the manifest to see this"}
+                        </>
+                      )}
                     </p>
                     <PriceTiers
+                      showFloor={isOwner}
                       floorPrice={shelfSaleLookup.floorPrice ?? null}
                       idealPrice={shelfSaleLookup.idealPrice ?? 0}
                       nearExpiryPrice={shelfSaleLookup.nearExpiryPrice ?? 0}
@@ -1413,39 +1322,21 @@ function ScanPageInner() {
                 . Selling this reduces that listing.
               </Alert>
 
-              {shelfSaleLookup.manifestId != null && (
-                <CheckboxRow
-                  label="Expiring within 6 months"
-                  description="Switches the price to the near-expiry tier."
-                  checked={shelfSaleNearExpiry}
-                  onChange={(e) => {
-                    const checked = e.target.checked;
-                    setShelfSaleNearExpiry(checked);
-                    setShelfSalePricePerUnit(
-                      (
-                        (checked ? (shelfSaleLookup.nearExpiryPrice ?? 0) : (shelfSaleLookup.idealPrice ?? 0)) *
-                        packMultiplier
-                      ).toFixed(2)
-                    );
-                  }}
-                />
-              )}
-
-              <SaleFields
-                packMultiplier={packMultiplier}
-                quantity={shelfSaleQuantity}
-                onQuantityChange={setShelfSaleQuantity}
-                price={shelfSalePricePerUnit}
-                onPriceChange={setShelfSalePricePerUnit}
+              <CounterSaleCheckout
+                target={{
+                  kind: "shelf",
+                  manifestId: shelfSaleLookup.manifestId,
+                  itemId: shelfSaleLookup.itemId,
+                  upc: shelfSaleUpc.trim(),
+                  binCode: shelfSaleLookup.binCode ?? null,
+                }}
+                onDone={(text) => {
+                  resetShelfSale();
+                  setShelfSaleMessage(`${text} Scan the next shelf location.`);
+                  focusScanField("shelf-sale-location");
+                }}
+                onCancel={resetShelfSale}
               />
-
-              <Button variant="success" size="xl" block onClick={saveShelfSale} disabled={shelfSaleSaving}>
-                <Check className="size-5" aria-hidden />
-                {shelfSaleSaving ? "Saving…" : "Mark as sold"}
-              </Button>
-              <Button variant="ghost" block onClick={resetShelfSale}>
-                Scan a different item instead
-              </Button>
             </>
           )}
         </div>
@@ -1638,12 +1529,19 @@ function ScanPageInner() {
               <Card>
                 <p className="font-semibold leading-snug text-foreground">{walkupLookup.description}</p>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  Retail ${walkupLookup.retailPrice.toFixed(2)} · COGS{" "}
-                  {walkupLookup.landedCostPerUnit != null
-                    ? `$${walkupLookup.landedCostPerUnit.toFixed(2)}`
-                    : "— enter a landed cost on the manifest to see this"}
+                  Retail ${walkupLookup.retailPrice.toFixed(2)}
+                  {isOwner && (
+                    <>
+                      {" "}
+                      · COGS{" "}
+                      {walkupLookup.landedCostPerUnit != null
+                        ? `$${walkupLookup.landedCostPerUnit.toFixed(2)}`
+                        : "— enter a landed cost on the manifest to see this"}
+                    </>
+                  )}
                 </p>
                 <PriceTiers
+                  showFloor={isOwner}
                   floorPrice={walkupLookup.floorPrice}
                   idealPrice={walkupLookup.idealPrice}
                   nearExpiryPrice={walkupLookup.nearExpiryPrice}
@@ -1662,45 +1560,24 @@ function ScanPageInner() {
                       : `${walkupLookup.alreadyListed.availableQuantity} available on eBay`
                   }. Reduce that listing instead of logging a fresh receive.`}
                   checked={walkupAlreadyInventoried}
-                  onChange={(e) => {
-                    const checked = e.target.checked;
-                    setWalkupAlreadyInventoried(checked);
-                    const multiplier = walkupPackMultiplier(walkupLookup.alreadyListed, checked);
-                    setWalkupPricePerUnit(
-                      ((walkupNearExpiry ? walkupLookup.nearExpiryPrice : walkupLookup.idealPrice) * multiplier).toFixed(2)
-                    );
-                  }}
+                  onChange={(e) => setWalkupAlreadyInventoried(e.target.checked)}
                 />
               )}
 
-              <CheckboxRow
-                label="Expiring within 6 months"
-                description="Switches the price to the near-expiry tier."
-                checked={walkupNearExpiry}
-                onChange={(e) => {
-                  const checked = e.target.checked;
-                  setWalkupNearExpiry(checked);
-                  setWalkupPricePerUnit(
-                    ((checked ? walkupLookup.nearExpiryPrice : walkupLookup.idealPrice) * packMultiplier).toFixed(2)
-                  );
+              <CounterSaleCheckout
+                target={{
+                  kind: "walkup",
+                  manifestId: activeManifestId,
+                  itemId: walkupAlreadyInventoried ? (walkupLookup.alreadyListed?.itemId ?? null) : null,
+                  upc: walkupUpc.trim(),
                 }}
+                onDone={(text) => {
+                  resetWalkupSale();
+                  setWalkupMessage(text);
+                  focusScanField("walkup-upc");
+                }}
+                onCancel={resetWalkupSale}
               />
-
-              <SaleFields
-                packMultiplier={packMultiplier}
-                quantity={walkupQuantity}
-                onQuantityChange={setWalkupQuantity}
-                price={walkupPricePerUnit}
-                onPriceChange={setWalkupPricePerUnit}
-              />
-
-              <Button variant="success" size="xl" block onClick={saveWalkupSale} disabled={walkupSaving}>
-                <Check className="size-5" aria-hidden />
-                {walkupSaving ? "Saving…" : "Mark as sold"}
-              </Button>
-              <Button variant="ghost" block onClick={resetWalkupSale}>
-                Scan a different item instead
-              </Button>
             </>
           )}
         </div>
@@ -2899,11 +2776,13 @@ function UnitInput({ unit, ...props }: Omit<ComponentProps<"input">, "type" | "s
 // Floor / ideal / near-expiry price breakdown shared by walk-up sale and
 // shelf sale.
 function PriceTiers({
+  showFloor,
   floorPrice,
   idealPrice,
   nearExpiryPrice,
   packMultiplier,
 }: {
+  showFloor: boolean;
   floorPrice: number | null;
   idealPrice: number;
   nearExpiryPrice: number;
@@ -2911,12 +2790,12 @@ function PriceTiers({
 }) {
   return (
     <div className="mt-4">
-      <div className="grid grid-cols-3 gap-2">
-        <PriceTier label="Floor" value={floorPrice != null ? floorPrice * packMultiplier : null} />
+      <div className={cn("grid gap-2", showFloor ? "grid-cols-3" : "grid-cols-2")}>
+        {showFloor && <PriceTier label="Floor" value={floorPrice != null ? floorPrice * packMultiplier : null} />}
         <PriceTier label="Ideal" value={idealPrice * packMultiplier} highlight />
         <PriceTier label="Near-expiry" value={nearExpiryPrice * packMultiplier} />
       </div>
-      {floorPrice == null && (
+      {showFloor && floorPrice == null && (
         <p className="mt-2 text-xs text-muted-foreground">
           Enter a landed cost on the manifest to get a floor (minimum acceptable) price.
         </p>
@@ -2944,50 +2823,3 @@ function PriceTier({ label, value, highlight = false }: { label: string; value: 
   );
 }
 
-// Quantity + price pair shared by walk-up sale and shelf sale — labels
-// switch to "packs" when the matched listing is a multipack.
-function SaleFields({
-  packMultiplier,
-  quantity,
-  onQuantityChange,
-  price,
-  onPriceChange,
-}: {
-  packMultiplier: number;
-  quantity: string;
-  onQuantityChange: (v: string) => void;
-  price: string;
-  onPriceChange: (v: string) => void;
-}) {
-  return (
-    <div className="grid grid-cols-2 gap-3">
-      <Field label={packMultiplier > 1 ? "Packs sold" : "Quantity sold"}>
-        <Input
-          size="lg"
-          type="number"
-          min={1}
-          value={quantity}
-          onChange={(e) => onQuantityChange(e.target.value)}
-          onWheel={(e) => e.currentTarget.blur()}
-        />
-      </Field>
-      <Field label={packMultiplier > 1 ? "Price per pack" : "Price per unit"}>
-        <div className="relative">
-          <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-lg text-muted-foreground">
-            $
-          </span>
-          <Input
-            size="lg"
-            type="number"
-            step="0.01"
-            min={0}
-            value={price}
-            onChange={(e) => onPriceChange(e.target.value)}
-            onWheel={(e) => e.currentTarget.blur()}
-            className="pl-7"
-          />
-        </div>
-      </Field>
-    </div>
-  );
-}

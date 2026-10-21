@@ -1156,6 +1156,57 @@ model InPersonSale {
   @@index([soldAt])
 }
 
+// Every walk-up and shelf sale made from the scan page, for review
+// (Cristian, 2026-10-21: more people on the scanners). The stock side is
+// still ManifestWalkupSale / InPersonSale (linked below); this is the
+// who/why/how-paid record on top:
+//   - idealPricePerUnit: what the app asked for, same unit as pricePerUnit
+//     (per pack when sold as packs). null = nothing to compare against.
+//   - nearExpiry: "expiring soon" was ticked; needs a photo of the date.
+//   - belowAsked: charged under the price the app allowed (ideal, or the
+//     near-expiry price when ticked); needs a photo and a reason.
+//   - payment "cash", or "invoice": a Shopify draft order on Epic Steals,
+//     local pickup, emailed to the customer. Stock only comes off once
+//     it's paid (status awaiting_payment -> sold).
+// status: "sold" | "awaiting_payment" | "cancelled" | "failed".
+model CounterSale {
+  id                  String    @id @default(uuid())
+  kind                String // "walkup" | "shelf"
+  manifestId          String?
+  itemId              String?
+  upc                 String?
+  binCode             String?
+  description         String
+  quantity            Int
+  packSize            Int?
+  pricePerUnit        Decimal   @db.Decimal(10, 2)
+  idealPricePerUnit   Decimal?  @db.Decimal(10, 2)
+  allowedPricePerUnit Decimal?  @db.Decimal(10, 2)
+  nearExpiry          Boolean   @default(false)
+  belowAsked          Boolean   @default(false)
+  reason              String?
+  photoUrls           String[]
+  payment             String
+  customerEmail       String?
+  shopifyDraftOrderId String?
+  shopifyOrderId      String?
+  shopifyOrderName    String?
+  invoiceUrl          String?
+  status              String
+  error               String?
+  soldBy              String?
+  createdAt           DateTime  @default(now())
+  paidAt              DateTime?
+  completedAt         DateTime?
+  inPersonSaleId      String?
+  walkupSaleId        String?
+  reviewedAt          DateTime?
+  reviewedBy          String?
+
+  @@index([createdAt])
+  @@index([status])
+}
+
 model StockAdjustment {
   id                String   @id @default(uuid())
   item              Item     @relation(fields: [itemId], references: [id], onDelete: Cascade)

@@ -22,6 +22,8 @@ export const SHOPIFY_REQUIRED_SCOPES = [
   // Local delivery: fulfill the order and mark it delivered.
   "write_merchant_managed_fulfillment_orders",
   "write_fulfillments",
+  // In-person sales paid by card: an emailed invoice (counterSale.ts).
+  "write_draft_orders",
 ];
 
 export type ShopifyConfig = { shop: string; clientId: string; clientSecret: string };

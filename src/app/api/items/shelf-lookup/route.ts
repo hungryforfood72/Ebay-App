@@ -1,3 +1,4 @@
+import { getRequestUser } from "@/lib/auth";
 import { computeWalkupPrices, getWalkupSaleSettings } from "@/lib/walkupSale";
 import { getLiveAvailableQuantity } from "@/lib/ebay";
 import { parseBundleComponentUnits } from "@/lib/itemUnits";
@@ -205,8 +206,11 @@ export async function GET(request: NextRequest) {
     binCode,
     description: line.description,
     retailPrice: Number(line.retailPrice),
-    landedCostPerUnit,
+    // Cost and the cost-based floor are the owner's; staff get the ideal
+    // and near-expiry prices only.
+    landedCostPerUnit: getRequestUser(request)?.role === "owner" ? landedCostPerUnit : null,
     alreadyListed,
     ...prices,
+    floorPrice: getRequestUser(request)?.role === "owner" ? prices.floorPrice : null,
   });
 }

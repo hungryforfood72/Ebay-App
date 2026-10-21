@@ -11,7 +11,7 @@ import { Button, buttonClasses } from "@/components/ui/Button";
 import { Card, SectionHeader } from "@/components/ui/Card";
 import { cn } from "@/components/ui/cn";
 import { Input, Select } from "@/components/ui/Input";
-import { ClipboardCheck, ExternalLink, RefreshCw, ScanBarcode } from "lucide-react";
+import { ChevronRight, ClipboardCheck, ExternalLink, HandCoins, RefreshCw, ScanBarcode } from "lucide-react";
 import { describeBreakdown, type ExpirySplit } from "@/lib/expirationBreakdown";
 import type { ItemLocation } from "@/lib/warehouse/types";
 import type { RelistProgress } from "@/lib/relist";
@@ -254,6 +254,8 @@ export default function DashboardPage() {
         </section>
 
         <SalesSection isOwner={isOwner} refreshKey={salesRefresh} />
+
+        {isOwner && <InPersonCard />}
 
         {isOwner && <BuyerOffersSection />}
 
@@ -1201,5 +1203,35 @@ function ActionGroup({ label, status, children }: { label: string; status?: Reac
       </div>
       {children}
     </div>
+  );
+}
+
+// Owner only: today's walk-up and shelf sales, and anything waiting on a
+// look (a sale under the ideal price, an "expiring soon", an invoice
+// problem) or a payment. The detail is on /reports/in-person.
+function InPersonCard() {
+  const [summary, setSummary] = useState<{ todaySales: number; todayRevenue: number; toReview: number; unpaid: number } | null>(null);
+  useEffect(() => {
+    fetch("/api/reports/in-person-sales/summary")
+      .then((r) => (r.ok ? r.json() : null))
+      .then(setSummary)
+      .catch(() => setSummary(null));
+  }, []);
+  if (!summary) return null;
+  return (
+    <Link href="/reports/in-person" className="block">
+      <Card className={cn("flex items-center gap-3 transition-colors hover:bg-muted", summary.toReview > 0 && "border-amber-300")}>
+        <HandCoins className="size-6 shrink-0 text-primary" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <p className="font-medium text-foreground">In-person sales</p>
+          <p className="text-sm text-muted-foreground">
+            Today: {summary.todaySales} sale{summary.todaySales === 1 ? "" : "s"}, ${summary.todayRevenue.toFixed(2)}
+            {summary.toReview > 0 && <span className="font-semibold text-amber-700"> · {summary.toReview} to review</span>}
+            {summary.unpaid > 0 && <span> · {summary.unpaid} unpaid invoice{summary.unpaid === 1 ? "" : "s"}</span>}
+          </p>
+        </div>
+        <ChevronRight className="size-5 shrink-0 text-muted-foreground" aria-hidden />
+      </Card>
+    </Link>
   );
 }

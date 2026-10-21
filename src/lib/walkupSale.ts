@@ -87,6 +87,31 @@ export function computeWalkupPrices(
   return { floorPrice, idealPrice, nearExpiryPrice };
 }
 
+// One manifest line's walk-up prices, per physical unit: the same math the
+// two lookup routes show at the table (landed cost per unit approximated
+// from the line's expected quantity). null = no line with that UPC.
+export async function manifestLinePrices(manifestId: string, upc: string) {
+  const [manifest, line] = await Promise.all([
+    prisma.manifest.findUnique({
+      where: { id: manifestId },
+      select: { totalLandedCost: true, lines: { select: { extendedRetail: true } } },
+    }),
+    prisma.manifestLine.findFirst({
+      where: { manifestId, upc },
+      select: { description: true, retailPrice: true, extendedRetail: true, expectedQuantity: true },
+    }),
+  ]);
+  if (!manifest || !line) return null;
+  const totalLandedCost = manifest.totalLandedCost != null ? Number(manifest.totalLandedCost) : null;
+  const totalExtendedRetail = manifest.lines.reduce((sum, l) => sum + Number(l.extendedRetail), 0);
+  const valueShare = totalExtendedRetail > 0 ? Number(line.extendedRetail) / totalExtendedRetail : 0;
+  const landedCostPerUnit =
+    totalLandedCost != null && line.expectedQuantity > 0 ? (valueShare * totalLandedCost) / line.expectedQuantity : null;
+  const retailPrice = Number(line.retailPrice);
+  const prices = computeWalkupPrices({ retailPrice, landedCostPerUnit }, await getWalkupSaleSettings());
+  return { description: line.description, retailPrice, landedCostPerUnit, ...prices };
+}
+
 // Thrown by recordItemSale — carries the HTTP status a caller route should
 // respond with, so the same logic can be shared by both the manifest-scoped
 // walk-up-sale route and the manifest-less shelf-sale route without either
