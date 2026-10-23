@@ -1918,6 +1918,23 @@ export async function getListingStatus(
   };
 }
 
+// The whole listing as eBay holds it (description, every photo, item
+// specifics, condition, category, package weight), raw XML. Used by the
+// listing backup (src/lib/listingBackup.ts), which keeps it all in case the
+// account is ever lost.
+export async function getFullListingXml(itemId: string): Promise<string> {
+  return tradingApiFetch(
+    "GetItem",
+    `<GetItemRequest xmlns="urn:ebay:apis:eBLBaseComponents"><ItemID>${xmlEscape(itemId)}</ItemID><DetailLevel>ReturnAll</DetailLevel><IncludeItemSpecifics>true</IncludeItemSpecifics></GetItemRequest>`
+  );
+}
+
+// The eBay user ID of the account the app is connected to right now.
+export async function getConnectedSellerId(): Promise<string | null> {
+  const xml = await tradingApiFetch("GetUser", `<GetUserRequest xmlns="urn:ebay:apis:eBLBaseComponents"></GetUserRequest>`);
+  return xmlField(xml, "UserID");
+}
+
 // Best Offers buyers sent us. Unlike sendOfferToInterestedBuyers (we offer,
 // Negotiation API), receiving and answering a buyer's offer only exists in
 // the Trading API. Confirmed live 2026-10-14: eBay gives the buyer's state

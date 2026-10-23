@@ -2,6 +2,7 @@
   "crons": [
     { "path": "/api/cron/sync-ebay-orders", "schedule": "*/10 * * * *" },
     { "path": "/api/cron/full-sync", "schedule": "5 */4 * * *" },
-    { "path": "/api/cron/expire-listings", "schedule": "0 * * * *" }
+    { "path": "/api/cron/expire-listings", "schedule": "0 * * * *" },
+    { "path": "/api/cron/backup-listings", "schedule": "30 * * * *" }
   ]
 }

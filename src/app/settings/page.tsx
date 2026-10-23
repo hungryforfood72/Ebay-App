@@ -31,6 +31,7 @@ function SettingsPageInner() {
       <div className="flex flex-col gap-8">
         <SettingsGroup title="Connections">
           <EbayConnectionStatus />
+          <EbayBackupLink />
           <EbaySaleAlerts />
           <ShopifyConnection />
           <DealAlertsCard />
@@ -1084,6 +1085,25 @@ function EbaySaleAlerts() {
           {message && <p className="text-sm text-foreground">{message}</p>}
         </div>
       )}
+    </Card>
+  );
+}
+
+// Points to the listing backup (/settings/ebay-backup): every live eBay
+// listing saved on our side, and the restore onto a new account.
+function EbayBackupLink() {
+  return (
+    <Card>
+      <SectionHeader
+        title="eBay listing backup"
+        description="Every live listing is saved here hourly, photos included, so a new eBay account can be connected and everything re-listed if this one is ever lost."
+        action={
+          <a href="/settings/ebay-backup" className={buttonClasses({ size: "sm", variant: "outline" })}>
+            Open
+          </a>
+        }
+        className="mb-0"
+      />
     </Card>
   );
 }

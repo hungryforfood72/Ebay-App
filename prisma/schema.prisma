@@ -1793,3 +1793,73 @@ model ShippingLabel {
   @@index([trackingNumber])
   @@index([createdAt])
 }
+
+// A copy of every live eBay listing, kept in case the eBay account is ever
+// lost (Cristian, 2026-10-23): with it, a new account can be connected and
+// everything re-listed without re-scanning or re-photographing. One row per
+// eBay listing, refreshed by src/lib/listingBackup.ts (hourly cron).
+// Listings the app made already live on their Item; this also covers the
+// ones made straight on eBay, which exist nowhere else. Rows are never
+// deleted: a listing that comes off eBay just gets endedAt.
+model EbayListingBackup {
+  // eBay's listing (item) ID.
+  listingId          String    @id
+  // The eBay account it was on, so a restore can refuse to re-list onto
+  // that same account (which would double every listing).
+  sellerUserId       String?
+  // The app's Item for it, when the app made it (or adopted it on restore).
+  itemId             String?
+  sku                String?
+  title              String
+  // HTML, as eBay shows it.
+  description        String?
+  price              Decimal   @db.Decimal(10, 2)
+  quantityAvailable  Int
+  quantitySold       Int       @default(0)
+  categoryId         String?
+  categoryName       String?
+  conditionId        String?
+  conditionName      String?
+  // { "Brand": ["Vaseline"], "Body Area": ["Body", "Full Body"] }, exactly
+  // as eBay holds them (a name can have several values).
+  itemSpecifics      Json?
+  upc                String?
+  weightLbs          Int?
+  weightOz           Int?
+  // Package size in inches, when eBay has one.
+  packageLength      Float?
+  packageWidth       Float?
+  packageDepth       Float?
+  bestOfferEnabled   Boolean   @default(false)
+  // Photos as eBay serves them, and our own copies on Cloudinary (same
+  // order). The eBay ones go away with the account, so only savedPhotoUrls
+  // count for a restore. Listings the app made reuse Item.photoUrls.
+  ebayPhotoUrls      String[]  @default([])
+  savedPhotoUrls     String[]  @default([])
+  photoError         String?
+  listingStartedAt   DateTime?
+  // eBay's whole GetItem response, minus buyer details, for anything the
+  // columns above don't cover.
+  rawXml             String?
+  // Last full GetItem pull. Price and quantity are refreshed every run from
+  // the active list; the rest every few days or when the title changes.
+  detailsFetchedAt   DateTime?
+  detailsError       String?
+  firstSeenAt        DateTime  @default(now())
+  lastSeenActiveAt   DateTime  @default(now())
+  // No longer on the account's active list (sold out, ended).
+  endedAt            DateTime?
+
+  // Restore onto a new account (src/lib/listingBackup.ts restoreListings).
+  // restoreOfferId: the new account's offer, kept as soon as it exists so a
+  // retry publishes it instead of making a second one.
+  restoreOfferId     String?
+  restoredListingId  String?
+  restoredAt         DateTime?
+  restoreError       String?
+
+  updatedAt          DateTime  @updatedAt
+
+  @@index([endedAt])
+  @@index([itemId])
+}
