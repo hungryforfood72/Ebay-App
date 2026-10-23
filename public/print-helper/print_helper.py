@@ -23,6 +23,7 @@ Log: print_helper.log next to this file.
 from __future__ import annotations
 
 import base64
+import io
 import json
 import logging
 import logging.handlers
@@ -46,7 +47,7 @@ import win32ui
 import winerror
 from PIL import Image, ImageWin
 
-VERSION = "2026-10-21.1"
+VERSION = "2026-10-23.1"
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE / "config.json"
 POLL_SECONDS = 2
@@ -119,11 +120,14 @@ class Station:
         body = {"status": "printed"} if ok else {"status": "failed", "error": (error or "Printing failed.")[:500]}
         self.call("PATCH", f"/api/print-helper/jobs/{job_id}", body)
 
+    def label_png(self, label_id: str) -> bytes:
+        return self.call("GET", f"/api/print-helper/labels/{label_id}/image", raw=True)
+
     def inline_images(self, html: str) -> str:
         # A shipping label page loads its PNG from the app; fetch it with the
         # station key and put it in the page itself.
         def swap(m: re.Match) -> str:
-            png = self.call("GET", f"/api/print-helper/labels/{m.group(1)}/image", raw=True)
+            png = self.label_png(m.group(1))
             return 'src="data:image/png;base64,' + base64.b64encode(png).decode() + '"'
 
         return LABEL_IMG.sub(swap, html)
@@ -183,6 +187,17 @@ def pdf_pages(pdf: bytes) -> list[Image.Image]:
     return pages
 
 
+def png_page(png: bytes) -> Image.Image:
+    img = Image.open(io.BytesIO(png))
+    if img.mode in ("RGBA", "LA", "P"):
+        # Transparent areas would print black: put it on white paper first.
+        img = img.convert("RGBA")
+        page = Image.new("RGB", img.size, "white")
+        page.paste(img, mask=img.getchannel("A"))
+        return page
+    return img.convert("RGB")
+
+
 def paper_4x6(printer: str, port: str) -> int | None:
     """The printer's own 4x6 paper code, if it lists one."""
     try:
@@ -238,7 +253,13 @@ def print_job(station: Station, job: dict):
         raise RuntimeError(f"Nothing to print in this {job.get('kind')} job.")
     if station.printer not in list_printers():
         raise RuntimeError(f'The printer "{station.printer}" isn\'t on this PC anymore. Pick it again on the station page.')
-    pages = pdf_pages(html_to_pdf(station.inline_images(html)))
+    if job.get("kind") == "shipping_label" and (m := LABEL_IMG.search(html)):
+        # The label is already a 4x6 PNG: print it as is. Starting headless
+        # Chrome for it took 1s on a good run and 15-20s on a bad one, and
+        # the shipper stood waiting for it.
+        pages = [png_page(station.label_png(m.group(1)))]
+    else:
+        pages = pdf_pages(html_to_pdf(station.inline_images(html)))
     print_pages(station.printer, pages, payload.get("code") or job.get("kind") or "Label", max(1, int(job.get("copies") or 1)))
 
 
