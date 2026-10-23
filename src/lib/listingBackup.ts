@@ -167,11 +167,10 @@ export function parseListingXml(xml: string): ParsedListing {
     packageWidth: numberOrNull(field(pkg, "PackageWidth")),
     packageDepth: numberOrNull(field(pkg, "PackageDepth")),
     bestOfferEnabled: field(item, "BestOfferEnabled") === "true",
-    // A listing made from eBay's catalog with no photos of its own shows the
-    // catalog's stock photo instead.
-    ebayPhotoUrls: allFields(pictures, "PictureURL").length
-      ? allFields(pictures, "PictureURL")
-      : allFields(productDetails, "StockPhotoURL"),
+    // Only photos the seller uploaded. eBay's catalog stock photo
+    // (StockPhotoURL) is never copied: it's eBay's or the brand's image, and
+    // listings using them have been taken down on brand complaints.
+    ebayPhotoUrls: allFields(pictures, "PictureURL"),
     listingStartedAt: startTime ? new Date(startTime) : null,
     active: field(selling, "ListingStatus") === "Active",
   };
@@ -182,10 +181,9 @@ export function parseListingXml(xml: string): ParsedListing {
 // ---------------------------------------------------------------------------
 
 // GetItem hands back a mid-size picture ("…/z/{id}/$_57.JPG"); the same
-// picture at full size is /images/g/{id}/s-l1600.jpg. Catalog stock photos
-// come as /images/g/{id}/s-l640.jpg.
+// picture at full size is /images/g/{id}/s-l1600.jpg.
 function fullSizePhotoUrl(url: string): string | null {
-  const id = url.match(/\/z\/([^/]+)\/\$_\d+\.\w+/)?.[1] ?? url.match(/\/images\/g\/([^/]+)\/s-l\d+\.\w+/)?.[1];
+  const id = url.match(/\/z\/([^/]+)\/\$_\d+\.\w+/)?.[1];
   return id ? `https://i.ebayimg.com/images/g/${id}/s-l1600.jpg` : null;
 }
 
@@ -619,7 +617,9 @@ export async function getRestorePreflight(): Promise<RestorePreflight> {
 // "listed") until it's live, so neither the Shopify sync nor anything else
 // treats it as for sale yet.
 async function itemFromBackup(row: EbayListingBackup): Promise<Item> {
-  if (row.savedPhotoUrls.length === 0) throw new Error("No saved photos for this listing.");
+  if (row.savedPhotoUrls.length === 0) {
+    throw new Error("No photos of its own on eBay (stock photo only). Take real photos and list it from the app.");
+  }
   const location = locationFromSku(row.sku);
   return prisma.item.create({
     data: {
