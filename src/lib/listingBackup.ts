@@ -167,7 +167,11 @@ export function parseListingXml(xml: string): ParsedListing {
     packageWidth: numberOrNull(field(pkg, "PackageWidth")),
     packageDepth: numberOrNull(field(pkg, "PackageDepth")),
     bestOfferEnabled: field(item, "BestOfferEnabled") === "true",
-    ebayPhotoUrls: allFields(pictures, "PictureURL"),
+    // A listing made from eBay's catalog with no photos of its own shows the
+    // catalog's stock photo instead.
+    ebayPhotoUrls: allFields(pictures, "PictureURL").length
+      ? allFields(pictures, "PictureURL")
+      : allFields(productDetails, "StockPhotoURL"),
     listingStartedAt: startTime ? new Date(startTime) : null,
     active: field(selling, "ListingStatus") === "Active",
   };
@@ -178,9 +182,10 @@ export function parseListingXml(xml: string): ParsedListing {
 // ---------------------------------------------------------------------------
 
 // GetItem hands back a mid-size picture ("…/z/{id}/$_57.JPG"); the same
-// picture at full size is /images/g/{id}/s-l1600.jpg.
+// picture at full size is /images/g/{id}/s-l1600.jpg. Catalog stock photos
+// come as /images/g/{id}/s-l640.jpg.
 function fullSizePhotoUrl(url: string): string | null {
-  const id = url.match(/\/z\/([^/]+)\/\$_\d+\.\w+/)?.[1];
+  const id = url.match(/\/z\/([^/]+)\/\$_\d+\.\w+/)?.[1] ?? url.match(/\/images\/g\/([^/]+)\/s-l\d+\.\w+/)?.[1];
   return id ? `https://i.ebayimg.com/images/g/${id}/s-l1600.jpg` : null;
 }
 
