@@ -55,9 +55,14 @@ import win32ui
 import winerror
 from PIL import Image, ImageWin
 
-VERSION = "2026-10-24.1"
+VERSION = "2026-10-24.2"
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE / "config.json"
+# The code this process is running, as it was when it started. Updates are
+# checked against this, not the file on disk: a reinstall can put the new
+# file there while this old copy keeps running, and comparing with the disk
+# would say "up to date" forever.
+RUNNING = Path(__file__).read_bytes().replace(b"\r\n", b"\n")
 POLL_SECONDS = 2
 CHECKIN_SECONDS = 10
 UPDATE_SECONDS = 6 * 60 * 60
@@ -394,18 +399,20 @@ def load_config() -> tuple[str, list[dict]]:
 
 
 def update_self(base: str) -> bool:
-    """Fetches the latest helper from the app; True when this file changed."""
+    """Fetches the latest helper from the app; True when it isn't what this
+    process is running (the file on disk is then the latest: restart)."""
     try:
         with urllib.request.urlopen(f"{base}/print-helper/print_helper.py?t={int(time.time())}", timeout=30) as res:
-            new = res.read()
+            new = res.read().replace(b"\r\n", b"\n")
         compile(new, "print_helper.py", "exec")
     except Exception:
         log.exception("Couldn't check for an update")
         return False
-    me = Path(__file__)
-    if new.replace(b"\r\n", b"\n") == me.read_bytes().replace(b"\r\n", b"\n"):
+    if new == RUNNING:
         return False
-    me.write_bytes(new)
+    me = Path(__file__)
+    if me.read_bytes().replace(b"\r\n", b"\n") != new:
+        me.write_bytes(new)
     log.info("Updated itself; restarting")
     return True
 

@@ -53,7 +53,8 @@ export function labelSizeOf(v: unknown): LabelSize {
 // its dates compare as strings) that prints the small labels at a picked
 // size and takes "Check for updates". An older one would print small
 // labels on its 4x6 printer, so it doesn't get them until it has updated
-// (every 6h, a restart, or Reinstall).
+// (every 6h, a restart, or Reinstall). Later versions only need to be
+// greater; this stays the first one with the feature.
 export const LABEL_HELPER_VERSION = "2026-10-24.1";
 
 export function helperCanPrintLabels(version: string | null): boolean {

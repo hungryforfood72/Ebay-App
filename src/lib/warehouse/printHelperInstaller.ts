@@ -140,6 +140,13 @@ try {
   $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 99 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
   Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Description 'Prints labels and packing slips for the eBay tool stations' -Force | Out-Null
   Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+  # A helper that restarted itself after an update isn't the task's
+  # process, so stopping the task leaves it running; the new copy would see
+  # it and quit, and the old version would keep printing (Cristian,
+  # 2026-10-24: reinstalled 5 times, still the old version). Stop every one.
+  Get-CimInstance Win32_Process -Filter "Name like 'python%'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -like '*print_helper.py*' } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
   Start-Sleep -Seconds 2
   Start-ScheduledTask -TaskName $TaskName
 
