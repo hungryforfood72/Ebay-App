@@ -1287,11 +1287,11 @@ export default function SortPage() {
         )}
 
         {line && isDud && (
-          <div role="alert" className="rounded-xl border-2 border-amber-400 bg-amber-50 p-3 text-amber-950">
-            <div className="flex gap-2.5">
-              <Ban className="mt-0.5 size-7 shrink-0 text-amber-600" aria-hidden />
+          <div role="alert" className="rounded-xl border-2 border-amber-400 bg-amber-50 px-3 py-2 text-amber-950">
+            <div className="flex gap-2">
+              <Ban className="mt-0.5 size-6 shrink-0 text-amber-600" aria-hidden />
               <div className="min-w-0">
-                <p className="text-xl font-bold leading-tight">DUD: put it in the dud box</p>
+                <p className="text-lg font-bold leading-tight">DUD: put it in the dud box</p>
                 {result?.dudReason && <p className="mt-0.5 text-sm font-medium">{result.dudReason}</p>}
                 <p className="mt-1 text-sm">
                   {dudBox ? (
@@ -1308,12 +1308,12 @@ export default function SortPage() {
         )}
 
         {line && goesBack && (
-          <div role="alert" className="rounded-xl border-2 border-amber-400 bg-amber-50 p-3 text-amber-950">
-            <div className="flex gap-2.5">
-              <Ban className="mt-0.5 size-7 shrink-0 text-amber-600" aria-hidden />
+          <div role="alert" className="rounded-xl border-2 border-amber-400 bg-amber-50 px-3 py-2 text-amber-950">
+            <div className="flex gap-2">
+              <Ban className="mt-0.5 size-6 shrink-0 text-amber-600" aria-hidden />
               <div className="min-w-0">
-                <p className="text-xl font-bold leading-tight">DON&apos;T KEEP: set it aside for the supplier</p>
-                <p className="mt-0.5 text-sm font-medium">
+                <p className="text-lg font-bold leading-tight">DON&apos;T KEEP: set it aside for the supplier</p>
+                <p className="text-sm font-medium">
                   {result?.consignmentCall?.reason ?? "It wasn't supposed to come with this load. It goes back."}
                 </p>
               </div>
