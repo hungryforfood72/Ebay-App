@@ -351,6 +351,11 @@ export async function GET(
     });
   }
 
+  // Consignment (Cristian, 2026-10-24): nothing was paid for the load, so
+  // there's no landed cost and COGS is $0. What it costs is the supplier's
+  // share of each sale's profit, taken off profit below.
+  const supplierPct = manifest.consignment ? (manifest.consignmentSupplierPct ?? DEFAULT_CONSIGNMENT_SUPPLIER_PCT) : null;
+
   const lines = manifest.lines.map((line, index) => {
     const receivedUnits = receivedAllocation[index];
     const damagedUnits = damagedAllocation[index];
@@ -366,9 +371,11 @@ export async function GET(
     // raising the cost per unit rather than understating it.
     const valueShare = totalCostWeight > 0 ? costWeights[index] / totalCostWeight : 0;
     const weightedCogsPerUnit =
-      totalLandedCost != null && receivedUnits > 0
-        ? (valueShare * totalLandedCost) / receivedUnits
-        : null;
+      supplierPct != null
+        ? 0
+        : totalLandedCost != null && receivedUnits > 0
+          ? (valueShare * totalLandedCost) / receivedUnits
+          : null;
 
     // A UPC's real sold revenue/fees are dollar totals per UPC, not
     // per-line — split across lines sharing that UPC proportionally to
@@ -381,8 +388,12 @@ export async function GET(
     const soldShipping = soldShare * (line.upc ? (soldShippingByUpc.get(line.upc) ?? 0) : 0);
     const soldRefunds = soldShare * (line.upc ? (soldRefundsByUpc.get(line.upc) ?? 0) : 0);
     const soldCogs = weightedCogsPerUnit != null ? soldUnits * weightedCogsPerUnit : null;
+    const net = soldRevenue - soldFees - soldShipping - soldRefunds - (soldCogs ?? 0);
+    // Consignment: less the supplier's share. Worked out per line here; the
+    // ledger card has the exact amount owed, per sale (a sale that lost
+    // money owes him nothing, which a line total can blur a little).
     const profit =
-      soldUnits > 0 && soldCogs != null ? soldRevenue - soldFees - soldShipping - soldRefunds - soldCogs : null;
+      soldUnits > 0 && soldCogs != null ? (supplierPct != null ? net - Math.max(0, net) * (supplierPct / 100) : net) : null;
 
     // Sorting status: "not_sorted" until the load is marked sorted or
     // something of this line was counted; then matches / short / over by
@@ -529,7 +540,7 @@ export async function GET(
   const totalProfit = lines.reduce((sum, l) => sum + (l.profit ?? 0), 0);
 
   const blendedCogsPerUnit =
-    totalLandedCost != null && totalReceivedUnits > 0 ? totalLandedCost / totalReceivedUnits : null;
+    supplierPct != null ? 0 : totalLandedCost != null && totalReceivedUnits > 0 ? totalLandedCost / totalReceivedUnits : null;
 
   // Matches the discount route's own eligibility — a legacy CSV-uploaded
   // item that's since been linked up (ebayListingId, no offerId) is just as

@@ -42,11 +42,15 @@ export function ConsignmentTermsCard({
   consignment,
   supplierPct,
   onSaved,
+  bought = false,
 }: {
   manifestId: string;
   consignment: boolean;
   supplierPct: number;
   onSaved: () => void;
+  // On the manifest page, after it was taken: no on/off switch (it's a
+  // consignment load for good), just the supplier's split.
+  bought?: boolean;
 }) {
   const [pct, setPct] = useState(String(supplierPct));
   const [saving, setSaving] = useState(false);
@@ -73,20 +77,26 @@ export function ConsignmentTermsCard({
   return (
     <Card>
       <SectionHeader
-        title="Consignment"
-        description="Pay the supplier only when something sells, pick what you want, and give back what doesn't sell. Shows a pick list instead of a max bid."
+        title={bought ? "Consignment split" : "Consignment"}
+        description={
+          bought
+            ? "No cost to you for this load. The supplier gets this share of the profit on each sale, after eBay fees and the label, and nothing on a sale that loses money."
+            : "Pay the supplier only when something sells, pick what you want, and give back what doesn't sell. Shows a pick list instead of a max bid."
+        }
       />
       <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
-        <label className="inline-flex items-center gap-2 text-sm font-medium text-foreground">
-          <input
-            type="checkbox"
-            className="size-4 accent-primary"
-            checked={consignment}
-            disabled={saving}
-            onChange={(e) => save({ consignment: e.target.checked })}
-          />
-          This load is on consignment
-        </label>
+        {!bought && (
+          <label className="inline-flex items-center gap-2 text-sm font-medium text-foreground">
+            <input
+              type="checkbox"
+              className="size-4 accent-primary"
+              checked={consignment}
+              disabled={saving}
+              onChange={(e) => save({ consignment: e.target.checked })}
+            />
+            This load is on consignment
+          </label>
+        )}
         {consignment && (
           <div className="flex flex-wrap items-center gap-2">
             <label htmlFor="supplier-pct" className="text-sm text-muted-foreground">
@@ -119,6 +129,9 @@ export function ConsignmentTermsCard({
           </div>
         )}
       </div>
+      {consignment && supplierPct === 0 && (
+        <p className="mt-2 text-sm font-medium text-warning">Set to 0% right now, so the supplier gets nothing.</p>
+      )}
       {error && <p className="mt-2 text-sm font-medium text-danger">{error}</p>}
     </Card>
   );

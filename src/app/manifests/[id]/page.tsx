@@ -1,6 +1,7 @@
 "use client";
 
 import { ConsignmentLedgerCard } from "@/components/ConsignmentLedgerCard";
+import { ConsignmentTermsCard } from "@/components/ConsignmentPickList";
 import { SupplierShareCard } from "@/components/SupplierShareCard";
 import { Stat } from "@/components/Stat";
 import { Alert } from "@/components/ui/Alert";
@@ -84,6 +85,8 @@ type ManifestDetail = {
   // Owner only. A consignment load shows what's owed to the supplier.
   consignment?: boolean;
   shareToken?: string | null;
+  // The supplier's % of each sale's profit (consignment loads).
+  consignmentSupplierPct?: number;
   // Owner only. Set when this load was won through the Analyzer's bid
   // tracking — a starting point for the landed cost.
   bidStatus?: "active" | "lost" | "won" | null;
@@ -350,10 +353,17 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
                   highlight={s.totalSoldRefunds > 0}
                 />
               )}
-              {s.totalSoldCogs != null && <Stat label="COGS of sold" value={s.totalSoldCogs} format="currency" />}
+              {/* Consignment: nothing was paid for the load, so no COGS. */}
+              {s.totalSoldCogs != null && !manifest.consignment && (
+                <Stat label="COGS of sold" value={s.totalSoldCogs} format="currency" />
+              )}
               {s.totalProfit != null && (
                 <Stat
-                  label="Profit"
+                  label={
+                    manifest.consignment
+                      ? `Your profit (after his ${manifest.consignmentSupplierPct ?? 0}%)`
+                      : "Profit"
+                  }
                   value={s.totalProfit}
                   format="currency"
                   highlight={s.totalSoldUnits > 0 && s.totalProfit < 0}
@@ -380,7 +390,8 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
           <SupplierShareCard manifestId={manifest.id} shareToken={manifest.shareToken ?? null} onChange={load} />
         )}
 
-        {isOwner && evaluation?.status === "complete" && (
+        {/* A max bid means nothing on consignment: nothing was paid. */}
+        {isOwner && evaluation?.status === "complete" && !manifest.consignment && (
           <Card>
             <SectionHeader
               title="Pre-purchase estimate"
@@ -433,48 +444,61 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
             changes live eBay prices (its route is owner-only too). */}
         {isOwner && (
           <div className="grid gap-6 lg:grid-cols-2">
-            <Card>
-              <SectionHeader
-                title="Total landed cost"
-                description={
-                  manifest.bidStatus === "won" && manifest.bidAmount != null
-                    ? `Won at $${manifest.bidAmount.toFixed(2)}. Add the buyer's fee, shipping and tax on top for what it cost you delivered.`
-                    : "What this whole load actually cost you, delivered."
-                }
+            {manifest.consignment ? (
+              // No cost on consignment (Cristian, 2026-10-24): the supplier's
+              // split takes the landed cost's place.
+              <ConsignmentTermsCard
+                key={manifest.consignmentSupplierPct}
+                manifestId={manifest.id}
+                consignment
+                supplierPct={manifest.consignmentSupplierPct ?? 0}
+                onSaved={load}
+                bought
               />
-              <div className="flex gap-2">
-                <div className="relative min-w-0 flex-1">
-                  <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-muted-foreground">
-                    $
-                  </span>
-                  <Input
-                    size="sm"
-                    type="number"
-                    step="0.01"
-                    value={landedCostInput}
-                    onChange={(e) => setLandedCostInput(e.target.value)}
-                    placeholder="1200.00"
-                    aria-label="Total landed cost"
-                    className="pl-7"
-                  />
+            ) : (
+              <Card>
+                <SectionHeader
+                  title="Total landed cost"
+                  description={
+                    manifest.bidStatus === "won" && manifest.bidAmount != null
+                      ? `Won at $${manifest.bidAmount.toFixed(2)}. Add the buyer's fee, shipping and tax on top for what it cost you delivered.`
+                      : "What this whole load actually cost you, delivered."
+                  }
+                />
+                <div className="flex gap-2">
+                  <div className="relative min-w-0 flex-1">
+                    <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-muted-foreground">
+                      $
+                    </span>
+                    <Input
+                      size="sm"
+                      type="number"
+                      step="0.01"
+                      value={landedCostInput}
+                      onChange={(e) => setLandedCostInput(e.target.value)}
+                      placeholder="1200.00"
+                      aria-label="Total landed cost"
+                      className="pl-7"
+                    />
+                  </div>
+                  <Button onClick={saveLandedCost} disabled={savingCost}>
+                    Save
+                  </Button>
                 </div>
-                <Button onClick={saveLandedCost} disabled={savingCost}>
-                  Save
-                </Button>
-              </div>
-              {error && <p className="mt-2 text-sm font-medium text-danger">{error}</p>}
-              {s.blendedCogsPerUnit != null ? (
-                <p className="mt-3 text-sm text-muted-foreground">
-                  Blended COGS:{" "}
-                  <strong className="text-foreground">${s.blendedCogsPerUnit.toFixed(4)}</strong> per unit (landed cost ÷{" "}
-                  {s.totalReceivedUnits} units received). Per-line weighted cost below accounts for each item&apos;s
-                  share of the load&apos;s declared value, divided by that line&apos;s good units received —
-                  damaged/expired and still-missing units aren&apos;t counted.
-                </p>
-              ) : (
-                <p className="mt-3 text-sm text-muted-foreground">Enter a landed cost to see COGS per unit.</p>
-              )}
-            </Card>
+                {error && <p className="mt-2 text-sm font-medium text-danger">{error}</p>}
+                {s.blendedCogsPerUnit != null ? (
+                  <p className="mt-3 text-sm text-muted-foreground">
+                    Blended COGS:{" "}
+                    <strong className="text-foreground">${s.blendedCogsPerUnit.toFixed(4)}</strong> per unit (landed cost ÷{" "}
+                    {s.totalReceivedUnits} units received). Per-line weighted cost below accounts for each item&apos;s
+                    share of the load&apos;s declared value, divided by that line&apos;s good units received —
+                    damaged/expired and still-missing units aren&apos;t counted.
+                  </p>
+                ) : (
+                  <p className="mt-3 text-sm text-muted-foreground">Enter a landed cost to see COGS per unit.</p>
+                )}
+              </Card>
+            )}
 
             <Card>
               <SectionHeader

@@ -1,4 +1,5 @@
 import { cogsMapsFor, costPerListingUnit } from "./cogs";
+import { getConsignmentLedger } from "./consignmentLedger";
 import { prisma } from "./prisma";
 
 export type SalesSummary = {
@@ -8,6 +9,9 @@ export type SalesSummary = {
   shipping: number;
   cogs: number;
   refunded: number;
+  // Consignment suppliers' share of the profit on sales in the range: what
+  // those loads cost instead of COGS (they're $0 COGS, nothing was paid).
+  supplierShare: number;
   profit: number;
   // Revenue split by where it sold: "ebay", "shopify", "whatnot", ...
   revenueByChannel: Record<string, number>;
@@ -108,6 +112,24 @@ export async function salesSummary(from: Date | null, to: Date | null): Promise<
   // Shopify Payments keeps its fee on a refund, so there's no credit.
   for (const refund of shopifyRefunds) refunded += Number(refund.amount);
 
+  // Consignment loads (Cristian, 2026-10-24): the supplier's share of each
+  // sale in the range, per sale from the same ledger the manifest page
+  // shows, so the dashboard's profit is what's really left.
+  const manifestIds = [
+    ...new Set([...sales, ...shopifySales, ...inPerson].map((s) => s.item.manifestId).filter((id): id is string => Boolean(id))),
+  ];
+  const consignmentIds = manifestIds.length
+    ? (await prisma.manifest.findMany({ where: { id: { in: manifestIds }, consignment: true }, select: { id: true } })).map((m) => m.id)
+    : [];
+  let supplierShare = 0;
+  for (const id of consignmentIds) {
+    const ledger = await getConsignmentLedger(id);
+    for (const sale of ledger?.sales ?? []) {
+      if ((from && sale.soldAt < from) || (to && sale.soldAt >= to)) continue;
+      supplierShare += sale.supplierShare;
+    }
+  }
+
   return {
     units,
     revenue,
@@ -115,7 +137,8 @@ export async function salesSummary(from: Date | null, to: Date | null): Promise<
     shipping,
     cogs,
     refunded,
-    profit: revenue - fees - shipping - cogs - (refunded - refundFeeCredit),
+    supplierShare,
+    profit: revenue - fees - shipping - cogs - (refunded - refundFeeCredit) - supplierShare,
     revenueByChannel,
   };
 }
