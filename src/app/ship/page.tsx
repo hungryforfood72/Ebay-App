@@ -95,6 +95,8 @@ function putBack(location: string): string {
 }
 
 function placeText(l: PickLine): string {
+  // Straight on an oversized shelf: no bin to look for.
+  if (l.grabFrom.oversized) return `Oversized shelf ${l.grabFrom.shelf}`;
   if (l.grabFrom.binCode) {
     return l.grabFrom.shelf ? `Shelf ${l.grabFrom.shelf} · ${l.grabFrom.binCode}` : `${l.grabFrom.binCode} (not on a shelf)`;
   }
@@ -505,7 +507,9 @@ export default function ShipPage() {
       show({
         tone: "info",
         headline: "Pick undone",
-        detail: json.returnedToBin
+        detail: line.grabFrom.oversized
+          ? `Put it back on oversized shelf ${line.grabFrom.shelf}.`
+          : json.returnedToBin
           ? `Put it back in ${json.returnedToBin}.`
           : line.grabFrom.binningTable
             ? "Put it back on the binning table."
@@ -950,7 +954,13 @@ function NextUpCard({
       </div>
       {line.location && line.location.bins.length > 1 && (
         <p className="mt-2 text-xs text-muted-foreground">
-          Also in: {line.location.bins.slice(1).map((b) => (b.shelfLabel ? `${b.binCode} (shelf ${b.shelfLabel})` : b.binCode)).join(", ")}
+          Also in:{" "}
+          {line.location.bins
+            .slice(1)
+            .map((b) =>
+              b.oversized ? `oversized shelf ${b.shelfLabel}` : b.shelfLabel ? `${b.binCode} (shelf ${b.shelfLabel})` : b.binCode
+            )
+            .join(", ")}
         </p>
       )}
       {/* Old-system items only: a worn or missing UPC shouldn't stop the

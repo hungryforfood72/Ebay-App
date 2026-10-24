@@ -6,7 +6,8 @@ import { binsErrorResponse, readCode, summarizeBins } from "../../shared";
 
 // Binning station "Close bin": done filling, ready to shelve.
 // { binCode } -> { bin }. An empty bin has nothing to close and is left
-// as it is (still reusable).
+// as it is (still reusable), and so is an oversized shelf (nothing to
+// close: it's a shelf).
 export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({}));
   const binCode = readCode(body.binCode);
@@ -14,7 +15,7 @@ export async function POST(request: NextRequest) {
   try {
     const bin = await findBin(prisma, binCode);
     const items = await prisma.binContent.count({ where: { binId: bin.id } });
-    if (items > 0) {
+    if (items > 0 && !bin.shelfBin) {
       await prisma.bin.update({
         where: { id: bin.id },
         data: { closedAt: new Date(), closedBy: getRequestUser(request)?.username ?? null },

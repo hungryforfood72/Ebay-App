@@ -12,6 +12,7 @@ import {
   BannerPanel,
   beep,
   binCounts,
+  binName,
   errorText,
   focusField,
   ItemLine,
@@ -32,7 +33,9 @@ type FillResult = BinDetail & { item: ItemRow; reopened: boolean };
 // someone opens an empty bin (scans it), scans each bag's label into it
 // (one scan = one unit), and taps Close bin when it's full. Closed bins
 // wait for the Shelve tab. Works across every load at once: the label
-// says which item it is, so there's no manifest to pick.
+// says which item it is, so there's no manifest to pick. Scanning an
+// oversized shelf's label instead of a bin puts the items straight on that
+// shelf (Cristian, 2026-10-24).
 export function FillPanel({ onWaitingCount }: { onWaitingCount: (count: number) => void }) {
   const [open, setOpen] = useState<BinDetail | null>(null);
   // A different bin scanned while one is open: asks before switching, so
@@ -103,9 +106,13 @@ export function FillPanel({ onWaitingCount }: { onWaitingCount: (count: number) 
       beep("next");
       setBanner({
         tone: "info",
-        title: `${res.bin.code} open`,
+        title: `${binName(res.bin)} open`,
         lines: [
-          res.wasClosed
+          res.bin.oversizedShelf
+            ? res.contents.length > 0
+              ? `Oversized shelf: already has ${binCounts(res.bin).toLowerCase()}. Scan each item's label onto it.`
+              : "Oversized shelf: scan each item's label onto it."
+            : res.wasClosed
             ? "This bin was closed. Adding anyway."
             : res.contents.length > 0
               ? `Already has ${binCounts(res.bin).toLowerCase()}. Keep adding.`
@@ -126,11 +133,17 @@ export function FillPanel({ onWaitingCount }: { onWaitingCount: (count: number) 
       beep("ok");
       setBanner({
         tone: "success",
-        title: res.bin.status === "empty" ? `${res.bin.code} is empty` : `${res.bin.code} closed`,
-        lines: [
-          res.bin.status === "empty" ? "Nothing in it, so it's still free to use." : `${binCounts(res.bin)}. Set it with the bins ready to shelve.`,
-          "Scan the next empty bin.",
-        ],
+        title: res.bin.oversizedShelf
+          ? `Done with ${binName(res.bin)}`
+          : res.bin.status === "empty"
+            ? `${res.bin.code} is empty`
+            : `${res.bin.code} closed`,
+        lines: res.bin.oversizedShelf
+          ? [`${binCounts(res.bin)} on it.`, "Scan the next bin or oversized shelf."]
+          : [
+              res.bin.status === "empty" ? "Nothing in it, so it's still free to use." : `${binCounts(res.bin)}. Set it with the bins ready to shelve.`,
+              "Scan the next empty bin.",
+            ],
       });
       loadWaiting();
       return true;
@@ -166,7 +179,7 @@ export function FillPanel({ onWaitingCount }: { onWaitingCount: (count: number) 
         title: `+1 ${res.item.code}`,
         lines: [
           res.item.title,
-          `${plural(inThisBin, "unit")} of this in ${res.bin.code}${stillLoose > 0 ? `, ${stillLoose} more still loose` : ""}.`,
+          `${plural(inThisBin, "unit")} of this ${res.bin.oversizedShelf ? "on" : "in"} ${binName(res.bin)}${stillLoose > 0 ? `, ${stillLoose} more still loose` : ""}.`,
           res.reopened ? "This bin was closed. Adding anyway." : "",
         ],
       });
@@ -181,19 +194,23 @@ export function FillPanel({ onWaitingCount }: { onWaitingCount: (count: number) 
     const current = openRef.current;
     const pending = pendingRef.current;
 
-    if (kind === "bin") {
-      if (!current) return openBin(code);
-      if (code === current.bin.code) {
+    // A bin, or anything else that isn't an item or a UPC: maybe an
+    // oversized shelf's label (the server says if it isn't).
+    if (kind === "bin" || kind === "other") {
+      const target = kind === "other" ? raw.trim() : code;
+      if (!current) return openBin(target);
+      const shelf = current.bin.oversizedShelf;
+      if (code === current.bin.code || (shelf && code === normalizeCode(shelf))) {
         setPendingSwitch(null);
         pendingRef.current = null;
         beep("next");
-        setBanner({ tone: "info", title: `${code} is already open`, lines: ["Keep scanning bags into it."] });
+        setBanner({ tone: "info", title: `${binName(current.bin)} is already open`, lines: ["Keep scanning into it."] });
         return;
       }
       // Same other bin scanned twice = yes, switch.
-      if (pending === code) return switchTo(code);
-      setPendingSwitch(code);
-      pendingRef.current = code;
+      if (pending === target) return switchTo(target);
+      setPendingSwitch(target);
+      pendingRef.current = target;
       beep("next");
       setBanner(null);
       return;
@@ -204,7 +221,7 @@ export function FillPanel({ onWaitingCount }: { onWaitingCount: (count: number) 
         "Scan the label on the bag (starts with ES), or a bin label."
       );
     }
-    if (pending) return fail("Choose first", `Close ${current?.bin.code} and switch, or keep filling it.`);
+    if (pending) return fail("Choose first", `Close ${current ? binName(current.bin) : "it"} and switch, or keep filling it.`);
     if (!current) return fail("Open a bin first", "Scan an empty bin's label, then the bags.");
     return addItem(current, code);
   }
@@ -254,7 +271,7 @@ export function FillPanel({ onWaitingCount }: { onWaitingCount: (count: number) 
       <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-surface p-4">
         <div className="min-w-0">
           <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Filling</p>
-          <p className="font-mono text-3xl font-bold tracking-tight text-foreground">{open ? open.bin.code : "No bin open"}</p>
+          <p className="font-mono text-3xl font-bold tracking-tight text-foreground">{open ? binName(open.bin) : "No bin open"}</p>
           {open && <p className="mt-1 text-sm text-muted-foreground">{binCounts(open.bin)}</p>}
         </div>
         {open && (
@@ -264,7 +281,7 @@ export function FillPanel({ onWaitingCount }: { onWaitingCount: (count: number) 
                 if (current) await closeBin(current);
               })
             } disabled={busy}>
-            Close bin
+            {open.bin.oversizedShelf ? "Done with shelf" : "Close bin"}
           </Button>
         )}
       </div>
@@ -272,20 +289,26 @@ export function FillPanel({ onWaitingCount }: { onWaitingCount: (count: number) 
       <ScanStep
         id={FIELD}
         label={open ? "Bag label" : "Bin"}
-        prompt={open ? `Scan each bag into ${open.bin.code}` : "Scan an empty bin to fill"}
-        hint={open ? "One scan = one unit. Tap Close bin when it's full." : "Then scan each bag's label into it."}
+        prompt={open ? `Scan each bag ${open.bin.oversizedShelf ? "onto" : "into"} ${binName(open.bin)}` : "Scan an empty bin to fill"}
+        hint={
+          open
+            ? open.bin.oversizedShelf
+              ? "One scan = one unit. Tap Done with shelf when you're finished."
+              : "One scan = one unit. Tap Close bin when it's full."
+            : "Then scan each bag's label into it. Oversized item? Scan the oversized shelf's label instead."
+        }
         onScan={(code) => enqueue(() => handle(code))}
       />
 
       {pendingSwitch && open && (
         <Card className="border-amber-300 bg-amber-50">
           <p className="text-base font-semibold text-amber-950">
-            {open.bin.code} is still open. Close it and start {pendingSwitch}?
+            {binName(open.bin)} is still open. Close it and start {pendingSwitch}?
           </p>
           <p className="mt-1 text-sm text-amber-900">Scanning {pendingSwitch} again also switches.</p>
           <div className="mt-3 flex flex-col gap-2">
             <Button size="lg" block onClick={() => enqueue(() => switchTo(pendingSwitch))}>
-              Close {open.bin.code}, start {pendingSwitch}
+              Close {binName(open.bin)}, start {pendingSwitch}
             </Button>
             <Button
               variant="outline"
@@ -297,7 +320,7 @@ export function FillPanel({ onWaitingCount }: { onWaitingCount: (count: number) 
                 focusField(FIELD);
               }}
             >
-              Keep filling {open.bin.code}
+              Keep filling {binName(open.bin)}
             </Button>
           </div>
         </Card>
@@ -308,7 +331,7 @@ export function FillPanel({ onWaitingCount }: { onWaitingCount: (count: number) 
       {open && (
         <Card padded={false}>
           <SectionHeader
-            title={`In ${open.bin.code} (${plural(open.bin.units, "unit")})`}
+            title={`${open.bin.oversizedShelf ? "On" : "In"} ${binName(open.bin)} (${plural(open.bin.units, "unit")})`}
             action={
               history.length > 0 ? (
                 <Button variant="outline" size="sm" onClick={() => enqueue(undo)} disabled={busy}>

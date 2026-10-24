@@ -13,6 +13,7 @@ import {
   api,
   BannerPanel,
   beep,
+  binName,
   errorText,
   focusField,
   ItemLine,
@@ -107,10 +108,14 @@ export function PutAwayPanel({ initialItemCode }: { initialItemCode?: string }) 
       beep("ok");
       setBanner({
         tone: "success",
-        title: `${plural(n, "unit")} into ${res.bin.code}`,
+        title: `${plural(n, "unit")} ${res.bin.oversizedShelf ? "onto" : "into"} ${binName(res.bin)}`,
         lines: [
           res.item.title,
-          res.bin.shelfLabel ? `${res.bin.code} is on shelf ${res.bin.shelfLabel}.` : `${res.bin.code} isn't shelved yet.`,
+          res.bin.oversizedShelf
+            ? "Oversized shelf: the item sits right on it."
+            : res.bin.shelfLabel
+              ? `${res.bin.code} is on shelf ${res.bin.shelfLabel}.`
+              : `${res.bin.code} isn't shelved yet.`,
           res.notInBins > 0 ? `${plural(res.notInBins, "unit")} of this still not in a bin.` : "",
         ],
       });
@@ -130,6 +135,12 @@ export function PutAwayPanel({ initialItemCode }: { initialItemCode?: string }) 
     if (kind === "bin") {
       if (!candidate) return fail("Scan the item first", "Then set how many, then scan the bin.");
       void putInto(code);
+      return;
+    }
+    // With an item ready, anything that isn't an item label or a UPC is
+    // taken as an oversized shelf's label (the server says if it isn't).
+    if (candidate && kind === "other") {
+      void putInto(raw.trim());
       return;
     }
     // Anything else is an item (label, UPC or an older sku): start over

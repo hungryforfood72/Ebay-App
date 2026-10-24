@@ -2,6 +2,7 @@ import { getRequestUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { findBin, getItemLocations, lockBins, placeInBin, WarehouseError } from "@/lib/warehouse/bins";
 import { normalizeCode } from "@/lib/warehouse/codes";
+import { resolveBinScan } from "@/lib/warehouse/shelves";
 import { NextRequest, NextResponse } from "next/server";
 import { binsErrorResponse, ITEM_ROW_SELECT, lockItemRoom, onHandUnits, readCode, summarizeBins, toItemRow } from "../shared";
 
@@ -19,10 +20,10 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({}));
   const itemId = readCode(body.itemId);
   const itemCode = readCode(body.itemCode);
-  const binCode = readCode(body.binCode);
+  const scannedBin = readCode(body.binCode);
   const units = Number(body.units);
   if (!itemId && !itemCode) return NextResponse.json({ error: "Scan the item label first." }, { status: 400 });
-  if (!binCode) return NextResponse.json({ error: "Scan a bin." }, { status: 400 });
+  if (!scannedBin) return NextResponse.json({ error: "Scan a bin." }, { status: 400 });
   if (!Number.isInteger(units) || units < 1) {
     return NextResponse.json({ error: "Units must be a whole number, at least 1." }, { status: 400 });
   }
@@ -37,6 +38,8 @@ export async function POST(request: NextRequest) {
       throw new WarehouseError(itemId ? "That item doesn't exist anymore." : `No item with code ${normalizeCode(itemCode)}.`, 404);
     }
 
+    // A bin, or an oversized shelf's label (items straight on the shelf).
+    const binCode = await resolveBinScan(prisma, scannedBin);
     const binId = await prisma.$transaction(async (tx) => {
       // Bin lock before the item lock, same order as Fill bins (bins.ts).
       await lockBins(tx, [binCode]);

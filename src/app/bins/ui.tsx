@@ -166,6 +166,12 @@ export function plural(n: number, one: string, many = `${one}s`): string {
   return `${n} ${n === 1 ? one : many}`;
 }
 
+// What people call a bin: its code, or "Shelf A5" for an oversized
+// shelf's hidden bin (items straight on the shelf).
+export function binName(bin: Pick<BinSummary, "code" | "oversizedShelf">): string {
+  return bin.oversizedShelf ? `Shelf ${bin.oversizedShelf}` : bin.code;
+}
+
 export function binCounts(bin: Pick<BinSummary, "items" | "units">): string {
   return bin.items === 0 ? "Empty" : `${plural(bin.units, "unit")}, ${plural(bin.items, "item")}`;
 }
@@ -313,6 +319,7 @@ export function PrintToStation({
 
 // A shelf's cutover state in a few words (see src/lib/warehouse/shelves.ts).
 export function describeShelf(s: ShelfState): string {
+  if (s.oversized) return `Oversized, no bins (${plural(s.oversizedUnits, "unit")})`;
   switch (s.state) {
     case "free":
       return s.bins > 0 ? `Using bins (${plural(s.bins, "bin")})` : "Ready for bins";
@@ -325,7 +332,8 @@ export function describeShelf(s: ShelfState): string {
   }
 }
 
-export function shelfTone(s: ShelfState): "success" | "warning" | "neutral" {
+export function shelfTone(s: ShelfState): "success" | "warning" | "neutral" | "primary" {
+  if (s.oversized) return "primary";
   return s.state === "free" || s.state === "bins" ? "success" : s.state === "looks_empty" ? "warning" : "neutral";
 }
 

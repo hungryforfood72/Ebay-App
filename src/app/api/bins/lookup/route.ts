@@ -1,7 +1,7 @@
 import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getItemLocations, WarehouseError } from "@/lib/warehouse/bins";
-import { classifyScan, normalizeCode } from "@/lib/warehouse/codes";
+import { classifyScan, normalizeCode, SHELF_BIN_CODE_PREFIX, shelfBinCode } from "@/lib/warehouse/codes";
 import { getShelfState, oldItemIdsOnShelf } from "@/lib/warehouse/shelves";
 import { NextRequest, NextResponse } from "next/server";
 import { binsErrorResponse, getBinDetail, ITEM_ROW_SELECT, onHandUnits, summarizeBins, toItemRow } from "../shared";
@@ -50,7 +50,10 @@ export async function GET(request: NextRequest) {
   const code = normalizeCode(raw);
   try {
     const kind = classifyScan(code);
-    if (kind === "bin") return NextResponse.json({ kind: "bin", ...(await getBinDetail(code)) });
+    // An oversized shelf's hidden bin code shows up in bin histories.
+    if (kind === "bin" || code.startsWith(SHELF_BIN_CODE_PREFIX)) {
+      return NextResponse.json({ kind: "bin", ...(await getBinDetail(code)) });
+    }
 
     if (kind === "item") {
       const item = await prisma.item.findUnique({ where: { sku: code }, select: ITEM_ROW_SELECT });
@@ -70,6 +73,8 @@ export async function GET(request: NextRequest) {
     }
 
     const state = await getShelfState(prisma, raw);
+    // An oversized shelf shows like a bin: what's on it and its history.
+    if (state?.oversized) return NextResponse.json({ kind: "bin", ...(await getBinDetail(shelfBinCode(state.label))) });
     if (state) {
       // Old-system items still on it, by the same rule that decides whether
       // the shelf takes bins (shelves.ts), so the list matches the count.

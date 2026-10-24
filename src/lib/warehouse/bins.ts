@@ -81,7 +81,8 @@ export async function placeInBin(
   await lockBins(tx, [args.binCode]);
   const bin = await findBin(tx, args.binCode);
   const existingCount = await tx.binContent.count({ where: { binId: bin.id } });
-  if (existingCount === 0 && bin.shelfLabel) {
+  // An oversized shelf's own bin never leaves its shelf.
+  if (existingCount === 0 && bin.shelfLabel && !bin.shelfBin) {
     await tx.bin.update({ where: { id: bin.id }, data: { shelfLabel: null, shelvedAt: null, shelvedBy: null } });
     await tx.binMove.create({
       data: { kind: "unshelve", fromBinCode: bin.code, shelfLabel: bin.shelfLabel, note: "Empty bin reused", by: args.by },
@@ -284,6 +285,9 @@ export async function moveBinContents(args: {
     const from = await findBin(tx, args.fromBinCode);
     const to = await findBin(tx, args.toBinCode);
     if (from.id === to.id) throw new WarehouseError("That's the same bin twice.");
+    if (from.shelfBin || to.shelfBin) {
+      throw new WarehouseError("Items on an oversized shelf stay on the shelf: they can't be combined with a bin.");
+    }
     // Two people combining the same bins at once (A into B while someone
     // does B into A, or both emptying A) would otherwise each read the
     // same rows and move the units twice. A per-bin lock, always taken in
@@ -355,6 +359,7 @@ export async function shelveBin(args: { binCode: string; shelfLabel: string | nu
   return prisma.$transaction(async (tx) => {
     await lockBins(tx, [args.binCode]);
     const bin = await findBin(tx, args.binCode);
+    if (bin.shelfBin) throw new WarehouseError(`That's oversized shelf ${bin.shelfLabel}, not a bin: it stays where it is.`);
     let shelfLabel: string | null = null;
     if (args.shelfLabel) {
       const shelf = await tx.shelfLocation.findFirst({
@@ -425,13 +430,18 @@ export async function getItemLocations(
 ): Promise<Map<string, ItemLocation>> {
   const contents = await prisma.binContent.findMany({
     where: { itemId: { in: items.map((i) => i.id) } },
-    include: { bin: { select: { code: true, shelfLabel: true } } },
+    include: { bin: { select: { code: true, shelfLabel: true, shelfBin: true } } },
     orderBy: { placedAt: "asc" },
   });
   const map = new Map<string, ItemLocation>();
   for (const item of items) map.set(item.id, { bins: [], legacyShelf: item.shelfLocation || null });
   for (const c of contents) {
-    map.get(c.itemId)?.bins.push({ binCode: c.bin.code, shelfLabel: c.bin.shelfLabel, units: c.units });
+    map.get(c.itemId)?.bins.push({
+      binCode: c.bin.code,
+      shelfLabel: c.bin.shelfLabel,
+      units: c.units,
+      ...(c.bin.shelfBin ? { oversized: true } : {}),
+    });
   }
   for (const loc of map.values()) if (loc.bins.length > 0) loc.legacyShelf = null;
   return map;

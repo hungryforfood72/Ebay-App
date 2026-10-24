@@ -123,6 +123,8 @@ export type BinLocation = {
   binCode: string;
   shelfLabel: string | null;
   units: number;
+  // Straight on an oversized shelf (its hidden shelf bin), not in a bin.
+  oversized?: boolean;
 };
 
 export type ItemLocation = {

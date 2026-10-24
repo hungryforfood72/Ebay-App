@@ -561,6 +561,12 @@ model ShelfLocation {
   // A shelf no old item ever used takes bins without this.
   binsAllowedAt DateTime?
   binsAllowedBy String?
+  // Oversized shelf (Cristian, 2026-10-24): too-big items sit straight on
+  // it, no bins. It has one hidden "shelf bin" (Bin.shelfBin, code OS-<label>)
+  // so stock on it is tracked, picked and sold exactly like stock in a bin.
+  oversized     Boolean   @default(false)
+  oversizedAt   DateTime?
+  oversizedBy   String?
   createdAt DateTime @default(now())
 }
 
@@ -1458,6 +1464,9 @@ model Bin {
   // Cleared when the bin empties out (then it's reusable).
   closedAt   DateTime?
   closedBy   String?
+  // The hidden bin of an oversized shelf (ShelfLocation.oversized): always
+  // on that shelf, never moved, combined or listed with real bins.
+  shelfBin   Boolean   @default(false)
   createdAt  DateTime  @default(now())
 
   contents BinContent[]

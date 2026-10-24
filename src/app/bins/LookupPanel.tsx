@@ -12,6 +12,7 @@ import {
   BannerPanel,
   beep,
   binCounts,
+  binName,
   BinStatusBadge,
   ConfirmEmptyButton,
   describeShelf,
@@ -155,12 +156,14 @@ export function BinView({
       <Card>
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <p className="font-mono text-3xl font-bold tracking-tight text-foreground">{bin.code}</p>
-            <p className="mt-1 text-sm text-muted-foreground">{binCounts(bin)}</p>
+            <p className="font-mono text-3xl font-bold tracking-tight text-foreground">{binName(bin)}</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {bin.oversizedShelf ? `Oversized shelf: no bins, items right on it. ${binCounts(bin)}` : binCounts(bin)}
+            </p>
           </div>
-          <BinStatusBadge bin={bin} />
+          {!bin.oversizedShelf && <BinStatusBadge bin={bin} />}
         </div>
-        {bin.shelfLabel && (
+        {bin.shelfLabel && !bin.oversizedShelf && (
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <Button variant="outline" size="sm" onClick={unshelve} disabled={unshelving}>
               {unshelving ? "Saving…" : `Take off shelf ${bin.shelfLabel}`}
@@ -234,16 +237,19 @@ export function BinView({
         )}
       </Card>
 
-      <Card>
-        <SectionHeader title="Reprint this bin's label" />
-        <PrintToStation
-          label="Print"
-          onPrint={async (stationId) => {
-            await api("/api/bins/print", { stationId, kind: "bin", codes: [bin.code] });
-            return `Sent ${bin.code} to the printer.`;
-          }}
-        />
-      </Card>
+      {/* An oversized shelf keeps its own shelf label: no bin label. */}
+      {!bin.oversizedShelf && (
+        <Card>
+          <SectionHeader title="Reprint this bin's label" />
+          <PrintToStation
+            label="Print"
+            onPrint={async (stationId) => {
+              await api("/api/bins/print", { stationId, kind: "bin", codes: [bin.code] });
+              return `Sent ${bin.code} to the printer.`;
+            }}
+          />
+        </Card>
+      )}
     </div>
   );
 }
@@ -269,10 +275,17 @@ export function ItemView({
           <ul className="flex flex-col gap-1.5">
             {location.bins.map((b) => (
               <li key={b.binCode} className="flex items-center justify-between gap-3 rounded-lg bg-muted/60 px-3 py-2">
-                <span className="text-base">
-                  <BinButton code={b.binCode} onOpen={onOpen} />
-                  <span className="ml-2 text-foreground">{b.shelfLabel ? `on shelf ${b.shelfLabel}` : "not shelved"}</span>
-                </span>
+                {b.oversized && b.shelfLabel ? (
+                  <span className="text-base">
+                    <span className="text-foreground">Oversized shelf </span>
+                    <BinButton code={b.shelfLabel} onOpen={onOpen} />
+                  </span>
+                ) : (
+                  <span className="text-base">
+                    <BinButton code={b.binCode} onOpen={onOpen} />
+                    <span className="ml-2 text-foreground">{b.shelfLabel ? `on shelf ${b.shelfLabel}` : "not shelved"}</span>
+                  </span>
+                )}
                 <span className="text-sm font-semibold text-foreground">×{b.units}</span>
               </li>
             ))}

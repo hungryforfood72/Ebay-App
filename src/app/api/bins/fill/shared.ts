@@ -18,7 +18,9 @@ export async function openForFilling(tx: Tx, binCode: string) {
   const bin = await findBin(tx, binCode);
   const fresh = await tx.bin.findUniqueOrThrow({ where: { id: bin.id } });
   const items = await tx.binContent.count({ where: { binId: bin.id } });
-  if (items > 0 && fresh.shelfLabel) {
+  // An oversized shelf's hidden bin is always on its shelf: items go
+  // straight onto it.
+  if (items > 0 && fresh.shelfLabel && !fresh.shelfBin) {
     throw new WarehouseError(
       `${fresh.code} is on shelf ${fresh.shelfLabel} with items in it. Take it off the shelf first (Look up, then Take off shelf).`,
       409

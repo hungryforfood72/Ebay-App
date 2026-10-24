@@ -4,7 +4,8 @@ import { getShelfStates } from "@/lib/warehouse/shelves";
 import { NextRequest, NextResponse } from "next/server";
 import { binsErrorResponse, summarizeBins } from "./shared";
 
-// Every bin with its status and counts, plus the shelf labels (for the
+// Every bin with its status and counts (not oversized shelves' hidden
+// bins: those show under Shelves), plus the shelf labels (for the
 // "by shelf" filter and shelf label printing). Bin counts stay in the low
 // thousands, so the Bins page filters on its own instead of paging.
 //
@@ -13,7 +14,7 @@ import { binsErrorResponse, summarizeBins } from "./shared";
 // pendingRemovals is how many are still owed after trying.
 export async function GET() {
   const pendingRemovals = await applyPendingRemovals();
-  const [bins, shelfStates] = await Promise.all([summarizeBins(), getShelfStates()]);
+  const [bins, shelfStates] = await Promise.all([summarizeBins({ shelfBin: false }), getShelfStates()]);
   return NextResponse.json({
     pendingRemovals,
     bins,

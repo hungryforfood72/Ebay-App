@@ -18,6 +18,13 @@ export const BIN_CODE_PREFIX = "BN";
 export const BOX_CODE_PREFIX = "BX";
 export const DUD_BOX_CODE_PREFIX = "DB";
 export const SORT_BOX_CODE_PREFIX = "SB";
+// An oversized shelf's hidden bin (Bin.shelfBin): "OS-" + the shelf label.
+// Never printed: people scan the shelf's own label.
+export const SHELF_BIN_CODE_PREFIX = "OS-";
+
+export function shelfBinCode(shelfLabel: string): string {
+  return SHELF_BIN_CODE_PREFIX + normalizeCode(shelfLabel);
+}
 
 const ITEM_RE = /^ES\d{6,}$/;
 const BIN_RE = /^BN\d{4,}$/;

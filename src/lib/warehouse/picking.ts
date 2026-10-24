@@ -95,7 +95,9 @@ export type PickLine = {
   // Where to walk to for the next unit: the bin removeUnits will take from
   // first (oldest placement), or the old shelf. binningTable = a labelled
   // item with no bin yet: its units are still on the binning table.
-  grabFrom: { shelf: string | null; binCode: string | null; binningTable: boolean };
+  // oversized = straight on an oversized shelf (binCode is its hidden bin,
+  // not a label to look for).
+  grabFrom: { shelf: string | null; binCode: string | null; binningTable: boolean; oversized?: boolean };
   // What the store itself says, for lines with no app record.
   listing: { title: string; customLabel: string | null; shelfHint: string | null; image: string | null };
   // The order's page on its own store (eBay Seller Hub or Shopify admin),
@@ -644,7 +646,7 @@ export async function getPickList(options?: { fresh?: boolean }): Promise<ShipOr
       item: item && verifyBy ? toPickItem(item, verifyBy) : null,
       location,
       grabFrom: firstBin
-        ? { shelf: firstBin.shelfLabel, binCode: firstBin.binCode, binningTable: false }
+        ? { shelf: firstBin.shelfLabel, binCode: firstBin.binCode, binningTable: false, oversized: Boolean(firstBin.oversized) }
         : {
             shelf: location?.legacyShelf ?? (item ? null : shelfFromSku(l.sku)),
             binCode: null,

@@ -150,7 +150,7 @@ export function OverviewPanel({
         </Card>
       )}
 
-      <ShelvesCard shelfStates={shelfStates} onOpen={onOpenBin} onChanged={onChanged} />
+      <ShelvesCard shelfStates={shelfStates} isOwner={isOwner} onOpen={onOpenBin} onChanged={onChanged} />
 
       <Card padded={false}>
         <div className="flex flex-col gap-3 p-4">
@@ -229,20 +229,40 @@ export function OverviewPanel({
 
 // Warehouse cutover: which shelves take bins yet. A shelf moves to bins
 // once its old-system items are gone and someone confirms it's empty.
+// The owner can make a shelf oversized (Cristian, 2026-10-24): no bins,
+// big items sit straight on it.
 function ShelvesCard({
   shelfStates,
+  isOwner,
   onOpen,
   onChanged,
 }: {
   shelfStates: ShelfState[];
+  isOwner: boolean;
   onOpen: (code: string) => void;
   onChanged: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [busyShelf, setBusyShelf] = useState<string | null>(null);
+  const [shelfError, setShelfError] = useState<{ shelf: string; text: string } | null>(null);
   if (shelfStates.length === 0) return null;
-  const onBins = shelfStates.filter((s) => s.state === "free" || s.state === "bins").length;
-  const toConfirm = shelfStates.filter((s) => s.state === "looks_empty");
-  const oldSystem = shelfStates.length - onBins;
+  const oversized = shelfStates.filter((s) => s.oversized).length;
+  const onBins = shelfStates.filter((s) => !s.oversized && (s.state === "free" || s.state === "bins")).length;
+  const toConfirm = shelfStates.filter((s) => !s.oversized && s.state === "looks_empty");
+  const oldSystem = shelfStates.length - onBins - oversized;
+
+  async function setOversized(s: ShelfState, on: boolean) {
+    setBusyShelf(s.label);
+    setShelfError(null);
+    try {
+      await api("/api/bins/shelves/oversized", { shelfLabel: s.label, on });
+      onChanged();
+    } catch (e) {
+      setShelfError({ shelf: s.label, text: errorText(e) });
+    } finally {
+      setBusyShelf(null);
+    }
+  }
   return (
     <Card padded={false}>
       <button
@@ -253,7 +273,8 @@ function ShelvesCard({
         <span className="min-w-0">
           <span className="block text-base font-semibold tracking-tight text-foreground">Shelves</span>
           <span className="mt-0.5 block text-sm text-muted-foreground">
-            {plural(onBins, "shelf", "shelves")} on bins, {oldSystem} still old system
+            {plural(onBins, "shelf", "shelves")} on bins
+            {oversized > 0 ? `, ${oversized} oversized` : ""}, {oldSystem} still old system
             {toConfirm.length > 0 ? `, ${toConfirm.length} to confirm empty` : ""}
           </span>
         </span>
@@ -268,8 +289,19 @@ function ShelvesCard({
               </button>
               <span className="flex items-center gap-2">
                 <Badge tone={shelfTone(s)}>{describeShelf(s)}</Badge>
+                {isOwner && (s.oversized || s.bins === 0) && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setOversized(s, !s.oversized)}
+                    disabled={busyShelf != null}
+                  >
+                    {busyShelf === s.label ? "Saving…" : s.oversized ? "Make it a bin shelf" : "Make oversized"}
+                  </Button>
+                )}
               </span>
-              {s.state === "looks_empty" && (
+              {shelfError?.shelf === s.label && <p className="w-full text-sm text-danger">{shelfError.text}</p>}
+              {!s.oversized && s.state === "looks_empty" && (
                 <div className="w-full">
                   <ConfirmEmptyButton shelf={s.label} size="md" onConfirmed={onChanged} />
                 </div>
