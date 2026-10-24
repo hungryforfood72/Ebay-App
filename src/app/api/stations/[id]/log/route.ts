@@ -18,12 +18,20 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const limit = Number.isInteger(limitParam) ? Math.min(100, Math.max(1, limitParam)) : 25;
 
   await prisma.printJob.updateMany({
-    where: { stationId: id, status: "printing", createdAt: { lt: new Date(Date.now() - STUCK_PRINTING_MS) } },
+    where: {
+      stationId: id,
+      status: "printing",
+      // Jobs taken before claimedAt existed have none: fall back to createdAt.
+      OR: [
+        { claimedAt: { lt: new Date(Date.now() - STUCK_PRINTING_MS) } },
+        { claimedAt: null, createdAt: { lt: new Date(Date.now() - STUCK_PRINTING_MS) } },
+      ],
+    },
     data: { status: "failed", error: "The station page closed before it said this printed. Check for the label." },
   });
   const jobs = await prisma.printJob.findMany({
     where: { stationId: id },
-    orderBy: { createdAt: "desc" },
+    orderBy: { seq: "desc" },
     take: limit,
   });
   return NextResponse.json(jobs.map(toPrintJobRow));

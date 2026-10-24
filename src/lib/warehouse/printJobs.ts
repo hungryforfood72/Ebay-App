@@ -33,7 +33,7 @@ export async function queuePrintJob(
   });
 }
 
-// Hands out a station's queued jobs: oldest first, flipped to "printing" in
+// Hands out a station's queued jobs: in queue order (seq), flipped to "printing" in
 // the same statement, so two pollers (two tabs, or the page and the print
 // helper) never get the same job (SKIP LOCKED passes over rows another
 // poll is claiming). which: "page" = the 4x6 pages (the print helper's),
@@ -58,19 +58,19 @@ export async function claimJobs(stationId: string, which: "all" | "page" | "labe
           SELECT 1 FROM "Station" WHERE id = ${stationId} AND "labelPrinterName" IS NOT NULL
             AND "helperVersion" COLLATE "C" >= ${LABEL_HELPER_VERSION}))`
     : Prisma.empty;
-  const rows = await prisma.$queryRaw<{ id: string; kind: string; payload: unknown; copies: number; createdAt: Date }[]>`
-    UPDATE "PrintJob" SET status = 'printing'
+  const rows = await prisma.$queryRaw<{ id: string; kind: string; payload: unknown; copies: number; createdAt: Date; seq: number }[]>`
+    UPDATE "PrintJob" SET status = 'printing', "claimedAt" = now()
     WHERE id IN (
       SELECT id FROM "PrintJob"
       WHERE "stationId" = ${stationId} AND status = 'queued' ${kindFilter} ${helperFilter}
         AND NOT EXISTS (SELECT 1 FROM "Station" WHERE id = ${stationId} AND "printPaused")
-      ORDER BY "createdAt" ASC
+      ORDER BY seq ASC
       LIMIT 20
       FOR UPDATE SKIP LOCKED
     )
-    RETURNING id, kind, payload, copies, "createdAt"`;
+    RETURNING id, kind, payload, copies, "createdAt", seq`;
   // RETURNING doesn't promise any order.
-  rows.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+  rows.sort((a, b) => Number(a.seq) - Number(b.seq));
   return rows.map((r) => ({
     id: r.id,
     kind: r.kind,

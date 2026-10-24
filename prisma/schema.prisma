@@ -1563,6 +1563,14 @@ model PrintJob {
   createdBy String?
   createdAt DateTime  @default(now())
   printedAt DateTime?
+  // Queue order. Jobs queued together (a run of bin labels, createMany)
+  // all get the same createdAt, so ordering by it alone printed them
+  // shuffled (Cristian, 2026-10-24). Rises in insert order.
+  seq       Int       @default(autoincrement())
+  // When a poller took it (status -> printing). "Stuck printing" counts
+  // from here, not createdAt: in a long run the later labels are taken
+  // minutes after they were queued.
+  claimedAt DateTime?
 
   @@index([stationId, status])
 }
