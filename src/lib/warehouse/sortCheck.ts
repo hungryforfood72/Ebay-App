@@ -2,7 +2,7 @@ import type { Prisma } from "@/generated/prisma/client";
 import { ebayBanReason } from "../ebayBanned";
 import { parseBundleComponentUnits, unitsFor } from "../itemUnits";
 import { prisma } from "../prisma";
-import { upcMatchKeys } from "../upcMatch";
+import { ITEM_KEY_PREFIX, isItemKey, lineKey, upcMatchKeys } from "../upcMatch";
 import { returnedUnitsByUpc } from "./returnReconcile";
 import { sortedByUpc } from "./sortBoxes";
 
@@ -91,6 +91,7 @@ export function dudCall(args: { description: string; evaluated: boolean; estimat
 // (see upcMatchKeys), so the line sharing the most match keys with the
 // scan wins, same as the sort page always did.
 export function matchLineUpc(lineUpcs: (string | null)[], scanned: string): string | null {
+  if (isItemKey(scanned)) return lineUpcs.includes(scanned) ? scanned : null;
   const keys = new Set(upcMatchKeys(scanned));
   if (keys.size === 0) return null;
   let best: string | null = null;
@@ -104,6 +105,30 @@ export function matchLineUpc(lineUpcs: (string | null)[], scanned: string): stri
     }
   }
   return best;
+}
+
+// The line key (lineKey) a scan or typed code belongs to: the UPC match
+// first, then the code as an Item # (exact, ignoring case and spaces), so a
+// product with no barcode can be typed in by its Item #. Several lines can
+// share an Item #; one keyed by it (no UPC) wins, since that's why it's
+// being typed.
+export function matchLineCode(
+  lines: { upc: string | null; supplierSku: string | null }[],
+  scanned: string
+): string | null {
+  const byUpc = matchLineUpc(
+    lines.map((l) => lineKey(l)),
+    scanned
+  );
+  if (byUpc) return byUpc;
+  const norm = (s: string) => s.replace(/\s+/g, "").toLowerCase();
+  const wanted = norm(isItemKey(scanned) ? scanned.slice(ITEM_KEY_PREFIX.length) : scanned);
+  if (!wanted) return null;
+  const keys = lines
+    .filter((l) => l.supplierSku && norm(l.supplierSku) === wanted)
+    .map((l) => lineKey(l))
+    .filter((k): k is string => k != null);
+  return keys.find((k) => isItemKey(k)) ?? keys[0] ?? null;
 }
 
 export type ProductCounts = {

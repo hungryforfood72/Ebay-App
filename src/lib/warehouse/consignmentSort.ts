@@ -1,9 +1,9 @@
 import { buildConsignmentPickList, DEFAULT_CONSIGNMENT_SUPPLIER_PCT } from "../consignment";
 import { ebayBanReason } from "../ebayBanned";
 import { prisma } from "../prisma";
-import { upcMatchKeys } from "../upcMatch";
+import { ITEM_KEY_PREFIX, lineKey, upcMatchKeys } from "../upcMatch";
 import { WarehouseError } from "./bins";
-import { latestCompleteEvaluationId, matchLineUpc } from "./sortCheck";
+import { latestCompleteEvaluationId, matchLineCode } from "./sortCheck";
 
 // Sorting a consignment load (Cristian, 2026-10-21). The supplier delivered
 // it, so what he scanned at their place may not be what showed up. The
@@ -58,10 +58,14 @@ async function buildCalls(manifestId: string, pct: number): Promise<Map<string, 
   const list = await buildConsignmentPickList(manifestId, pct);
   if (!list) return null;
   const calls = new Map<string, ConsignmentCall>();
-  for (const p of list.skipped) if (p.upc) calls.set(p.upc, { decision: "leave", reason: leaveReason(p.description) });
+  // Keyed like the sort station keys lines (lineKey): the UPC, or "item:" +
+  // the Item # for a product with no UPC.
+  const keysOf = (p: { upc: string | null; itemNumbers: string[] }) =>
+    p.upc ? [p.upc] : p.itemNumbers.map((n) => ITEM_KEY_PREFIX + n.trim());
+  for (const p of list.skipped) for (const k of keysOf(p)) calls.set(k, { decision: "leave", reason: leaveReason(p.description) });
   // A UPC split across take and leave can't happen (one estimate per UPC),
   // but take wins if it ever does.
-  for (const p of list.picks) if (p.upc) calls.set(p.upc, { decision: "take", reason: null });
+  for (const p of list.picks) for (const k of keysOf(p)) calls.set(k, { decision: "take", reason: null });
   return calls;
 }
 
@@ -98,15 +102,12 @@ export async function logReturn(args: { manifestId: string; code: string; quanti
   }
   const manifest = await prisma.manifest.findUnique({
     where: { id: args.manifestId },
-    select: { consignment: true, lines: { select: { upc: true, description: true } } },
+    select: { consignment: true, lines: { select: { upc: true, supplierSku: true, description: true } } },
   });
   if (!manifest) throw new WarehouseError("That load doesn't exist anymore. Pick the load again.", 404);
   if (!manifest.consignment) throw new WarehouseError("Only consignment loads send things back to the supplier.");
-  const upc = matchLineUpc(
-    manifest.lines.map((l) => l.upc),
-    scanned
-  );
-  const description = (upc && manifest.lines.find((l) => l.upc === upc)?.description) || `UPC ${scanned}`;
+  const upc = matchLineCode(manifest.lines, scanned);
+  const description = (upc && manifest.lines.find((l) => lineKey(l) === upc)?.description) || `UPC ${scanned}`;
   return prisma.consignmentReturnEntry.create({
     data: {
       manifestId: args.manifestId,

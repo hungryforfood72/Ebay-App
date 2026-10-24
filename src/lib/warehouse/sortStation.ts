@@ -2,7 +2,7 @@ import { prisma } from "../prisma";
 import { WarehouseError } from "./bins";
 import { normalizeCode } from "./codes";
 import { findSortBox, logSorted, undoSorted } from "./sortBoxes";
-import { matchLineUpc } from "./sortCheck";
+import { matchLineCode } from "./sortCheck";
 import type { CodeLabelPayload } from "./types";
 
 // The sort station's side of sort boxes (sortBoxes.ts holds the box
@@ -80,11 +80,11 @@ export async function logGood(args: {
 }) {
   const scanned = args.code.trim();
   if (!scanned) throw new WarehouseError("Scan the item first.");
-  const lines = await prisma.manifestLine.findMany({ where: { manifestId: args.manifestId }, select: { upc: true } });
-  const upc = matchLineUpc(
-    lines.map((l) => l.upc),
-    scanned
-  );
+  const lines = await prisma.manifestLine.findMany({
+    where: { manifestId: args.manifestId },
+    select: { upc: true, supplierSku: true },
+  });
+  const upc = matchLineCode(lines, scanned);
   if (!upc && !args.extra) {
     throw new WarehouseError("That isn't on this manifest. Box it as an extra if it's good.");
   }

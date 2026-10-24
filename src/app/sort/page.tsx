@@ -11,6 +11,7 @@ import { Card, SectionHeader } from "@/components/ui/Card";
 import { cn } from "@/components/ui/cn";
 import { Input } from "@/components/ui/Input";
 import type { DudBoxDetail, DudBoxSummary } from "@/lib/warehouse/dudBoxTypes";
+import { keyLabel } from "@/lib/upcMatch";
 import { classifyScan, normalizeCode } from "@/lib/warehouse/codes";
 import {
   Ban,
@@ -80,6 +81,8 @@ type CheckResult = {
   // Sorted without sort boxes (Manifest.sortWithoutBoxes): Good just
   // counts units in.
   sortWithoutBoxes: boolean;
+  // Products on the load with no UPC but an Item # (typed in instead).
+  itemNumberLines: number;
   // Consignment loads only: what the pick list said for this product.
   consignmentCall: { decision: "take" | "leave"; reason: string | null } | null;
   line: {
@@ -230,6 +233,7 @@ export default function SortPage() {
     evaluated: boolean;
     consignment: boolean;
     sortWithoutBoxes: boolean;
+    itemNumberLines: number;
     sortedAt: string | null;
     sortedBy: string | null;
   } | null>(null);
@@ -301,6 +305,7 @@ export default function SortPage() {
           evaluated: d.evaluated,
           consignment: d.consignment,
           sortWithoutBoxes: d.sortWithoutBoxes,
+          itemNumberLines: d.itemNumberLines,
           sortedAt: d.manifest.sortedAt,
           sortedBy: d.manifest.sortedBy,
         });
@@ -986,6 +991,7 @@ export default function SortPage() {
   const isDud = Boolean(line && result?.dud);
   const consignment = info?.consignment ?? result?.consignment ?? false;
   const noBoxes = info?.sortWithoutBoxes ?? result?.sortWithoutBoxes ?? false;
+  const itemNumbers = (info?.itemNumberLines ?? 0) > 0;
   // Consignment: this one goes back to the supplier (the pick list said
   // leave it, or it isn't on the manifest).
   const goesBack = Boolean(consignment && result && (!line || result.consignmentCall?.decision === "leave"));
@@ -1083,6 +1089,11 @@ export default function SortPage() {
             for the supplier.
           </p>
         )}
+        {!scan && itemNumbers && (
+          <p className="text-sm text-muted-foreground">
+            No barcode on it? Tap the keyboard button next to the scan box and type its Item #.
+          </p>
+        )}
         {!scan && noBoxes && (
           <p className="text-sm text-muted-foreground">No sort boxes on this load: Good just counts them in.</p>
         )}
@@ -1097,8 +1108,10 @@ export default function SortPage() {
         <ScanField
           id="sort-upc"
           label="UPC"
-          prompt="Scan the item's UPC"
-          numeric
+          prompt={itemNumbers ? "Scan the UPC, or type the Item # (keyboard button)" : "Scan the item's UPC"}
+          // Item #s can have letters (L14541): the full keyboard when the
+          // load has products typed in by Item #.
+          numeric={!itemNumbers}
           autoFocus
           compact={Boolean(scan)}
           value={code}
@@ -1182,7 +1195,7 @@ export default function SortPage() {
         {line && (
           <Card padded={false} className="p-3">
             <p className="line-clamp-2 text-sm font-semibold leading-snug text-foreground">{line.description}</p>
-            <p className="text-xs tabular-nums text-muted-foreground">UPC {line.upc}</p>
+            <p className="text-xs tabular-nums text-muted-foreground">{keyLabel(line.upc)}</p>
             <div className="mt-2 grid grid-cols-4 gap-1.5 text-center">
               <Count label="Expected" value={line.expected} />
               <Count label="Sorted" value={line.sorted} />

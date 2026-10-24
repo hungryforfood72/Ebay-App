@@ -10,6 +10,7 @@ import { returnedUnitsByUpc } from "@/lib/warehouse/returnReconcile";
 import { sortedByUpc } from "@/lib/warehouse/sortBoxes";
 import { callFor, consignmentCalls, returnedByUpc, returnList } from "@/lib/warehouse/consignmentSort";
 import { matchLineUpc } from "@/lib/warehouse/sortCheck";
+import { lineKey } from "@/lib/upcMatch";
 
 // Fills each line's expected quantity in order before spilling into the
 // next — a UPC can legitimately appear on more than one manifest line (e.g.
@@ -251,11 +252,14 @@ export async function GET(
   // Group lines by UPC (in manifest order) so received/damaged pools can be
   // allocated across duplicates instead of double-counted onto each one.
   const lineIndexesByUpc = new Map<string, number[]>();
+  // Keyed by lineKey: a line with no UPC goes under "item:" + its Item #,
+  // which is what the sort station logs for it.
   manifest.lines.forEach((line, index) => {
-    if (!line.upc) return;
-    const list = lineIndexesByUpc.get(line.upc) ?? [];
+    const key = lineKey(line);
+    if (!key) return;
+    const list = lineIndexesByUpc.get(key) ?? [];
     list.push(index);
-    lineIndexesByUpc.set(line.upc, list);
+    lineIndexesByUpc.set(key, list);
   });
 
   // Sort station counts (warehouse mode: the whole load is sorted before
@@ -273,8 +277,9 @@ export async function GET(
     ? await Promise.all([consignmentCalls(id), returnedByUpc(id), returnList(id)])
     : [null, new Map<string, number>(), []];
   const leaveLine = (upc: string | null) => manifest.consignment && upc != null && callFor(consignmentCallMap, upc).decision === "leave";
-  const sortExpected = (line: { upc: string | null; expectedQuantity: number }) => (leaveLine(line.upc) ? 0 : line.expectedQuantity);
-  const lineUpcList = manifest.lines.map((l) => l.upc);
+  const sortExpected = (line: { upc: string | null; supplierSku: string | null; expectedQuantity: number }) =>
+    leaveLine(lineKey(line)) ? 0 : line.expectedQuantity;
+  const lineUpcList = manifest.lines.map((l) => lineKey(l));
   const returnedByLineUpc = new Map<string, number>();
   for (const [stored, units] of returnedStored) {
     const match = matchLineUpc(lineUpcList, stored);
@@ -381,7 +386,9 @@ export async function GET(
 
     // Sorting status: "not_sorted" until the load is marked sorted or
     // something of this line was counted; then matches / short / over by
-    // the physical count. Lines with no UPC can't be scanned (null).
+    // the physical count. Lines with neither a UPC nor an Item # can't be
+    // scanned or typed in (null).
+    const sortKey = lineKey(line);
     const sortedGood = sortGoodAllocation[index];
     const sortCounted = sortCountedAllocation[index];
     const sortDiff = sortCounted - sortExpected(line);
@@ -391,9 +398,9 @@ export async function GET(
     const sortStatus: {
       kind: "not_sorted" | "matches" | "short" | "over" | "left" | "going_back";
       units: number;
-    } | null = !line.upc
+    } | null = !sortKey
       ? null
-      : leaveLine(line.upc) && sortCounted === 0
+      : leaveLine(sortKey) && sortCounted === 0
         ? sortReturned > 0
           ? { kind: "going_back", units: sortReturned }
           : { kind: "left", units: 0 }

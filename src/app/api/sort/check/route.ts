@@ -7,11 +7,12 @@ import {
   DUD_ESTIMATE_SELECT,
   dudCall,
   latestCompleteEvaluationId,
-  matchLineUpc,
+  matchLineCode,
   productCounts,
   sortedUnitsFor,
 } from "@/lib/warehouse/sortCheck";
 import { sortedByUpc } from "@/lib/warehouse/sortBoxes";
+import { lineKey } from "@/lib/upcMatch";
 import { NextRequest, NextResponse } from "next/server";
 
 // The sort station's scan: GET ?manifestId=&upc= -> what the manifest says
@@ -26,8 +27,10 @@ import { NextRequest, NextResponse } from "next/server";
 //   line: { upc, description, expected, sorted, damaged, dudLogged,
 //           leftToSort, over, received, dud } | null,
 //   extraSorted,   // not on the manifest: units of it already boxed as extra
-//   dud, dudReason, sortWithoutBoxes
+//   dud, dudReason, sortWithoutBoxes, itemNumberLines
 // }
+// line.upc is the line's key: the UPC, or "item:" + Item # for a product
+// with no barcode (upc param can be an Item # typed in).
 // Sorting counts physical units: sorted (good, in sort boxes) + damaged +
 // dudLogged (every unit put in a dud box), against expected. received/dud
 // are the listing-side reconciliation numbers (manifest page), kept for
@@ -58,7 +61,7 @@ export async function GET(request: NextRequest) {
               consignment: true,
               sortWithoutBoxes: true,
               lines: {
-                select: { upc: true, description: true, expectedQuantity: true },
+                select: { upc: true, supplierSku: true, description: true, expectedQuantity: true },
                 orderBy: { sortOrder: "asc" },
               },
             },
@@ -73,6 +76,8 @@ export async function GET(request: NextRequest) {
       evaluated: evaluationId != null,
       consignment: manifest.consignment,
       sortWithoutBoxes: manifest.sortWithoutBoxes,
+      // Products with no UPC but an Item #: the page says to type the Item #.
+      itemNumberLines: manifest.lines.filter((l) => !l.upc?.trim() && l.supplierSku?.trim()).length,
     };
     const none = { line: null, extraSorted: 0, dud: false, dudReason: null, consignmentCall: null };
     if (!scanned) {
@@ -82,10 +87,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ ...base, ...none });
     }
 
-    const upc = matchLineUpc(
-      manifest.lines.map((l) => l.upc),
-      scanned
-    );
+    // The line's key: its UPC, or "item:" + Item # for a product with no
+    // barcode (typed in by its Item #).
+    const upc = matchLineCode(manifest.lines, scanned);
     if (!upc) {
       return NextResponse.json({
         ...base,
@@ -95,7 +99,7 @@ export async function GET(request: NextRequest) {
     }
 
     // A UPC can be split across lines (pallets); the product is all of them.
-    const lines = manifest.lines.filter((l) => l.upc === upc);
+    const lines = manifest.lines.filter((l) => lineKey(l) === upc);
     const [counts, estimate, calls, returned] = await Promise.all([
       productCounts(manifest.id, upc),
       evaluationId && !manifest.consignment
