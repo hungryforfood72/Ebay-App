@@ -77,6 +77,9 @@ type CheckResult = {
   manifest: { id: string; title: string; sortedAt: string | null; sortedBy: string | null };
   evaluated: boolean;
   consignment: boolean;
+  // Sorted without sort boxes (Manifest.sortWithoutBoxes): Good just
+  // counts units in.
+  sortWithoutBoxes: boolean;
   // Consignment loads only: what the pick list said for this product.
   consignmentCall: { decision: "take" | "leave"; reason: string | null } | null;
   line: {
@@ -226,6 +229,7 @@ export default function SortPage() {
     title: string;
     evaluated: boolean;
     consignment: boolean;
+    sortWithoutBoxes: boolean;
     sortedAt: string | null;
     sortedBy: string | null;
   } | null>(null);
@@ -296,6 +300,7 @@ export default function SortPage() {
           title: d.manifest.title,
           evaluated: d.evaluated,
           consignment: d.consignment,
+          sortWithoutBoxes: d.sortWithoutBoxes,
           sortedAt: d.manifest.sortedAt,
           sortedBy: d.manifest.sortedBy,
         });
@@ -461,7 +466,9 @@ export default function SortPage() {
     setMessage(null);
     setReopenCode(null);
     const kind = classifyScan(raw);
-    if (kind === "sortbox") void activateGoodBox(normalizeCode(raw));
+    if (kind === "sortbox" && info?.sortWithoutBoxes) {
+      setMessage({ tone: "warning", text: "This load doesn't use sort boxes. Just scan the items." });
+    } else if (kind === "sortbox") void activateGoodBox(normalizeCode(raw));
     else if (kind === "dudbox") void activateDudBox(normalizeCode(raw));
     else void runCheck(raw);
     focusScan();
@@ -499,25 +506,29 @@ export default function SortPage() {
     }
   }
 
-  // Puts good units (or an extra) in the sort box. Returns false if it
+  // Puts good units (or an extra) in the sort box, or just counts them in
+  // on a load sorted without boxes (boxCode null). Returns false if it
   // didn't save.
-  async function saveGood(boxCode: string, p: Pending): Promise<boolean> {
+  async function saveGood(boxCode: string | null, p: Pending): Promise<boolean> {
     setSaving(true);
     try {
-      const data = await readJson<{ entry: { id: string }; box: SortBoxSummary }>(
+      const data = await readJson<{ entry: { id: string }; box: SortBoxSummary | null }>(
         await postJson("/api/sort/log", { boxCode, manifestId, code: p.code, quantity: p.quantity, extra: p.extra }),
         "Save failed."
       );
-      rememberGood({ code: data.box.code, unitsLeft: data.box.unitsLeft });
+      if (data.box) rememberGood({ code: data.box.code, unitsLeft: data.box.unitsLeft });
       const kind: Kind = p.extra ? "extra" : "good";
       setTally((t) => ({ ...t, [kind]: t[kind] + p.quantity }));
       addToLog({
         kind,
         quantity: p.quantity,
         description: p.description,
-        ref: { kind: "good", id: data.entry.id, boxCode: data.box.code },
+        ref: { kind: "good", id: data.entry.id, boxCode: data.box?.code ?? null },
       });
-      setMessage({ tone: "success", text: `Put ${p.quantity} in ${data.box.code}. Scan the next one.` });
+      setMessage({
+        tone: "success",
+        text: data.box ? `Put ${p.quantity} in ${data.box.code}. Scan the next one.` : `Counted ${p.quantity} in. Scan the next one.`,
+      });
       setQuantity("1");
       void refreshAfterSave(p.quantity);
       return true;
@@ -750,6 +761,10 @@ export default function SortPage() {
     setMessage(null);
 
     if (kind === "good" || kind === "extra") {
+      if (info?.sortWithoutBoxes) {
+        await saveGood(null, p);
+        return;
+      }
       if (!goodBox) {
         // One more scan: the sort box label. These go in as soon as it's
         // active.
@@ -864,6 +879,29 @@ export default function SortPage() {
     }
   }
 
+  // Owner: this load is sorted without sort boxes (or with them again).
+  async function setNoBoxes(on: boolean) {
+    if (!manifestId) return;
+    setSaving(true);
+    try {
+      const d = await readJson<{ sortWithoutBoxes: boolean }>(
+        await postJson("/api/sort/no-boxes", { manifestId, on }),
+        "Couldn't change that."
+      );
+      setInfo((i) => (i ? { ...i, sortWithoutBoxes: d.sortWithoutBoxes } : i));
+      setPendingGood(null);
+      setMessage({
+        tone: "success",
+        text: d.sortWithoutBoxes ? "This load is sorted without sort boxes now. Good just counts them in." : "This load uses sort boxes again.",
+      });
+    } catch (e) {
+      setMessage({ tone: "danger", text: errorText(e, "Couldn't change that.") });
+    } finally {
+      setSaving(false);
+      focusScan();
+    }
+  }
+
   async function askDone() {
     if (!manifestId) return;
     setOtherSorters(null);
@@ -947,6 +985,7 @@ export default function SortPage() {
   const line = result?.line ?? null;
   const isDud = Boolean(line && result?.dud);
   const consignment = info?.consignment ?? result?.consignment ?? false;
+  const noBoxes = info?.sortWithoutBoxes ?? result?.sortWithoutBoxes ?? false;
   // Consignment: this one goes back to the supplier (the pick list said
   // leave it, or it isn't on the manifest).
   const goesBack = Boolean(consignment && result && (!line || result.consignmentCall?.decision === "leave"));
@@ -957,20 +996,39 @@ export default function SortPage() {
   const hasStations = stations.error ? false : stationList == null || stationList.length > 0;
   const showStationPicker = pickingStation || (starting && stations.needsStation && hasStations);
   const undoable = log.find((e) => e.ref && !e.failed && !e.undone);
+  // The third small button next to Damaged / Expired: the other way this
+  // one can go, if any.
+  const otherAction: { kind: Kind; label: string } | null = consignment
+    ? goesBack
+      ? // Keeping one that goes back is Cristian's call, not a sorter's.
+        isOwner
+        ? { kind: line ? "good" : "extra", label: "Keep it" }
+        : null
+      : { kind: "return", label: "To supplier" }
+    : !isDud
+      ? { kind: "dud", label: "Dud box" }
+      : null;
 
   return (
-    <AppShell
-      focused
-      width="narrow"
-      title="Sort"
-      subtitle={info ? info.title : loadError ? undefined : "Loading…"}
-      actions={
-        <Button variant="outline" size="sm" onClick={() => pickManifest(null)}>
-          Change load
-        </Button>
-      }
-    >
-      <div className="flex flex-col gap-4">
+    // Laid out to fit one handheld screen (about 360x620) from the scan
+    // down to the action buttons, so nobody scrolls between scans
+    // (Cristian, 2026-10-24): a one-line header instead of the page title,
+    // small tallies, the scan field without its label and hint once
+    // something's scanned, and damaged/expired/the other option in one row.
+    <AppShell focused width="narrow">
+      <div className="-mt-2 flex flex-col gap-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-muted-foreground">Sort</p>
+            <p className="truncate text-sm font-semibold text-foreground">
+              {info ? info.title : loadError ? "Can't open this load" : "Loading…"}
+            </p>
+          </div>
+          <Button variant="outline" size="sm" className="shrink-0" onClick={() => pickManifest(null)}>
+            Change load
+          </Button>
+        </div>
+
         {loadError && (
           <Alert
             tone="danger"
@@ -984,26 +1042,29 @@ export default function SortPage() {
           </Alert>
         )}
 
-        <ActiveBoxesBar
-          showDud={!consignment}
-          goodBox={goodBox}
-          goodChecked={goodChecked}
-          dudBox={dudBox}
-          dudChecked={dudChecked}
-          busy={boxBusy}
-          confirmCloseDud={confirmCloseDud}
-          onGoodFull={goodBoxFull}
-          onDudFull={() => setConfirmCloseDud(true)}
-          onCancelCloseDud={() => setConfirmCloseDud(false)}
-          onCloseDud={closeDudBox}
-          onStartDud={() => {
-            setStationFor("start");
-            setStarting(true);
-          }}
-          onReprint={(which) => reprint(which)}
-        />
+        {(!noBoxes || !consignment) && (
+          <ActiveBoxesBar
+            showGood={!noBoxes}
+            showDud={!consignment}
+            goodBox={goodBox}
+            goodChecked={goodChecked}
+            dudBox={dudBox}
+            dudChecked={dudChecked}
+            busy={boxBusy}
+            confirmCloseDud={confirmCloseDud}
+            onGoodFull={goodBoxFull}
+            onDudFull={() => setConfirmCloseDud(true)}
+            onCancelCloseDud={() => setConfirmCloseDud(false)}
+            onCloseDud={closeDudBox}
+            onStartDud={() => {
+              setStationFor("start");
+              setStarting(true);
+            }}
+            onReprint={(which) => reprint(which)}
+          />
+        )}
 
-        <div className="grid grid-cols-5 gap-1.5 text-center">
+        <div className="grid grid-cols-5 gap-1 text-center">
           <TallyTile label="Good" value={tally.good} tone="success" />
           <TallyTile label="Extra" value={tally.extra} tone="primary" />
           {consignment ? (
@@ -1015,59 +1076,68 @@ export default function SortPage() {
           <TallyTile label="Expired" value={tally.expired} tone="danger" />
         </div>
 
-        {info?.consignment && (
+        {/* Only before the first scan: it's the same every time. */}
+        {!scan && info?.consignment && (
           <p className="text-sm text-muted-foreground">
             Consignment load: count everything the supplier delivered. If the screen says it goes back, set it aside
             for the supplier.
           </p>
         )}
+        {!scan && noBoxes && (
+          <p className="text-sm text-muted-foreground">No sort boxes on this load: Good just counts them in.</p>
+        )}
 
-        {info && !info.evaluated && !info.consignment && (
+        {!scan && info && !info.evaluated && !info.consignment && (
           <p className="text-sm text-muted-foreground">
             This load never went through the Analyzer, so nothing is called a dud for you. Use the dud box for anything
             that clearly won&apos;t sell.
           </p>
         )}
 
-        <Card>
-          <ScanField
-            id="sort-upc"
-            label="UPC"
-            prompt="Scan the item's UPC"
-            numeric
-            autoFocus
-            value={code}
-            onChange={setCode}
-            onScan={handleScan}
-            hint="Scan a sort box (SB) or dud box (DB) label to switch boxes."
-          />
-        </Card>
+        <ScanField
+          id="sort-upc"
+          label="UPC"
+          prompt="Scan the item's UPC"
+          numeric
+          autoFocus
+          compact={Boolean(scan)}
+          value={code}
+          onChange={setCode}
+          onScan={handleScan}
+          hint={
+            noBoxes
+              ? consignment
+                ? "Scan each item."
+                : "Scan each item, or a dud box (DB) label to switch dud boxes."
+              : "Scan a sort box (SB) or dud box (DB) label to switch boxes."
+          }
+        />
 
         {scan?.loading && (
-          <Card>
-            <p className="flex items-center gap-2 text-sm text-muted-foreground">
-              <LoaderCircle className="size-4 animate-spin" aria-hidden />
-              Checking {scan.code}…
-            </p>
-          </Card>
+          <p className="flex items-center gap-2 text-sm text-muted-foreground">
+            <LoaderCircle className="size-4 animate-spin" aria-hidden />
+            Checking {scan.code}…
+          </p>
         )}
 
         {scan?.error && <Alert tone="danger">{scan.error}</Alert>}
 
         {scan && result && !line && (
-          <div role="alert" className="rounded-xl border-2 border-red-300 bg-red-50 p-4 text-red-950">
+          <div role="alert" className="rounded-xl border-2 border-red-300 bg-red-50 p-3 text-red-950">
             <div className="flex gap-2">
               <SearchX className="mt-0.5 size-6 shrink-0 text-red-600" aria-hidden />
               <div className="min-w-0">
-                <p className="text-lg font-semibold">Not on this manifest</p>
-                <p className="mt-0.5 break-all text-sm tabular-nums text-red-900/80">Scanned: {scan.code}</p>
+                <p className="text-lg font-semibold leading-tight">Not on this manifest</p>
+                <p className="mt-0.5 break-all text-xs tabular-nums text-red-900/80">Scanned: {scan.code}</p>
                 <p className="mt-1 text-sm">
                   {consignment
                     ? "It wasn't on the supplier's list. Set it aside to go back to the supplier."
-                    : "If it's good, box it as an extra. Otherwise log it below."}
+                    : noBoxes
+                      ? "If it's good, count it in as an extra. Otherwise log it below."
+                      : "If it's good, box it as an extra. Otherwise log it below."}
                 </p>
                 {result.extraSorted > 0 && (
-                  <p className="mt-1 text-sm font-medium">Already boxed as extra on this load: {result.extraSorted}</p>
+                  <p className="mt-1 text-sm font-medium">Already counted as extra on this load: {result.extraSorted}</p>
                 )}
               </div>
             </div>
@@ -1075,13 +1145,13 @@ export default function SortPage() {
         )}
 
         {line && isDud && (
-          <div role="alert" className="rounded-xl border-2 border-amber-400 bg-amber-50 p-4 text-amber-950">
-            <div className="flex gap-3">
-              <Ban className="mt-1 size-8 shrink-0 text-amber-600" aria-hidden />
+          <div role="alert" className="rounded-xl border-2 border-amber-400 bg-amber-50 p-3 text-amber-950">
+            <div className="flex gap-2.5">
+              <Ban className="mt-0.5 size-7 shrink-0 text-amber-600" aria-hidden />
               <div className="min-w-0">
-                <p className="text-2xl font-bold leading-tight">DUD: put it in the dud box</p>
-                {result?.dudReason && <p className="mt-1 text-sm font-medium">{result.dudReason}</p>}
-                <p className="mt-2 text-sm">
+                <p className="text-xl font-bold leading-tight">DUD: put it in the dud box</p>
+                {result?.dudReason && <p className="mt-0.5 text-sm font-medium">{result.dudReason}</p>}
+                <p className="mt-1 text-sm">
                   {dudBox ? (
                     <>
                       Dud box <span className="font-mono font-bold">{dudBox.code}</span>
@@ -1096,25 +1166,24 @@ export default function SortPage() {
         )}
 
         {line && goesBack && (
-          <div role="alert" className="rounded-xl border-2 border-amber-400 bg-amber-50 p-4 text-amber-950">
-            <div className="flex gap-3">
-              <Ban className="mt-1 size-8 shrink-0 text-amber-600" aria-hidden />
+          <div role="alert" className="rounded-xl border-2 border-amber-400 bg-amber-50 p-3 text-amber-950">
+            <div className="flex gap-2.5">
+              <Ban className="mt-0.5 size-7 shrink-0 text-amber-600" aria-hidden />
               <div className="min-w-0">
-                <p className="text-2xl font-bold leading-tight">DON&apos;T KEEP: set it aside for the supplier</p>
-                {result?.consignmentCall?.reason && (
-                  <p className="mt-1 text-sm font-medium">{result.consignmentCall.reason}</p>
-                )}
-                <p className="mt-2 text-sm">It wasn&apos;t supposed to come with this load. It goes back.</p>
+                <p className="text-xl font-bold leading-tight">DON&apos;T KEEP: set it aside for the supplier</p>
+                <p className="mt-0.5 text-sm font-medium">
+                  {result?.consignmentCall?.reason ?? "It wasn't supposed to come with this load. It goes back."}
+                </p>
               </div>
             </div>
           </div>
         )}
 
         {line && (
-          <Card>
-            <p className="font-semibold leading-snug text-foreground">{line.description}</p>
-            <p className="mt-0.5 text-xs tabular-nums text-muted-foreground">UPC {line.upc}</p>
-            <div className="mt-3 grid grid-cols-4 gap-2 text-center">
+          <Card padded={false} className="p-3">
+            <p className="line-clamp-2 text-sm font-semibold leading-snug text-foreground">{line.description}</p>
+            <p className="text-xs tabular-nums text-muted-foreground">UPC {line.upc}</p>
+            <div className="mt-2 grid grid-cols-4 gap-1.5 text-center">
               <Count label="Expected" value={line.expected} />
               <Count label="Sorted" value={line.sorted} />
               <Count label="Damaged" value={line.damaged} />
@@ -1126,122 +1195,112 @@ export default function SortPage() {
             </div>
             {consignment && result?.consignmentCall?.decision === "leave" ? (
               line.over > 0 ? (
-                <p className="mt-2 flex items-center gap-1.5 text-sm font-semibold text-danger">
+                <p className="mt-1.5 flex items-center gap-1.5 text-sm font-semibold text-danger">
                   <TriangleAlert className="size-4 shrink-0" aria-hidden />
                   {line.over} kept anyway.
                 </p>
               ) : null
             ) : line.over > 0 ? (
-              <p className="mt-2 flex items-center gap-1.5 text-sm font-semibold text-danger">
+              <p className="mt-1.5 flex items-center gap-1.5 text-sm font-semibold text-danger">
                 <TriangleAlert className="size-4 shrink-0" aria-hidden />
                 Over by {line.over}: more than the manifest listed.
               </p>
             ) : (
-              <p className={cn("mt-2 text-sm font-medium", line.leftToSort > 0 ? "text-foreground" : "text-warning")}>
+              <p className={cn("mt-1.5 text-sm font-medium", line.leftToSort > 0 ? "text-foreground" : "text-warning")}>
                 {line.leftToSort > 0
                   ? `${line.leftToSort} left to sort`
                   : "All of these are sorted. Any more would be over."}
               </p>
             )}
-            {!isDud && result?.dudReason && <p className="mt-1 text-xs text-muted-foreground">{result.dudReason}</p>}
+            {!isDud && result?.dudReason && <p className="mt-0.5 text-xs text-muted-foreground">{result.dudReason}</p>}
           </Card>
         )}
 
         {showActions && scan && result && (
           <>
-            <div>
-              <p className="mb-1.5 text-sm font-medium text-foreground">I have this many</p>
-              <div className="grid grid-cols-[3.5rem_1fr_3.5rem] gap-2">
-                <Button
-                  variant="outline"
-                  size="icon-xl"
-                  aria-label="One less"
-                  onClick={() => setQuantity((q) => String(Math.max(1, (Number(q) || 1) - 1)))}
-                >
-                  <Minus className="size-5" aria-hidden />
-                </Button>
-                <Input
-                  size="lg"
-                  type="number"
-                  min={1}
-                  inputMode="numeric"
-                  className="text-center"
-                  value={quantity}
-                  onChange={(e) => setQuantity(e.target.value)}
-                  onWheel={(e) => e.currentTarget.blur()}
-                />
-                <Button
-                  variant="outline"
-                  size="icon-xl"
-                  aria-label="One more"
-                  onClick={() => setQuantity((q) => String((Number(q) || 0) + 1))}
-                >
-                  <Plus className="size-5" aria-hidden />
-                </Button>
-              </div>
+            <div className="grid grid-cols-[auto_3rem_1fr_3rem] items-center gap-2">
+              <span className="text-sm font-medium text-foreground">How many</span>
+              <Button
+                variant="outline"
+                size="lg"
+                className="px-0"
+                aria-label="One less"
+                onClick={() => setQuantity((q) => String(Math.max(1, (Number(q) || 1) - 1)))}
+              >
+                <Minus className="size-5" aria-hidden />
+              </Button>
+              <Input
+                size="lg"
+                type="number"
+                min={1}
+                inputMode="numeric"
+                className="text-center"
+                aria-label="How many"
+                value={quantity}
+                onChange={(e) => setQuantity(e.target.value)}
+                onWheel={(e) => e.currentTarget.blur()}
+              />
+              <Button
+                variant="outline"
+                size="lg"
+                className="px-0"
+                aria-label="One more"
+                onClick={() => setQuantity((q) => String((Number(q) || 0) + 1))}
+              >
+                <Plus className="size-5" aria-hidden />
+              </Button>
             </div>
 
-            <div className="flex flex-col gap-2">
-              {goesBack ? (
-                <Button variant="warning" size="xl" block onClick={() => record("return")} disabled={saving}>
-                  <PackageX className="size-5" aria-hidden />
-                  Set aside for the supplier
-                </Button>
-              ) : isDud ? (
-                <Button variant="warning" size="xl" block onClick={() => record("dud")} disabled={saving || boxBusy}>
-                  <PackageX className="size-5" aria-hidden />
-                  {dudBox ? `Put in dud box ${dudBox.code}` : "Start a dud box"}
-                </Button>
-              ) : line ? (
-                <Button variant="success" size="xl" block onClick={() => record("good")} disabled={saving}>
-                  <ThumbsUp className="size-5" aria-hidden />
-                  {goodBox ? `Good, into ${goodBox.code}` : "Good, pass to lister"}
-                </Button>
-              ) : (
-                <Button variant="success" size="xl" block onClick={() => record("extra")} disabled={saving}>
-                  <PackageCheck className="size-5" aria-hidden />
-                  {goodBox ? `Box it as extra, into ${goodBox.code}` : "Box it as extra"}
-                </Button>
-              )}
-              <div className="grid grid-cols-2 gap-2">
+            {goesBack ? (
+              <Button variant="warning" size="xl" block onClick={() => record("return")} disabled={saving}>
+                <PackageX className="size-5" aria-hidden />
+                Set aside for the supplier
+              </Button>
+            ) : isDud ? (
+              <Button variant="warning" size="xl" block onClick={() => record("dud")} disabled={saving || boxBusy}>
+                <PackageX className="size-5" aria-hidden />
+                {dudBox ? `Put in dud box ${dudBox.code}` : "Start a dud box"}
+              </Button>
+            ) : line ? (
+              <Button variant="success" size="xl" block onClick={() => record("good")} disabled={saving}>
+                <ThumbsUp className="size-5" aria-hidden />
+                {noBoxes ? "Good, count it in" : goodBox ? `Good, into ${goodBox.code}` : "Good, pass to lister"}
+              </Button>
+            ) : (
+              <Button variant="success" size="xl" block onClick={() => record("extra")} disabled={saving}>
+                <PackageCheck className="size-5" aria-hidden />
+                {noBoxes ? "Count it in as extra" : goodBox ? `Box it as extra, into ${goodBox.code}` : "Box it as extra"}
+              </Button>
+            )}
+            <div className={cn("grid gap-2", otherAction ? "grid-cols-3" : "grid-cols-2")}>
+              <Button
+                variant="danger-ghost"
+                size="md"
+                className="border border-red-200 px-1"
+                onClick={() => record("damaged")}
+                disabled={saving}
+              >
+                {isDud ? "It's damaged" : "Damaged"}
+              </Button>
+              <Button
+                variant="danger-ghost"
+                size="md"
+                className="border border-red-200 px-1"
+                onClick={() => record("expired")}
+                disabled={saving}
+              >
+                {isDud ? "It's expired" : "Expired"}
+              </Button>
+              {otherAction && (
                 <Button
-                  variant="danger-ghost"
-                  size="lg"
-                  className="border border-red-200"
-                  onClick={() => record("damaged")}
-                  disabled={saving}
+                  variant="outline"
+                  size="md"
+                  className="px-1"
+                  onClick={() => record(otherAction.kind)}
+                  disabled={saving || (otherAction.kind === "dud" && boxBusy)}
                 >
-                  {isDud ? "It's damaged" : "Damaged"}
+                  {otherAction.label}
                 </Button>
-                <Button
-                  variant="danger-ghost"
-                  size="lg"
-                  className="border border-red-200"
-                  onClick={() => record("expired")}
-                  disabled={saving}
-                >
-                  {isDud ? "It's expired" : "Expired"}
-                </Button>
-              </div>
-              {consignment ? (
-                goesBack ? (
-                  // Cristian's call to make, not a sorter's.
-                  isOwner && (
-                    <Button variant="ghost" size="md" onClick={() => record(line ? "good" : "extra")} disabled={saving}>
-                      Keep it anyway {goodBox ? `(into ${goodBox.code})` : ""}
-                    </Button>
-                  )
-                ) : (
-                  <Button variant="ghost" size="md" onClick={() => record("return")} disabled={saving}>
-                    Set aside for the supplier instead
-                  </Button>
-                )
-              ) : (
-                !isDud && (
-                  <Button variant="ghost" size="md" onClick={() => record("dud")} disabled={saving || boxBusy}>
-                    Put in the dud box instead
-                  </Button>
-                )
               )}
             </div>
           </>
@@ -1380,10 +1439,17 @@ export default function SortPage() {
           onReopen={() => markDone(true)}
         />
 
-        <Link href="/sort/boxes" className={buttonClasses({ variant: "ghost" })}>
-          <Boxes className="size-4" aria-hidden />
-          Sort boxes
-        </Link>
+        {!noBoxes && (
+          <Link href="/sort/boxes" className={buttonClasses({ variant: "ghost" })}>
+            <Boxes className="size-4" aria-hidden />
+            Sort boxes
+          </Link>
+        )}
+        {isOwner && info && (
+          <Button variant="ghost" size="sm" onClick={() => setNoBoxes(!noBoxes)} disabled={saving}>
+            {noBoxes ? "Use sort boxes for this load" : "Sort this load without sort boxes"}
+          </Button>
+        )}
       </div>
     </AppShell>
   );
@@ -1392,7 +1458,9 @@ export default function SortPage() {
 // The two boxes the sorter is filling, side by side, always on screen. Each
 // has its own "full" button that leaves the other alone.
 function ActiveBoxesBar(props: {
-  // Consignment loads have no dud box.
+  // Loads sorted without sort boxes have no good box; consignment loads
+  // have no dud box.
+  showGood: boolean;
   showDud: boolean;
   goodBox: SortBoxState | null;
   goodChecked: boolean;
@@ -1409,18 +1477,22 @@ function ActiveBoxesBar(props: {
 }) {
   return (
     <Card padded={false}>
-      <div className={cn("grid divide-x divide-border", props.showDud ? "grid-cols-2" : "grid-cols-1")}>
-        <BoxSlot
-          label="Good"
-          icon={<PackageCheck className="size-4 text-success" aria-hidden />}
-          code={props.goodBox?.code ?? null}
-          units={props.goodBox?.unitsLeft ?? 0}
-          checked={props.goodChecked}
-          emptyText="None. Scan a sort box."
-          busy={props.busy}
-          onFull={props.onGoodFull}
-          onReprint={() => props.onReprint("good")}
-        />
+      <div
+        className={cn("grid divide-x divide-border", props.showGood && props.showDud ? "grid-cols-2" : "grid-cols-1")}
+      >
+        {props.showGood && (
+          <BoxSlot
+            label="Good"
+            icon={<PackageCheck className="size-4 text-success" aria-hidden />}
+            code={props.goodBox?.code ?? null}
+            units={props.goodBox?.unitsLeft ?? 0}
+            checked={props.goodChecked}
+            emptyText="None. Scan a sort box."
+            busy={props.busy}
+            onFull={props.onGoodFull}
+            onReprint={() => props.onReprint("good")}
+          />
+        )}
         {props.showDud && (
           <BoxSlot
             label="Dud"
@@ -1693,18 +1765,18 @@ const TALLY_TONES = {
 
 function TallyTile({ label, value, tone }: { label: string; value: number; tone: keyof typeof TALLY_TONES }) {
   return (
-    <div className={cn("rounded-lg border px-0.5 py-1.5", TALLY_TONES[tone])}>
-      <p className="truncate text-[11px] font-medium">{label}</p>
-      <p className="text-xl font-semibold tabular-nums">{value}</p>
+    <div className={cn("rounded-lg border px-0.5 py-0.5", TALLY_TONES[tone])}>
+      <p className="truncate text-[10px] font-medium leading-tight">{label}</p>
+      <p className="text-base font-semibold leading-tight tabular-nums">{value}</p>
     </div>
   );
 }
 
 function Count({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded-lg border border-border bg-background px-1 py-2">
-      <p className="text-[11px] font-medium text-muted-foreground">{label}</p>
-      <p className="text-lg font-semibold tabular-nums text-foreground">{value}</p>
+    <div className="rounded-lg border border-border bg-background px-0.5 py-1">
+      <p className="truncate text-[10px] font-medium leading-tight text-muted-foreground">{label}</p>
+      <p className="text-base font-semibold leading-tight tabular-nums text-foreground">{value}</p>
     </div>
   );
 }

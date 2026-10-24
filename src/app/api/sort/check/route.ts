@@ -26,7 +26,7 @@ import { NextRequest, NextResponse } from "next/server";
 //   line: { upc, description, expected, sorted, damaged, dudLogged,
 //           leftToSort, over, received, dud } | null,
 //   extraSorted,   // not on the manifest: units of it already boxed as extra
-//   dud, dudReason
+//   dud, dudReason, sortWithoutBoxes
 // }
 // Sorting counts physical units: sorted (good, in sort boxes) + damaged +
 // dudLogged (every unit put in a dud box), against expected. received/dud
@@ -56,6 +56,7 @@ export async function GET(request: NextRequest) {
               sortedAt: true,
               sortedBy: true,
               consignment: true,
+              sortWithoutBoxes: true,
               lines: {
                 select: { upc: true, description: true, expectedQuantity: true },
                 orderBy: { sortOrder: "asc" },
@@ -71,6 +72,7 @@ export async function GET(request: NextRequest) {
       manifest: { id: manifest.id, title: manifest.title, sortedAt: manifest.sortedAt, sortedBy: manifest.sortedBy },
       evaluated: evaluationId != null,
       consignment: manifest.consignment,
+      sortWithoutBoxes: manifest.sortWithoutBoxes,
     };
     const none = { line: null, extraSorted: 0, dud: false, dudReason: null, consignmentCall: null };
     if (!scanned) {

@@ -16,6 +16,10 @@ type Tx = Prisma.TransactionClient;
 
 export type SortLocation = { boxCode: string; inBox: number; pulled: number; sorted: number };
 
+// Where units sorted on a no-box load (Manifest.sortWithoutBoxes) show up:
+// a "box" called this on the List page.
+export const NO_BOX = "Not boxed";
+
 // Makes `count` new boxes numbered after the highest existing one.
 export async function createSortBoxes(count: number): Promise<string[]> {
   if (!Number.isInteger(count) || count < 1 || count > 500) {
@@ -70,9 +74,10 @@ export async function activateSortBox(args: { boxCode: string; manifestId: strin
 
 // Logs good units into a box. upc should be the manifest line's UPC when the
 // scan matched a line (so later lookups match the manifest exactly), or the
-// scanned code when it isn't on the manifest (extra = true).
+// scanned code when it isn't on the manifest (extra = true). boxCode null =
+// a load sorted without boxes: counted in, no box.
 export async function logSorted(args: {
-  boxCode: string;
+  boxCode: string | null;
   manifestId: string;
   upc: string;
   quantity: number;
@@ -83,15 +88,23 @@ export async function logSorted(args: {
     throw new WarehouseError("Quantity has to be a whole number, at least 1.");
   }
   return prisma.$transaction(async (tx) => {
-    const box = await findSortBox(tx, args.boxCode);
-    await tx.$executeRaw`SELECT id FROM "SortBox" WHERE id = ${box.id} FOR UPDATE`;
-    const fresh = await tx.sortBox.findUniqueOrThrow({ where: { id: box.id } });
-    if (fresh.manifestId !== args.manifestId) {
-      throw new WarehouseError(`${fresh.code} isn't this load's box. Scan it again to use it for this load.`, 409);
+    let boxId: string | null = null;
+    if (args.boxCode == null) {
+      const m = await tx.manifest.findUnique({ where: { id: args.manifestId }, select: { sortWithoutBoxes: true } });
+      if (!m) throw new WarehouseError("That load doesn't exist anymore.", 404);
+      if (!m.sortWithoutBoxes) throw new WarehouseError("This load uses sort boxes. Scan a sort box first.", 409);
+    } else {
+      const box = await findSortBox(tx, args.boxCode);
+      await tx.$executeRaw`SELECT id FROM "SortBox" WHERE id = ${box.id} FOR UPDATE`;
+      const fresh = await tx.sortBox.findUniqueOrThrow({ where: { id: box.id } });
+      if (fresh.manifestId !== args.manifestId) {
+        throw new WarehouseError(`${fresh.code} isn't this load's box. Scan it again to use it for this load.`, 409);
+      }
+      boxId = fresh.id;
     }
     return tx.sortBoxEntry.create({
       data: {
-        boxId: fresh.id,
+        boxId,
         manifestId: args.manifestId,
         upc: args.upc.trim(),
         quantity: args.quantity,
@@ -137,14 +150,15 @@ async function productEntries(tx: Tx, manifestId: string, upc: string, lock: boo
   return matching;
 }
 
-function summarize(entries: { quantity: number; pulledUnits: number; box: { code: string } }[]): SortLocation[] {
+function summarize(entries: { quantity: number; pulledUnits: number; box: { code: string } | null }[]): SortLocation[] {
   const byBox = new Map<string, SortLocation>();
   for (const e of entries) {
-    const loc = byBox.get(e.box.code) ?? { boxCode: e.box.code, inBox: 0, pulled: 0, sorted: 0 };
+    const code = e.box?.code ?? NO_BOX;
+    const loc = byBox.get(code) ?? { boxCode: code, inBox: 0, pulled: 0, sorted: 0 };
     loc.sorted += e.quantity;
     loc.pulled += e.pulledUnits;
     loc.inBox += e.quantity - e.pulledUnits;
-    byBox.set(e.box.code, loc);
+    byBox.set(code, loc);
   }
   return [...byBox.values()].sort((a, b) => a.boxCode.localeCompare(b.boxCode));
 }
@@ -170,9 +184,10 @@ export async function pullForListing(args: { manifestId: string; upc: string; by
         where: { id: e.id },
         data: { pulledUnits: e.quantity, pulledAt: now, pulledBy: args.by },
       });
-      const prev = pulled.find((p) => p.boxCode === e.box.code);
+      const code = e.box?.code ?? NO_BOX;
+      const prev = pulled.find((p) => p.boxCode === code);
       if (prev) prev.units += left;
-      else pulled.push({ boxCode: e.box.code, units: left });
+      else pulled.push({ boxCode: code, units: left });
     }
     const after = await productEntries(tx, args.manifestId, args.upc, false);
     return { pulled, locations: summarize(after) };
@@ -184,8 +199,8 @@ export async function pullForListing(args: { manifestId: string; upc: string; by
 export async function putBack(args: { manifestId: string; upc: string; boxCode: string; units: number }) {
   if (!Number.isInteger(args.units) || args.units < 1) throw new WarehouseError("Units must be at least 1.");
   return prisma.$transaction(async (tx) => {
-    const code = normalizeCode(args.boxCode);
-    const entries = (await productEntries(tx, args.manifestId, args.upc, true)).filter((e) => e.box.code === code);
+    const code = args.boxCode.trim() === NO_BOX ? NO_BOX : normalizeCode(args.boxCode);
+    const entries = (await productEntries(tx, args.manifestId, args.upc, true)).filter((e) => (e.box?.code ?? NO_BOX) === code);
     const pulled = entries.reduce((sum, e) => sum + e.pulledUnits, 0);
     if (pulled < args.units) {
       throw new WarehouseError(`Only ${pulled} of this product were pulled from ${code}.`);

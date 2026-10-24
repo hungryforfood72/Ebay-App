@@ -636,6 +636,10 @@ model Manifest {
   // that, products not boxed yet are "not sorted yet"; after, they're short.
   sortedAt        DateTime?
   sortedBy        String?
+  // Sorted without sort boxes (Cristian, 2026-10-24: the medical load,
+  // a one-off): Good just counts the units in, no box to scan. Owner
+  // switches it on the Sort page.
+  sortWithoutBoxes Boolean @default(false)
   items   Item[]
 
   sourcingEvaluations SourcingEvaluation[]
@@ -1757,11 +1761,12 @@ model SortBox {
 // taken out (scanning the product at the List page pulls every unit of it to
 // the table; "put back" lowers it again). manifestId stays on the row even
 // after the box moves on to another load, so the load's sorted count never
-// changes. extra = the product isn't on the manifest at all.
+// changes. extra = the product isn't on the manifest at all. No box = a
+// load sorted without sort boxes (Manifest.sortWithoutBoxes).
 model SortBoxEntry {
   id          String    @id @default(uuid())
-  box         SortBox   @relation(fields: [boxId], references: [id], onDelete: Restrict)
-  boxId       String
+  box         SortBox?  @relation(fields: [boxId], references: [id], onDelete: Restrict)
+  boxId       String?
   manifest    Manifest  @relation(fields: [manifestId], references: [id], onDelete: Cascade)
   manifestId  String
   upc         String

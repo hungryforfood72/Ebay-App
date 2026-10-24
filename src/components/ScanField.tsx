@@ -49,6 +49,7 @@ export function ScanField({
   list,
   trailing,
   hint,
+  compact = false,
 }: {
   id: string;
   label: string;
@@ -64,6 +65,9 @@ export function ScanField({
   trailing?: ReactNode;
   // Replaces the default idle hint line.
   hint?: ReactNode;
+  // Just the field: the label is for screen readers only and there's no
+  // hint line (the sort page once something's scanned, to fit one screen).
+  compact?: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [typing, setTyping] = useState(false);
@@ -142,7 +146,10 @@ export function ScanField({
 
   return (
     <div>
-      <label htmlFor={id} className="mb-1.5 flex items-center justify-between text-sm font-medium text-foreground">
+      <label
+        htmlFor={id}
+        className={cn(compact ? "sr-only" : "mb-1.5 flex items-center justify-between text-sm font-medium text-foreground")}
+      >
         {label}
         {done && (
           <span className="inline-flex items-center gap-1 text-xs font-medium text-success">
@@ -229,13 +236,15 @@ export function ScanField({
         </button>
         {trailing}
       </div>
-      <p className={cn("mt-1.5 text-xs", waiting ? "font-medium text-primary" : "text-muted-foreground")}>
-        {typing
-          ? "Typing mode — press Go/Enter when done."
-          : waiting
-            ? `${prompt}…`
-            : (hint ?? "Scans submit on their own — no need to tap search.")}
-      </p>
+      {(!compact || typing) && (
+        <p className={cn("mt-1.5 text-xs", waiting ? "font-medium text-primary" : "text-muted-foreground")}>
+          {typing
+            ? "Typing mode — press Go/Enter when done."
+            : waiting
+              ? `${prompt}…`
+              : (hint ?? "Scans submit on their own — no need to tap search.")}
+        </p>
+      )}
     </div>
   );
 }

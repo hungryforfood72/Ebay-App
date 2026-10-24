@@ -68,9 +68,10 @@ export async function listSortBoxes(): Promise<SortBoxSummary[]> {
 // A "Good" at the sort station. The server matches the scan to a manifest
 // line (loosely, like the check) and stores the line's UPC, so the List
 // page and the manifest page find it exactly. A scan that isn't on the
-// manifest only goes in as an extra when the sorter said so.
+// manifest only goes in as an extra when the sorter said so. boxCode null
+// = a load sorted without boxes (box comes back null too).
 export async function logGood(args: {
-  boxCode: string;
+  boxCode: string | null;
   manifestId: string;
   code: string;
   quantity: number;
@@ -95,7 +96,7 @@ export async function logGood(args: {
     extra: !upc,
     by: args.by,
   });
-  return { entry, box: await getSortBoxSummary(args.boxCode) };
+  return { entry, box: args.boxCode ? await getSortBoxSummary(args.boxCode) : null };
 }
 
 export type UndoKind = "good" | "dud" | "damaged";
