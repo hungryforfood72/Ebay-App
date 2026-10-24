@@ -14,27 +14,41 @@ const stripZeros = (s: string) => s.replace(/^0+/, "");
 // 150832 sit a digit apart, which the loose barcode keys would merge.
 export const ITEM_KEY_PREFIX = "item:";
 
-export function isItemKey(code: string | null | undefined): code is string {
+// A line with neither is keyed by its own row ("line:<ManifestLine.id>"),
+// found at the sort station by searching its name.
+export const LINE_KEY_PREFIX = "line:";
+
+export function isItemKey(code: string | null | undefined): boolean {
   return Boolean(code?.startsWith(ITEM_KEY_PREFIX));
+}
+
+// An Item # or row key: matched exactly, never loosely like a barcode.
+export function isExactKey(code: string | null | undefined): code is string {
+  return Boolean(code?.startsWith(ITEM_KEY_PREFIX) || code?.startsWith(LINE_KEY_PREFIX));
 }
 
 // The key a manifest line is counted under: its UPC, or "item:" + its
 // Item # when it has no UPC (Cristian, 2026-10-24: the medical load has
-// products with no barcode). null = neither, nothing to scan it by.
-export function lineKey(line: { upc: string | null; supplierSku?: string | null }): string | null {
+// products with no barcode), or "line:" + its id when it has neither
+// (pass id for that). null = nothing to key it by.
+export function lineKey(line: { id?: string; upc: string | null; supplierSku?: string | null }): string | null {
   const upc = line.upc?.trim();
   if (upc) return upc;
   const sku = line.supplierSku?.trim();
-  return sku ? ITEM_KEY_PREFIX + sku : null;
+  if (sku) return ITEM_KEY_PREFIX + sku;
+  return line.id ? LINE_KEY_PREFIX + line.id : null;
 }
 
-// What a sorter reads for a key: "UPC 0123..." or "Item # 2049-02".
+// What a sorter reads for a key: "UPC 0123...", "Item # 2049-02", or that
+// it has neither.
 export function keyLabel(key: string): string {
-  return isItemKey(key) ? `Item # ${key.slice(ITEM_KEY_PREFIX.length)}` : `UPC ${key}`;
+  if (isItemKey(key)) return `Item # ${key.slice(ITEM_KEY_PREFIX.length)}`;
+  if (key.startsWith(LINE_KEY_PREFIX)) return "No UPC or Item #";
+  return `UPC ${key}`;
 }
 
 export function upcMatchKeys(code: string | null | undefined): string[] {
-  if (isItemKey(code)) return [code];
+  if (isExactKey(code)) return [code];
   const d = (code ?? "").replace(/\D/g, "");
   if (d.length < 6) return [];
   const keys = new Set<string>([stripZeros(d), stripZeros(d.slice(0, -1))]);

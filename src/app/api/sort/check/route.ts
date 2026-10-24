@@ -61,7 +61,7 @@ export async function GET(request: NextRequest) {
               consignment: true,
               sortWithoutBoxes: true,
               lines: {
-                select: { upc: true, supplierSku: true, description: true, expectedQuantity: true },
+                select: { id: true, upc: true, supplierSku: true, description: true, expectedQuantity: true },
                 orderBy: { sortOrder: "asc" },
               },
             },

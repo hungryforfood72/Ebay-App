@@ -1,6 +1,7 @@
 import { ebayBanReason } from "./ebayBanned";
 import { MIN_PROFIT_PER_SALE } from "./packSize";
 import { prisma } from "./prisma";
+import { lineKey } from "./upcMatch";
 import {
   expiresByDate,
   getLongTailMonths,
@@ -34,6 +35,9 @@ export type ConsignmentPick = {
   estimateId: string;
   upc: string | null;
   itemNumbers: string[];
+  // The sort station's keys for its lines (lineKey): how a product with no
+  // UPC is found there.
+  lineKeys: string[];
   description: string;
   availableUnits: number;
   takeUnits: number;
@@ -89,6 +93,7 @@ export async function buildConsignmentPickList(manifestId: string, supplierPct: 
       estimateId: e.id,
       upc: e.upc,
       itemNumbers: [...new Set(groupLines.map((l) => l.supplierSku).filter((s): s is string => Boolean(s)))],
+      lineKeys: [...new Set(groupLines.map((l) => lineKey(l)).filter((k): k is string => k != null))],
       description: e.description,
       availableUnits: e.effectiveUnits,
       piecesPerUnit: groupLines.find((l) => l.piecesPerBox)?.piecesPerBox ?? null,

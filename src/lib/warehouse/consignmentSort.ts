@@ -1,7 +1,7 @@
 import { buildConsignmentPickList, DEFAULT_CONSIGNMENT_SUPPLIER_PCT } from "../consignment";
 import { ebayBanReason } from "../ebayBanned";
 import { prisma } from "../prisma";
-import { ITEM_KEY_PREFIX, lineKey, upcMatchKeys } from "../upcMatch";
+import { lineKey, upcMatchKeys } from "../upcMatch";
 import { WarehouseError } from "./bins";
 import { latestCompleteEvaluationId, matchLineCode } from "./sortCheck";
 
@@ -60,8 +60,7 @@ async function buildCalls(manifestId: string, pct: number): Promise<Map<string, 
   const calls = new Map<string, ConsignmentCall>();
   // Keyed like the sort station keys lines (lineKey): the UPC, or "item:" +
   // the Item # for a product with no UPC.
-  const keysOf = (p: { upc: string | null; itemNumbers: string[] }) =>
-    p.upc ? [p.upc] : p.itemNumbers.map((n) => ITEM_KEY_PREFIX + n.trim());
+  const keysOf = (p: { upc: string | null; lineKeys: string[] }) => (p.upc ? [p.upc] : p.lineKeys);
   for (const p of list.skipped) for (const k of keysOf(p)) calls.set(k, { decision: "leave", reason: leaveReason(p.description) });
   // A UPC split across take and leave can't happen (one estimate per UPC),
   // but take wins if it ever does.
@@ -102,7 +101,7 @@ export async function logReturn(args: { manifestId: string; code: string; quanti
   }
   const manifest = await prisma.manifest.findUnique({
     where: { id: args.manifestId },
-    select: { consignment: true, lines: { select: { upc: true, supplierSku: true, description: true } } },
+    select: { consignment: true, lines: { select: { id: true, upc: true, supplierSku: true, description: true } } },
   });
   if (!manifest) throw new WarehouseError("That load doesn't exist anymore. Pick the load again.", 404);
   if (!manifest.consignment) throw new WarehouseError("Only consignment loads send things back to the supplier.");

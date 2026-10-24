@@ -26,6 +26,7 @@ import {
   PackageX,
   Plus,
   Printer,
+  Search,
   SearchX,
   ThumbsUp,
   TriangleAlert,
@@ -129,6 +130,9 @@ type SortBoxSummary = { code: string; manifestId: string | null; unitsLeft: numb
 type Pending = { code: string; upc: string; quantity: number; description: string; extra: boolean };
 
 type Message = { tone: "success" | "warning" | "danger"; text: string };
+
+// GET /api/sort/search
+type SearchResult = { key: string; description: string; label: string };
 
 const SORT_MANIFEST_KEY = "ebay-tool.sortManifestId";
 // The boxes this device is filling, per load.
@@ -275,7 +279,44 @@ export default function SortPage() {
   // popup (null = still checking).
   const [otherSorters, setOtherSorters] = useState<OtherSorter[] | null>(null);
 
+  // "Search by name" (Cristian, 2026-10-24: products with no UPC and no
+  // Item #): type part of the name, tap the product, and it's checked like
+  // a scan.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQ, setSearchQ] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchResult[] | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
+
   const stations = useChosenStation(true);
+
+  useEffect(() => {
+    if (!searchOpen || !manifestId) return;
+    const q = searchQ.trim();
+    if (q.length < 2) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setSearchResults(null);
+      return;
+    }
+    let cancelled = false;
+    const id = setTimeout(async () => {
+      try {
+        const d = await readJson<{ results: SearchResult[] }>(
+          await fetch(`/api/sort/search?manifestId=${encodeURIComponent(manifestId)}&q=${encodeURIComponent(q)}`),
+          "Couldn't search."
+        );
+        if (!cancelled) {
+          setSearchResults(d.results);
+          setSearchError(null);
+        }
+      } catch (e) {
+        if (!cancelled) setSearchError(errorText(e, "Couldn't search."));
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(id);
+    };
+  }, [searchOpen, searchQ, manifestId]);
 
   // Starting a dud box (or picking a station) happens in a card below the
   // scan answer; bring it on screen on the handheld.
@@ -884,6 +925,30 @@ export default function SortPage() {
     }
   }
 
+  // Clears the product on screen: the search is for the next one.
+  function openSearch() {
+    checkId.current++;
+    setScan(null);
+    setSearchOpen(true);
+    setSearchQ("");
+    setSearchResults(null);
+    setSearchError(null);
+    setMessage(null);
+  }
+
+  function closeSearch() {
+    setSearchOpen(false);
+    focusScan();
+  }
+
+  // Picked a product from the search: checked exactly like a scan of it.
+  function pickSearchResult(r: SearchResult) {
+    setSearchOpen(false);
+    setReopenCode(null);
+    void runCheck(r.key);
+    focusScan();
+  }
+
   // Owner: this load is sorted without sort boxes (or with them again).
   async function setNoBoxes(on: boolean) {
     if (!manifestId) return;
@@ -1083,22 +1148,24 @@ export default function SortPage() {
         </div>
 
         {/* Only before the first scan: it's the same every time. */}
-        {!scan && info?.consignment && (
+        {!scan && !searchOpen && info?.consignment && (
           <p className="text-sm text-muted-foreground">
             Consignment load: count everything the supplier delivered. If the screen says it goes back, set it aside
             for the supplier.
           </p>
         )}
-        {!scan && itemNumbers && (
+        {!scan && !searchOpen && (
           <p className="text-sm text-muted-foreground">
-            No barcode on it? Tap the keyboard button next to the scan box and type its Item #.
+            {itemNumbers
+              ? "No barcode on it? Tap the keyboard button and type its Item #, or the search button to find it by name."
+              : "Barcode won't scan? Tap the search button to find it by name."}
           </p>
         )}
-        {!scan && noBoxes && (
+        {!scan && !searchOpen && noBoxes && (
           <p className="text-sm text-muted-foreground">No sort boxes on this load: Good just counts them in.</p>
         )}
 
-        {!scan && info && !info.evaluated && !info.consignment && (
+        {!scan && !searchOpen && info && !info.evaluated && !info.consignment && (
           <p className="text-sm text-muted-foreground">
             This load never went through the Analyzer, so nothing is called a dud for you. Use the dud box for anything
             that clearly won&apos;t sell.
@@ -1113,10 +1180,27 @@ export default function SortPage() {
           // load has products typed in by Item #.
           numeric={!itemNumbers}
           autoFocus
-          compact={Boolean(scan)}
+          compact={Boolean(scan) || searchOpen}
           value={code}
           onChange={setCode}
           onScan={handleScan}
+          trailing={
+            <button
+              type="button"
+              onClick={() => (searchOpen ? closeSearch() : openSearch())}
+              aria-pressed={searchOpen}
+              aria-label="Search by name"
+              title="Search by name"
+              className={cn(
+                "grid size-14 shrink-0 place-items-center rounded-lg border shadow-sm transition-colors",
+                searchOpen
+                  ? "border-primary bg-blue-50 text-primary"
+                  : "border-border bg-surface text-muted-foreground hover:bg-muted"
+              )}
+            >
+              <Search className="size-5" aria-hidden />
+            </button>
+          }
           hint={
             noBoxes
               ? consignment
@@ -1125,6 +1209,51 @@ export default function SortPage() {
               : "Scan a sort box (SB) or dud box (DB) label to switch boxes."
           }
         />
+
+        {searchOpen && (
+          <Card padded={false} className="p-3">
+            <div className="flex gap-2">
+              <Input
+                autoFocus
+                type="search"
+                enterKeyHint="search"
+                placeholder="Type part of the name"
+                aria-label="Search this load by name"
+                value={searchQ}
+                onChange={(e) => setSearchQ(e.target.value)}
+              />
+              <Button variant="outline" onClick={closeSearch}>
+                Cancel
+              </Button>
+            </div>
+            {searchError ? (
+              <p className="mt-2 text-sm text-danger">{searchError}</p>
+            ) : searchQ.trim().length < 2 ? (
+              <p className="mt-2 text-sm text-muted-foreground">Type at least 2 letters, like &quot;lens&quot;.</p>
+            ) : searchResults === null ? (
+              <p className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
+                <LoaderCircle className="size-4 animate-spin" aria-hidden /> Searching…
+              </p>
+            ) : searchResults.length === 0 ? (
+              <p className="mt-2 text-sm text-muted-foreground">Nothing on this load matches.</p>
+            ) : (
+              <ul className="mt-2 flex max-h-80 flex-col gap-1.5 overflow-y-auto">
+                {searchResults.map((r) => (
+                  <li key={r.key}>
+                    <button
+                      type="button"
+                      onClick={() => pickSearchResult(r)}
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-left active:bg-muted"
+                    >
+                      <span className="line-clamp-2 block text-sm font-medium text-foreground">{r.description}</span>
+                      <span className="block text-xs text-muted-foreground">{r.label}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+        )}
 
         {scan?.loading && (
           <p className="flex items-center gap-2 text-sm text-muted-foreground">

@@ -82,7 +82,7 @@ export async function logGood(args: {
   if (!scanned) throw new WarehouseError("Scan the item first.");
   const lines = await prisma.manifestLine.findMany({
     where: { manifestId: args.manifestId },
-    select: { upc: true, supplierSku: true },
+    select: { id: true, upc: true, supplierSku: true },
   });
   const upc = matchLineCode(lines, scanned);
   if (!upc && !args.extra) {

@@ -2,7 +2,7 @@ import type { Prisma } from "@/generated/prisma/client";
 import { ebayBanReason } from "../ebayBanned";
 import { parseBundleComponentUnits, unitsFor } from "../itemUnits";
 import { prisma } from "../prisma";
-import { ITEM_KEY_PREFIX, isItemKey, lineKey, upcMatchKeys } from "../upcMatch";
+import { ITEM_KEY_PREFIX, isExactKey, isItemKey, lineKey, upcMatchKeys } from "../upcMatch";
 import { returnedUnitsByUpc } from "./returnReconcile";
 import { sortedByUpc } from "./sortBoxes";
 
@@ -91,7 +91,7 @@ export function dudCall(args: { description: string; evaluated: boolean; estimat
 // (see upcMatchKeys), so the line sharing the most match keys with the
 // scan wins, same as the sort page always did.
 export function matchLineUpc(lineUpcs: (string | null)[], scanned: string): string | null {
-  if (isItemKey(scanned)) return lineUpcs.includes(scanned) ? scanned : null;
+  if (isExactKey(scanned)) return lineUpcs.includes(scanned) ? scanned : null;
   const keys = new Set(upcMatchKeys(scanned));
   if (keys.size === 0) return null;
   let best: string | null = null;
@@ -113,7 +113,7 @@ export function matchLineUpc(lineUpcs: (string | null)[], scanned: string): stri
 // share an Item #; one keyed by it (no UPC) wins, since that's why it's
 // being typed.
 export function matchLineCode(
-  lines: { upc: string | null; supplierSku: string | null }[],
+  lines: { id: string; upc: string | null; supplierSku: string | null }[],
   scanned: string
 ): string | null {
   const byUpc = matchLineUpc(
