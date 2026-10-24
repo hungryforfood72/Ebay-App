@@ -1087,7 +1087,7 @@ export default function SortPage() {
     // small tallies, the scan field without its label and hint once
     // something's scanned, and damaged/expired/the other option in one row.
     <AppShell focused width="narrow">
-      <div className="-mt-2 flex flex-col gap-2.5">
+      <div className="-mt-2 flex flex-col gap-2">
         <div className="flex items-center justify-between gap-2">
           <div className="min-w-0">
             <p className="text-xs font-medium text-muted-foreground">Sort</p>
