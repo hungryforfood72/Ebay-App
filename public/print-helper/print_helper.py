@@ -40,6 +40,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -55,7 +56,7 @@ import win32ui
 import winerror
 from PIL import Image, ImageWin
 
-VERSION = "2026-10-24.2"
+VERSION = "2026-10-24.3"
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE / "config.json"
 # The code this process is running, as it was when it started. Updates are
@@ -432,6 +433,36 @@ def setup_logging():
     log.setLevel(logging.INFO)
 
 
+def keep_checking_in(stations: list[Station]):
+    """Checks in every 10s from its own thread, printing or not. When the
+    main loop did it between jobs, a batch of labels (20 took ~23s) went
+    quiet long enough that the station looked offline, and the station
+    page printed the next batch itself on the Windows default printer
+    (Cristian, 2026-10-24: bin labels came out sideways on 4x6 pages)."""
+    printers: list[str] = []
+    errors: dict[str, str] = {}
+    while True:
+        due = [st for st in stations if time.time() - st.last_checkin >= CHECKIN_SECONDS]
+        if due:
+            try:
+                printers = list_printers()
+            except Exception:
+                log.exception("Couldn't list printers")  # keeps the last list
+        for st in due:
+            try:
+                st.checkin(printers)
+                errors.pop(st.id, None)
+            except Exception as e:
+                # The main loop's claim hits the same problem and logs it;
+                # here only log a check-in problem once.
+                text = f"{type(e).__name__}: {e}"
+                if errors.get(st.id) != text:
+                    log.warning("%s: check-in failed: %s", st.name, text)
+                    errors[st.id] = text
+                st.last_checkin = time.time() - CHECKIN_SECONDS + 3  # try again in 3s
+        time.sleep(1)
+
+
 def main():
     setup_logging()
     # One helper per PC: a second copy (the logon task while one runs)
@@ -444,17 +475,11 @@ def main():
         restart(mutex)
     stations = [Station(base, c) for c in configs]
     log.info("Print helper %s for: %s", VERSION, ", ".join(s.name for s in stations) or "(no stations)")
-    printers: list[str] = []
+    threading.Thread(target=keep_checking_in, args=(stations,), daemon=True).start()
     last_update = time.time()
     while True:
-        try:
-            printers = list_printers()
-        except Exception:
-            log.exception("Couldn't list printers")
         for st in stations:
             try:
-                if time.time() - st.last_checkin >= CHECKIN_SECONDS:
-                    st.checkin(printers)
                 if st.update_requested:
                     # "Check for updates" on the station page.
                     st.update_requested = False

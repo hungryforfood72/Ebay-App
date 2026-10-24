@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { AuthError } from "../auth";
 import { WarehouseError } from "./bins";
 import { STATION_ONLINE_MS } from "./settings";
-import { labelSizeOf, type StationStatus } from "./types";
+import { helperCanPrintLabels, labelSizeOf, type StationStatus } from "./types";
 
 // Shared bits for the /api/stations and /api/print-jobs routes. Server only.
 
@@ -67,6 +67,8 @@ export function toStationStatus(row: StationRow, now = Date.now()): StationStatu
     labelSize: labelSizeOf(row.labelSize),
     labelPrinterName: row.labelPrinterName,
     helperLabelsActive: helperPrintsLabels(row, now),
+    helperTakesPages: row.printerName != null,
+    helperTakesLabels: row.labelPrinterName != null && helperCanPrintLabels(row.helperVersion),
     printPaused: row.printPaused,
   };
 }

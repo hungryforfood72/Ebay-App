@@ -11,5 +11,5 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const { id } = await params;
   const kinds = request.nextUrl.searchParams.get("kinds");
   const which = kinds === "label" || kinds === "page" ? kinds : "all";
-  return NextResponse.json(await claimJobs(id, which));
+  return NextResponse.json(await claimJobs(id, which, true));
 }

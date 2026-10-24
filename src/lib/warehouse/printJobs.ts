@@ -2,7 +2,7 @@ import { Prisma } from "@/generated/prisma/client";
 import { prisma } from "../prisma";
 import { WarehouseError } from "./bins";
 import { stripShipTo } from "./packingSlip";
-import { PAGE_JOB_KINDS, type PrintJobKind, type PrintJobPayload } from "./types";
+import { LABEL_HELPER_VERSION, PAGE_JOB_KINDS, type PrintJobKind, type PrintJobPayload } from "./types";
 
 // Queues labels for a station PC to print. The station page (/station/{id})
 // polls for queued jobs and prints them on its Rollo.
@@ -41,17 +41,28 @@ export async function queuePrintJob(
 // printing the pages). Nothing while the station's printing is paused.
 // At most 20 per call (a literal: a bound parameter can arrive as numeric,
 // which LIMIT rejects).
+// stationPage: the station page asking. It never gets what the helper is
+// set to print (a printer picked for it), whatever kinds it asked for: an
+// open tab from before an update shouldn't print those on the Windows
+// default (Cristian, 2026-10-24: bin labels sideways on 4x6).
 export type ClaimedJob = { id: string; kind: string; payload: unknown; copies: number; createdAt: string };
 
-export async function claimJobs(stationId: string, which: "all" | "page" | "label"): Promise<ClaimedJob[]> {
+export async function claimJobs(stationId: string, which: "all" | "page" | "label", stationPage = false): Promise<ClaimedJob[]> {
   const pages = Prisma.join([...PAGE_JOB_KINDS]);
   const kindFilter =
     which === "page" ? Prisma.sql`AND kind IN (${pages})` : which === "label" ? Prisma.sql`AND kind NOT IN (${pages})` : Prisma.empty;
+  const helperFilter = stationPage
+    ? Prisma.sql`
+        AND NOT (kind IN (${pages}) AND EXISTS (SELECT 1 FROM "Station" WHERE id = ${stationId} AND "printerName" IS NOT NULL))
+        AND NOT (kind NOT IN (${pages}) AND EXISTS (
+          SELECT 1 FROM "Station" WHERE id = ${stationId} AND "labelPrinterName" IS NOT NULL
+            AND "helperVersion" COLLATE "C" >= ${LABEL_HELPER_VERSION}))`
+    : Prisma.empty;
   const rows = await prisma.$queryRaw<{ id: string; kind: string; payload: unknown; copies: number; createdAt: Date }[]>`
     UPDATE "PrintJob" SET status = 'printing'
     WHERE id IN (
       SELECT id FROM "PrintJob"
-      WHERE "stationId" = ${stationId} AND status = 'queued' ${kindFilter}
+      WHERE "stationId" = ${stationId} AND status = 'queued' ${kindFilter} ${helperFilter}
         AND NOT EXISTS (SELECT 1 FROM "Station" WHERE id = ${stationId} AND "printPaused")
       ORDER BY "createdAt" ASC
       LIMIT 20

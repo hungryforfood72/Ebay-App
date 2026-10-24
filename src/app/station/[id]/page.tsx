@@ -116,10 +116,11 @@ export default function StationPage() {
   // else (Cristian, 2026-10-19: a scan form on the regular printer).
   const [autoPrint, setAutoPrint] = useState(true);
   const autoPrintRef = useRef(true);
-  // The print helper is printing the 4x6 pages: this page takes only the
-  // small code labels. helperLabelsRef: it's printing the small labels
-  // too (or only those). labelSizeRef: the stock this page prints them on.
-  const helperActiveRef = useRef(false);
+  // A printer is picked for the 4x6 pages / small labels, so the print
+  // helper prints those and this page leaves them alone, even while the
+  // helper looks offline (StationStatus.helperTakesPages). labelSizeRef:
+  // the stock this page prints small labels on.
+  const helperPagesRef = useRef(false);
   const helperLabelsRef = useRef(false);
   const labelSizeRef = useRef<LabelSize>(DEFAULT_LABEL_SIZE);
   const stationLoadedAt = useRef(0);
@@ -179,8 +180,8 @@ export default function StationPage() {
     setStation(data);
     autoPrintRef.current = !data.printPaused;
     setAutoPrint(!data.printPaused);
-    helperActiveRef.current = data.helperActive;
-    helperLabelsRef.current = data.helperLabelsActive;
+    helperPagesRef.current = data.helperTakesPages;
+    helperLabelsRef.current = data.helperTakesLabels;
     labelSizeRef.current = data.labelSize;
   }
 
@@ -287,7 +288,7 @@ export default function StationPage() {
   async function pollJobs() {
     const state = poll.current;
     // The helper takes whatever it has a printer for; this page the rest.
-    const pages = !helperActiveRef.current;
+    const pages = !helperPagesRef.current;
     const labels = !helperLabelsRef.current;
     if (!pages && !labels) {
       state.lastAt = Date.now();
@@ -473,6 +474,14 @@ export default function StationPage() {
                   : "Nothing's waiting. Anything sent here waits until it's back on."}
               </Alert>
             )}
+            {station && (station.helperTakesPages || station.helperTakesLabels) && !station.helperOnline && (
+              <Alert tone="danger" title="The print helper isn't running" className="mb-3">
+                {[station.helperTakesLabels && "Small labels", station.helperTakesPages && "4x6 labels"].filter(Boolean).join(" and ")}{" "}
+                wait here until it&apos;s back, so they don&apos;t come out on the wrong printer. Restart this PC or
+                reinstall the print helper (Printers card). To print them on the Windows default printer instead, set the
+                printer there to the Windows default option.
+              </Alert>
+            )}
             <label className="mb-3 flex items-start gap-2 text-sm text-foreground">
               <input
                 type="checkbox"
@@ -538,10 +547,10 @@ export default function StationPage() {
                 text={
                 !autoPrint
                   ? "Paused. Labels wait until printing is back on."
-                  : station?.helperActive || station?.helperLabelsActive
+                  : station?.helperTakesPages || station?.helperTakesLabels
                     ? [
-                        `4x6 labels: ${station.helperActive ? `${station.printerName} (print helper)` : "this page"}.`,
-                        `Small labels: ${station.helperLabelsActive ? `${station.labelPrinterName} (print helper)` : "this page"}.`,
+                        `4x6 labels: ${station.helperTakesPages ? `${station.printerName} (print helper)` : "this page"}.`,
+                        `Small labels: ${station.helperTakesLabels ? `${station.labelPrinterName} (print helper)` : "this page"}.`,
                       ].join(" ")
                     : `Checking for labels every ${(pollActive ? POLL_ACTIVE_MS : POLL_IDLE_MS) / 1000}s`
               }

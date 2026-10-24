@@ -106,6 +106,14 @@ export type StationStatus = {
   labelSize: LabelSize;
   labelPrinterName: string | null;
   helperLabelsActive: boolean;
+  // Which jobs the helper takes, so the station page leaves them alone:
+  // decided by the printers picked, NOT by whether the helper checked in
+  // lately. When the page took over whenever the helper looked offline,
+  // a long batch of bin labels went quiet past the online window and the
+  // page printed the rest on the Windows default printer, sideways on 4x6
+  // (Cristian, 2026-10-24). If the helper is really down, they wait.
+  helperTakesPages: boolean;
+  helperTakesLabels: boolean;
   // Print automatically off: nothing is handed out to print.
   printPaused: boolean;
 };
