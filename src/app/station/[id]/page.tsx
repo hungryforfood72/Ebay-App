@@ -12,8 +12,20 @@ import { printLabels, printPage } from "@/lib/warehouse/labelPrint";
 import { formatOunces, formatPoundsOunces, scaleStatusMessage } from "@/lib/warehouse/scale";
 import { DEFAULT_CHROME_PATH, stationPolicyRegFile, stationShortcutArgs } from "@/lib/warehouse/stationSetup";
 import type { PrintJobRow } from "@/lib/warehouse/stations";
-import { isPageKind, type CodeLabelPayload, type ItemLabelPayload, type PageJobPayload, type PrintJobKind, type PrintJobPayload, type StationStatus } from "@/lib/warehouse/types";
-import { Copy, Download, Power, Printer, RotateCcw, Scale, Usb } from "lucide-react";
+import {
+  DEFAULT_LABEL_SIZE,
+  LABEL_SIZES,
+  helperCanPrintLabels,
+  isPageKind,
+  type CodeLabelPayload,
+  type ItemLabelPayload,
+  type LabelSize,
+  type PageJobPayload,
+  type PrintJobKind,
+  type PrintJobPayload,
+  type StationStatus,
+} from "@/lib/warehouse/types";
+import { Copy, Download, Power, Printer, RefreshCw, RotateCcw, Scale, Usb } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useScale } from "./useScale";
@@ -105,8 +117,11 @@ export default function StationPage() {
   const [autoPrint, setAutoPrint] = useState(true);
   const autoPrintRef = useRef(true);
   // The print helper is printing the 4x6 pages: this page takes only the
-  // small code labels.
+  // small code labels. helperLabelsRef: it's printing the small labels
+  // too (or only those). labelSizeRef: the stock this page prints them on.
   const helperActiveRef = useRef(false);
+  const helperLabelsRef = useRef(false);
+  const labelSizeRef = useRef<LabelSize>(DEFAULT_LABEL_SIZE);
   const stationLoadedAt = useRef(0);
 
   const weightOz = scale.connection === "connected" ? (scale.reading?.weightOz ?? null) : null;
@@ -165,6 +180,8 @@ export default function StationPage() {
     autoPrintRef.current = !data.printPaused;
     setAutoPrint(!data.printPaused);
     helperActiveRef.current = data.helperActive;
+    helperLabelsRef.current = data.helperLabelsActive;
+    labelSizeRef.current = data.labelSize;
   }
 
   async function loadStation(first = false) {
@@ -254,7 +271,7 @@ export default function StationPage() {
         for (let i = 0; i < job.copies; i++) await printPage(page.html, { width: "4in", height: "6in" });
       } else {
         if (!isLabelKind(job.kind)) throw new Error(`Unknown label type "${job.kind}".`);
-        await printLabels(job.kind, job.payload, job.copies);
+        await printLabels(job.kind, job.payload, job.copies, labelSizeRef.current);
       }
     } catch (e) {
       result = { status: "failed", error: e instanceof Error ? e.message : "Printing failed." };
@@ -269,9 +286,18 @@ export default function StationPage() {
 
   async function pollJobs() {
     const state = poll.current;
+    // The helper takes whatever it has a printer for; this page the rest.
+    const pages = !helperActiveRef.current;
+    const labels = !helperLabelsRef.current;
+    if (!pages && !labels) {
+      state.lastAt = Date.now();
+      void loadLog();
+      return;
+    }
     state.busy = true;
     try {
-      const res = await fetch(`/api/stations/${id}/jobs${helperActiveRef.current ? "?kinds=label" : ""}`, { cache: "no-store" });
+      const kinds = pages && labels ? "" : pages ? "?kinds=page" : "?kinds=label";
+      const res = await fetch(`/api/stations/${id}/jobs${kinds}`, { cache: "no-store" });
       if (!res.ok) {
         handleStatus(res.status);
         return;
@@ -469,7 +495,12 @@ export default function StationPage() {
             )}
             {latest && (
               <div className="mb-4 flex flex-wrap items-center gap-4">
-                <LabelPreview kind={latest.kind as PrintJobKind} payload={latest.payload as PrintJobPayload} scale={1.5} />
+                <LabelPreview
+                  kind={latest.kind as PrintJobKind}
+                  payload={latest.payload as PrintJobPayload}
+                  scale={1.5}
+                  size={station?.labelSize}
+                />
                 <p className="text-sm text-muted-foreground">Last label sent to this station.</p>
               </div>
             )}
@@ -507,15 +538,18 @@ export default function StationPage() {
                 text={
                 !autoPrint
                   ? "Paused. Labels wait until printing is back on."
-                  : station?.helperActive
-                    ? `4x6 labels: ${station.printerName} (print helper). Small labels: checking every ${(pollActive ? POLL_ACTIVE_MS : POLL_IDLE_MS) / 1000}s`
+                  : station?.helperActive || station?.helperLabelsActive
+                    ? [
+                        `4x6 labels: ${station.helperActive ? `${station.printerName} (print helper)` : "this page"}.`,
+                        `Small labels: ${station.helperLabelsActive ? `${station.labelPrinterName} (print helper)` : "this page"}.`,
+                      ].join(" ")
                     : `Checking for labels every ${(pollActive ? POLL_ACTIVE_MS : POLL_IDLE_MS) / 1000}s`
               }
               />
             </ul>
           </Card>
           {station && (
-            <PrinterCard station={station} onPick={(printerName) => void patchStation({ printerName })} disabled={stopped} />
+            <PrinterCard station={station} onChange={patchStation} disabled={stopped} />
           )}
           <SetupHelp stationId={id} />
         </div>
@@ -524,78 +558,216 @@ export default function StationPage() {
   );
 }
 
-// Which printer the 4x6 pages (shipping labels, packing slips, delivery
-// labels) go to. Chrome can only print on this PC's default printer and
-// drifts to the last one it used, so the print helper (installed from
-// here) prints them on the printer picked below instead.
+// Where this station's labels print and on what stock. Chrome can only
+// print on this PC's default printer and drifts to the last one it used,
+// so the print helper (installed from here) prints on the printers picked
+// below instead: one for the 4x6 pages (shipping labels, packing slips,
+// delivery labels), one for the small code labels. The label size applies
+// either way (Cristian, 2026-10-24: bin labels on 2.25" x 1.25").
 function PrinterCard({
   station,
-  onPick,
+  onChange,
   disabled,
 }: {
   station: StationStatus;
-  onPick: (printerName: string | null) => void;
+  onChange: (body: Record<string, unknown>) => Promise<boolean>;
   disabled: boolean;
 }) {
   const installer = `/api/stations/${station.id}/print-helper`;
   const installed = station.helperSeenAt != null;
   const seen = station.helperSeenAt ? new Date(station.helperSeenAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : null;
+  const canPrintLabels = helperCanPrintLabels(station.helperVersion);
+  const latest = useLatestHelperVersion(station.helperVersion);
+  const [checking, setChecking] = useState(false);
+  const [checkNote, setCheckNote] = useState<string | null>(null);
+  const wasPending = useRef(false);
+
+  // The helper picks the request up on its next check-in (about 10s) and
+  // restarts if there was an update; the next station refresh shows it.
+  useEffect(() => {
+    if (wasPending.current && !station.helperUpdatePending) {
+      setChecking(false);
+      setCheckNote(`Checked. The helper is on version ${station.helperVersion ?? "?"}.`);
+    }
+    wasPending.current = station.helperUpdatePending;
+  }, [station.helperUpdatePending, station.helperVersion]);
+
+  async function checkForUpdates() {
+    setCheckNote(null);
+    setChecking(true);
+    if (!(await onChange({ checkForUpdate: true }))) setChecking(false);
+  }
+
+  const printerOptions = (picked: string | null, none: string) => (
+    <>
+      <option value="">{none}</option>
+      {station.printers.map((p) => (
+        <option key={p} value={p}>
+          {p}
+        </option>
+      ))}
+      {picked && !station.printers.includes(picked) && <option value={picked}>{picked} (not on this PC anymore)</option>}
+    </>
+  );
+
+  const sizeName = LABEL_SIZES[station.labelSize].name;
+
   return (
     <Card>
-      <SectionHeader title="Printer for 4x6 labels" description="Shipping labels, packing slips and delivery labels." />
-      {!installed ? (
-        <div className="flex flex-col gap-3 text-sm text-foreground">
-          <p>
-            Right now these print on this PC&apos;s Windows default printer. To pick the printer here instead, install the
-            print helper on this PC. One file sets up everything it needs.
-          </p>
-          <a href={installer} className={buttonClasses({ variant: "primary", size: "md" })}>
-            <Download className="size-4" aria-hidden />
-            Download installer
-          </a>
-          <ol className="list-decimal pl-5 text-xs text-muted-foreground">
-            <li>Open the file you just downloaded. If Chrome warns about it, choose Keep.</li>
-            <li>If Windows says it protected your PC, click More info, then Run anyway.</li>
-            <li>Wait for &quot;Done&quot; (the first time can take a couple of minutes), then pick the printer here.</li>
-          </ol>
-        </div>
-      ) : (
-        <div className="flex flex-col gap-3 text-sm">
-          <ul className="flex flex-col gap-2">
-            <StatusRow
-              ok={station.helperOnline}
-              label="Print helper"
-              text={station.helperOnline ? "Running on this PC" : `Not running. Last seen ${seen}. Restart the PC or reinstall.`}
-            />
-          </ul>
-          <Select
-            value={station.printerName ?? ""}
-            disabled={disabled}
-            onChange={(e) => onPick(e.target.value || null)}
-            aria-label="Printer for 4x6 labels"
-          >
-            <option value="">Don&apos;t use the helper (Windows default printer)</option>
-            {station.printers.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-            {station.printerName && !station.printers.includes(station.printerName) && (
-              <option value={station.printerName}>{station.printerName} (not on this PC anymore)</option>
-            )}
-          </Select>
+      <SectionHeader title="Printers" description="Where this station's labels print, and on what size labels." />
+      <div className="flex flex-col gap-4 text-sm">
+        <div className="flex flex-col gap-2">
+          <p className="font-medium text-foreground">Small labels</p>
+          <p className="text-xs text-muted-foreground">Item, bin, shelf and box labels.</p>
+          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+            Label size
+            <Select
+              value={station.labelSize}
+              disabled={disabled}
+              onChange={(e) => void onChange({ labelSize: e.target.value })}
+              aria-label="Label size"
+            >
+              {(Object.keys(LABEL_SIZES) as LabelSize[]).map((s) => (
+                <option key={s} value={s}>
+                  {LABEL_SIZES[s].name}
+                </option>
+              ))}
+            </Select>
+          </label>
+          {installed && canPrintLabels && (
+            <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+              Printer
+              <Select
+                value={station.labelPrinterName ?? ""}
+                disabled={disabled}
+                onChange={(e) => void onChange({ labelPrinterName: e.target.value || null })}
+                aria-label="Printer for small labels"
+              >
+                {printerOptions(station.labelPrinterName, "Windows default printer (this page prints them)")}
+              </Select>
+            </label>
+          )}
           <p className="text-xs text-muted-foreground">
-            {station.printerName
-              ? "4x6 labels print there no matter what the Windows default is. Small item labels still print on the default printer."
-              : "Pick the 4x6 printer. Until then, everything prints on the Windows default."}
+            {station.labelPrinterName && canPrintLabels
+              ? `They print on ${station.labelPrinterName} at ${sizeName}, whatever the Windows default is. If they come out the wrong size, set ${sizeName} as the paper size in that printer's Printing preferences.`
+              : `They print on this PC's Windows default printer at ${sizeName}. Set ${sizeName} as the paper size in that printer's Printing preferences too.`}
           </p>
-          <a href={installer} className="text-xs font-medium text-primary underline">
-            Reinstall the print helper
-          </a>
+          {installed && !canPrintLabels && (
+            <p className="text-xs text-muted-foreground">
+              To pick a separate printer for these, the print helper needs updating:{" "}
+              <a href={installer} className="font-medium text-primary underline">
+                reinstall it
+              </a>{" "}
+              once.
+            </p>
+          )}
         </div>
-      )}
+
+        <div className="flex flex-col gap-2 border-t border-border pt-4">
+          <p className="font-medium text-foreground">4x6 labels</p>
+          <p className="text-xs text-muted-foreground">Shipping labels, packing slips and delivery labels.</p>
+          {installed && (
+            <Select
+              value={station.printerName ?? ""}
+              disabled={disabled}
+              onChange={(e) => void onChange({ printerName: e.target.value || null })}
+              aria-label="Printer for 4x6 labels"
+            >
+              {printerOptions(station.printerName, "Don't use the helper (Windows default printer)")}
+            </Select>
+          )}
+          <p className="text-xs text-muted-foreground">
+            {!installed
+              ? "Right now these print on this PC's Windows default printer."
+              : station.printerName
+                ? "4x6 labels print there no matter what the Windows default is."
+                : "Pick the 4x6 printer. Until then, they print on the Windows default."}
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-3 border-t border-border pt-4">
+          {!installed ? (
+            <>
+              <p className="text-foreground">
+                To pick the printers here instead of using the Windows default, install the print helper on this PC.
+                One file sets up everything it needs.
+              </p>
+              <a href={installer} className={buttonClasses({ variant: "primary", size: "md" })}>
+                <Download className="size-4" aria-hidden />
+                Download installer
+              </a>
+              <ol className="list-decimal pl-5 text-xs text-muted-foreground">
+                <li>Open the file you just downloaded. If Chrome warns about it, choose Keep.</li>
+                <li>If Windows says it protected your PC, click More info, then Run anyway.</li>
+                <li>Wait for &quot;Done&quot; (the first time can take a couple of minutes), then pick the printers here.</li>
+              </ol>
+            </>
+          ) : (
+            <>
+              <ul className="flex flex-col gap-2">
+                <StatusRow
+                  ok={station.helperOnline}
+                  label="Print helper"
+                  text={
+                    station.helperOnline
+                      ? `Running on this PC${station.helperVersion ? ` (version ${station.helperVersion})` : ""}`
+                      : `Not running. Last seen ${seen}. Restart the PC or reinstall.`
+                  }
+                />
+              </ul>
+              {canPrintLabels ? (
+                <div className="flex flex-col gap-1">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={checkForUpdates}
+                    disabled={disabled || checking || station.helperUpdatePending || !station.helperOnline}
+                  >
+                    <RefreshCw className={checking || station.helperUpdatePending ? "size-4 animate-spin" : "size-4"} aria-hidden />
+                    {checking || station.helperUpdatePending ? "Checking for updates…" : "Check for updates"}
+                  </Button>
+                  <p className="text-xs text-muted-foreground">
+                    {checkNote ??
+                      (latest && station.helperVersion && latest > station.helperVersion
+                        ? `Version ${latest} is out. Press Check for updates to get it now.`
+                        : "It also updates itself every 6 hours.")}
+                  </p>
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  This version can&apos;t update on request yet. Reinstall once and it gets a Check for updates button.
+                </p>
+              )}
+              <a href={installer} className="text-xs font-medium text-primary underline">
+                Reinstall the print helper
+              </a>
+            </>
+          )}
+        </div>
+      </div>
     </Card>
   );
+}
+
+// The helper version the app is handing out right now, read from the
+// helper file itself (its VERSION line), so "an update is out" can't drift
+// from the real file. Re-read when the running version changes.
+function useLatestHelperVersion(running: string | null): string | null {
+  const [latest, setLatest] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/print-helper/print_helper.py?t=${Date.now()}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.text() : ""))
+      .then((text) => {
+        const m = /^VERSION = "([^"]+)"/m.exec(text);
+        if (!cancelled && m) setLatest(m[1]);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [running]);
+  return latest;
 }
 
 function scaleConnectionText(c: ReturnType<typeof useScale>["connection"]): string {
@@ -798,7 +970,7 @@ function SetupHelp({ stationId }: { stationId: string }) {
         <summary className="cursor-pointer text-base font-semibold tracking-tight text-foreground">Setting up this PC</summary>
         <p className="mt-3 text-sm text-foreground">
           Easiest: plug in the scale and the Rollo, then use <span className="font-medium">Download installer</span> in
-          the Printer card. It does steps 3 and 4 below by itself (the Chrome settings and a desktop shortcut named after
+          the Printers card. It does steps 3 and 4 below by itself (the Chrome settings and a desktop shortcut named after
           this station), turns off &quot;Let Windows manage my default printer&quot;, and sets up the print helper. You
           still pick the Windows default printer in step 2. These steps are for doing it all by hand.
         </p>
@@ -809,7 +981,8 @@ function SetupHelp({ stationId }: { stationId: string }) {
           </li>
           <li>
             Make the Rollo the Windows default printer (Settings, Printers &amp; scanners; turn off &quot;Let Windows
-            manage my default printer&quot;). In the Rollo&apos;s Printing preferences, set the paper size to 2 x 1 in.
+            manage my default printer&quot;). In the Rollo&apos;s Printing preferences, set the paper size to the label size picked in the Printers card
+            (2 x 1 in unless you changed it).
           </li>
           <li>
             So Chrome always prints labels on the default printer (not the last printer it used), save this as a .reg

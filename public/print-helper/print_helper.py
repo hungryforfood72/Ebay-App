@@ -1,4 +1,4 @@
-"""Print helper: prints a station's 4x6 labels and packing slips on a chosen printer.
+"""Print helper: prints a station's labels and packing slips on chosen printers.
 
 Cristian, 2026-10-21. Chrome's silent printing can only use the Windows
 default printer (and drifts to whichever printer it used last), so a
@@ -6,7 +6,11 @@ station PC with a 4x6 Rollo AND a regular printer kept sending labels to
 the wrong one. This runs in the background on the station PC, tells the app
 which printers the PC has, and prints the 4x6 pages (packing slips,
 shipping labels, local delivery labels) on the printer picked on the
-station page. The small code labels still print from the station page.
+station page. The small code labels (items, bins, shelves, boxes) print
+from the station page unless a label printer is picked too (Cristian,
+2026-10-24): then they print here, on the label size picked on the station
+page (2x1, 2.25x1.25, ...). "Check for updates" on the station page makes
+it update itself on its next check-in.
 
 Installed and updated by the installer from the station page (Printer
 section, "Download installer"), into %LOCALAPPDATA%\\PrintHelper with a
@@ -16,7 +20,11 @@ It also updates itself from the app.
 
 How a page prints: the job is a 4x6 HTML page. Headless Chrome (or Edge)
 turns it into a PDF honoring its @page size, PyMuPDF renders it, and
-pywin32 draws it on the printer at 4x6. Nothing pops up.
+pywin32 draws it on the printer at 4x6. Small labels go the same way at
+their label size, all the labels from one check in a single Chrome run
+(a run of bin labels would otherwise start Chrome once per label), drawn
+at the printer's own dpi so barcode bars stay on whole dots. Nothing
+pops up.
 Log: print_helper.log next to this file.
 """
 
@@ -47,7 +55,7 @@ import win32ui
 import winerror
 from PIL import Image, ImageWin
 
-VERSION = "2026-10-23.1"
+VERSION = "2026-10-24.1"
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE / "config.json"
 POLL_SECONDS = 2
@@ -57,6 +65,7 @@ RENDER_DPI = 300
 # 4x6 in tenths of a millimetre, as DeviceCapabilities reports paper sizes.
 SIZE_4X6 = (1016, 1524)
 SIZE_SLOP = 25
+DMPAPER_USER = 256
 BROWSERS = [
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
@@ -95,7 +104,10 @@ class Station:
         self.name = cfg.get("name") or self.id
         self.token = cfg["token"]
         self.printer: str | None = None
+        self.label_printer: str | None = None
+        self.label_size = "2x1"
         self.paused = False
+        self.update_requested = False
         self.last_checkin = 0.0
         self.last_error = ""
 
@@ -108,11 +120,17 @@ class Station:
         if state.get("printerName") != self.printer:
             log.info("%s: printer is now %s", self.name, state.get("printerName") or "(not picked yet)")
         self.printer = state.get("printerName")
+        label_size = state.get("labelSize") or "2x1"
+        if state.get("labelPrinterName") != self.label_printer or label_size != self.label_size:
+            log.info("%s: small labels are now %s on %s", self.name, label_size, state.get("labelPrinterName") or "(the station page)")
+        self.label_printer = state.get("labelPrinterName")
+        self.label_size = label_size
         self.paused = bool(state.get("paused"))
+        self.update_requested = self.update_requested or bool(state.get("checkUpdate"))
         self.last_checkin = time.time()
 
     def claim(self) -> list[dict]:
-        if not self.printer or self.paused:
+        if not (self.printer or self.label_printer) or self.paused:
             return []
         return self.call("GET", "/api/print-helper/jobs") or []
 
@@ -178,12 +196,19 @@ def html_to_pdf(html: str) -> bytes:
         return out.read_bytes()
 
 
-def pdf_pages(pdf: bytes) -> list[Image.Image]:
+def pdf_pages(pdf: bytes, dpi: int = RENDER_DPI, crisp: bool = False) -> list[Image.Image]:
+    """crisp: no anti-aliasing, for barcodes drawn at the printer's dpi."""
     pages = []
-    with pymupdf.open(stream=pdf, filetype="pdf") as doc:
-        for page in doc:
-            pix = page.get_pixmap(dpi=RENDER_DPI, colorspace=pymupdf.csGRAY)
-            pages.append(Image.frombytes("L", (pix.width, pix.height), pix.samples).convert("RGB"))
+    if crisp:
+        pymupdf.TOOLS.set_aa_level(0)
+    try:
+        with pymupdf.open(stream=pdf, filetype="pdf") as doc:
+            for page in doc:
+                pix = page.get_pixmap(dpi=dpi, colorspace=pymupdf.csGRAY)
+                pages.append(Image.frombytes("L", (pix.width, pix.height), pix.samples).convert("RGB"))
+    finally:
+        if crisp:
+            pymupdf.TOOLS.set_aa_level(8)
     return pages
 
 
@@ -198,8 +223,9 @@ def png_page(png: bytes) -> Image.Image:
     return img.convert("RGB")
 
 
-def paper_4x6(printer: str, port: str) -> int | None:
-    """The printer's own 4x6 paper code, if it lists one."""
+def paper_code(printer: str, port: str, paper: tuple[int, int]) -> int | None:
+    """The printer's own paper code for this size (tenths of a mm, either
+    way round), if it lists one."""
     try:
         codes = win32print.DeviceCapabilities(printer, port, win32con.DC_PAPERS)
         sizes = win32print.DeviceCapabilities(printer, port, win32con.DC_PAPERSIZE)
@@ -208,33 +234,60 @@ def paper_4x6(printer: str, port: str) -> int | None:
     for code, size in zip(codes, sizes):
         w, h = size["x"], size["y"]
         for a, b in ((w, h), (h, w)):
-            if abs(a - SIZE_4X6[0]) <= SIZE_SLOP and abs(b - SIZE_4X6[1]) <= SIZE_SLOP:
+            if abs(a - paper[0]) <= SIZE_SLOP and abs(b - paper[1]) <= SIZE_SLOP:
                 return code
     return None
 
 
-def print_pages(printer: str, pages: list[Image.Image], title: str, copies: int):
+def inches_to_paper(width: float, height: float) -> tuple[int, int]:
+    return round(width * 254), round(height * 254)
+
+
+def open_printer(printer: str, paper: tuple[int, int]):
+    """A device context on the printer set to this paper size. A printer
+    that doesn't list the size gets it as a custom size; a driver that
+    doesn't take custom sizes uses the size in its Printing preferences."""
     handle = win32print.OpenPrinter(printer)
     try:
         info = win32print.GetPrinter(handle, 2)
     finally:
         win32print.ClosePrinter(handle)
     devmode = info["pDevMode"]
-    code = paper_4x6(printer, info["pPortName"])
+    code = paper_code(printer, info["pPortName"], paper)
     if code is not None:
         devmode.PaperSize = code
         devmode.Fields |= win32con.DM_PAPERSIZE
+    elif paper != SIZE_4X6:
+        devmode.PaperSize = DMPAPER_USER
+        devmode.PaperWidth, devmode.PaperLength = paper
+        devmode.Fields |= win32con.DM_PAPERSIZE | win32con.DM_PAPERWIDTH | win32con.DM_PAPERLENGTH
     devmode.Orientation = win32con.DMORIENT_PORTRAIT
     devmode.Fields |= win32con.DM_ORIENTATION
     hdc = win32gui.CreateDC("WINSPOOL", printer, devmode)
-    dc = win32ui.CreateDCFromHandle(hdc)
+    return win32ui.CreateDCFromHandle(hdc)
+
+
+def printer_dpi(printer: str, paper: tuple[int, int]) -> int:
+    dc = open_printer(printer, paper)
+    try:
+        return dc.GetDeviceCaps(win32con.LOGPIXELSX) or RENDER_DPI
+    finally:
+        dc.DeleteDC()
+
+
+def print_pages(printer: str, pages: list[Image.Image], title: str, copies: int, paper: tuple[int, int] = SIZE_4X6):
+    dc = open_printer(printer, paper)
     try:
         width = dc.GetDeviceCaps(win32con.HORZRES)
         height = dc.GetDeviceCaps(win32con.VERTRES)
         dc.StartDoc(title)
         for _ in range(copies):
             for img in pages:
-                # Fit the 4x6 page into the printable area, centered.
+                # A driver that lists a wide label (2.25 x 1.25) as tall
+                # paper: turn the label to match.
+                if (width > height) != (img.width > img.height) and width != height and img.width != img.height:
+                    img = img.rotate(90, expand=True)
+                # Fit the page into the printable area, centered.
                 scale = min(width / img.width, height / img.height)
                 w, h = int(img.width * scale), int(img.height * scale)
                 x, y = (width - w) // 2, (height - h) // 2
@@ -247,6 +300,9 @@ def print_pages(printer: str, pages: list[Image.Image], title: str, copies: int)
 
 
 def print_job(station: Station, job: dict):
+    if job.get("target") == "label":
+        print_labels(station, [job])
+        return
     payload = job.get("payload") or {}
     html = payload.get("html")
     if not isinstance(html, str):
@@ -261,6 +317,67 @@ def print_job(station: Station, job: dict):
     else:
         pages = pdf_pages(html_to_pdf(station.inline_images(html)))
     print_pages(station.printer, pages, payload.get("code") or job.get("kind") or "Label", max(1, int(job.get("copies") or 1)))
+
+
+def label_paper(job: dict) -> tuple[int, int]:
+    size = job.get("size") or {}
+    return inches_to_paper(float(size.get("width") or 2), float(size.get("height") or 1))
+
+
+def label_pages(jobs: list[dict], dpi: int) -> list[Image.Image]:
+    """One page per job, from one Chrome run: every job's html has the same
+    head (same label size), so the bodies go into one document."""
+    htmls = [(j.get("payload") or {}).get("html") for j in jobs]
+    if not all(isinstance(h, str) for h in htmls):
+        raise RuntimeError("Nothing to print in this label job.")
+    head = htmls[0].partition("<body>")[0]
+    bodies = [h.partition("<body>")[2].rpartition("</body>")[0] for h in htmls]
+    pages = pdf_pages(html_to_pdf(head + "<body>" + "".join(bodies) + "</body></html>"), dpi, crisp=True)
+    if len(pages) != len(jobs):
+        raise RuntimeError(f"Expected {len(jobs)} label pages, got {len(pages)}.")
+    return pages
+
+
+def print_labels(station: Station, jobs: list[dict]):
+    printer = station.label_printer
+    if not printer:
+        raise RuntimeError("No label printer picked on the station page.")
+    if printer not in list_printers():
+        raise RuntimeError(f'The printer "{printer}" isn\'t on this PC anymore. Pick it again on the station page.')
+    paper = label_paper(jobs[0])
+    pages = label_pages(jobs, printer_dpi(printer, paper))
+    for job, page in zip(jobs, pages):
+        code = (job.get("payload") or {}).get("code") or "Label"
+        print_pages(printer, [page], code, max(1, int(job.get("copies") or 1)), paper)
+
+
+def run_jobs(station: Station, jobs: list[dict]):
+    """Prints a claim's jobs and reports each. Several labels are rendered
+    together first (one Chrome run); if that fails they're tried one at a
+    time, so one bad label doesn't fail the rest."""
+    done: set[str] = set()
+    labels = [j for j in jobs if j.get("target") == "label"]
+    if len(labels) > 1:
+        try:
+            print_labels(station, labels)
+            for job in labels:
+                station.report(job["id"], True)
+                done.add(job["id"])
+            log.info("%s: printed %d labels on %s", station.name, len(labels), station.label_printer)
+        except Exception:
+            log.exception("%s: printing %d labels together failed; trying one at a time", station.name, len(labels))
+    for job in jobs:
+        if job["id"] in done:
+            continue
+        code = (job.get("payload") or {}).get("code") or job["id"]
+        printer = station.label_printer if job.get("target") == "label" else station.printer
+        try:
+            print_job(station, job)
+            station.report(job["id"], True)
+            log.info("%s: printed %s on %s", station.name, code, printer)
+        except Exception as e:  # one bad job never stops the rest
+            log.exception("%s: failed %s", station.name, code)
+            station.report(job["id"], False, f"Print helper: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +396,7 @@ def load_config() -> tuple[str, list[dict]]:
 def update_self(base: str) -> bool:
     """Fetches the latest helper from the app; True when this file changed."""
     try:
-        with urllib.request.urlopen(f"{base}/print-helper/print_helper.py", timeout=30) as res:
+        with urllib.request.urlopen(f"{base}/print-helper/print_helper.py?t={int(time.time())}", timeout=30) as res:
             new = res.read()
         compile(new, "print_helper.py", "exec")
     except Exception:
@@ -331,15 +448,15 @@ def main():
             try:
                 if time.time() - st.last_checkin >= CHECKIN_SECONDS:
                     st.checkin(printers)
-                for job in st.claim():
-                    code = (job.get("payload") or {}).get("code") or job["id"]
-                    try:
-                        print_job(st, job)
-                        st.report(job["id"], True)
-                        log.info("%s: printed %s on %s", st.name, code, st.printer)
-                    except Exception as e:  # one bad job never stops the rest
-                        log.exception("%s: failed %s", st.name, code)
-                        st.report(job["id"], False, f"Print helper: {e}")
+                if st.update_requested:
+                    # "Check for updates" on the station page.
+                    st.update_requested = False
+                    log.info("%s: asked to check for updates", st.name)
+                    last_update = time.time()
+                    if update_self(base):
+                        restart(mutex)
+                    log.info("Already the latest version (%s)", VERSION)
+                run_jobs(st, st.claim())
                 st.last_error = ""
             except Exception as e:
                 # Network down, app deploying, PC waking up: keep trying, and

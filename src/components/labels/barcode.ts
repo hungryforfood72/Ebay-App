@@ -42,15 +42,22 @@ export function code128Bits(code: string): string | null {
   return target.encodings.map((e) => e.data).join("");
 }
 
-export function barcodeSvg(code: string, heightIn: number): BarcodeSvg | null {
+// zoom: the label is drawn inside a box CSS-zoomed by this much (bigger
+// label stock, see labelsDocument). The bars get the bigger label's width
+// to work with and still land on whole printer dots once zoomed, so the
+// SVG's own width is divided back by the zoom. heightIn is before zoom.
+export function barcodeSvg(code: string, heightIn: number, zoom = 1): BarcodeSvg | null {
   const bits = code128Bits(code);
   if (!bits) return null;
   const modules = bits.length;
 
-  const moduleDots = [3, 2, 1].find((d) => (modules + QUIET_MODULES * 2) * d <= USABLE_WIDTH_DOTS) ?? 0;
+  const usableDots = Math.floor(USABLE_WIDTH_DOTS * zoom);
+  const widest = Math.max(3, Math.round(3 * zoom));
+  const dotChoices = Array.from({ length: widest }, (_, i) => widest - i);
+  const moduleDots = dotChoices.find((d) => (modules + QUIET_MODULES * 2) * d <= usableDots) ?? 0;
   const widthIn = moduleDots
     ? (modules * moduleDots) / PRINTER_DPI
-    : (USABLE_WIDTH_DOTS * modules) / (modules + QUIET_MODULES * 2) / PRINTER_DPI;
+    : (usableDots * modules) / (modules + QUIET_MODULES * 2) / PRINTER_DPI;
 
   // One rect per run of black bars, in bar-width units (the viewBox), so
   // the browser scales whole bars rather than drawing hairlines.
@@ -69,6 +76,6 @@ export function barcodeSvg(code: string, heightIn: number): BarcodeSvg | null {
   const svg =
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${modules} 1" preserveAspectRatio="none" ` +
     `shape-rendering="crispEdges" fill="#000" ` +
-    `style="display:block;width:${widthIn.toFixed(4)}in;height:${heightIn}in">${rects}</svg>`;
+    `style="display:block;width:${(widthIn / zoom).toFixed(4)}in;height:${heightIn}in">${rects}</svg>`;
   return { svg, widthIn, moduleDots };
 }

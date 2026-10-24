@@ -1528,6 +1528,17 @@ model Station {
   helperSeenAt  DateTime?
   helperVersion String?
   helperToken   String?
+  // The small code labels (items, bins, shelves, boxes; Cristian,
+  // 2026-10-24): the stock they print on (LABEL_SIZES in
+  // src/lib/warehouse/types.ts) and the printer the helper prints them on.
+  // No labelPrinterName = the station page prints them on the Windows
+  // default, at labelSize.
+  labelSize        String  @default("2x1")
+  labelPrinterName String?
+  // "Check for updates" pressed on the station page: the helper's next
+  // check-in tells it to fetch the latest version now (instead of within
+  // 6h), and clears this.
+  helperUpdateAt   DateTime?
   // "Print automatically" off on the station page: nothing is handed out to
   // print, to the page or the helper, until it's back on.
   printPaused   Boolean   @default(false)

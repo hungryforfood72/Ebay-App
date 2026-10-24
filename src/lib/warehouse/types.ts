@@ -29,6 +29,37 @@ export type PrintJobKind = "item" | "bin" | "shelf" | "box" | "dud" | "sort";
 
 export type PrintJobPayload = ItemLabelPayload | CodeLabelPayload;
 
+// The label stock a station's small code labels print on, picked on the
+// station page (Cristian, 2026-10-24: bin labels on 2.25" x 1.25"). The
+// label is laid out for 2" x 1" and grows to fill bigger stock. Inches,
+// width across the printer first.
+export const LABEL_SIZES = {
+  "2x1": { width: 2, height: 1, name: '2" x 1"' },
+  "2.25x1.25": { width: 2.25, height: 1.25, name: '2.25" x 1.25"' },
+  "4x6": { width: 4, height: 6, name: '4" x 6"' },
+} as const;
+export type LabelSize = keyof typeof LABEL_SIZES;
+export const DEFAULT_LABEL_SIZE: LabelSize = "2x1";
+
+export function isLabelSize(v: unknown): v is LabelSize {
+  return typeof v === "string" && Object.hasOwn(LABEL_SIZES, v);
+}
+
+export function labelSizeOf(v: unknown): LabelSize {
+  return isLabelSize(v) ? v : DEFAULT_LABEL_SIZE;
+}
+
+// The first print helper (VERSION in public/print-helper/print_helper.py;
+// its dates compare as strings) that prints the small labels at a picked
+// size and takes "Check for updates". An older one would print small
+// labels on its 4x6 printer, so it doesn't get them until it has updated
+// (every 6h, a restart, or Reinstall).
+export const LABEL_HELPER_VERSION = "2026-10-24.1";
+
+export function helperCanPrintLabels(version: string | null): boolean {
+  return version != null && version >= LABEL_HELPER_VERSION;
+}
+
 // Whole 4x6 pages rather than 2x1 labels: they only go to the station
 // marked for packing slips (its PC's default printer is a 4x6 Rollo). The
 // html is the complete printable page; code is what the station's log shows.
@@ -63,6 +94,17 @@ export type StationStatus = {
   helperOnline: boolean;
   helperSeenAt: string | null;
   helperActive: boolean;
+  // The version the helper last checked in with, and "Check for updates"
+  // was pressed and the helper hasn't picked that up yet.
+  helperVersion: string | null;
+  helperUpdatePending: boolean;
+  // The small code labels: the stock they print on, and the printer the
+  // helper prints them on (null = the station page, on the Windows
+  // default). helperLabelsActive = the helper is online, new enough, and
+  // has a label printer: it prints them, not the page.
+  labelSize: LabelSize;
+  labelPrinterName: string | null;
+  helperLabelsActive: boolean;
   // Print automatically off: nothing is handed out to print.
   printPaused: boolean;
 };

@@ -138,7 +138,7 @@ try {
   $action = New-ScheduledTaskAction -Execute $pythonw -Argument ('"' + (Join-Path $Dir 'print_helper.py') + '"') -WorkingDirectory $Dir
   $trigger = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
   $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 99 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew
-  Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Description 'Prints 4x6 labels and packing slips for the eBay tool stations' -Force | Out-Null
+  Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Description 'Prints labels and packing slips for the eBay tool stations' -Force | Out-Null
   Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
   Start-Sleep -Seconds 2
   Start-ScheduledTask -TaskName $TaskName

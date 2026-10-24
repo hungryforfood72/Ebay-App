@@ -1,9 +1,9 @@
-import { helperOnline } from "./printHelper";
+import { helperOnline, helperPrintsLabels } from "./printHelper";
 import { NextResponse } from "next/server";
 import { AuthError } from "../auth";
 import { WarehouseError } from "./bins";
 import { STATION_ONLINE_MS } from "./settings";
-import type { StationStatus } from "./types";
+import { labelSizeOf, type StationStatus } from "./types";
 
 // Shared bits for the /api/stations and /api/print-jobs routes. Server only.
 
@@ -20,6 +20,10 @@ export const STATION_STATUS_SELECT = {
   printers: true,
   printerName: true,
   helperSeenAt: true,
+  helperVersion: true,
+  helperUpdateAt: true,
+  labelSize: true,
+  labelPrinterName: true,
   printPaused: true,
 } as const;
 
@@ -34,6 +38,10 @@ type StationRow = {
   printers: string[];
   printerName: string | null;
   helperSeenAt: Date | null;
+  helperVersion: string | null;
+  helperUpdateAt: Date | null;
+  labelSize: string;
+  labelPrinterName: string | null;
   printPaused: boolean;
 };
 
@@ -54,6 +62,11 @@ export function toStationStatus(row: StationRow, now = Date.now()): StationStatu
     helperOnline: helperOnline(row.helperSeenAt, now),
     helperSeenAt: row.helperSeenAt?.toISOString() ?? null,
     helperActive: helperOnline(row.helperSeenAt, now) && row.printerName != null,
+    helperVersion: row.helperVersion,
+    helperUpdatePending: row.helperUpdateAt != null,
+    labelSize: labelSizeOf(row.labelSize),
+    labelPrinterName: row.labelPrinterName,
+    helperLabelsActive: helperPrintsLabels(row, now),
     printPaused: row.printPaused,
   };
 }

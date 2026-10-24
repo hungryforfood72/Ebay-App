@@ -1,7 +1,16 @@
-import type { CodeLabelPayload, ItemLabelPayload, PrintJobKind, PrintJobPayload } from "@/lib/warehouse/types";
+import {
+  DEFAULT_LABEL_SIZE,
+  LABEL_SIZES,
+  type CodeLabelPayload,
+  type ItemLabelPayload,
+  type LabelSize,
+  type PrintJobKind,
+  type PrintJobPayload,
+} from "@/lib/warehouse/types";
 import { barcodeSvg } from "./barcode";
 
-// The 2" x 1" labels as HTML strings. Strings (not React) because the same
+// The 2" x 1" labels as HTML strings (bigger stock gets the same label,
+// zoomed to fill it: labelsDocument). Strings (not React) because the same
 // markup has to go into a bare print iframe that has none of the app's CSS
 // or React; LabelPreview renders the same strings on screen. Plain inline
 // CSS in inches and points only, black on white, no Tailwind.
@@ -98,14 +107,34 @@ export const LABEL_CSS = `
 }
 `;
 
-// Page setup for printing: one label per page, sized to the Rollo's 2x1
-// stock, no margins (also keeps Chrome from adding its date/URL header).
-export const LABEL_PRINT_CSS = `
-@page { size: 2in 1in; margin: 0; }
+// Page setup for printing: one label per page, sized to the station's
+// label stock, no margins (also keeps Chrome from adding its date/URL
+// header). Each label sits centered on its page.
+export function labelPrintCss(size: LabelSize = DEFAULT_LABEL_SIZE): string {
+  const { width, height } = LABEL_SIZES[size];
+  return `
+@page { size: ${width}in ${height}in; margin: 0; }
 html, body { margin: 0; padding: 0; background: #fff; }
-.wl-label { page-break-after: always; break-after: page; }
-.wl-label:last-child { page-break-after: auto; break-after: auto; }
+.wl-page {
+  width: ${width}in;
+  height: ${height}in;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  page-break-after: always;
+  break-after: page;
+}
+.wl-page:last-child { page-break-after: auto; break-after: auto; }
 `;
+}
+
+// How much the 2x1 label grows to fill the stock: 1.125 on 2.25x1.25,
+// 2 on 4x6 (a 4x2 label across the middle of the page).
+export function labelZoom(size: LabelSize = DEFAULT_LABEL_SIZE): number {
+  const { width, height } = LABEL_SIZES[size];
+  return Math.min(width / 2, height / 1);
+}
 
 function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -158,10 +187,10 @@ function badLabel(code: string): string {
   return `<div class="wl-label"><div class="wl-bad">Can't make a barcode for "${esc(code)}"</div></div>`;
 }
 
-function itemLabelHtml(p: ItemLabelPayload): string {
+function itemLabelHtml(p: ItemLabelPayload, zoom: number): string {
   // 0.34" of bars leaves room for the code, two lines of name and the
   // meta line inside 1" (adds up to about 0.95").
-  const bars = barcodeSvg(p.code, 0.34);
+  const bars = barcodeSvg(p.code, 0.34, zoom);
   if (!bars) return badLabel(p.code);
   const meta = itemMetaLine(p);
   return (
@@ -174,12 +203,12 @@ function itemLabelHtml(p: ItemLabelPayload): string {
   );
 }
 
-function codeLabelHtml(kind: PrintJobKind, p: CodeLabelPayload): string {
+function codeLabelHtml(kind: PrintJobKind, p: CodeLabelPayload, zoom: number): string {
   const caption = p.caption?.trim() || defaultCaption(kind, p.code);
   // Shelf captions are just "Shelf " + the code, so the code line under
   // them would only repeat it.
   const showSub = caption !== p.code && caption !== defaultCaption(kind, p.code);
-  const bars = barcodeSvg(p.code, showSub ? 0.4 : 0.46);
+  const bars = barcodeSvg(p.code, showSub ? 0.4 : 0.46, zoom);
   if (!bars) return badLabel(p.code);
   return (
     `<div class="wl-label">` +
@@ -194,11 +223,11 @@ function codeLabelHtml(kind: PrintJobKind, p: CodeLabelPayload): string {
 // the big line (like a bin label) and the caption sits under it, small, up
 // to two lines: the load for a dud box ("DUDS · 10/14/26 Pallet 2 ..."),
 // just "SORT BOX" for a sort box (they're reused load to load).
-function boxLabelHtml(p: CodeLabelPayload, fallbackCaption: string): string {
+function boxLabelHtml(p: CodeLabelPayload, fallbackCaption: string, zoom: number): string {
   const caption = p.caption?.trim() || fallbackCaption;
   // 0.32" of bars + 16pt code + two 8.5pt caption lines fits inside 1"
   // with the padding (about 0.85").
-  const bars = barcodeSvg(p.code, 0.32);
+  const bars = barcodeSvg(p.code, 0.32, zoom);
   if (!bars) return badLabel(p.code);
   return (
     `<div class="wl-label">` +
@@ -209,26 +238,35 @@ function boxLabelHtml(p: CodeLabelPayload, fallbackCaption: string): string {
   );
 }
 
-// One label's markup.
-export function labelHtml(kind: PrintJobKind, payload: PrintJobPayload): string {
-  if (kind === "item") return itemLabelHtml(payload as ItemLabelPayload);
-  if (kind === "dud") return boxLabelHtml(payload as CodeLabelPayload, "DUDS");
-  if (kind === "sort") return boxLabelHtml(payload as CodeLabelPayload, "SORT BOX");
-  return codeLabelHtml(kind, payload as CodeLabelPayload);
+// One label's markup, laid out at 2" x 1". zoom = the box it goes in is
+// CSS-zoomed by this much (labelZoom), so the bars are sized to still land
+// on whole printer dots.
+function labelBody(kind: PrintJobKind, payload: PrintJobPayload, zoom: number): string {
+  if (kind === "item") return itemLabelHtml(payload as ItemLabelPayload, zoom);
+  if (kind === "dud") return boxLabelHtml(payload as CodeLabelPayload, "DUDS", zoom);
+  if (kind === "sort") return boxLabelHtml(payload as CodeLabelPayload, "SORT BOX", zoom);
+  return codeLabelHtml(kind, payload as CodeLabelPayload, zoom);
 }
 
-// A whole printable document: every label repeated `copies` times, one per
-// page, in order.
-export function labelsDocument(labels: LabelSpec[]): string {
+// One 2" x 1" label's markup.
+export function labelHtml(kind: PrintJobKind, payload: PrintJobPayload): string {
+  return labelBody(kind, payload, 1);
+}
+
+// A whole printable document for the station's label stock: every label
+// repeated `copies` times, one per page, in order, grown to fill the page.
+export function labelsDocument(labels: LabelSpec[], size: LabelSize = DEFAULT_LABEL_SIZE): string {
+  const zoom = labelZoom(size);
   const pages = labels
     .flatMap((l) => {
-      const one = labelHtml(l.kind, l.payload);
+      const label = labelBody(l.kind, l.payload, zoom);
+      const one = `<div class="wl-page">${zoom === 1 ? label : `<div style="zoom:${zoom}">${label}</div>`}</div>`;
       return Array.from({ length: Math.max(1, l.copies ?? 1) }, () => one);
     })
     .join("");
   return (
     `<!doctype html><html><head><meta charset="utf-8"><title>Labels</title>` +
-    `<style>${LABEL_CSS}${LABEL_PRINT_CSS}</style></head><body>${pages}</body></html>`
+    `<style>${LABEL_CSS}${labelPrintCss(size)}</style></head><body>${pages}</body></html>`
   );
 }
 

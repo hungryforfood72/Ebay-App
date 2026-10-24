@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { prisma } from "../prisma";
 import { WarehouseError } from "./bins";
 import { STATION_ONLINE_MS } from "./settings";
+import { helperCanPrintLabels } from "./types";
 
 // The print helper (Cristian, 2026-10-21): a small Python program on a
 // station PC (public/print-helper/print_helper.py) that prints the 4x6
@@ -22,6 +23,14 @@ export function newHelperToken(): string {
 
 export function helperOnline(seenAt: Date | null, now = Date.now()): boolean {
   return seenAt != null && now - seenAt.getTime() <= STATION_ONLINE_MS;
+}
+
+// The helper prints this station's small code labels, not the page.
+export function helperPrintsLabels(
+  s: { helperSeenAt: Date | null; helperVersion: string | null; labelPrinterName: string | null },
+  now = Date.now()
+): boolean {
+  return helperOnline(s.helperSeenAt, now) && s.labelPrinterName != null && helperCanPrintLabels(s.helperVersion);
 }
 
 // The station a helper request is for, by its key.

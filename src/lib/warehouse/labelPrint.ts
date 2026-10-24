@@ -1,7 +1,8 @@
 import { labelsDocument, type LabelSpec } from "@/components/labels/labelMarkup";
-import type { PrintJobKind, PrintJobPayload } from "./types";
+import { DEFAULT_LABEL_SIZE, LABEL_SIZES, type LabelSize, type PrintJobKind, type PrintJobPayload } from "./types";
 
-// Prints 2" x 1" labels straight from the current browser: the station
+// Prints the small labels straight from the current browser, on 2" x 1"
+// stock unless the station picked another label size: the station
 // page uses it for queued jobs, and any page can call it as a fallback
 // ("print here") when no station is set up. Client only.
 //
@@ -16,15 +17,16 @@ import type { PrintJobKind, PrintJobPayload } from "./types";
 
 let queue: Promise<void> = Promise.resolve();
 
-export function printLabels(kind: PrintJobKind, payload: PrintJobPayload, copies = 1): Promise<void> {
-  return printLabelBatch([{ kind, payload, copies }]);
+export function printLabels(kind: PrintJobKind, payload: PrintJobPayload, copies = 1, size: LabelSize = DEFAULT_LABEL_SIZE): Promise<void> {
+  return printLabelBatch([{ kind, payload, copies }], size);
 }
 
 // Several different labels in one print (e.g. every box barcode at once).
 // Calls are lined up one after another: Chrome ignores a print() while
 // another one is still open.
-export function printLabelBatch(labels: LabelSpec[]): Promise<void> {
-  const run = queue.then(() => printDocument(labelsDocument(labels)));
+export function printLabelBatch(labels: LabelSpec[], size: LabelSize = DEFAULT_LABEL_SIZE): Promise<void> {
+  const { width, height } = LABEL_SIZES[size];
+  const run = queue.then(() => printDocument(labelsDocument(labels, size), { width: `${width}in`, height: `${height}in` }));
   queue = run.catch(() => {});
   return run;
 }
