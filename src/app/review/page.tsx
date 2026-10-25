@@ -372,6 +372,7 @@ export default function ReviewPage() {
 
   return (
     <AppShell
+      width="full"
       title="Review queue"
       subtitle={`${pending.length} waiting on review · ${ready.length} ready to list`}
       actions={
@@ -836,8 +837,14 @@ function ItemCard({
     }
   }
   return (
-    <Card padded={false} className="overflow-hidden">
-      <div className="p-4 sm:p-5">
+    // overflow-clip, not hidden: hidden would stop the action bar sticking.
+    <Card padded={false} className="overflow-clip">
+      {/* On a PC the card uses the whole width in columns (Cristian,
+          2026-10-25: no scrolling to reach Mark ready or the rest of one
+          item): the listing text | price, condition, shipping | category,
+          specifics. One column on the scanner, same order. */}
+      <div className="flex flex-col gap-4 p-4 sm:p-5 lg:grid lg:grid-cols-2 lg:gap-6 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_minmax(0,1fr)]">
+      <div className="flex min-w-0 flex-col">
         {/* Photos: a swipeable strip on the scanner, a row on desktop. */}
         {item.photoUrls.length > 0 && (
           <div className="-mx-4 mb-4 flex gap-2 overflow-x-auto px-4 pb-1 sm:mx-0 sm:px-0">
@@ -868,7 +875,7 @@ function ItemCard({
             <Badge tone="warning">Exp {describeBreakdown(item.expirationBreakdown)}</Badge>
           ) : (
             item.expirationDate && (
-              <Badge tone="warning">Exp {new Date(item.expirationDate).toLocaleDateString()}</Badge>
+              <Badge tone="warning">Exp {new Date(item.expirationDate).toLocaleDateString(undefined, { timeZone: "UTC" })}</Badge>
             )
           )}
         </div>
@@ -887,7 +894,7 @@ function ItemCard({
                     {c.expirationDate && (
                       <span className="text-muted-foreground">
                         {" "}
-                        · exp {new Date(c.expirationDate).toLocaleDateString()}
+                        · exp {new Date(c.expirationDate).toLocaleDateString(undefined, { timeZone: "UTC" })}
                       </span>
                     )}
                   </span>
@@ -953,11 +960,15 @@ function ItemCard({
                 if (e.target.value !== (item.finalDescription ?? "")) onChange({ finalDescription: e.target.value });
               }}
               rows={4}
+              className="lg:min-h-56"
             />
           </Field>
+        </div>
+      </div>
 
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div>
+      <div className="flex min-w-0 flex-col gap-4">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-1 2xl:grid-cols-2">
+            <div className="2xl:col-span-2">
               <Field label="Price">
                 <div className="relative">
                   <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-muted-foreground">
@@ -1103,6 +1114,86 @@ function ItemCard({
             </Field>
           </div>
 
+          {!item.isBundle && (
+            <CheckboxRow
+              label="Shopify & Whatnot only"
+              description={
+                item.shopifyOnly
+                  ? "Won't be listed on eBay. Price it like eBay; the Shopify store takes its discount off, and the buyer pays shipping."
+                  : "Skip eBay. For things that can't pay for an eBay label, since Shopify and Whatnot buyers pay their own shipping."
+              }
+              checked={item.shopifyOnly}
+              onChange={(e) => onChange({ shopifyOnly: e.target.checked })}
+            />
+          )}
+
+          <div className="rounded-lg border border-border p-3 sm:p-4">
+            <p className="text-sm font-medium text-foreground">Shipping</p>
+            <p className="mb-3 text-xs text-muted-foreground">
+              {item.shopifyOnly
+                ? "The buyer pays shipping on Shopify and Whatnot, worked out from this weight, so get it close."
+                : item.localPickupOnly
+                ? "Local pickup only: the buyer pays on eBay and picks it up. No label, so no weight or box needed."
+                : "Free, USPS Ground Advantage. Weight/box matter either way — accurate numbers keep eBay's calculated cost (or your absorbed cost on free shipping) from defaulting high."}
+            </p>
+            {!item.shopifyOnly && (
+            <CheckboxRow
+              className="mb-3"
+              label="Local pickup only"
+              description="No shipping. For big, heavy or fragile items."
+              checked={item.localPickupOnly}
+              onChange={(e) => onChange({ localPickupOnly: e.target.checked })}
+            />
+            )}
+            {!item.localPickupOnly && (
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-[1fr_7rem_7rem]">
+              <div className="col-span-2 sm:col-span-1">
+                <Select
+                  value={item.boxSize ?? ""}
+                  onChange={(e) => onChange({ boxSize: e.target.value || null })}
+                  aria-label="Box size"
+                >
+                  <option value="">Box size…</option>
+                  {boxSizes.map((b) => (
+                    <option key={b.id} value={b.label}>
+                      {b.label}
+                    </option>
+                  ))}
+                </Select>
+                {boxSizes.length === 0 && (
+                  <Link href="/settings" className="mt-1 inline-block text-xs font-medium text-primary hover:underline">
+                    Add box sizes in Settings
+                  </Link>
+                )}
+              </div>
+              <SuffixNumber
+                key={`lbs-${item.id}-${item.weightLbs ?? ""}`}
+                suffix="lb"
+                min={0}
+                defaultValue={item.weightLbs ?? ""}
+                onBlur={(e) => {
+                  const value = e.target.value ? Number(e.target.value) : null;
+                  if (value !== item.weightLbs) onChange({ weightLbs: value });
+                }}
+              />
+              <SuffixNumber
+                key={`oz-${item.id}-${item.weightOz ?? ""}`}
+                suffix="oz"
+                min={0}
+                max={15}
+                defaultValue={item.weightOz ?? ""}
+                onBlur={(e) => {
+                  const value = e.target.value ? Number(e.target.value) : null;
+                  if (value !== item.weightOz) onChange({ weightOz: value });
+                }}
+              />
+            </div>
+            )}
+          </div>
+
+      </div>
+
+      <div className="flex min-w-0 flex-col gap-4">
           <div className="rounded-lg border border-border p-3 sm:p-4">
             <p className="mb-3 text-sm font-medium text-foreground">eBay category</p>
             <div className="grid gap-3 sm:grid-cols-[10rem_1fr]">
@@ -1211,7 +1302,7 @@ function ItemCard({
                 <p className="mb-2 text-xs text-muted-foreground">
                   Typed a category ID in by hand? Save it as a rule so matching titles get it automatically:
                 </p>
-                <div className="flex flex-col gap-2 sm:flex-row">
+                <div className="flex flex-col gap-2 sm:flex-row lg:flex-col 2xl:flex-row">
                   <Input
                     size="sm"
                     type="text"
@@ -1245,95 +1336,6 @@ function ItemCard({
             )}
           </div>
 
-          <Field label="Sold comps notes" hint="Paste from Terapeak — for your reference only.">
-            <Input
-              key={`comps-${item.id}-${item.compNotes ?? ""}`}
-              type="text"
-              placeholder="e.g. 12 sold, $14–$19"
-              defaultValue={item.compNotes ?? ""}
-              onBlur={(e) => {
-                if (e.target.value !== (item.compNotes ?? "")) onChange({ compNotes: e.target.value });
-              }}
-            />
-          </Field>
-
-          {!item.isBundle && (
-            <CheckboxRow
-              label="Shopify & Whatnot only"
-              description={
-                item.shopifyOnly
-                  ? "Won't be listed on eBay. Price it like eBay; the Shopify store takes its discount off, and the buyer pays shipping."
-                  : "Skip eBay. For things that can't pay for an eBay label, since Shopify and Whatnot buyers pay their own shipping."
-              }
-              checked={item.shopifyOnly}
-              onChange={(e) => onChange({ shopifyOnly: e.target.checked })}
-            />
-          )}
-
-          <div className="rounded-lg border border-border p-3 sm:p-4">
-            <p className="text-sm font-medium text-foreground">Shipping</p>
-            <p className="mb-3 text-xs text-muted-foreground">
-              {item.shopifyOnly
-                ? "The buyer pays shipping on Shopify and Whatnot, worked out from this weight, so get it close."
-                : item.localPickupOnly
-                ? "Local pickup only: the buyer pays on eBay and picks it up. No label, so no weight or box needed."
-                : "Free, USPS Ground Advantage. Weight/box matter either way — accurate numbers keep eBay's calculated cost (or your absorbed cost on free shipping) from defaulting high."}
-            </p>
-            {!item.shopifyOnly && (
-            <CheckboxRow
-              className="mb-3"
-              label="Local pickup only"
-              description="No shipping. For big, heavy or fragile items."
-              checked={item.localPickupOnly}
-              onChange={(e) => onChange({ localPickupOnly: e.target.checked })}
-            />
-            )}
-            {!item.localPickupOnly && (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-[1fr_7rem_7rem]">
-              <div className="col-span-2 sm:col-span-1">
-                <Select
-                  value={item.boxSize ?? ""}
-                  onChange={(e) => onChange({ boxSize: e.target.value || null })}
-                  aria-label="Box size"
-                >
-                  <option value="">Box size…</option>
-                  {boxSizes.map((b) => (
-                    <option key={b.id} value={b.label}>
-                      {b.label}
-                    </option>
-                  ))}
-                </Select>
-                {boxSizes.length === 0 && (
-                  <Link href="/settings" className="mt-1 inline-block text-xs font-medium text-primary hover:underline">
-                    Add box sizes in Settings
-                  </Link>
-                )}
-              </div>
-              <SuffixNumber
-                key={`lbs-${item.id}-${item.weightLbs ?? ""}`}
-                suffix="lb"
-                min={0}
-                defaultValue={item.weightLbs ?? ""}
-                onBlur={(e) => {
-                  const value = e.target.value ? Number(e.target.value) : null;
-                  if (value !== item.weightLbs) onChange({ weightLbs: value });
-                }}
-              />
-              <SuffixNumber
-                key={`oz-${item.id}-${item.weightOz ?? ""}`}
-                suffix="oz"
-                min={0}
-                max={15}
-                defaultValue={item.weightOz ?? ""}
-                onBlur={(e) => {
-                  const value = e.target.value ? Number(e.target.value) : null;
-                  if (value !== item.weightOz) onChange({ weightOz: value });
-                }}
-              />
-            </div>
-            )}
-          </div>
-
           <div className="rounded-lg border border-border p-3 sm:p-4">
             <p className="mb-3 text-sm font-medium text-foreground">
               Item specifics
@@ -1342,7 +1344,7 @@ function ItemCard({
               )}
             </p>
             {Object.keys(item.itemSpecifics ?? {}).length > 0 && (
-              <div className="mb-3 grid gap-2 sm:grid-cols-2">
+              <div className="mb-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-1">
                 {Object.entries(item.itemSpecifics ?? {}).map(([key, value]) => (
                   <div key={key} className="flex items-center gap-2">
                     <span className="w-24 shrink-0 truncate text-xs font-medium capitalize text-muted-foreground" title={key}>
@@ -1403,10 +1405,21 @@ function ItemCard({
               </Button>
             </div>
           </div>
-        </div>
+          <Field label="Sold comps notes" hint="Paste from Terapeak — for your reference only.">
+            <Input
+              key={`comps-${item.id}-${item.compNotes ?? ""}`}
+              type="text"
+              placeholder="e.g. 12 sold, $14–$19"
+              defaultValue={item.compNotes ?? ""}
+              onBlur={(e) => {
+                if (e.target.value !== (item.compNotes ?? "")) onChange({ compNotes: e.target.value });
+              }}
+            />
+          </Field>
+      </div>
       </div>
 
-      <div className="flex items-center justify-between gap-3 border-t border-border bg-background px-4 py-3 sm:px-5">
+      <div className="flex items-center justify-between gap-3 border-t border-border bg-background px-4 py-3 sm:px-5 lg:sticky lg:bottom-0 lg:z-10">
         <Button variant="danger-ghost" onClick={onDelete}>
           <Trash2 className="size-4" aria-hidden />
           Delete

@@ -102,13 +102,15 @@ function isActive(pathname: string, href: string) {
   return href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
 }
 
-export type AppShellWidth = "narrow" | "medium" | "default" | "wide";
+export type AppShellWidth = "narrow" | "medium" | "default" | "wide" | "full";
 
 const widths: Record<AppShellWidth, string> = {
   narrow: "max-w-lg",
   medium: "max-w-3xl",
   default: "max-w-5xl",
   wide: "max-w-6xl",
+  // Nearly the whole screen on a PC (the Review queue's 3-column cards).
+  full: "max-w-[120rem]",
 };
 
 export function AppShell({
