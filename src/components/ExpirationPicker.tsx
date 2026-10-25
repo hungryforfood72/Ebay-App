@@ -9,8 +9,9 @@ import { useState } from "react";
 // number ("10" with "Oct" under it) since that's what packages print. The
 // phone's calendar started on today and made you page month by month.
 //
-// Picking the month already fills in that month's last day, which is what
-// a package with only a month and year means; tapping a day changes it.
+// Picking the month already fills in the 1st, for a package with only a
+// month and year (Cristian's call: how he'd been entering them, and the
+// earlier date is the safe side for the buyer); tapping a day changes it.
 // value/onChange are "YYYY-MM-DD" (or "" for none), same as <input
 // type="date">.
 
@@ -55,8 +56,8 @@ export function ExpirationPicker({ value, onChange, label }: { value: string; on
 
   function pickMonth(m: number) {
     if (year == null) return;
-    // Keeps a day already picked; otherwise the month's last day.
-    onChange(format(year, m, date?.d ?? daysIn(year, m)));
+    // Keeps a day already picked; otherwise the 1st.
+    onChange(format(year, m, date?.d ?? 1));
     setOpen("day");
   }
 
@@ -135,7 +136,7 @@ export function ExpirationPicker({ value, onChange, label }: { value: string; on
       {open === "day" && date && (
         <>
           <p className="text-xs text-muted-foreground">
-            Only a month and year on the package? Leave it on {daysIn(date.y, date.m)}, the last day, and tap Next.
+            Only a month and year on the package? Leave it on the 1st and tap Next.
           </p>
           <div className="grid grid-cols-7 gap-1">
             {Array.from({ length: daysIn(date.y, date.m) }, (_, i) => i + 1).map((d) => (
