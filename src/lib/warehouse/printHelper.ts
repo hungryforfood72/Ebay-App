@@ -56,3 +56,42 @@ export async function helperTokenFor(stationId: string): Promise<{ token: string
   await prisma.station.update({ where: { id: stationId }, data: { helperToken: token } });
   return { token, name: station.name, slipPrinter: station.slipPrinter };
 }
+
+// The scale on the helper's PC (Cristian, 2026-10-25): the helper reads the
+// DYMO over USB and reports { status, weightOz, stable } on every change and
+// with each check-in. status is a ScaleStatus (scale.ts) or "none" (no scale
+// on that PC, or the helper can't read USB scales).
+const HELPER_SCALE_STATUSES = new Set([
+  "none",
+  "off",
+  "fault",
+  "zero",
+  "moving",
+  "stable",
+  "under_zero",
+  "over_weight",
+  "needs_calibration",
+  "needs_rezero",
+]);
+
+// The Station fields a scale report writes, or null if it isn't one. A
+// slip printer station has no scale: its reports are dropped.
+export function helperScaleData(scale: unknown, station: { slipPrinter: boolean }, now: Date) {
+  if (station.slipPrinter || !scale || typeof scale !== "object") return null;
+  const { status, weightOz, stable } = scale as Record<string, unknown>;
+  if (typeof status !== "string" || !HELPER_SCALE_STATUSES.has(status)) return null;
+  const oz = typeof weightOz === "number" && Number.isFinite(weightOz) && weightOz >= 0 && weightOz < 1_000_000 ? Math.round(weightOz * 100) / 100 : null;
+  if (status === "none") return { scaleStatus: status, scaleSeenAt: now };
+  return {
+    scaleStatus: status,
+    scaleSeenAt: now,
+    weightOz: oz,
+    weightStable: oz !== null && stable === true,
+    weightAt: oz === null ? null : now,
+  };
+}
+
+// The helper has the scale right now: the weight is its, not the page's.
+export function helperHasScale(s: { scaleStatus: string | null; scaleSeenAt: Date | null }, now = Date.now()): boolean {
+  return s.scaleStatus != null && s.scaleStatus !== "none" && helperOnline(s.scaleSeenAt, now);
+}

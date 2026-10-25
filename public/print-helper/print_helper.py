@@ -68,7 +68,15 @@ try:
 except Exception:
     IMPORT_ERROR = traceback.format_exc()
 
-VERSION = "2026-10-25.1"
+# The USB scale. Optional: helpers installed before 2026-10-25 don't have
+# it, and get it on their own (install_hidapi). Without it the station page
+# keeps reading the scale through Chrome.
+try:
+    import hid
+except Exception:
+    hid = None
+
+VERSION = "2026-10-25.2"
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE / "config.json"
 # The code this process is running, as it was when it started. Updates are
@@ -128,12 +136,15 @@ class Station:
         self.update_requested = False
         self.last_checkin = 0.0
         self.last_error = ""
+        # Whether the app wants this station's scale readings (not a Wi-Fi
+        # slip printer). Assumed yes until the first check-in says.
+        self.wants_scale = True
 
     def call(self, method: str, path: str, body: dict | None = None, raw: bool = False):
         return request(self.base, self.token, method, path, body, raw)
 
     def checkin(self, printers: list[str]):
-        body = {"printers": printers, "version": VERSION, "scalePolicy": scale_policy(self.base)}
+        body = {"printers": printers, "version": VERSION, "scalePolicy": scale_policy(self.base), "scale": SCALE.state}
         state = self.call("POST", "/api/print-helper/checkin", body) or {}
         self.name = state.get("name") or self.name
         if state.get("printerName") != self.printer:
@@ -146,6 +157,7 @@ class Station:
         self.label_size = label_size
         self.paused = bool(state.get("paused"))
         self.update_requested = self.update_requested or bool(state.get("checkUpdate"))
+        self.wants_scale = state.get("wantsScale", True) is not False
         self.last_checkin = time.time()
 
     def claim(self) -> list[dict]:
@@ -400,6 +412,163 @@ def run_jobs(station: Station, jobs: list[dict]):
 
 
 # ---------------------------------------------------------------------------
+# The scale
+# ---------------------------------------------------------------------------
+#
+# The DYMO M25 read over USB (hidapi) and sent to the app, instead of the
+# station page reading it through Chrome (Cristian, 2026-10-25). The M25 has
+# no USB serial number, so Chrome forgot it whenever it powered off and came
+# back, policy or not. Here it's just "the scale on this PC": found again
+# by itself every time. Same report format as src/lib/warehouse/scale.ts:
+# [3, status, unit, exponent, raw lo, raw hi]; unit 0 = display off.
+
+DYMO_VENDOR_ID = 0x0922
+POS_SCALE_USAGE_PAGE = 0x8D
+SCALE_STATUS = {1: "fault", 2: "zero", 3: "moving", 4: "stable", 5: "under_zero", 6: "over_weight", 7: "needs_calibration", 8: "needs_rezero"}
+GRAMS_PER_OUNCE = 28.349523125
+OUNCES_PER_UNIT = {1: 0.001 / GRAMS_PER_OUNCE, 2: 1 / GRAMS_PER_OUNCE, 3: 1000 / GRAMS_PER_OUNCE, 10: 1.0971428571, 11: 1.0, 12: 16.0}
+SCALE_NONE = {"status": "none", "weightOz": None, "stable": False}
+SCALE_OFF = {"status": "off", "weightOz": None, "stable": False}
+# Readings go out the moment they change, at most this often.
+SCALE_MIN_GAP = 0.25
+
+
+def parse_scale_report(data) -> dict | None:
+    b = [x & 0xFF for x in data]
+    if len(b) >= 6 and b[0] == 3:  # report id at the front
+        b = b[1:]
+    if len(b) < 5:
+        return None
+    status = SCALE_STATUS.get(b[0])
+    if not status:
+        return None
+    if b[1] == 0:
+        return dict(SCALE_OFF)
+    if status == "zero":
+        return {"status": status, "weightOz": 0, "stable": True}
+    per_unit = OUNCES_PER_UNIT.get(b[1])
+    if status not in ("stable", "moving") or per_unit is None:
+        return {"status": status, "weightOz": None, "stable": False}
+    exponent = b[2] - 256 if b[2] > 127 else b[2]
+    raw = b[3] | (b[4] << 8)
+    return {"status": status, "weightOz": round(raw * 10**exponent * per_unit, 2), "stable": status == "stable"}
+
+
+class Scale:
+    """The latest reading (.state); .changed is set when it changes."""
+
+    def __init__(self):
+        self.state = dict(SCALE_NONE)
+        self.changed = threading.Event()
+        self.seen = False
+
+    def set(self, state: dict):
+        if state != self.state:
+            self.state = state
+            self.changed.set()
+
+
+SCALE = Scale()
+
+
+def install_hidapi():
+    """Helpers installed before the scale moved here don't have hidapi:
+    get it once, quietly, the way the installer does."""
+    python = Path(sys.executable).with_name("python.exe")
+    if not python.exists():
+        python = Path(sys.executable)
+    try:
+        subprocess.run(
+            [str(python), "-m", "pip", "install", "--user", "--disable-pip-version-check", "--no-warn-script-location", "--quiet", "hidapi"],
+            check=True,
+            capture_output=True,
+            timeout=300,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        import importlib
+        import site
+
+        user_site = site.getusersitepackages()
+        if user_site not in sys.path:
+            sys.path.append(user_site)
+        importlib.invalidate_caches()
+        import hid as module
+
+        log.info("Installed hidapi for the scale")
+        return module
+    except Exception as e:
+        log.warning("Couldn't install hidapi, so the station page keeps reading the scale: %s", e)
+        return None
+
+
+def read_scale(scale: Scale):
+    """Finds the scale, reads it, and finds it again whenever it drops off
+    USB (powered off on batteries, unplugged). Runs forever."""
+    global hid
+    if hid is None:
+        hid = install_hidapi()
+    if hid is None:
+        return  # stays "none": the station page reads it through Chrome
+    dev = None
+    while True:
+        try:
+            if dev is None:
+                info = next(
+                    (d for d in hid.enumerate() if d.get("vendor_id") == DYMO_VENDOR_ID or d.get("usage_page") == POS_SCALE_USAGE_PAGE),
+                    None,
+                )
+                if info is None:
+                    # Gone after we had it = it powered off (on batteries).
+                    scale.set(dict(SCALE_OFF if scale.seen else SCALE_NONE))
+                    time.sleep(1)
+                    continue
+                dev = hid.device()
+                dev.open_path(info["path"])
+                if not scale.seen:
+                    log.info("Scale: %s", info.get("product_string") or "found")
+                scale.seen = True
+            data = dev.read(64, 1000)
+            if data:
+                reading = parse_scale_report(data)
+                if reading:
+                    scale.set(reading)
+        except Exception:
+            try:
+                dev.close()
+            except Exception:
+                pass
+            dev = None
+            scale.set(dict(SCALE_OFF if scale.seen else SCALE_NONE))
+            time.sleep(1)
+
+
+def send_scale(scale: Scale, stations: list[Station]):
+    """Sends each new reading to the app (check-ins carry it too, every
+    10s, so one that fails here is caught up there)."""
+    sent = None
+    error = ""
+    while True:
+        scale.changed.wait()
+        scale.changed.clear()
+        state = scale.state
+        if state == sent:
+            continue
+        for st in stations:
+            if not st.wants_scale:
+                continue
+            try:
+                st.call("POST", "/api/print-helper/scale", state)
+                error = ""
+            except Exception as e:
+                text = f"{type(e).__name__}: {e}"
+                if text != error:
+                    log.warning("%s: couldn't send the scale reading: %s", st.name, text)
+                    error = text
+        sent = state
+        time.sleep(SCALE_MIN_GAP)
+
+
+# ---------------------------------------------------------------------------
 # Running
 # ---------------------------------------------------------------------------
 
@@ -574,6 +743,8 @@ def run():
     stations = [Station(base, c) for c in configs]
     log.info("Print helper %s for: %s", VERSION, ", ".join(s.name for s in stations) or "(no stations)")
     threading.Thread(target=keep_checking_in, args=(stations,), daemon=True).start()
+    threading.Thread(target=read_scale, args=(SCALE,), daemon=True).start()
+    threading.Thread(target=send_scale, args=(SCALE, stations), daemon=True).start()
     last_update = time.time()
     while True:
         for st in stations:

@@ -1659,7 +1659,7 @@ function ScanPageInner() {
                 <span className="flex min-w-0 items-center gap-2">
                   <span className="text-muted-foreground">Station</span>
                   <span className="truncate font-medium text-foreground">{station.name}</span>
-                  <StationOnline online={liveWeight.status?.online ?? station.online} />
+                  <StationOnline online={liveWeight.status?.scaleOnline ?? station.online} />
                 </span>
                 <button
                   type="button"
@@ -2300,7 +2300,7 @@ function ScanPageInner() {
               ) : typedWeight ? (
                 <p className="mt-1.5 text-xs text-muted-foreground">
                   Typed in, so the scale won&apos;t change it.{" "}
-                  {liveWeight.status?.online && (
+                  {liveWeight.status?.scaleOnline && (
                     <button
                       type="button"
                       className="font-medium text-primary hover:underline"

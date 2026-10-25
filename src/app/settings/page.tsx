@@ -1470,7 +1470,7 @@ function StationsManager() {
                   <span className="truncate">{s.name}</span>
                   <Badge tone={s.online ? "success" : "neutral"}>{s.online ? "Online" : "Offline"}</Badge>
                 </p>
-                {s.online && s.weightOz !== null && (
+                {s.scaleOnline && s.weightOz !== null && (
                   <p className="text-xs text-muted-foreground">Scale reads {s.weightOz.toFixed(1)} oz</p>
                 )}
               </div>

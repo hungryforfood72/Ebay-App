@@ -47,7 +47,7 @@ export function useStationWeight(
           const s: StationStatus = { ...data, weightOz: data.weightOz == null ? null : Number(data.weightOz) };
           setStatus(s);
           setError(null);
-          if (s.online && s.weightStable && s.weightOz != null && s.weightOz > 0) onStableRef.current?.(s.weightOz);
+          if (s.scaleOnline && s.weightStable && s.weightOz != null && s.weightOz > 0) onStableRef.current?.(s.weightOz);
         }
       } catch {
         if (cancelled) return;
@@ -100,7 +100,7 @@ export function LiveWeightReadout({
       </div>
     );
   }
-  if (!status || !status.online) {
+  if (!status || !status.scaleOnline) {
     return (
       <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
         <WifiOff className="mt-0.5 size-5 shrink-0 text-amber-600" aria-hidden />

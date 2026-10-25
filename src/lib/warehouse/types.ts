@@ -81,6 +81,12 @@ export type StationStatus = {
   id: string;
   name: string;
   online: boolean;
+  // The weight is live: from the station page (online) or from the print
+  // helper reading the scale over USB (helperScale; Cristian, 2026-10-25).
+  // scaleStatus = the helper's reading status (ScaleStatus or null).
+  scaleOnline: boolean;
+  helperScale: boolean;
+  scaleStatus: string | null;
   weightOz: number | null;
   weightStable: boolean;
   weightAt: string | null;

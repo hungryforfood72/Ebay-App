@@ -9,7 +9,7 @@ import { Button, buttonClasses } from "@/components/ui/Button";
 import { Card, SectionHeader } from "@/components/ui/Card";
 import { Select } from "@/components/ui/Input";
 import { printLabels, printPage } from "@/lib/warehouse/labelPrint";
-import { formatOunces, formatPoundsOunces, scaleStatusMessage } from "@/lib/warehouse/scale";
+import { formatOunces, formatPoundsOunces, scaleStatusMessage, type ScaleStatus } from "@/lib/warehouse/scale";
 import { DEFAULT_CHROME_PATH, stationPolicyRegFile, stationShortcutArgs } from "@/lib/warehouse/stationSetup";
 import type { PrintJobRow } from "@/lib/warehouse/stations";
 import {
@@ -28,13 +28,17 @@ import {
 import { Copy, Download, Power, Printer, RefreshCw, RotateCcw, Scale, Usb } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { useScale } from "./useScale";
+import { useScale, type ScaleState } from "./useScale";
 import { useTicker } from "./useTicker";
 
 // The page left open full-screen on a listing station PC. It does three
 // jobs, all on its own once it's set up:
 //   1. Reads the USB scale (useScale) and reports the weight to the server
-//      (heartbeat), where the lister's handheld picks it up.
+//      (heartbeat), where the lister's handheld picks it up. With the print
+//      helper on this PC, the helper reads the scale over USB and reports
+//      it itself (StationStatus.helperScale; Cristian, 2026-10-25: Chrome
+//      wouldn't pick the DYMO back up after it powered off); this page
+//      then only shows the helper's reading and leaves the scale alone.
 //   2. Checks for queued labels and prints them on the Rollo. With the
 //      print helper installed on this PC and a printer picked (Printer
 //      card), the helper prints the 4x6 pages on that printer and this page
@@ -58,7 +62,11 @@ const ACTIVE_WINDOW_MS = 2 * 60_000;
 // A weight change at least this big counts as someone working here.
 const ACTIVITY_OZ = 0.2;
 // How often the station's settings and print helper status are re-read.
+// While the helper has the scale, that's also where this page gets the
+// weight it shows: every second while someone's weighing, else every 3s.
 const STATION_REFRESH_MS = 10_000;
+const HELPER_SCALE_ACTIVE_MS = 1_000;
+const HELPER_SCALE_IDLE_MS = 3_000;
 
 // Two short beeps when the scale turns itself off, so whoever's weighing
 // presses its power button before the next item instead of after. Chrome
@@ -101,8 +109,26 @@ const TEST_LABEL: ItemLabelPayload = {
 
 export default function StationPage() {
   const { id } = useParams<{ id: string }>();
-  const scale = useScale();
   const [station, setStation] = useState<StationStatus | null>(null);
+  // Chrome only reads the scale when the helper doesn't (and not before the
+  // station has loaded, so it doesn't grab it for a moment first).
+  const helperScale = station?.helperScale ?? false;
+  const webScale = useScale(station != null && !helperScale);
+  const scale: ScaleState =
+    helperScale && station
+      ? {
+          connection: station.scaleStatus === "off" ? "off" : "connected",
+          deviceName: "DYMO scale (read by the print helper)",
+          reading:
+            station.scaleStatus === "off"
+              ? null
+              : { status: (station.scaleStatus ?? "zero") as ScaleStatus, weightOz: station.weightOz, stable: station.weightStable },
+          lastReportAt: null,
+          error: null,
+          connect: webScale.connect,
+        }
+      : webScale;
+  const helperScaleRef = useRef(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [server, setServer] = useState<ServerState>("connecting");
   const [log, setLog] = useState<PrintJobRow[] | null>(null);
@@ -182,6 +208,7 @@ export default function StationPage() {
     setAutoPrint(!data.printPaused);
     helperPagesRef.current = data.helperTakesPages;
     helperLabelsRef.current = data.helperTakesLabels;
+    helperScaleRef.current = data.helperScale;
     labelSizeRef.current = data.labelSize;
   }
 
@@ -247,7 +274,8 @@ export default function StationPage() {
       const res = await fetch(`/api/stations/${id}/heartbeat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(reading),
+        // The helper's weight isn't this page's to send.
+        body: JSON.stringify(helperScaleRef.current ? {} : reading),
       });
       if (res.ok) setServer("online");
       else {
@@ -322,7 +350,7 @@ export default function StationPage() {
     const t = Date.now();
 
     const reading = readingRef.current;
-    const key = `${reading.weightOz}|${reading.stable}`;
+    const key = helperScaleRef.current ? "helper" : `${reading.weightOz}|${reading.stable}`;
     const h = hb.current;
     if (
       !h.inFlight &&
@@ -342,8 +370,10 @@ export default function StationPage() {
       }
     } else if (!p.busy && t - p.lastAt >= (active ? POLL_ACTIVE_MS : POLL_IDLE_MS)) void pollJobs();
 
-    // The print helper's status and the picked printer.
-    if (t - stationLoadedAt.current >= STATION_REFRESH_MS) void loadStation();
+    // The print helper's status and the picked printer (and the helper's
+    // scale reading).
+    const refreshMs = helperScaleRef.current ? (active ? HELPER_SCALE_ACTIVE_MS : HELPER_SCALE_IDLE_MS) : STATION_REFRESH_MS;
+    if (t - stationLoadedAt.current >= refreshMs) void loadStation();
 
     // Re-render once a second for "last reading 12s ago".
     if (Math.floor(t / 1000) !== Math.floor(now / 1000)) setNow(t);
@@ -428,7 +458,7 @@ export default function StationPage() {
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
         <div className="flex min-w-0 flex-col gap-4">
-          <ScaleCard scale={scale} weightOz={weightOz} stable={stable} now={now} scalePolicy={station?.scalePolicy ?? null} />
+          <ScaleCard scale={scale} weightOz={weightOz} stable={stable} now={now} scalePolicy={station?.scalePolicy ?? null} viaHelper={helperScale} />
 
           <Card>
             <SectionHeader
@@ -832,12 +862,14 @@ function ScaleCard({
   stable,
   now,
   scalePolicy,
+  viaHelper,
 }: {
   scale: ReturnType<typeof useScale>;
   weightOz: number | null;
   stable: boolean;
   now: number;
   scalePolicy: string | null;
+  viaHelper: boolean;
 }) {
   const statusMessage = scale.reading ? scaleStatusMessage(scale.reading.status) : null;
   const quietFor = scale.lastReportAt ? Math.round((now - scale.lastReportAt) / 1000) : 0;
@@ -878,10 +910,12 @@ function ScaleCard({
             It turns itself off after 3 idle minutes, and that can&apos;t be changed. It shows up here again on its
             own once it&apos;s on.
           </p>
-          <Button variant="outline" size="sm" onClick={scale.connect}>
-            <Usb className="size-4" aria-hidden />
-            Still not working? Connect scale
-          </Button>
+          {!viaHelper && (
+            <Button variant="outline" size="sm" onClick={scale.connect}>
+              <Usb className="size-4" aria-hidden />
+              Still not working? Connect scale
+            </Button>
+          )}
         </div>
       ) : scale.connection === "unsupported" ? (
         <Alert tone="danger" title="This browser can't read the scale">
@@ -902,7 +936,7 @@ function ScaleCard({
         </div>
       )}
       {scale.error && <p className="mt-3 text-sm font-medium text-danger">{scale.error}</p>}
-      {scale.connection !== "connected" && scale.connection !== "unsupported" && (scalePolicy === "missing" || scalePolicy === "other-site") && (
+      {!viaHelper && scale.connection !== "connected" && scale.connection !== "unsupported" && (scalePolicy === "missing" || scalePolicy === "other-site") && (
         <Alert tone="warning" title="This PC isn't set to remember the scale" className="mt-3">
           The DYMO has no serial number, so Chrome forgets it every time Chrome restarts or the scale blinks off USB.
           {scalePolicy === "other-site" ? " The setting on this PC is for a different web address." : ""} Reinstall the

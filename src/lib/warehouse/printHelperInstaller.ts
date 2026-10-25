@@ -7,8 +7,9 @@ import { stationChromePolicies, stationShortcutArgs } from "./stationSetup";
 // the file and runs from the marker on. The PowerShell:
 //   1. finds Python 3.9+ (not the Microsoft Store stub), or installs it
 //      quietly for this Windows user from python.org
-//   2. pip installs pymupdf, pywin32, pillow for this user (leaving any
-//      already there alone: other programs on the PC may use them)
+//   2. pip installs pymupdf, pywin32, pillow, hidapi (the USB scale) for
+//      this user (leaving any already there alone: other programs on the
+//      PC may use them)
 //   3. downloads print_helper.py from the app into %LOCALAPPDATA%\PrintHelper
 //   4. adds this station (id + key) to config.json there, keeping any other
 //      station a helper on this PC already prints for
@@ -110,7 +111,7 @@ try {
   Write-Host "Python: $python"
 
   Write-Host 'Installing the printing libraries...'
-  & $python -m pip install --user --disable-pip-version-check --no-warn-script-location --quiet pymupdf pywin32 pillow
+  & $python -m pip install --user --disable-pip-version-check --no-warn-script-location --quiet pymupdf pywin32 pillow hidapi
   if ($LASTEXITCODE -ne 0) { throw 'Installing the libraries (pip) failed.' }
 
   # PyMuPDF needs Microsoft's Visual C++ runtime (msvcp140.dll), which

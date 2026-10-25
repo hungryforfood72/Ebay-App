@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { stationForHelper } from "@/lib/warehouse/printHelper";
+import { helperScaleData, stationForHelper } from "@/lib/warehouse/printHelper";
 import { errorResponse } from "@/lib/warehouse/stations";
 import { labelSizeOf } from "@/lib/warehouse/types";
 import { NextRequest, NextResponse } from "next/server";
@@ -12,8 +12,9 @@ import { NextRequest, NextResponse } from "next/server";
 // through this too. checkUpdate: "Check for updates" was pressed on the
 // station page; the helper fetches its latest version right away.
 // Also { version: "installer" } from the installer, { error } from a
-// helper that can't start, and { scalePolicy } (the PC's Chrome scale
-// policy, see Station.scalePolicy).
+// helper that can't start, { scalePolicy } (the PC's Chrome scale
+// policy, see Station.scalePolicy) and { scale } (the helper's latest scale
+// reading, see /api/print-helper/scale).
 export async function POST(request: NextRequest) {
   try {
     const station = await stationForHelper(request);
@@ -43,6 +44,7 @@ export async function POST(request: NextRequest) {
               helperSeenAt: now,
               helperVersion: version,
               ...(station.helperError ? { helperError: null, helperErrorAt: null } : {}),
+              ...(helperScaleData(body.scale, station, now) ?? {}),
               ...(station.slipPrinter ? { lastSeenAt: now } : {}),
               ...(station.helperUpdateAt ? { helperUpdateAt: null } : {}),
             }),
@@ -56,6 +58,7 @@ export async function POST(request: NextRequest) {
       labelSize: labelSizeOf(station.labelSize),
       paused: station.printPaused,
       checkUpdate: station.helperUpdateAt != null,
+      wantsScale: !station.slipPrinter,
     });
   } catch (e) {
     return errorResponse(e);

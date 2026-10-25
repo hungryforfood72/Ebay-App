@@ -1556,6 +1556,15 @@ model Station {
   // has no USB serial number, so without the policy Chrome forgets it on
   // every Chrome restart or USB blip.
   scalePolicy       String?
+  // The scale read by the print helper over USB instead of Chrome
+  // (Cristian, 2026-10-25: Chrome wouldn't pick the DYMO back up after it
+  // powered off, even with the policy set). scaleStatus is the helper's
+  // latest reading status (ScaleStatus in scale.ts, or "none" = no scale on
+  // that PC); scaleSeenAt its last report. While that's fresh and not
+  // "none", weightOz/weightStable/weightAt come from the helper and the
+  // station page's heartbeat leaves them alone.
+  scaleStatus       String?
+  scaleSeenAt       DateTime?
   // The small code labels (items, bins, shelves, boxes; Cristian,
   // 2026-10-24): the stock they print on (LABEL_SIZES in
   // src/lib/warehouse/types.ts) and the printer the helper prints them on.

@@ -1,4 +1,4 @@
-import { helperOnline, helperPrintsLabels } from "./printHelper";
+import { helperHasScale, helperOnline, helperPrintsLabels } from "./printHelper";
 import { NextResponse } from "next/server";
 import { AuthError } from "../auth";
 import { WarehouseError } from "./bins";
@@ -26,6 +26,8 @@ export const STATION_STATUS_SELECT = {
   helperError: true,
   helperErrorAt: true,
   scalePolicy: true,
+  scaleStatus: true,
+  scaleSeenAt: true,
   labelSize: true,
   labelPrinterName: true,
   printPaused: true,
@@ -48,6 +50,8 @@ type StationRow = {
   helperError: string | null;
   helperErrorAt: Date | null;
   scalePolicy: string | null;
+  scaleStatus: string | null;
+  scaleSeenAt: Date | null;
   labelSize: string;
   labelPrinterName: string | null;
   printPaused: boolean;
@@ -55,14 +59,19 @@ type StationRow = {
 
 export function toStationStatus(row: StationRow, now = Date.now()): StationStatus {
   const online = row.lastSeenAt != null && now - row.lastSeenAt.getTime() <= STATION_ONLINE_MS;
+  const helperScale = helperHasScale(row, now);
+  const scaleOnline = online || helperScale;
   return {
     id: row.id,
     name: row.name,
     online,
+    scaleOnline,
+    helperScale,
+    scaleStatus: helperScale ? row.scaleStatus : null,
     // An offline station's last reading is stale; don't let a handheld use
     // it as if it were on the scale right now.
-    weightOz: online && row.weightOz != null ? row.weightOz.toNumber() : null,
-    weightStable: online && row.weightStable,
+    weightOz: scaleOnline && row.weightOz != null ? row.weightOz.toNumber() : null,
+    weightStable: scaleOnline && row.weightStable,
     weightAt: row.weightAt ? row.weightAt.toISOString() : null,
     packingSlips: row.packingSlips,
     printers: row.printers,

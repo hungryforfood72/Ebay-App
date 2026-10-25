@@ -84,7 +84,9 @@ export type ScaleState = {
   connect: () => Promise<void>;
 };
 
-export function useScale(): ScaleState {
+// enabled false: leave the scale alone (the print helper reads it over USB
+// instead; Cristian, 2026-10-25) and let go of it if this page had it open.
+export function useScale(enabled = true): ScaleState {
   const [connection, setConnection] = useState<ScaleConnection>("checking");
   const [deviceName, setDeviceName] = useState<string | null>(null);
   const [reading, setReading] = useState<ScaleReading | null>(null);
@@ -139,6 +141,7 @@ export function useScale(): ScaleState {
   );
 
   useEffect(() => {
+    if (!enabled) return;
     const hid = getHid();
     if (!hid) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -185,7 +188,7 @@ export function useScale(): ScaleState {
         deviceRef.current = null;
       }
     };
-  }, [attach, onReport]);
+  }, [attach, onReport, enabled]);
 
   // From a button click only (Chrome requires a user gesture).
   const connect = useCallback(async () => {
