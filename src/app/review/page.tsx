@@ -22,6 +22,7 @@ import {
   X,
 } from "lucide-react";
 import { describeBreakdown, type ExpirationBatch } from "@/lib/expirationBreakdown";
+import { ebayDescriptionHtml } from "@/lib/listingDescription";
 import { priceOutcome } from "@/lib/offerMath";
 import type { RetailCheckLine, RetailCheckRow } from "@/lib/retailCheck";
 import { labelForWeight } from "@/lib/shippingZone";
@@ -639,6 +640,7 @@ function ItemCard({
   drafting: boolean;
 }) {
   const [ruleKeyword, setRuleKeyword] = useState("");
+  const [showPreview, setShowPreview] = useState(false);
   const [ruleName, setRuleName] = useState("");
   const [titleLength, setTitleLength] = useState((item.finalTitle ?? "").length);
   useEffect(() => {
@@ -963,6 +965,30 @@ function ItemCard({
               className="lg:min-h-56"
             />
           </Field>
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={() => setShowPreview((v) => !v)}
+              className="text-xs font-medium text-primary hover:underline"
+            >
+              {showPreview ? "Hide eBay preview" : "Preview how it looks on eBay"}
+            </button>
+            {showPreview && (
+              <>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Updates when you click out of the description box. Headings are short lines ending in &quot;:&quot;,
+                  bullets start with &quot;- &quot;.
+                </p>
+                {/* Sandboxed: it's the exact HTML eBay gets (listingDescription.ts). */}
+                <iframe
+                  title="eBay description preview"
+                  sandbox="allow-same-origin"
+                  srcDoc={`<!doctype html><html><body style="margin:12px;background:#fff">${ebayDescriptionHtml(item)}</body></html>`}
+                  className="mt-2 h-96 w-full rounded-lg border border-border bg-white"
+                />
+              </>
+            )}
+          </div>
         </div>
       </div>
 

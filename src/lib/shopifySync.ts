@@ -1,4 +1,5 @@
 import { after } from "next/server";
+import { descriptionBodyHtml } from "./listingDescription";
 import {
   getEbayEnvironment,
   getLiveAvailableQuantity,
@@ -331,21 +332,12 @@ const CONDITION_LABEL: Record<string, string> = {
   for_parts: "For parts or not working",
 };
 
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-// The eBay description is usually HTML already; plain text gets
-// paragraphs so its line breaks survive. Condition and expiration are
-// eBay fields with no Shopify equivalent, so they're spelled out here.
+// The description with the same headings and bullets as on eBay
+// (listingDescription.ts), minus eBay's "Buying from us" note. Condition and
+// expiration are eBay fields with no Shopify equivalent, so they're spelled
+// out here.
 function shopifyDescription(item: Item): string {
-  const base = item.finalDescription ?? "";
-  const body = /<[a-z][^>]*>/i.test(base)
-    ? base
-    : base
-        .split(/\n{2,}/)
-        .map((p) => `<p>${escapeHtml(p).replace(/\n/g, "<br>")}</p>`)
-        .join("");
+  const body = descriptionBodyHtml(item.finalDescription ?? "");
   const facts: string[] = [];
   if (item.condition) facts.push(`<li><strong>Condition:</strong> ${CONDITION_LABEL[item.condition] ?? item.condition}</li>`);
   if (item.expirationDate) {

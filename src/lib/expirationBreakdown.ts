@@ -37,7 +37,17 @@ export function describeBreakdown(batches: ExpirationBatch[]): string {
 
 // Added to the end of the drafted description, the same way a bundle's
 // per-item dates are, so the counts and dates are exact rather than
-// retyped by the model. eBay renders descriptions as HTML.
+// retyped by the model. A plain-text section, laid out with the rest of
+// the description by listingDescription.ts (2026-10-25).
+export function breakdownDescriptionText(batches: ExpirationBatch[]): string {
+  return [
+    "Expiration dates:",
+    "The units in this listing don't all share one date:",
+    ...batches.map((b) => `- ${unitsLabel(b.units)}: Best by ${formatExpiration(b.date)}`),
+  ].join("\n");
+}
+
+// The older HTML version, for a description that's already HTML.
 export function breakdownDescriptionHtml(batches: ExpirationBatch[]): string {
   const rows = batches.map((b) => `<li>${unitsLabel(b.units)}: Best by ${formatExpiration(b.date)}</li>`).join("");
   return `<p>The units in this listing have different expiration dates:</p><ul>${rows}</ul>`;

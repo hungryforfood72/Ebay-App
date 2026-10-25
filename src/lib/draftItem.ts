@@ -5,7 +5,7 @@ import { anthropic, fetchImageAsBase64 } from "@/lib/anthropic";
 import { logAiUsage } from "@/lib/aiUsage";
 import { truncateTitle } from "@/lib/ebayTitle";
 import { getBlockedPhrases, removeBlockedPhrases } from "@/lib/blockedWords";
-import { breakdownDescriptionHtml, describeBreakdown, normalizeBreakdown } from "@/lib/expirationBreakdown";
+import { breakdownDescriptionHtml, breakdownDescriptionText, describeBreakdown, normalizeBreakdown } from "@/lib/expirationBreakdown";
 import { formatExpiration } from "@/lib/formatExpiration";
 import type { Item, Prisma } from "@/generated/prisma/client";
 import type Anthropic from "@anthropic-ai/sdk";
@@ -53,7 +53,7 @@ const DRAFT_SCHEMA = {
     },
     description: {
       type: "string",
-      description: "eBay listing description, a few sentences",
+      description: "eBay listing description as plain text: a one or two sentence summary, then short 'What's included:', 'Details:' and 'Condition:' sections of '- ' bullets",
     },
     specifics: SPECIFICS_SCHEMA,
     countPerPackage: {
@@ -214,6 +214,20 @@ ${returnNote ? `\n${returnNote}\n` : ""}
 ${photos.length > 1 ? `\nThere are ${photos.length} photos of this exact item. The first is the main shot; the others are usually taken to show condition (a dented box, a torn seal, scuffs, wear) or other sides of the package (ingredients, count, size). Use details from all of them, and if any shows a flaw, say so plainly in the description so the buyer isn't surprised.\n` : ""}
 Write a clear, keyword-appropriate eBay title (80 characters max) and a short, honest description a buyer would find helpful. Do not invent specifics (model numbers, exact materials) that aren't supported by the UPC data or the photos.
 
+Lay the description out as plain text in this shape (no HTML, no markdown like ** or #; it's turned into headings and bullet lists for eBay):
+One or two sentences saying exactly what the buyer gets (how many, what it is).
+
+What's included:
+- one short line per thing in the box or lot (counts, pack sizes, totals)
+
+Details:
+- only facts the package or lookup data supports: brand, model or REF number, size, count, expiration date, lot number, where it's made
+
+Condition:
+- plainly what the photos show: seals, shrink-wrap, shelf wear, any flaw
+
+Keep every bullet short (one fact each), skip a section if there's nothing true to put in it, and leave a blank line between sections. Don't add a shipping or returns section; the listing adds that itself.
+
 Describe the item's state the way a seller who has it in hand would: state what the photos clearly show as plain fact ("The caps are still shrink-wrapped."), and leave out anything the photos can't confirm. Never hedge with "appears", "seems" or "looks like": it reads as if the seller never checked their own item.`;
 
   // Every photo, not just the first: the extra ones are usually condition
@@ -247,16 +261,13 @@ Describe the item's state the way a seller who has it in hand would: state what 
     textBlock && "text" in textBlock ? textBlock.text : "{}"
   ) as Draft;
 
-  // The drafted text is plain; once HTML follows it, eBay (and the Shopify
-  // copy) read the whole thing as HTML, so its paragraphs get <p> tags too.
+  // Every date with its unit count, as one more plain-text section (laid
+  // out with the rest by listingDescription.ts). An HTML draft (shouldn't
+  // happen any more) keeps the HTML list.
   if (breakdown && draft.description) {
-    const text = /<[a-z][^>]*>/i.test(draft.description)
-      ? draft.description
-      : draft.description
-          .split(/\n{2,}/)
-          .map((p) => `<p>${p.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>")}</p>`)
-          .join("");
-    draft.description = text + breakdownDescriptionHtml(breakdown);
+    draft.description = /<[a-z][^>]*>/i.test(draft.description)
+      ? draft.description + breakdownDescriptionHtml(breakdown)
+      : `${draft.description.trimEnd()}\n\n${breakdownDescriptionText(breakdown)}`;
   }
 
   const countPerPackage =

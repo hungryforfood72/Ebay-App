@@ -1,4 +1,5 @@
 import { prisma } from "./prisma";
+import { ebayDescriptionHtml } from "./listingDescription";
 import { truncateTitle } from "./ebayTitle";
 
 // Single toggle for which eBay environment the whole app talks to. Flipping
@@ -773,7 +774,7 @@ async function putInventoryItem(item: ItemForEbayPublish): Promise<void> {
       condition: CONDITION_ENUM[item.condition],
       product: {
         title: truncateTitle(item.finalTitle),
-        description: item.finalDescription,
+        description: ebayDescriptionHtml(item),
         imageUrls: item.photoUrls.slice(0, 12),
         aspects: buildAspects(item.itemSpecifics, item.expirationDate),
         ...(item.upc ? { upc: [item.upc] } : {}),
@@ -799,7 +800,8 @@ async function buildOfferBody(item: ItemForEbayPublish, price: number) {
     format: "FIXED_PRICE",
     availableQuantity: availableQuantity(item),
     categoryId: item.categoryId,
-    listingDescription: item.finalDescription,
+    // The plain-text description laid out for eBay (listingDescription.ts).
+    listingDescription: ebayDescriptionHtml(item),
     listingPolicies: {
       fulfillmentPolicyId,
       paymentPolicyId,
