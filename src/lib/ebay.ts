@@ -845,6 +845,21 @@ export async function refreshOffer(offerId: string, item: ItemForEbayPublish): P
   );
 }
 
+// Changes only a live listing's description (Cristian, 2026-10-25: try the
+// new layout on one listing). Reads the offer as eBay has it and sends it
+// back with just listingDescription swapped, so price, quantity and
+// policies stay exactly as they are live, even if the app's copy differs.
+export async function updateOfferDescription(offerId: string, html: string): Promise<void> {
+  const path = `/sell/inventory/v1/offer/${encodeURIComponent(offerId)}`;
+  const current = (await ebayFetch(path)) as Record<string, unknown>;
+  // Read-only fields eBay returns but doesn't take back.
+  const { offerId: _id, listing: _listing, status: _status, ...body } = current;
+  void _id;
+  void _listing;
+  void _status;
+  await withEbayRetry(() => ebayFetch(path, { method: "PUT", body: JSON.stringify({ ...body, listingDescription: html }) }));
+}
+
 async function existingOfferId(ebaySku: string): Promise<string | null> {
   try {
     const result = (await ebayFetch(
