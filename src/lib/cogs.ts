@@ -1,5 +1,6 @@
 import { parseBundleComponentUnits, unitsFor } from "./itemUnits";
 import { prisma } from "./prisma";
+import { isExactKey, lineKey } from "./upcMatch";
 
 // Each manifest line's weight in the landed-cost split: its declared retail
 // value. A manifest with no retail prices at all (some other-supplier
@@ -117,18 +118,23 @@ export function costPerListingUnit(
 // UPC with nothing received yet (the first unit being scanned right now)
 // divides by the manifest's expected quantity instead of coming back empty.
 // null when the load has no landed cost entered.
+// upc can be a no-UPC product's line key ("item:..." / "line:...").
 export async function unitCostForScan(manifestId: string, upc: string): Promise<number | null> {
   const fromReceived = (await cogsPerUnitByManifest(manifestId)).get(upc);
   if (fromReceived != null) return fromReceived;
   const manifest = await prisma.manifest.findUnique({
     where: { id: manifestId },
-    select: { totalLandedCost: true, lines: { select: { upc: true, extendedRetail: true, expectedQuantity: true } } },
+    select: {
+      totalLandedCost: true,
+      lines: { select: { id: true, upc: true, supplierSku: true, extendedRetail: true, expectedQuantity: true } },
+    },
   });
   if (!manifest || manifest.totalLandedCost == null) return null;
+  const isIt = (l: (typeof manifest.lines)[number]) => (isExactKey(upc) ? lineKey(l) === upc : l.upc === upc);
   const weights = landedCostWeights(manifest.lines);
   const total = weights.reduce((sum, w) => sum + w, 0);
-  const expected = manifest.lines.reduce((sum, l) => (l.upc === upc ? sum + l.expectedQuantity : sum), 0);
+  const expected = manifest.lines.reduce((sum, l) => (isIt(l) ? sum + l.expectedQuantity : sum), 0);
   if (total === 0 || expected === 0) return null;
-  const share = manifest.lines.reduce((sum, l, i) => (l.upc === upc ? sum + weights[i] : sum), 0) / total;
+  const share = manifest.lines.reduce((sum, l, i) => (isIt(l) ? sum + weights[i] : sum), 0) / total;
   return (share * Number(manifest.totalLandedCost)) / expected;
 }

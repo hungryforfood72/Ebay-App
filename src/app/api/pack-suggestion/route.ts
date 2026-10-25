@@ -16,6 +16,8 @@ import {
   type PackStat,
 } from "@/lib/packSize";
 import { prisma } from "@/lib/prisma";
+import { linesForKey, productItemsWhere } from "@/lib/productItems";
+import { isExactKey } from "@/lib/upcMatch";
 import { lookupUpc } from "@/lib/upcLookup";
 import { getShopifyConfig } from "@/lib/shopify";
 import { getShopifyPricing, shopifyPriceFor } from "@/lib/shopifySync";
@@ -28,6 +30,9 @@ import { NextRequest, NextResponse } from "next/server";
 export const maxDuration = 60;
 
 // GET ?upc=&manifestId= — for the scan page: whether it's worth listing,
+// (upc can be a no-UPC product's line key, "item:<Item #>" or "line:<id>",
+// picked by name or Item # on the List page, Cristian 2026-10-25: it works
+// from the manifest's description instead, and counts by manifest line)
 // the best pack size to sell a product in (see src/lib/packSize.ts), and,
 // when scanning into a manifest, how many units of it are still left to
 // list and how to split them. Dollar figures are for the owner only.
@@ -41,6 +46,8 @@ export async function GET(request: NextRequest) {
   const upc = request.nextUrl.searchParams.get("upc")?.trim();
   const manifestId = request.nextUrl.searchParams.get("manifestId");
   if (!upc) return NextResponse.json({ error: "A UPC is required." }, { status: 400 });
+  const noUpc = isExactKey(upc);
+  let itemNumber: string | null = null;
 
   // Which manifest to count against: the one being scanned into, when it
   // lists this UPC. Otherwise (no manifest picked on the scanner, or a
@@ -52,13 +59,19 @@ export async function GET(request: NextRequest) {
   let unitsLeft: number | null = null;
   let inferredManifestTitle: string | null = null;
   if (manifestId) {
-    lines = await prisma.manifestLine.findMany({ where: { manifestId, upc }, select: LINE_SELECT });
+    if (noUpc) {
+      const found = await linesForKey(manifestId, upc);
+      itemNumber = found[0]?.supplierSku ?? null;
+      lines = found;
+    } else {
+      lines = await prisma.manifestLine.findMany({ where: { manifestId, upc }, select: LINE_SELECT });
+    }
     if (lines.length > 0) {
       countManifestId = manifestId;
       unitsLeft = await unitsLeftOnManifest(manifestId, upc, lines);
     }
   }
-  if (!countManifestId) {
+  if (!countManifestId && !noUpc) {
     const found = await findManifestForUpc(upc);
     if (found) {
       ({ lines, unitsLeft } = found);
@@ -67,6 +80,11 @@ export async function GET(request: NextRequest) {
     }
   }
   const description = lines[0]?.description ?? null;
+  // What the web check and the pack agent look up: no UPC to search, so the
+  // manifest's name, with the Item # (often the maker's REF number) to pin
+  // the exact product down.
+  const searchUpc = noUpc ? null : upc;
+  const searchName = noUpc && description ? (itemNumber ? `${description} (Item # ${itemNumber})` : description) : null;
 
   // A manifest unit that's itself a multi-pack ("... x 2 pack") gets listed
   // as-is — no suggestion to re-split it.
@@ -86,15 +104,15 @@ export async function GET(request: NextRequest) {
   if (saved) {
     recommendation = saved;
     reason = saved.reason;
-    market = await scanMarketCheck({ upc, description: description ?? `UPC ${upc}` }, { cachedOnly: true });
+    market = await scanMarketCheck({ upc: searchUpc, description: searchName ?? description ?? `UPC ${upc}` }, { cachedOnly: true });
   } else if (!alreadyMultipack) {
     // Scanned with no manifest there's no description: find out what the
     // product is first, so the checks know what they're looking at.
-    if (!description) productName = await productNameForUpc(upc);
-    const name = productName ?? description ?? `UPC ${upc}`;
+    if (!description && !noUpc) productName = await productNameForUpc(upc);
+    const name = searchName ?? productName ?? description ?? `UPC ${upc}`;
     // Independent, so side by side: the agent never sees the price.
     const [check, advice] = await Promise.all([
-      scanMarketCheck({ upc, description: name }),
+      scanMarketCheck({ upc: searchUpc, description: name }),
       advisePackSize({
         upc,
         description: name,
@@ -398,7 +416,10 @@ async function handCountLeft(
   const none = Promise.resolve({ _sum: { quantity: 0 as number | null } });
   const noneDud = Promise.resolve({ _sum: { quantity: 0 as number | null, listedUnits: 0 as number | null } });
   const [items, bundles, walkups, damaged, duds] = await Promise.all([
-    prisma.item.findMany({ where: { manifestId, upc, isBundle: false, createdAt: since }, select: { quantity: true, isMultipack: true, packSize: true } }),
+    prisma.item.findMany({
+      where: { ...(manifestId ? await productItemsWhere(manifestId, upc) : { manifestId, upc, isBundle: false }), createdAt: since },
+      select: { quantity: true, isMultipack: true, packSize: true },
+    }),
     prisma.item.findMany({ where: { manifestId, isBundle: true, createdAt: since }, select: { quantity: true, bundleComponents: true } }),
     manifestId ? prisma.manifestWalkupSale.aggregate({ where: { manifestId, upc, createdAt: since }, _sum: { quantity: true } }) : none,
     // Units a customer return wrote off never were in the counted pile.
@@ -492,7 +513,7 @@ async function unitsLeftOnManifest(
   lines: { expectedQuantity: number }[]
 ): Promise<number> {
   const [items, bundles, walkups, damaged, duds, returned] = await Promise.all([
-    prisma.item.findMany({ where: { manifestId, upc, isBundle: false }, select: { quantity: true, isMultipack: true, packSize: true } }),
+    prisma.item.findMany({ where: await productItemsWhere(manifestId, upc), select: { quantity: true, isMultipack: true, packSize: true } }),
     prisma.item.findMany({ where: { manifestId, isBundle: true }, select: { quantity: true, bundleComponents: true } }),
     prisma.manifestWalkupSale.aggregate({ where: { manifestId, upc }, _sum: { quantity: true } }),
     prisma.manifestDamagedEntry.aggregate({ where: { manifestId, upc }, _sum: { quantity: true } }),

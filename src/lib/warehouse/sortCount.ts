@@ -1,5 +1,6 @@
 import { parseBundleComponentUnits, unitsFor } from "../itemUnits";
 import { prisma } from "../prisma";
+import { productItemsWhere } from "../productItems";
 import { upcMatchKeys } from "../upcMatch";
 import { RETURN_NOTE_PREFIX, returnedUnitsByUpc } from "./returnReconcile";
 import { sortedByUpc } from "./sortBoxes";
@@ -32,7 +33,8 @@ export async function sortedLeft(
       orderBy: { createdAt: "desc" },
       select: { createdAt: true },
     }),
-    prisma.item.findMany({ where: { manifestId, upc, isBundle: false }, select: { quantity: true, isMultipack: true, packSize: true } }),
+    // A no-UPC product's items go by their manifest line (productItems.ts).
+    prisma.item.findMany({ where: await productItemsWhere(manifestId, upc), select: { quantity: true, isMultipack: true, packSize: true } }),
     prisma.item.findMany({ where: { manifestId, isBundle: true }, select: { quantity: true, bundleComponents: true } }),
     prisma.manifestWalkupSale.aggregate({ where: { manifestId, upc }, _sum: { quantity: true } }),
     prisma.manifestDudEntry.aggregate({ where: { manifestId, upc }, _sum: { listedUnits: true } }),

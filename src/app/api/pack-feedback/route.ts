@@ -1,6 +1,8 @@
 import { AuthError, requireOwner } from "@/lib/auth";
 import { MAX_RECOMMENDED_PACK } from "@/lib/packSize";
 import { prisma } from "@/lib/prisma";
+import { linesForKey } from "@/lib/productItems";
+import { isExactKey } from "@/lib/upcMatch";
 import { NextRequest, NextResponse } from "next/server";
 
 // POST { upc, manifestId?, description?, suggestedPackSize?, chosenPackSize, reason }
@@ -32,7 +34,9 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: `Pack size must be 1 to ${MAX_RECOMMENDED_PACK}.` }, { status: 400 });
   }
 
+  // A no-UPC product (line key, see productItems.ts) is found by its line.
   const line =
+    (body?.manifestId && isExactKey(upc) ? ((await linesForKey(body.manifestId, upc))[0] ?? null) : null) ??
     (body?.manifestId
       ? await prisma.manifestLine.findFirst({ where: { manifestId: body.manifestId, upc }, select: { description: true, category: true } })
       : null) ??

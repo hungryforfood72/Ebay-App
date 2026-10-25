@@ -801,7 +801,7 @@ export type ScanMarketCheck = { pricePerUnit: number | null; demand: DemandTier 
 // cachedOnly: answer from research already on file (fresh enough to reuse)
 // and never search; null when there's none.
 export async function scanMarketCheck(
-  subject: { upc: string; description: string },
+  subject: { upc: string | null; description: string },
   opts: { cachedOnly?: boolean } = {}
 ): Promise<ScanMarketCheck | null> {
   if (opts.cachedOnly) {

@@ -1929,9 +1929,10 @@ function ScanPageInner() {
 
         {step === "quantity" && (
           <Card className="flex flex-col gap-4">
-            {upc.trim() && (
+            {/* A product picked by name or Item # has no UPC: the card goes by its manifest line key. */}
+            {(upc.trim() || pickedLine) && (
               <PackSuggestionCard
-                upc={upc.trim()}
+                upc={upc.trim() || pickedLine!.key}
                 manifestId={activeManifestId}
                 onApply={(size, listings) => {
                   setIsMultipack(size > 1);
