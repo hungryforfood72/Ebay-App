@@ -82,6 +82,8 @@ export async function buildItemLabel(
     sku: string;
     upc: string | null;
     manifestId: string | null;
+    // No UPC, picked from the manifest by name or Item # (Item.manifestLineId).
+    manifestLineId?: string | null;
     isBundle: boolean;
     isMultipack: boolean;
     packSize: number | null;
@@ -95,6 +97,9 @@ export async function buildItemLabel(
 ): Promise<ItemLabelPayload> {
   const name =
     (item.isBundle ? null : await manifestDescriptionFor(tx, item.manifestId, item.upc)) ??
+    (!item.isBundle && !item.upc && item.manifestLineId
+      ? ((await tx.manifestLine.findUnique({ where: { id: item.manifestLineId }, select: { description: true } }))?.description ?? null)
+      : null) ??
     (clientName?.trim() || null) ??
     item.finalTitle ??
     item.aiTitle ??

@@ -29,6 +29,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       packSize: true,
       expirationDate: true,
       condition: true,
+      manifestLineId: true,
       finalTitle: true,
       aiTitle: true,
       quantity: true,

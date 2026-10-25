@@ -9,11 +9,12 @@ const MAX_RESULTS = 10;
 
 // The sort station's "search by name" (Cristian, 2026-10-24: products on
 // the medical load with no UPC and no Item #). GET ?manifestId=&q= ->
-// { results: [{ key, description, label }] }: the load's products whose
+// { results: [{ key, lineId, description, label }] }: the load's products whose
 // name has every word typed (any order, any case), or whose UPC / Item #
 // contains it. key is the line's key (lineKey); the page runs it through
 // the normal sort check, same as a scan. One result per key, at most 10,
-// products without a UPC first (they're why this exists).
+// products without a UPC first (they're why this exists). The List page
+// uses it too (2026-10-25), linking the item to lineId.
 export async function GET(request: NextRequest) {
   try {
     requireUser(request);
@@ -30,7 +31,7 @@ export async function GET(request: NextRequest) {
     });
     const words = q.split(/\s+/).filter(Boolean);
     const seen = new Set<string>();
-    const results: { key: string; description: string; label: string; hasUpc: boolean }[] = [];
+    const results: { key: string; lineId: string; description: string; label: string; hasUpc: boolean }[] = [];
     for (const l of lines) {
       const key = lineKey(l);
       if (!key || seen.has(key)) continue;
@@ -38,11 +39,11 @@ export async function GET(request: NextRequest) {
       const codes = `${l.upc ?? ""} ${l.supplierSku ?? ""}`.toLowerCase();
       if (!words.every((w) => name.includes(w)) && !codes.includes(q)) continue;
       seen.add(key);
-      results.push({ key, description: l.description, label: keyLabel(key), hasUpc: Boolean(l.upc?.trim()) });
+      results.push({ key, lineId: l.id, description: l.description, label: keyLabel(key), hasUpc: Boolean(l.upc?.trim()) });
     }
     results.sort((a, b) => Number(a.hasUpc) - Number(b.hasUpc));
     return NextResponse.json({
-      results: results.slice(0, MAX_RESULTS).map(({ key, description, label }) => ({ key, description, label })),
+      results: results.slice(0, MAX_RESULTS).map(({ key, lineId, description, label }) => ({ key, lineId, description, label })),
     });
   } catch (e) {
     return errorResponse(e);

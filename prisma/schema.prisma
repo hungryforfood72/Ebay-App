@@ -173,6 +173,11 @@ model Item {
   // from, if any (null for items scanned outside manifest mode).
   manifest   Manifest? @relation(fields: [manifestId], references: [id])
   manifestId String?
+  // The manifest line it was picked from by name or Item # on the List
+  // page, for products with no UPC (Cristian, 2026-10-25: the medical
+  // load's Bard leg bags). upc stays null then (never a made-up one, eBay
+  // and Shopify get it as-is); this is what ties it to its line instead.
+  manifestLineId String?
 
   // eBay API publish result — set by POST /api/items/[id]/publish-to-ebay,
   // never by the client. ebayOfferId is persisted as soon as createOffer

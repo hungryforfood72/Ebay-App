@@ -187,9 +187,17 @@ export async function draftItem(itemId: string) {
   // description says so. null for everything else.
   const returnNote = await returnDraftNote(item.id);
 
+  // No UPC but picked off the manifest by name or Item # (2026-10-25):
+  // the supplier's description says what it is.
+  const manifestLine =
+    !item.upc && item.manifestLineId
+      ? await prisma.manifestLine.findUnique({ where: { id: item.manifestLineId }, select: { description: true, supplierSku: true } })
+      : null;
   const upcNote = item.upc
     ? `UPC: ${item.upc}\nUPC lookup data (may be incomplete or missing): ${JSON.stringify(upcLookupData)}`
-    : "No UPC — this is a custom/handmade item with no barcode. Draft from the photo and the details below.";
+    : manifestLine
+      ? `No UPC. The supplier's manifest lists this product as: "${manifestLine.description}"${manifestLine.supplierSku ? ` (supplier Item # ${manifestLine.supplierSku})` : ""}. Use that and the photos to identify it. Don't put the supplier's Item # in the title.`
+      : "No UPC — this is a custom/handmade item with no barcode. Draft from the photo and the details below.";
 
   // Each is resized to 1568px before sending (src/lib/anthropic.ts), so 8
   // stays well under the request size limit.

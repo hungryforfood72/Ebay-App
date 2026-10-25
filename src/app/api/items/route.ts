@@ -218,6 +218,20 @@ export async function POST(request: NextRequest) {
   }
   const expirationDate = expirationBreakdown?.[0].date ?? body.expirationDate ?? bundleExpiration;
 
+  // A product with no UPC, picked from the manifest by name or Item #
+  // (Cristian, 2026-10-25). Only for a plain manifest listing, and only a
+  // line of that manifest; its description names the label.
+  let manifestLine: { id: string; description: string } | null = null;
+  if (has(body.manifestLineId) && !isBundle && !original && !returnOriginal && !dudBox && has(body.manifestId)) {
+    manifestLine = await prisma.manifestLine.findFirst({
+      where: { id: String(body.manifestLineId), manifestId: String(body.manifestId) },
+      select: { id: true, description: true },
+    });
+    if (!manifestLine) {
+      return NextResponse.json({ error: "That product isn't on this manifest anymore. Search for it again." }, { status: 400 });
+    }
+  }
+
   const data: Prisma.ItemUncheckedCreateInput = {
     sku,
     upc: original ? original.upc : returnOriginal ? returnOriginal.upc : isBundle ? null : body.upc || null,
@@ -243,6 +257,7 @@ export async function POST(request: NextRequest) {
         : dudBox
           ? dudBox.manifestId
           : body.manifestId ?? null,
+    manifestLineId: manifestLine?.id ?? null,
     isBundle,
     bundleComponents: isBundle ? body.bundleComponents : undefined,
     shopifyOnly:
@@ -282,7 +297,7 @@ export async function POST(request: NextRequest) {
         expirationDate: data.expirationDate instanceof Date ? data.expirationDate : null,
         condition: (data.condition as string | null | undefined) ?? null,
       },
-      typeof body.productName === "string" ? body.productName : null
+      typeof body.productName === "string" ? body.productName : (manifestLine?.description ?? null)
     );
     // Item, labels, bin contents (when a bin was sent), dud box units and
     // the return link land together or not at all: no labels for an item

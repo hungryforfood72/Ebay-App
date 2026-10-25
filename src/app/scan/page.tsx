@@ -2,6 +2,8 @@
 
 import BarcodeScanner from "@/components/BarcodeScanner";
 import { formatLbOz, formatOz, LiveWeightReadout, packageWeight, useStationWeight } from "@/components/LiveWeight";
+import { ExpirationPicker } from "@/components/ExpirationPicker";
+import { ManifestSearch, type ManifestSearchResult } from "@/components/ManifestSearch";
 import { PackSuggestionCard } from "@/components/PackSuggestionCard";
 import { ScanField } from "@/components/ScanField";
 import { StationOnline, StationPicker, useChosenStation } from "@/components/StationPicker";
@@ -282,6 +284,10 @@ function ScanPageInner() {
   // Single-item mode
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [upc, setUpc] = useState("");
+  // No UPC to scan: the product picked off the manifest by name or Item #
+  // instead (Cristian, 2026-10-25). Saved as Item.manifestLineId, upc empty.
+  const [pickedLine, setPickedLine] = useState<ManifestSearchResult | null>(null);
+  const [lineSearchOpen, setLineSearchOpen] = useState(false);
   const [isMultipack, setIsMultipack] = useState(false);
   // Set from the pack suggestion's "Sell on Shopify & Whatnot instead": this
   // item skips eBay entirely. Cleared for every new item.
@@ -684,6 +690,8 @@ function ScanPageInner() {
     setShopifyOnly(false);
     setPhotos([]);
     setUpc("");
+    setPickedLine(null);
+    setLineSearchOpen(false);
     setIsMultipack(false);
     setPackSize("");
     setHeroPhoto(null);
@@ -841,6 +849,17 @@ function ScanPageInner() {
 
   // UPC step scan: a dud box label switches into dud box mode instead of
   // being taken as a UPC (warehouse mode only).
+  // Searching the load works like a scan: pulls it from the sort boxes and
+  // moves on.
+  function pickManifestLine(line: ManifestSearchResult) {
+    setPickedLine(line);
+    setUpc("");
+    setLineSearchOpen(false);
+    pullFromSortBoxes(line.key);
+    if (stepIndex < steps.length - 1) setStep(steps[stepIndex + 1]);
+  }
+  const canSearchLoad = Boolean(activeManifestId) && !isBundle && !dudBox && !relist && !returnPlan;
+
   function handleUpcScan() {
     if (warehouseMode && classifyScan(upc) === "dudbox") {
       const code = upc;
@@ -1099,6 +1118,7 @@ function ScanPageInner() {
         body: JSON.stringify({
           isBundle,
           upc: isBundle ? undefined : upc.trim() || undefined,
+          manifestLineId: !isBundle && !upc.trim() && pickedLine ? pickedLine.lineId : undefined,
           quantity: Number(quantity) || 1,
           isMultipack: isBundle ? false : isMultipack,
           packSize: !isBundle && isMultipack ? Number(packSize) : null,
@@ -1855,6 +1875,7 @@ function ScanPageInner() {
         )}
 
         {step === "upc" && (
+          <>
           <Card>
             <ScanField
               id="scan-upc"
@@ -1863,7 +1884,10 @@ function ScanPageInner() {
               numeric
               autoFocus
               value={upc}
-              onChange={setUpc}
+              onChange={(v) => {
+                setUpc(v);
+                if (v) setPickedLine(null);
+              }}
               onScan={handleUpcScan}
               hint="Scanning moves on by itself. Optional — tap Next to skip for custom/handmade items."
               trailing={
@@ -1875,7 +1899,32 @@ function ScanPageInner() {
                 />
               }
             />
+            {canSearchLoad && !lineSearchOpen && !pickedLine && (
+              <Button variant="outline" size="lg" block className="mt-3" onClick={() => setLineSearchOpen(true)}>
+                <Search className="size-5" aria-hidden />
+                No UPC? Search by name or Item #
+              </Button>
+            )}
+            {pickedLine && !upc.trim() && (
+              <div className="mt-3 flex items-start justify-between gap-3 rounded-lg border border-green-200 bg-green-50/60 px-3 py-2">
+                <div className="min-w-0">
+                  <p className="line-clamp-2 text-sm font-medium text-foreground">{pickedLine.description}</p>
+                  <p className="text-xs text-muted-foreground">{pickedLine.label} · no UPC</p>
+                </div>
+                <button
+                  type="button"
+                  className="shrink-0 text-sm font-medium text-primary hover:underline"
+                  onClick={() => setPickedLine(null)}
+                >
+                  Clear
+                </button>
+              </div>
+            )}
           </Card>
+          {lineSearchOpen && canSearchLoad && activeManifestId && (
+            <ManifestSearch manifestId={activeManifestId} onPick={pickManifestLine} onCancel={() => setLineSearchOpen(false)} />
+          )}
+          </>
         )}
 
         {step === "quantity" && (
@@ -1934,7 +1983,7 @@ function ScanPageInner() {
           <Card>
             {extraDates.length === 0 ? (
               <Field label="Expiration date" hint="Optional — leave blank if it doesn't expire.">
-                <Input size="lg" type="date" value={expirationDate} onChange={(e) => setExpirationDate(e.target.value)} />
+                <ExpirationPicker value={expirationDate} onChange={setExpirationDate} />
               </Field>
             ) : (
               <div className="flex flex-col gap-3">
@@ -1960,16 +2009,14 @@ function ScanPageInner() {
                         </button>
                       )}
                     </div>
-                    <div className="grid grid-cols-[1fr_6.5rem] gap-2">
-                      <Input
-                        size="lg"
-                        type="date"
-                        aria-label={`Date ${i + 1}`}
+                    <div className="flex flex-col gap-2">
+                      <ExpirationPicker
+                        label={`Date ${i + 1}`}
                         value={row.date}
-                        onChange={(e) =>
+                        onChange={(v) =>
                           i === 0
-                            ? setExpirationDate(e.target.value)
-                            : setExtraDates((prev) => prev.map((r, j) => (j === i - 1 ? { ...r, date: e.target.value } : r)))
+                            ? setExpirationDate(v)
+                            : setExtraDates((prev) => prev.map((r, j) => (j === i - 1 ? { ...r, date: v } : r)))
                         }
                       />
                       <Input
@@ -2074,7 +2121,7 @@ function ScanPageInner() {
                 />
                 }
               />
-              <div className="grid grid-cols-[6rem_1fr] gap-3">
+              <div className="flex flex-col gap-3">
                 <Field label="Qty">
                   <Input
                     type="number"
@@ -2085,11 +2132,7 @@ function ScanPageInner() {
                   />
                 </Field>
                 <Field label="Expiration (optional)">
-                  <Input
-                    type="date"
-                    value={componentExpirationDate}
-                    onChange={(e) => setComponentExpirationDate(e.target.value)}
-                  />
+                  <ExpirationPicker value={componentExpirationDate} onChange={setComponentExpirationDate} />
                 </Field>
               </div>
               <Button
