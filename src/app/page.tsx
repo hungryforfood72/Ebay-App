@@ -327,7 +327,7 @@ export default function DashboardPage() {
                   <div className="flex items-start justify-between gap-3">
                     <span className="min-w-0 font-medium text-foreground">{item.finalTitle ?? item.sku}</span>
                     <span className="shrink-0 text-muted-foreground">
-                      {item.expirationDate ? new Date(item.expirationDate).toLocaleDateString() : "—"}
+                      {item.expirationDate ? new Date(item.expirationDate).toLocaleDateString(undefined, { timeZone: "UTC" }) : "—"}
                     </span>
                   </div>
                   <p className="mt-1 text-xs text-danger">{item.ebayEndError}</p>
@@ -377,7 +377,7 @@ export default function DashboardPage() {
                       daysUntil(item.expirationDate) <= 7 ? "font-semibold text-danger" : "text-muted-foreground"
                     )}
                   >
-                    {new Date(item.expirationDate).toLocaleDateString()}
+                    {new Date(item.expirationDate).toLocaleDateString(undefined, { timeZone: "UTC" })}
                   </span>
                 </li>
               ))}
@@ -446,7 +446,7 @@ function ShelfPullRow({
           <LocationBadge location={item.location} fallbackShelf={item.shelfLocation} />
           Expired{" "}
           {item.expirationDate
-            ? new Date(item.expirationDate).toLocaleDateString()
+            ? new Date(item.expirationDate).toLocaleDateString(undefined, { timeZone: "UTC" })
             : new Date(item.expiredAt).toLocaleDateString()}
         </p>
         {item.location && item.location.bins.length > 0 && (
@@ -997,7 +997,7 @@ function ExpiringItemCard({
         </div>
         <div className="shrink-0 text-right">
           <Badge tone={urgent ? "danger" : "neutral"}>{days < 0 ? "Expired" : `${days}d left`}</Badge>
-          <p className="mt-1 text-xs text-muted-foreground">{new Date(item.expirationDate).toLocaleDateString()}</p>
+          <p className="mt-1 text-xs text-muted-foreground">{new Date(item.expirationDate).toLocaleDateString(undefined, { timeZone: "UTC" })}</p>
         </div>
       </div>
 
