@@ -76,7 +76,7 @@ try:
 except Exception:
     hid = None
 
-VERSION = "2026-10-25.2"
+VERSION = "2026-10-25.3"
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE / "config.json"
 # The code this process is running, as it was when it started. Updates are
@@ -427,6 +427,9 @@ POS_SCALE_USAGE_PAGE = 0x8D
 SCALE_STATUS = {1: "fault", 2: "zero", 3: "moving", 4: "stable", 5: "under_zero", 6: "over_weight", 7: "needs_calibration", 8: "needs_rezero"}
 GRAMS_PER_OUNCE = 28.349523125
 OUNCES_PER_UNIT = {1: 0.001 / GRAMS_PER_OUNCE, 2: 1 / GRAMS_PER_OUNCE, 3: 1000 / GRAMS_PER_OUNCE, 10: 1.0971428571, 11: 1.0, 12: 16.0}
+# "none" = this helper can't read USB scales (no hidapi; the reason goes
+# along as "note"). A scale that isn't there is "off": the M25 on batteries
+# drops off USB when it powers off, so that's what not finding it means.
 SCALE_NONE = {"status": "none", "weightOz": None, "stable": False}
 SCALE_OFF = {"status": "off", "weightOz": None, "stable": False}
 # Readings go out the moment they change, at most this often.
@@ -498,6 +501,8 @@ def install_hidapi():
         return module
     except Exception as e:
         log.warning("Couldn't install hidapi, so the station page keeps reading the scale: %s", e)
+        detail = getattr(e, "stderr", b"") or b""
+        SCALE.set({**SCALE_NONE, "note": f"{type(e).__name__}: {e} {detail.decode(errors='replace')[-400:]}".strip()})
         return None
 
 
@@ -518,8 +523,7 @@ def read_scale(scale: Scale):
                     None,
                 )
                 if info is None:
-                    # Gone after we had it = it powered off (on batteries).
-                    scale.set(dict(SCALE_OFF if scale.seen else SCALE_NONE))
+                    scale.set(dict(SCALE_OFF))
                     time.sleep(1)
                     continue
                 dev = hid.device()
@@ -538,7 +542,7 @@ def read_scale(scale: Scale):
             except Exception:
                 pass
             dev = None
-            scale.set(dict(SCALE_OFF if scale.seen else SCALE_NONE))
+            scale.set(dict(SCALE_OFF))
             time.sleep(1)
 
 

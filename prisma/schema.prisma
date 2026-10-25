@@ -1565,6 +1565,8 @@ model Station {
   // station page's heartbeat leaves them alone.
   scaleStatus       String?
   scaleSeenAt       DateTime?
+  // Why the helper can't read USB scales (with scaleStatus "none").
+  scaleNote         String?
   // The small code labels (items, bins, shelves, boxes; Cristian,
   // 2026-10-24): the stock they print on (LABEL_SIZES in
   // src/lib/warehouse/types.ts) and the printer the helper prints them on.

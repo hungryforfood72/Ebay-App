@@ -78,13 +78,14 @@ const HELPER_SCALE_STATUSES = new Set([
 // slip printer station has no scale: its reports are dropped.
 export function helperScaleData(scale: unknown, station: { slipPrinter: boolean }, now: Date) {
   if (station.slipPrinter || !scale || typeof scale !== "object") return null;
-  const { status, weightOz, stable } = scale as Record<string, unknown>;
+  const { status, weightOz, stable, note } = scale as Record<string, unknown>;
   if (typeof status !== "string" || !HELPER_SCALE_STATUSES.has(status)) return null;
   const oz = typeof weightOz === "number" && Number.isFinite(weightOz) && weightOz >= 0 && weightOz < 1_000_000 ? Math.round(weightOz * 100) / 100 : null;
-  if (status === "none") return { scaleStatus: status, scaleSeenAt: now };
+  if (status === "none") return { scaleStatus: status, scaleSeenAt: now, scaleNote: typeof note === "string" ? note.slice(0, 1000) : null };
   return {
     scaleStatus: status,
     scaleSeenAt: now,
+    scaleNote: null,
     weightOz: oz,
     weightStable: oz !== null && stable === true,
     weightAt: oz === null ? null : now,
