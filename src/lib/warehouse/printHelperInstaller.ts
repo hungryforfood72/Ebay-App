@@ -113,6 +113,24 @@ try {
   & $python -m pip install --user --disable-pip-version-check --no-warn-script-location --quiet pymupdf pywin32 pillow
   if ($LASTEXITCODE -ne 0) { throw 'Installing the libraries (pip) failed.' }
 
+  # PyMuPDF needs Microsoft's Visual C++ runtime (msvcp140.dll), which
+  # python.org's Python doesn't bring. Most PCs have it from other programs;
+  # the Listing Station PC didn't, and the helper died on "DLL load failed
+  # while importing _extra" (Cristian, 2026-10-25). Needs admin: one prompt.
+  $sys32 = Join-Path $env:SystemRoot 'System32'
+  if (-not ((Test-Path (Join-Path $sys32 'msvcp140.dll')) -and (Test-Path (Join-Path $sys32 'vcruntime140_1.dll')))) {
+    Write-Host 'Installing the Microsoft Visual C++ runtime (one time). Windows will ask for permission: click Yes.'
+    $vc = Join-Path $env:TEMP 'vc_redist.x64.exe'
+    Invoke-WebRequest 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile $vc -UseBasicParsing
+    try {
+      $p = Start-Process $vc -Verb RunAs -Wait -PassThru -ArgumentList '/install', '/quiet', '/norestart'
+      # 3010 = installed, restart later; 1638 = a newer one is already there
+      if (@(0, 3010, 1638) -notcontains $p.ExitCode) { $Warnings += "The Visual C++ runtime installer stopped with code $($p.ExitCode)." }
+    } catch {
+      $Warnings += 'The Visual C++ runtime was not installed (permission declined?). Run this again and click Yes.'
+    }
+  }
+
   Write-Host 'Downloading the helper...'
   Invoke-WebRequest "$BaseUrl/print-helper/print_helper.py" -OutFile (Join-Path $Dir 'print_helper.py') -UseBasicParsing
 
