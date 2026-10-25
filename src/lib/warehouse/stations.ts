@@ -22,6 +22,10 @@ export const STATION_STATUS_SELECT = {
   helperSeenAt: true,
   helperVersion: true,
   helperUpdateAt: true,
+  helperInstalledAt: true,
+  helperError: true,
+  helperErrorAt: true,
+  scalePolicy: true,
   labelSize: true,
   labelPrinterName: true,
   printPaused: true,
@@ -40,6 +44,10 @@ type StationRow = {
   helperSeenAt: Date | null;
   helperVersion: string | null;
   helperUpdateAt: Date | null;
+  helperInstalledAt: Date | null;
+  helperError: string | null;
+  helperErrorAt: Date | null;
+  scalePolicy: string | null;
   labelSize: string;
   labelPrinterName: string | null;
   printPaused: boolean;
@@ -64,6 +72,10 @@ export function toStationStatus(row: StationRow, now = Date.now()): StationStatu
     helperActive: helperOnline(row.helperSeenAt, now) && row.printerName != null,
     helperVersion: row.helperVersion,
     helperUpdatePending: row.helperUpdateAt != null,
+    helperInstalled: row.helperSeenAt != null || row.helperInstalledAt != null,
+    helperError: row.helperError,
+    helperErrorAt: row.helperErrorAt?.toISOString() ?? null,
+    scalePolicy: row.scalePolicy,
     labelSize: labelSizeOf(row.labelSize),
     labelPrinterName: row.labelPrinterName,
     helperLabelsActive: helperPrintsLabels(row, now),

@@ -1541,6 +1541,21 @@ model Station {
   helperSeenAt  DateTime?
   helperVersion String?
   helperToken   String?
+  // The installer's own check-in (Cristian, 2026-10-25): it fills in the
+  // printer list but is NOT the helper running, so it no longer touches
+  // helperSeenAt. Before, a helper that died on startup showed "Running"
+  // for 30s after every reinstall, then "Not running".
+  helperInstalledAt DateTime?
+  // Why the helper couldn't start or keep running on that PC (traceback
+  // tail, from the helper or the installer's test run). Cleared by the
+  // next good check-in.
+  helperError       String?
+  helperErrorAt     DateTime?
+  // What the PC's Chrome policy says about the DYMO scale, as the helper
+  // reads it from the registry: "set" | "missing" | "other-site". The M25
+  // has no USB serial number, so without the policy Chrome forgets it on
+  // every Chrome restart or USB blip.
+  scalePolicy       String?
   // The small code labels (items, bins, shelves, boxes; Cristian,
   // 2026-10-24): the stock they print on (LABEL_SIZES in
   // src/lib/warehouse/types.ts) and the printer the helper prints them on.

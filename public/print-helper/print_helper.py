@@ -42,21 +42,33 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import urllib.error
+import urllib.parse
 import urllib.request
+import winreg
 from pathlib import Path
 
-import pymupdf
-import win32api
-import win32con
-import win32event
-import win32gui
-import win32print
-import win32ui
-import winerror
-from PIL import Image, ImageWin
+# The printing libraries. If one won't load, the helper used to die right
+# here under pythonw with nothing logged anywhere, and the station page just
+# said "Not running" (Cristian, 2026-10-25, Listing Station). Now the error
+# is kept, logged and sent to the app (report_failure) before quitting.
+try:
+    import pymupdf
+    import win32api
+    import win32con
+    import win32event
+    import win32gui
+    import win32print
+    import win32ui
+    import winerror
+    from PIL import Image, ImageWin
 
-VERSION = "2026-10-24.3"
+    IMPORT_ERROR = None
+except Exception:
+    IMPORT_ERROR = traceback.format_exc()
+
+VERSION = "2026-10-25.1"
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE / "config.json"
 # The code this process is running, as it was when it started. Updates are
@@ -121,7 +133,8 @@ class Station:
         return request(self.base, self.token, method, path, body, raw)
 
     def checkin(self, printers: list[str]):
-        state = self.call("POST", "/api/print-helper/checkin", {"printers": printers, "version": VERSION}) or {}
+        body = {"printers": printers, "version": VERSION, "scalePolicy": scale_policy(self.base)}
+        state = self.call("POST", "/api/print-helper/checkin", body) or {}
         self.name = state.get("name") or self.name
         if state.get("printerName") != self.printer:
             log.info("%s: printer is now %s", self.name, state.get("printerName") or "(not picked yet)")
@@ -399,6 +412,76 @@ def load_config() -> tuple[str, list[dict]]:
     return cfg["base_url"].rstrip("/"), [s for s in stations if s.get("station_id") and s.get("token")]
 
 
+def scale_policy(base: str) -> str:
+    """What this PC's Chrome policy says about the DYMO scale: "set",
+    "missing" or "other-site". The M25 has no USB serial number, so without
+    WebHidAllowDevicesForUrls Chrome forgets it on every Chrome restart."""
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Policies\Google\Chrome") as key:
+            value, _ = winreg.QueryValueEx(key, "WebHidAllowDevicesForUrls")
+        rules = json.loads(value)
+    except (OSError, ValueError):
+        return "missing"
+    origin = urllib.parse.urlsplit(base)
+    dymo = False
+    for rule in rules if isinstance(rules, list) else []:
+        if not any(isinstance(d, dict) and d.get("vendor_id") == 0x0922 for d in rule.get("devices") or []):
+            continue
+        dymo = True
+        for url in rule.get("urls") or []:
+            u = urllib.parse.urlsplit(str(url))
+            if (u.scheme, u.netloc) == (origin.scheme, origin.netloc):
+                return "set"
+    return "other-site" if dymo else "missing"
+
+
+def report_failure(text: str):
+    """Logs why the helper can't run and tells the app, so the station page
+    shows it. Plain urllib only: this runs when the libraries won't load."""
+    log.error("Print helper can't run:\n%s", text)
+    try:
+        base, configs = load_config()
+    except Exception:
+        log.exception("Couldn't read config.json")
+        return
+    body = {"version": VERSION, "error": f"Print helper {VERSION} on Python {sys.version.split()[0]}:\n{text}"[-2000:]}
+    try:
+        body["scalePolicy"] = scale_policy(base)
+    except Exception:
+        pass
+    for c in configs:
+        try:
+            request(base, c["token"], "POST", "/api/print-helper/checkin", body)
+        except Exception as e:
+            log.warning("Couldn't send the error to the app: %s", e)
+
+
+def check() -> int:
+    """python print_helper.py --check (the installer runs it): loads
+    everything and checks in once for each station, printing what went
+    wrong instead of dying silently. 0 = good."""
+    if IMPORT_ERROR:
+        print(IMPORT_ERROR)
+        report_failure(IMPORT_ERROR)
+        return 1
+    try:
+        base, configs = load_config()
+        if not configs:
+            raise RuntimeError("config.json has no stations.")
+        printers = list_printers()
+        for c in configs:
+            st = Station(base, c)
+            st.checkin(printers)
+            print(f"{st.name}: checked in OK as {VERSION}. Printers: {', '.join(printers) or '(none)'}")
+        print(f"Scale setting in Chrome: {scale_policy(base)}")
+        return 0
+    except Exception:
+        text = traceback.format_exc()
+        print(text)
+        report_failure(text)
+        return 1
+
+
 def update_self(base: str) -> bool:
     """Fetches the latest helper from the app; True when it isn't what this
     process is running (the file on disk is then the latest: restart)."""
@@ -465,6 +548,21 @@ def keep_checking_in(stations: list[Station]):
 
 def main():
     setup_logging()
+    if "--check" in sys.argv:
+        sys.exit(check())
+    if IMPORT_ERROR:
+        report_failure(IMPORT_ERROR)
+        sys.exit(1)
+    try:
+        run()
+    except SystemExit:
+        raise
+    except BaseException:
+        report_failure(traceback.format_exc())
+        raise
+
+
+def run():
     # One helper per PC: a second copy (the logon task while one runs)
     # just leaves.
     mutex = win32event.CreateMutex(None, False, "Global\\EbayToolPrintHelper")

@@ -99,6 +99,13 @@ export type StationStatus = {
   // was pressed and the helper hasn't picked that up yet.
   helperVersion: string | null;
   helperUpdatePending: boolean;
+  // The installer ran on this PC (or the helper ever checked in), the last
+  // reason the helper couldn't start/keep running there, and the PC's Chrome
+  // policy for the scale ("set" | "missing" | "other-site"; null = unknown).
+  helperInstalled: boolean;
+  helperError: string | null;
+  helperErrorAt: string | null;
+  scalePolicy: string | null;
   // The small code labels: the stock they print on, and the printer the
   // helper prints them on (null = the station page, on the Windows
   // default). helperLabelsActive = the helper is online, new enough, and

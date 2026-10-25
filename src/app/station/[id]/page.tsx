@@ -428,7 +428,7 @@ export default function StationPage() {
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_22rem]">
         <div className="flex min-w-0 flex-col gap-4">
-          <ScaleCard scale={scale} weightOz={weightOz} stable={stable} now={now} />
+          <ScaleCard scale={scale} weightOz={weightOz} stable={stable} now={now} scalePolicy={station?.scalePolicy ?? null} />
 
           <Card>
             <SectionHeader
@@ -583,7 +583,7 @@ function PrinterCard({
   disabled: boolean;
 }) {
   const installer = `/api/stations/${station.id}/print-helper`;
-  const installed = station.helperSeenAt != null;
+  const installed = station.helperInstalled;
   const seen = station.helperSeenAt ? new Date(station.helperSeenAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : null;
   const canPrintLabels = helperCanPrintLabels(station.helperVersion);
   const latest = useLatestHelperVersion(station.helperVersion);
@@ -720,10 +720,26 @@ function PrinterCard({
                   text={
                     station.helperOnline
                       ? `Running on this PC${station.helperVersion ? ` (version ${station.helperVersion})` : ""}`
-                      : `Not running. Last seen ${seen}. Restart the PC or reinstall.`
+                      : seen
+                        ? `Not running. Last seen ${seen}. Restart the PC or reinstall.`
+                        : "Installed, but it never started on this PC. Reinstall it and send Cristian a picture of the installer window."
                   }
                 />
               </ul>
+              {!station.helperOnline && station.helperError && (
+                <div className="rounded-lg border border-border bg-muted/40 p-2 text-xs">
+                  <p className="font-medium text-foreground">
+                    Why it stopped
+                    {station.helperErrorAt
+                      ? ` (${new Date(station.helperErrorAt).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })})`
+                      : ""}
+                    :
+                  </p>
+                  <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words text-muted-foreground">
+                    {station.helperError}
+                  </pre>
+                </div>
+              )}
               {canPrintLabels ? (
                 <div className="flex flex-col gap-1">
                   <Button
@@ -815,11 +831,13 @@ function ScaleCard({
   weightOz,
   stable,
   now,
+  scalePolicy,
 }: {
   scale: ReturnType<typeof useScale>;
   weightOz: number | null;
   stable: boolean;
   now: number;
+  scalePolicy: string | null;
 }) {
   const statusMessage = scale.reading ? scaleStatusMessage(scale.reading.status) : null;
   const quietFor = scale.lastReportAt ? Math.round((now - scale.lastReportAt) / 1000) : 0;
@@ -884,6 +902,14 @@ function ScaleCard({
         </div>
       )}
       {scale.error && <p className="mt-3 text-sm font-medium text-danger">{scale.error}</p>}
+      {scale.connection !== "connected" && scale.connection !== "unsupported" && (scalePolicy === "missing" || scalePolicy === "other-site") && (
+        <Alert tone="warning" title="This PC isn't set to remember the scale" className="mt-3">
+          The DYMO has no serial number, so Chrome forgets it every time Chrome restarts or the scale blinks off USB.
+          {scalePolicy === "other-site" ? " The setting on this PC is for a different web address." : ""} Reinstall the
+          print helper (Printers card) and click Yes when Windows asks for permission, then close every Chrome window
+          and reopen the station shortcut.
+        </Alert>
+      )}
     </Card>
   );
 }

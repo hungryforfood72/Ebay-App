@@ -13,7 +13,9 @@ import { stationChromePolicies, stationShortcutArgs } from "./stationSetup";
 //   4. adds this station (id + key) to config.json there, keeping any other
 //      station a helper on this PC already prints for
 //   5. checks in once (so the station page's printer list fills in right
-//      away), then sets it to start at logon and starts it now
+//      away), test-runs the helper here (--check: any error shows in the
+//      window and on the station page), then sets it to start at logon,
+//      starts it, and makes sure it's still running 12s later
 //   6. for a station with a browser (not the Wi-Fi slip printer), does the
 //      station page's manual setup too (Cristian, 2026-10-21): the Chrome
 //      policies (machine-wide, so one Windows permission prompt), "Let
@@ -148,7 +150,39 @@ try {
     Where-Object { $_.CommandLine -like '*print_helper.py*' } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
   Start-Sleep -Seconds 2
-  Start-ScheduledTask -TaskName $TaskName
+
+  # Run it once in this window first: if it can't load or reach the app,
+  # the error shows here (and on the station page) instead of the helper
+  # dying silently in the background (Cristian, 2026-10-25: Listing Station
+  # showed running for a few seconds after each reinstall, then not).
+  Write-Host 'Testing the helper...'
+  $ErrorActionPreference = 'Continue'
+  $out = & $python (Join-Path $Dir 'print_helper.py') --check 2>&1 | Out-String
+  $code = $LASTEXITCODE
+  $ErrorActionPreference = 'Stop'
+  Write-Host $out.Trim()
+  # A helper problem doesn't stop the rest: the Chrome settings below are
+  # what makes the scale stick, helper or not.
+  $HelperOk = $code -eq 0
+  if (-not $HelperOk) { $Warnings += "The print helper can't run on this PC (error above, also sent to the app). Send Cristian a picture of this window." }
+
+  if ($HelperOk) { Start-ScheduledTask -TaskName $TaskName; Start-Sleep -Seconds 12 }
+  # Then make sure the background copy stays up.
+  $alive = @(Get-CimInstance Win32_Process -Filter "Name like 'python%'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*print_helper.py*' })
+  if ($HelperOk -and $alive.Count -eq 0) {
+    $result = (Get-ScheduledTaskInfo -TaskName $TaskName -ErrorAction SilentlyContinue).LastTaskResult
+    $logPath = Join-Path $Dir 'print_helper.log'
+    $tail = if (Test-Path $logPath) { (Get-Content -LiteralPath $logPath -Tail 15) -join [Environment]::NewLine } else { '(no log file)' }
+    $why = "The helper passed the test but stopped right after starting in the background. Task result: $result. Python: $python" + [Environment]::NewLine + $tail
+    try {
+      $err = @{ error = $why; version = 'installer' } | ConvertTo-Json
+      Invoke-RestMethod "$BaseUrl/api/print-helper/checkin" -Method Post -Body $err -ContentType 'application/json' -Headers @{ Authorization = "Bearer $Token" } | Out-Null
+    } catch {}
+    Write-Host $tail
+    $HelperOk = $false
+    $Warnings += 'The print helper stopped right after starting in the background (details above, also sent to the app). Send Cristian a picture of this window.'
+  }
+  if ($HelperOk) { Write-Host 'The helper is running.' }
 
   if ($BrowserStation) {
     # Chrome settings for the station (the .reg step on the station page).
@@ -164,6 +198,9 @@ try {
       try {
         $p = Start-Process powershell.exe -Verb RunAs -Wait -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $PolicyScript
         if ($p.ExitCode -ne 0) { throw "it stopped with code $($p.ExitCode)" }
+        $saved = $false
+        try { $saved = (Get-ItemPropertyValue $key -Name 'WebHidAllowDevicesForUrls' -ErrorAction Stop) -eq $WantHidPolicy } catch {}
+        if (-not $saved) { throw 'the scale setting is not there after saving' }
         Write-Host 'Chrome settings: saved.'
       } catch {
         $Warnings += 'The Chrome settings were not saved (permission declined?). Run this again and click Yes, or do the .reg step on the station page.'
@@ -200,7 +237,7 @@ try {
 
   Write-Host ''
   foreach ($w in $Warnings) { Write-Host $w -ForegroundColor Yellow }
-  Write-Host 'Done.' -ForegroundColor Green
+  if ($HelperOk) { Write-Host 'Done.' -ForegroundColor Green } else { Write-Host 'Done, but the print helper is NOT running (see above).' -ForegroundColor Red }
   if ($BrowserStation) {
     Write-Host '1. Close every Chrome window, so the new settings take effect.'
     Write-Host "2. Open the '$ShortcutName' shortcut on the desktop and sign in (first time only)."
