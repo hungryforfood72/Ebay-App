@@ -368,6 +368,16 @@ export type PublishOutcome = "published" | "nothing_left" | "not_eligible";
 // up.
 // fromReview: the Publish button on a Shopify & Whatnot only item, which
 // is still "ready" until this succeeds and flips it to "listed".
+// Re-sends just the description to the item's Shopify product (2026-10-25:
+// live listings moved to the sectioned layout). Same text the publish
+// writes, past-date notice included. False when it isn't on Shopify.
+export async function refreshShopifyDescription(item: Item): Promise<boolean> {
+  if (!item.shopifyProductId) return false;
+  const body = shopifyDescription(item);
+  await updateDescription(item.shopifyProductId, item.pastDateAt ? pastDateDisclosure(item) + body : body);
+  return true;
+}
+
 export async function publishItemToShopify(itemId: string, options?: { fromReview?: boolean }): Promise<PublishOutcome> {
   const item = await prisma.item.findUnique({ where: { id: itemId } });
   if (!item) throw new Error("Item not found.");
