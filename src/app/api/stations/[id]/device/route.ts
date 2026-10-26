@@ -1,4 +1,4 @@
-import { requireUser } from "@/lib/auth";
+import { ownerOnly, requireUser } from "@/lib/auth";
 import {
   STATION_DEVICE_COOKIE,
   STATION_DEVICE_COOKIE_OPTIONS,
@@ -11,7 +11,8 @@ import { NextRequest, NextResponse } from "next/server";
 // Scanner sign-in on a station PC (src/lib/stationSignIn.ts). Turned on
 // per PC from the station page, not just by opening it: Cristian's own PC
 // and the handhelds open station pages too, and they should keep the
-// normal password sign-in.
+// normal password sign-in. Turning it on or off is owner only (Cristian,
+// 2026-10-26); anyone can ask whether it's on (the Log out button needs to).
 
 // Is this PC (this browser) set up as this station?
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -24,7 +25,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
 // Turn it on: after a log out, this PC shows the scan-to-sign-in screen
 // (/station-pc) instead of the password form.
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
-  requireUser(request);
+  const denied = ownerOnly(request);
+  if (denied) return denied;
   const { id } = await params;
   const key = await ensureSignInKey(id);
   if (!key) return NextResponse.json({ error: "That station doesn't exist anymore." }, { status: 404 });
@@ -35,7 +37,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
 // Turn it off on this PC.
 export async function DELETE(request: NextRequest) {
-  requireUser(request);
+  const denied = ownerOnly(request);
+  if (denied) return denied;
   const res = NextResponse.json({ thisStation: false, otherStation: null });
   res.cookies.delete(STATION_DEVICE_COOKIE);
   return res;

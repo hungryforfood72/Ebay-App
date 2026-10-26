@@ -630,7 +630,7 @@ export default function StationPage() {
           {station && (
             <PrinterCard station={station} onChange={patchStation} disabled={stopped} />
           )}
-          <ScannerSignInCard state={scannerSignIn} onChange={deviceRequest} />
+          {user?.role === "owner" && <ScannerSignInCard state={scannerSignIn} onChange={deviceRequest} />}
           <SetupHelp stationId={id} />
         </div>
       </div>
@@ -1052,7 +1052,7 @@ function PrintLog({ log, onReprint }: { log: PrintJobRow[] | null; onReprint: (j
 // Scanner sign-in on this PC (Cristian, 2026-10-26; src/lib/stationSignIn.ts):
 // on, Log out shows a QR code, and the next person scans it with their own
 // handheld and types their PIN there instead of a password here. Per PC
-// (a cookie), so his own PC opening this page isn't affected.
+// (a cookie), so his own PC opening this page isn't affected. Owner only.
 function ScannerSignInCard({
   state,
   onChange,
