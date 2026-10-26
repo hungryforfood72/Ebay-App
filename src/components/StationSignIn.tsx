@@ -3,6 +3,7 @@
 import { Button } from "@/components/ui/Button";
 import { Field, Input } from "@/components/ui/Input";
 import { HANDHELD_STATION_KEYS, PIN_PATTERN } from "@/lib/stationSignInCode";
+import { PinPad } from "./PinPad";
 import { CircleCheck, LoaderCircle, Monitor } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
@@ -140,6 +141,8 @@ export function StationSignInDialog({ code, onClose }: { code: string; onClose: 
   const [pin, setPin] = useState("");
   const [pin2, setPin2] = useState("");
   const [password, setPassword] = useState("");
+  // First-time PIN: password (keyboard), then the new PIN twice on the pad.
+  const [setupStage, setSetupStage] = useState<"password" | "new" | "confirm">("password");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const closeRef = useRef(onClose);
@@ -196,8 +199,7 @@ export function StationSignInDialog({ code, onClose }: { code: string; onClose: 
     setStep({ kind: "done", stationName: data.stationName ?? stationName });
   }
 
-  async function submitPin(e: React.FormEvent) {
-    e.preventDefault();
+  async function submitPin() {
     if (step.kind !== "pin") return;
     setBusy(true);
     setError(null);
@@ -210,11 +212,15 @@ export function StationSignInDialog({ code, onClose }: { code: string; onClose: 
     }
   }
 
-  async function submitSetup(e: React.FormEvent) {
-    e.preventDefault();
+  async function submitSetup() {
     if (step.kind !== "setup") return;
     if (!PIN_PATTERN.test(pin)) return setError("Your PIN has to be 4 to 6 numbers.");
-    if (pin !== pin2) return setError("The two PINs don't match.");
+    if (pin !== pin2) {
+      setPin("");
+      setPin2("");
+      setSetupStage("new");
+      return setError("The two PINs didn't match. Type your new PIN again.");
+    }
     setBusy(true);
     setError(null);
     try {
@@ -226,6 +232,12 @@ export function StationSignInDialog({ code, onClose }: { code: string; onClose: 
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         setError(data.error ?? "Couldn't save your PIN.");
+        // A wrong password: back to that box. Anything else: try the PIN again.
+        if (res.status === 401) {
+          setPin("");
+          setPin2("");
+          setSetupStage("password");
+        }
         return;
       }
       setPassword("");
@@ -275,84 +287,101 @@ export function StationSignInDialog({ code, onClose }: { code: string; onClose: 
         )}
 
         {step.kind === "pin" && (
-          <form onSubmit={submitPin} className="flex flex-col gap-4">
+          <div className="flex flex-col gap-3">
             <div>
               <p id="station-signin-title" className="flex items-center gap-2 text-lg font-bold text-foreground">
                 <Monitor className="size-5 text-primary" aria-hidden />
                 Sign in at {step.stationName}
               </p>
-              <p className="mt-1 text-sm text-muted-foreground">As {step.username}. Not you? Cancel and sign this scanner out.</p>
+              <p className="mt-0.5 text-sm text-muted-foreground">As {step.username}. Type your PIN.</p>
               <MovingNote from={step.otherStations} to={step.stationName} />
             </div>
-            <Field label="Your PIN">
-              <Input
-                type="password"
-                inputMode="numeric"
-                autoComplete="off"
-                autoFocus
-                size="lg"
-                maxLength={6}
-                value={pin}
-                onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))}
-              />
-            </Field>
-            {error && <p className="text-sm font-medium text-danger">{error}</p>}
-            <div className="flex gap-2">
-              <Button type="button" variant="outline" size="lg" onClick={onClose}>
-                Cancel
-              </Button>
-              <Button type="submit" size="lg" block disabled={busy || !PIN_PATTERN.test(pin)}>
-                {busy ? "Signing in…" : "Sign in"}
-              </Button>
-            </div>
-          </form>
+            <PinPad
+              value={pin}
+              onChange={(v) => {
+                setPin(v);
+                setError(null);
+              }}
+              onSubmit={submitPin}
+              submitLabel="Sign in"
+              busy={busy}
+            />
+            {error && <p className="text-center text-sm font-medium text-danger">{error}</p>}
+            <Button type="button" variant="ghost" block onClick={onClose}>
+              Cancel
+            </Button>
+          </div>
         )}
 
         {step.kind === "setup" && (
-          <form onSubmit={submitSetup} className="flex flex-col gap-3">
+          <div className="flex flex-col gap-3">
             <div>
               <p id="station-signin-title" className="text-lg font-bold text-foreground">
-                Make your PIN
+                {setupStage === "password" ? "Make your PIN" : setupStage === "new" ? "Pick your PIN" : "Same PIN again"}
               </p>
-              <p className="mt-1 text-sm text-muted-foreground">
-                {step.username}: pick 4 to 6 numbers. From now on you sign in at any station by scanning its screen and
-                typing this PIN. Your password is needed just this once.
+              <p className="mt-0.5 text-sm text-muted-foreground">
+                {setupStage === "password"
+                  ? `${step.username}: from now on you sign in at any station by scanning its screen and typing a PIN. Your password is needed just this once.`
+                  : setupStage === "new"
+                    ? "4 to 6 numbers you'll remember."
+                    : "Type it once more to make sure."}
               </p>
               <MovingNote from={step.otherStations} to={step.stationName} />
             </div>
-            <Field label="Your password">
-              <Input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
-            </Field>
-            <Field label="New PIN">
-              <Input
-                type="password"
-                inputMode="numeric"
-                autoComplete="off"
-                maxLength={6}
-                value={pin}
-                onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))}
-              />
-            </Field>
-            <Field label="Same PIN again">
-              <Input
-                type="password"
-                inputMode="numeric"
-                autoComplete="off"
-                maxLength={6}
-                value={pin2}
-                onChange={(e) => setPin2(e.target.value.replace(/\D/g, ""))}
-              />
-            </Field>
-            {error && <p className="text-sm font-medium text-danger">{error}</p>}
-            <div className="flex gap-2">
-              <Button type="button" variant="outline" size="lg" onClick={onClose}>
-                Cancel
-              </Button>
-              <Button type="submit" size="lg" block disabled={busy || !password || !pin || !pin2}>
-                {busy ? "Saving…" : `Save and sign in`}
-              </Button>
-            </div>
-          </form>
+            {setupStage === "password" ? (
+              <form
+                className="flex flex-col gap-3"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!password) return;
+                  setError(null);
+                  setSetupStage("new");
+                }}
+              >
+                <Field label="Your password">
+                  <Input
+                    type="password"
+                    autoComplete="current-password"
+                    autoFocus
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                </Field>
+                {error && <p className="text-sm font-medium text-danger">{error}</p>}
+                <div className="flex gap-2">
+                  <Button type="button" variant="outline" size="lg" onClick={onClose}>
+                    Cancel
+                  </Button>
+                  <Button type="submit" size="lg" block disabled={!password}>
+                    Next
+                  </Button>
+                </div>
+              </form>
+            ) : (
+              <>
+                {/* key: a fresh pad (and keyboard listener) for each stage. */}
+                <PinPad
+                  key={setupStage}
+                  value={setupStage === "new" ? pin : pin2}
+                  onChange={(v) => {
+                    if (setupStage === "new") setPin(v);
+                    else setPin2(v);
+                    setError(null);
+                  }}
+                  onSubmit={() => {
+                    if (setupStage === "new") setSetupStage("confirm");
+                    else void submitSetup();
+                  }}
+                  submitLabel={setupStage === "new" ? "Next" : "Save"}
+                  busy={busy}
+                />
+                {error && <p className="text-center text-sm font-medium text-danger">{error}</p>}
+                <Button type="button" variant="ghost" block onClick={onClose}>
+                  Cancel
+                </Button>
+              </>
+            )}
+          </div>
         )}
       </div>
     </div>
