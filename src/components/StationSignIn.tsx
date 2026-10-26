@@ -27,6 +27,72 @@ export function rememberHandheldStation(stationId: string) {
   window.dispatchEvent(new CustomEvent(STATION_CHOSEN_EVENT, { detail: stationId }));
 }
 
+// Fired on window after Sign out of a station, with its id: pages that
+// were printing there drop it (useStationLeft).
+export const STATION_LEFT_EVENT = "station-left";
+
+export function forgetHandheldStation(stationId: string) {
+  for (const key of HANDHELD_STATION_KEYS) {
+    try {
+      if (localStorage.getItem(key) === stationId) localStorage.removeItem(key);
+    } catch {
+      // Nothing remembered to forget.
+    }
+  }
+  window.dispatchEvent(new CustomEvent(STATION_LEFT_EVENT, { detail: stationId }));
+}
+
+export function useStationLeft(onLeft: (stationId: string) => void) {
+  const ref = useRef(onLeft);
+  useEffect(() => {
+    ref.current = onLeft;
+  });
+  useEffect(() => {
+    const listener = (e: Event) => ref.current((e as CustomEvent<string>).detail);
+    window.addEventListener(STATION_LEFT_EVENT, listener);
+    return () => window.removeEventListener(STATION_LEFT_EVENT, listener);
+  }, []);
+}
+
+// "Sign out" beside the station on the handheld (Cristian, 2026-10-26):
+// signs you out of that station's PC (it goes back to its QR screen) and
+// this handheld stops printing there.
+export function StationSignOutButton({ stationId, stationName }: { stationId: string; stationName: string }) {
+  const [busy, setBusy] = useState(false);
+  async function signOut() {
+    if (!confirm(`Sign out of ${stationName}?`)) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/stations/${stationId}/sign-out`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.error ?? "Couldn't sign out of the station.");
+        return;
+      }
+      // Pressed on the station PC itself: it's signed out, so on to its QR screen.
+      if (data.thisDevice) {
+        window.location.reload();
+        return;
+      }
+      forgetHandheldStation(stationId);
+    } catch {
+      alert("Couldn't reach the app. Check the Wi-Fi.");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <button
+      type="button"
+      onClick={signOut}
+      disabled={busy}
+      className="shrink-0 text-sm font-medium text-danger hover:underline disabled:opacity-50"
+    >
+      {busy ? "Signing out…" : "Sign out"}
+    </button>
+  );
+}
+
 // Calls onChosen with the station's id whenever this handheld signs in at
 // a station (rememberHandheldStation).
 export function useStationChosen(onChosen: (stationId: string) => void) {

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { AUTH_COOKIE_NAME, createSession, deleteSession, getRequestUser, getUserForSessionToken, verifyPassword } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { logActivity } from "@/lib/activityLog";
-import { STATION_DEVICE_COOKIE } from "@/lib/stationSignIn";
+import { STATION_DEVICE_COOKIE, stationForDevice } from "@/lib/stationSignIn";
 
 const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60; // 30 days — matches createSession's own expiry
 
@@ -37,7 +37,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Wrong username or password." }, { status: 401 });
   }
 
-  const { token, expiresAt } = await createSession(user.id);
+  // On a station PC (set up for scanner sign-in), tagged with the station
+  // so Sign out on the handheld can end it too.
+  const station = await stationForDevice(request);
+  const { token, expiresAt } = await createSession(user.id, undefined, station?.id ?? null);
   await logActivity(
     { request, user: { id: user.id, username: user.username, role: user.role } },
     { action: "auth.login", summary: `${user.username} signed in`, targetType: "user", targetId: user.username }

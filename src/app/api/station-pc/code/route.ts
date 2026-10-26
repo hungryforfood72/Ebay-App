@@ -65,7 +65,7 @@ export async function GET(request: Request) {
     }
   }
 
-  const { token, expiresAt } = await createSession(user.id, STATION_SESSION_MS);
+  const { token, expiresAt } = await createSession(user.id, STATION_SESSION_MS, station.id);
   await logActivity(
     { request, user },
     { action: "auth.login", summary: `${user.username} signed in at ${station.name} (scanner + PIN)`, targetType: "user", targetId: user.username }

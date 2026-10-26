@@ -2,6 +2,7 @@
 
 import { ScanField } from "@/components/ScanField";
 import { StationOnline, StationPicker, useChosenStation } from "@/components/StationPicker";
+import { StationSignOutButton } from "@/components/StationSignIn";
 import { useCurrentUser } from "@/components/UserNav";
 import { Alert } from "@/components/ui/Alert";
 import { AppShell } from "@/components/ui/AppShell";
@@ -478,13 +479,16 @@ export default function ReturnsPage() {
                 <span className="truncate font-medium text-foreground">{station.name}</span>
                 <StationOnline online={station.online} />
               </span>
-              <button
-                type="button"
-                className="shrink-0 text-sm font-medium text-primary hover:underline"
-                onClick={() => setPickingStation(true)}
-              >
-                Change
-              </button>
+              <span className="flex shrink-0 items-center gap-3">
+                <button
+                  type="button"
+                  className="shrink-0 text-sm font-medium text-primary hover:underline"
+                  onClick={() => setPickingStation(true)}
+                >
+                  Change
+                </button>
+                <StationSignOutButton stationId={station.id} stationName={station.name} />
+              </span>
             </div>
           )
         )}

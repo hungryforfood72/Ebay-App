@@ -8,6 +8,7 @@ import { PackSuggestionCard } from "@/components/PackSuggestionCard";
 import { PullBanner } from "@/components/PullBanner";
 import { ScanField } from "@/components/ScanField";
 import { StationOnline, StationPicker, useChosenStation } from "@/components/StationPicker";
+import { StationSignOutButton } from "@/components/StationSignIn";
 import { Alert } from "@/components/ui/Alert";
 import { AppShell } from "@/components/ui/AppShell";
 import { Badge } from "@/components/ui/Badge";
@@ -1678,17 +1679,20 @@ function ScanPageInner() {
             station && (
               <div className="flex items-center justify-between gap-2 rounded-xl border border-border bg-surface px-3 py-2 text-sm shadow-sm">
                 <span className="flex min-w-0 items-center gap-2">
-                  <span className="text-muted-foreground">Station</span>
+                  <span className="hidden text-muted-foreground sm:inline">Station</span>
                   <span className="truncate font-medium text-foreground">{station.name}</span>
                   <StationOnline online={liveWeight.status?.scaleOnline ?? station.online} />
                 </span>
-                <button
-                  type="button"
-                  className="shrink-0 text-sm font-medium text-primary hover:underline"
-                  onClick={() => setPickingStation(true)}
-                >
-                  Change
-                </button>
+                <span className="flex shrink-0 items-center gap-3">
+                  <button
+                    type="button"
+                    className="shrink-0 text-sm font-medium text-primary hover:underline"
+                    onClick={() => setPickingStation(true)}
+                  >
+                    Change
+                  </button>
+                  <StationSignOutButton stationId={station.id} stationName={station.name} />
+                </span>
               </div>
             )
           ))}

@@ -36,10 +36,15 @@ export async function verifyPassword(password: string, storedHash: string, store
 // durationMs: shorter for a station PC signed in by scanner + PIN (see
 // stationSignIn.ts), so a station nobody signed out of doesn't stay signed
 // in as them for a month.
-export async function createSession(userId: string, durationMs = SESSION_DURATION_MS): Promise<{ token: string; expiresAt: Date }> {
+// stationId: the station PC this sign-in is on (Session.stationId).
+export async function createSession(
+  userId: string,
+  durationMs = SESSION_DURATION_MS,
+  stationId: string | null = null
+): Promise<{ token: string; expiresAt: Date }> {
   const token = randomBytes(32).toString("hex");
   const expiresAt = new Date(Date.now() + durationMs);
-  await prisma.session.create({ data: { token, userId, expiresAt } });
+  await prisma.session.create({ data: { token, userId, expiresAt, stationId } });
   return { token, expiresAt };
 }
 

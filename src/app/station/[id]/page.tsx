@@ -628,10 +628,11 @@ export default function StationPage() {
             </ul>
           </Card>
           {station && (
-            <PrinterCard station={station} onChange={patchStation} disabled={stopped} />
+            <PrinterCard station={station} onChange={patchStation} disabled={stopped} isOwner={user?.role === "owner"} />
           )}
           {user?.role === "owner" && <ScannerSignInCard state={scannerSignIn} onChange={deviceRequest} />}
-          <SetupHelp stationId={id} />
+          {/* Setting up a station PC is the owner's job (Cristian, 2026-10-26). */}
+          {user?.role === "owner" && <SetupHelp stationId={id} />}
         </div>
       </div>
     </AppShell>
@@ -648,10 +649,13 @@ function PrinterCard({
   station,
   onChange,
   disabled,
+  isOwner,
 }: {
   station: StationStatus;
   onChange: (body: Record<string, unknown>) => Promise<boolean>;
   disabled: boolean;
+  // Installing / reinstalling the print helper is owner only.
+  isOwner: boolean;
 }) {
   const installer = `/api/stations/${station.id}/print-helper`;
   const installed = station.helperInstalled;
@@ -766,7 +770,9 @@ function PrinterCard({
         </div>
 
         <div className="flex flex-col gap-3 border-t border-border pt-4">
-          {!installed ? (
+          {!installed && !isOwner ? (
+            <p className="text-foreground">The print helper isn&apos;t installed on this PC. Ask the owner to set it up.</p>
+          ) : !installed ? (
             <>
               <p className="text-foreground">
                 To pick the printers here instead of using the Windows default, install the print helper on this PC.
@@ -792,8 +798,10 @@ function PrinterCard({
                     station.helperOnline
                       ? `Running on this PC${station.helperVersion ? ` (version ${station.helperVersion})` : ""}`
                       : seen
-                        ? `Not running. Last seen ${seen}. Restart the PC or reinstall.`
-                        : "Installed, but it never started on this PC. Reinstall it and send Cristian a picture of the installer window."
+                        ? `Not running. Last seen ${seen}. ${isOwner ? "Restart the PC or reinstall." : "Restart the PC, or tell the owner."}`
+                        : isOwner
+                          ? "Installed, but it never started on this PC. Reinstall it and check the installer window."
+                          : "Installed, but it never started on this PC. Tell the owner."
                   }
                 />
               </ul>
@@ -834,9 +842,11 @@ function PrinterCard({
                   This version can&apos;t update on request yet. Reinstall once and it gets a Check for updates button.
                 </p>
               )}
-              <a href={installer} className="text-xs font-medium text-primary underline">
-                Reinstall the print helper
-              </a>
+              {isOwner && (
+                <a href={installer} className="text-xs font-medium text-primary underline">
+                  Reinstall the print helper
+                </a>
+              )}
             </>
           )}
         </div>

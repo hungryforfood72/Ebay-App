@@ -1,4 +1,4 @@
-import { requireUser } from "@/lib/auth";
+import { requireOwner } from "@/lib/auth";
 import { ensureSignInKey } from "@/lib/stationSignIn";
 import { helperTokenFor } from "@/lib/warehouse/printHelper";
 import { printHelperInstaller } from "@/lib/warehouse/printHelperInstaller";
@@ -6,11 +6,12 @@ import { errorResponse } from "@/lib/warehouse/stations";
 import { NextRequest, NextResponse } from "next/server";
 
 // Downloads the print helper installer for this station (a .cmd carrying
-// the station's key; see printHelperInstaller.ts). Any signed-in user:
-// it's done from the station PC.
+// the station's key; see printHelperInstaller.ts). Owner only (Cristian,
+// 2026-10-26: he sets up each station; maybe managers later): it carries
+// the station's keys, and its shortcut turns on scanner sign-in.
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
-    requireUser(request);
+    requireOwner(request);
     const { id } = await params;
     const { token, name, slipPrinter } = await helperTokenFor(id);
     // Its desktop shortcut sets the PC up for scanner sign-in.

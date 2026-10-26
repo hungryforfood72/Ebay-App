@@ -106,8 +106,13 @@ model Session {
   userId    String
   expiresAt DateTime
   createdAt DateTime @default(now())
+  // The station PC this sign-in is on (scanner + PIN, or a password on a
+  // PC set up for scanner sign-in), so "Sign out" on the handheld can end
+  // it (Cristian, 2026-10-26). Null = any other device.
+  stationId String?
 
   @@index([userId])
+  @@index([stationId])
 }
 
 // No longer created (removed from the scan page 2026-09-27; manifests and

@@ -3,7 +3,7 @@
 import { ScanField } from "@/components/ScanField";
 import { ShippingLabelsCard } from "@/components/ShippingLabelsCard";
 import { StationOnline, StationPicker } from "@/components/StationPicker";
-import { useStationChosen } from "@/components/StationSignIn";
+import { StationSignOutButton, useStationChosen, useStationLeft } from "@/components/StationSignIn";
 import { Alert } from "@/components/ui/Alert";
 import { AppShell } from "@/components/ui/AppShell";
 import { Button } from "@/components/ui/Button";
@@ -83,6 +83,7 @@ export default function ShippingPage() {
   const [stationsError, setStationsError] = useState<string | null>(null);
   const [stationId, setStationId] = useState<string | null>(() => (typeof window === "undefined" ? null : loadStationId()));
   useStationChosen(setStationId);
+  useStationLeft((id) => setStationId((current) => (current === id ? null : current)));
   const [picking, setPicking] = useState(false);
   const [code, setCode] = useState("");
   const [result, setResult] = useState<Result | null>(null);
@@ -250,6 +251,7 @@ export default function ShippingPage() {
             <Button variant="outline" size="sm" onClick={() => setPicking(true)}>
               Change
             </Button>
+            <StationSignOutButton stationId={station.id} stationName={station.name} />
           </Card>
         )}
 

@@ -7,7 +7,7 @@ import type { StationStatus } from "@/lib/warehouse/types";
 import { Check, LoaderCircle, Monitor } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { useStationChosen } from "./StationSignIn";
+import { useStationChosen, useStationLeft } from "./StationSignIn";
 
 // Which listing station (PC with the scale and label printer) this handheld
 // works at. Picked once and remembered on the device, since a handheld
@@ -78,6 +78,10 @@ export function useChosenStation(enabled: boolean) {
   useStationChosen((id) => {
     setStationId(id);
     if (!stations?.some((s) => s.id === id)) setReloadKey((k) => k + 1);
+  });
+  // Signed out of it from the handheld: pick (or scan into) one again.
+  useStationLeft((id) => {
+    setStationId((current) => (current === id ? null : current));
   });
 
   return {
