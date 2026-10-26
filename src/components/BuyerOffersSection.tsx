@@ -155,6 +155,19 @@ function OfferCard({ offer: o, targetMarginPct }: { offer: BuyerOfferRow; target
   const target = targetProfit(o, o.quantity, targetMarginPct);
   const goodPrice = Math.min(priceForProfit(o, o.quantity, target ?? 0), Math.round((o.listPrice - 0.01) * 100) / 100);
   const [counter, setCounter] = useState(() => Math.max(goodPrice, o.price + 0.01).toFixed(2));
+  // The counter as % off the list price, kept in step with the $ box both
+  // ways: type 10 here and the price becomes 10% off (Cristian, 2026-10-26).
+  const [pct, setPct] = useState(() => pctOffText(o.listPrice, Math.max(goodPrice, o.price + 0.01)));
+  function changePrice(v: string) {
+    setCounter(v);
+    const n = Number(v);
+    setPct(v !== "" && Number.isFinite(n) ? pctOffText(o.listPrice, n) : "");
+  }
+  function changePct(v: string) {
+    setPct(v);
+    const n = Number(v);
+    if (v !== "" && Number.isFinite(n) && n >= 0 && n < 100) setCounter((Math.round(o.listPrice * (100 - n)) / 100).toFixed(2));
+  }
   const [note, setNote] = useState("");
   const [state, setState] = useState<RespondState | null>(null);
 
@@ -330,11 +343,24 @@ function OfferCard({ offer: o, targetMarginPct }: { offer: BuyerOfferRow; target
                   step="0.01"
                   min={0}
                   value={counter}
-                  onChange={(e) => setCounter(e.target.value)}
+                  onChange={(e) => changePrice(e.target.value)}
                   aria-label="Counter price"
                   className="pl-6"
                 />
               </div>
+            </div>
+            <div className="relative w-28">
+              <Input
+                type="number"
+                step="1"
+                min={0}
+                max={99}
+                value={pct}
+                onChange={(e) => changePct(e.target.value)}
+                aria-label="Counter as percent off the list price"
+                className="pr-14"
+              />
+              <span className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-sm text-muted-foreground">% off</span>
             </div>
             <Button size="sm" variant="outline" onClick={() => respond("Counter")} disabled={busy || !counterValid}>
               {state?.status === "sending" && state.action === "Counter" ? "Countering…" : "Counter"}
@@ -363,4 +389,10 @@ function OfferCard({ offer: o, targetMarginPct }: { offer: BuyerOfferRow; target
       )}
     </Card>
   );
+}
+
+// "10" or "7.5": a price as % off the list price, to one decimal.
+function pctOffText(listPrice: number, price: number): string {
+  if (!(listPrice > 0)) return "";
+  return String(Math.round((1 - price / listPrice) * 1000) / 10);
 }
