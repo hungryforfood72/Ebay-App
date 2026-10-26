@@ -73,7 +73,7 @@ async function storeUrl(): Promise<string> {
 
 // The Epic Steals box icon, served from this app's public/icons (exempt
 // from the sign-in gate in proxy.ts).
-const ICON_URL = "https://ebay-app-iota.vercel.app/icons/epic-steals-192.png";
+const ICON_URL = "https://www.epicsteals.dev/icons/epic-steals-192.png";
 
 export type Alert = { title: string; body: string; path: string; tag: string };
 export type SendResult = { sent: number; removed: number; failed: number };

@@ -1110,7 +1110,7 @@ function ScannerSignInCard({
 // One-time setup for a station PC. Shown on the page itself because that's
 // where you are when you're setting one up.
 function SetupHelp({ stationId }: { stationId: string }) {
-  const [origin, setOrigin] = useState("https://ebay-app-iota.vercel.app");
+  const [origin, setOrigin] = useState("https://www.epicsteals.dev");
   const [copied, setCopied] = useState<string | null>(null);
   useEffect(() => {
     // window only exists in the browser, after the first render.
