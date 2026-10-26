@@ -387,12 +387,12 @@ export default function ShipPage() {
               ? `Counter sale ${line.orderNumber}. ${more > 0 ? `${more} more to clear.` : "All cleared."}`
               : orderDone
                 ? line.handoff === "pickup"
-                  ? `Order ${line.orderNumber} is ready for pickup.`
+                  ? "Order ready for pickup."
                   : line.handoff === "delivery"
-                    ? `Order ${line.orderNumber} is ready for local delivery. No label needed.`
+                    ? "Order ready for local delivery. No label needed."
                     : holdFor
-                      ? `Order ${line.orderNumber} is picked. Don't pack it yet: it ships with order ${orderList(holdFor)}.`
-                      : `Order ${line.orderNumber} is ready to pack.`
+                      ? `Order picked. Don't pack it yet: it ships with order ${orderList(holdFor)}.`
+                      : "Order ready to pack."
                 : count,
           note: [json.manual ? "Confirmed by tap, not a scan." : null, json.binNote, slipNote(json.slip)].filter(Boolean).join(" ") || null,
           undoLine: { ...line, picked: json.picked },
@@ -543,7 +543,9 @@ export default function ShipPage() {
   return (
     <AppShell
       title="Pick orders"
-      subtitle="Scan each item's label. Green means put it with that order."
+      // Not on the handheld: every line there pushes Next to grab further
+      // down (Cristian, 2026-10-26: had to scroll after every pick).
+      subtitle={<span className="hidden sm:inline">Scan each item&apos;s label. Green means put it with that order.</span>}
       width="narrow"
       actions={
         <Button variant="outline" size="sm" onClick={() => load(true)} disabled={refreshing}>
@@ -552,7 +554,7 @@ export default function ShipPage() {
         </Button>
       }
     >
-      <div className="flex flex-col gap-5">
+      <div className="flex flex-col gap-3 sm:gap-5">
         {loadError && <Alert tone="danger">{loadError}</Alert>}
         {data?.warnings.map((w) => (
           <Alert key={w} tone="warning">
@@ -590,6 +592,7 @@ export default function ShipPage() {
               value={code}
               onChange={setCode}
               onScan={() => handleScan(code)}
+              compact={result != null && !currentBin}
               hint={
                 currentBin ? (
                   <span className="inline-flex items-center gap-1">
@@ -1023,11 +1026,15 @@ function ResultPanel({
   busy: boolean;
 }) {
   const Icon = result.tone === "good" ? CircleCheck : result.tone === "bad" ? CircleX : Info;
+  // Kept short on purpose: on the handheld the scan box and Next to grab
+  // have to fit under it without scrolling (Cristian, 2026-10-26).
+  const button =
+    "inline-flex items-center gap-1.5 rounded-lg bg-white/15 px-2.5 py-1.5 text-sm font-medium hover:bg-white/25 disabled:opacity-50";
   return (
     <div
       role="status"
       className={cn(
-        "relative rounded-2xl p-5 text-white shadow-sm",
+        "relative rounded-xl px-3 py-2.5 text-white shadow-sm",
         result.tone === "good" ? "bg-success" : result.tone === "bad" ? "bg-danger" : "bg-primary"
       )}
     >
@@ -1035,37 +1042,34 @@ function ResultPanel({
         type="button"
         onClick={onClose}
         aria-label="Dismiss"
-        className="absolute right-2 top-2 grid size-9 place-items-center rounded-md text-white/80 hover:bg-white/10"
+        className="absolute right-1 top-1 grid size-8 place-items-center rounded-md text-white/80 hover:bg-white/10"
       >
-        <X className="size-5" aria-hidden />
+        <X className="size-4" aria-hidden />
       </button>
-      <div className="flex items-center gap-3 pr-8">
-        <Icon className="size-10 shrink-0" aria-hidden />
-        <p className="text-2xl font-bold leading-tight tracking-tight">{result.headline}</p>
+      <div className="flex items-start gap-2 pr-7">
+        <Icon className="mt-0.5 size-6 shrink-0" aria-hidden />
+        <p className="min-w-0 text-lg font-bold leading-tight">{result.headline}</p>
       </div>
-      {result.detail && <p className="mt-3 text-lg font-semibold leading-snug">{result.detail}</p>}
-      {result.note && <p className="mt-1 text-sm opacity-90">{result.note}</p>}
-      {result.action && (
-        <button
-          type="button"
-          disabled={busy}
-          onClick={result.action.run}
-          className="mt-3 mr-2 inline-flex items-center gap-1.5 rounded-lg bg-white/15 px-3 py-2 text-sm font-medium hover:bg-white/25 disabled:opacity-50"
-        >
-          {result.action.label}
-        </button>
-      )}
-      {result.undoLine && (
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => onUndo(result.undoLine!)}
-          className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-white/15 px-3 py-2 text-sm font-medium hover:bg-white/25 disabled:opacity-50"
-        >
-          <Undo2 className="size-4" aria-hidden />
-          Undo this pick
-        </button>
-      )}
+      {/* Buttons beside the detail, not on a row of their own. */}
+      <div className="mt-1 flex items-end gap-2 pl-8">
+        <div className="min-w-0 flex-1">
+          {result.detail && <p className="text-base font-semibold leading-snug">{result.detail}</p>}
+          {result.note && <p className="mt-0.5 text-xs leading-snug opacity-90">{result.note}</p>}
+        </div>
+        <div className="flex shrink-0 flex-col items-end gap-1.5">
+          {result.action && (
+            <button type="button" disabled={busy} onClick={result.action.run} className={button}>
+              {result.action.label}
+            </button>
+          )}
+          {result.undoLine && (
+            <button type="button" disabled={busy} onClick={() => onUndo(result.undoLine!)} className={button}>
+              <Undo2 className="size-4" aria-hidden />
+              Undo
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
