@@ -95,7 +95,7 @@ const QUIET_REQUESTS: RegExp[] = [
   /^\/api\/pack-suggestion$/,
   /^\/api\/items\/[^/]+\/category-lookup$/,
   /^\/api\/returns\/advice$/,
-  /^\/api\/auth$/, // logged by the route itself, with the outcome
+  /^\/api\/auth(\/.*)?$/, // sign-in, reset links: logged by each route, with the outcome
   // Bodies with a password or PIN in them: each route logs its own row
   // without it.
   /^\/api\/users$/,

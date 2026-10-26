@@ -1,5 +1,6 @@
 "use client";
 
+import { Alert } from "@/components/ui/Alert";
 import { AppShell } from "@/components/ui/AppShell";
 import { Badge } from "@/components/ui/Badge";
 import { Button, buttonClasses } from "@/components/ui/Button";
@@ -8,7 +9,7 @@ import { Field, Input, Select } from "@/components/ui/Input";
 import type { BoxSizeDto } from "@/lib/warehouse/boxSizes";
 import { printLabelBatch } from "@/lib/warehouse/labelPrint";
 import type { StationStatus } from "@/lib/warehouse/types";
-import { Check, ExternalLink, KeyRound, Pencil, Printer, Trash2, X } from "lucide-react";
+import { Check, Copy, ExternalLink, KeyRound, Link2, Mail, Pencil, Printer, Send, Trash2, X } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState, type ReactNode } from "react";
 
@@ -137,6 +138,7 @@ type AppUser = {
   username: string;
   role: "owner" | "employee";
   createdAt: string;
+  email: string | null;
   // Station PIN (scan-to-sign-in at station PCs): set, and locked out.
   hasPin: boolean;
   pinLocked: boolean;
@@ -149,35 +151,52 @@ type AppUser = {
 // (dashboard, manifests, inventory), not anything client-side here.
 function UsersManager() {
   const [users, setUsers] = useState<AppUser[] | null>(null);
+  const [emailReady, setEmailReady] = useState(true);
   const [newUsername, setNewUsername] = useState("");
+  const [newEmail, setNewEmail] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [newRole, setNewRole] = useState<"employee" | "owner">("employee");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // What just happened to a set-password link, with the link itself so it
+  // can be copied and texted (always shown when the email didn't go).
+  const [notice, setNotice] = useState<{ ok: boolean; text: string; url?: string } | null>(null);
+  const [editingEmail, setEditingEmail] = useState<{ id: string; value: string } | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   function load() {
     fetch("/api/users")
       .then((r) => r.json())
-      .then((data: { users: AppUser[] }) => setUsers(data.users));
+      .then((data: { users: AppUser[]; emailReady: boolean }) => {
+        setUsers(data.users);
+        setEmailReady(data.emailReady);
+      });
   }
 
   useEffect(load, []);
 
   async function addUser() {
-    if (!newUsername.trim() || !newPassword) return;
+    if (!newUsername.trim() || (!newPassword && !newEmail.trim())) return;
     setSaving(true);
     setError(null);
+    setNotice(null);
     try {
       const res = await fetch("/api/users", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: newUsername.trim(), password: newPassword, role: newRole }),
+        body: JSON.stringify({ username: newUsername.trim(), email: newEmail.trim(), password: newPassword, role: newRole }),
       });
-      if (!res.ok) {
-        const result = await res.json().catch(() => ({}));
-        throw new Error(result.error ?? "Failed to create user.");
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(result.error ?? "Failed to create user.");
+      if (result.invite) {
+        setNotice(
+          result.invite.sentTo
+            ? { ok: true, text: `Added ${result.username} and emailed them a link to set their password (${result.invite.sentTo}).`, url: result.invite.url }
+            : { ok: false, text: `Added ${result.username}, but the email didn't go (${result.invite.error}). Copy the link and text it to them.`, url: result.invite.url }
+        );
       }
       setNewUsername("");
+      setNewEmail("");
       setNewPassword("");
       setNewRole("employee");
       load();
@@ -185,6 +204,59 @@ function UsersManager() {
       setError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function saveEmail(user: AppUser, value: string) {
+    setError(null);
+    try {
+      const res = await fetch(`/api/users/${user.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: value }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(result.error ?? "Failed to save the email.");
+      setEditingEmail(null);
+      load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong.");
+    }
+  }
+
+  // send: email it to them; otherwise just make it and copy it.
+  async function passwordLink(user: AppUser, send: boolean) {
+    setError(null);
+    setNotice(null);
+    setBusyId(user.id);
+    try {
+      const res = await fetch(`/api/users/${user.id}/password-link`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ send }),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setNotice({ ok: false, text: result.error ?? "Couldn't make the link.", url: result.url });
+        return;
+      }
+      if (send) {
+        setNotice({ ok: true, text: `Emailed ${user.username} a link to set their password (${result.sentTo}). It works once, for 3 days.`, url: result.url });
+      } else {
+        const copied = await navigator.clipboard.writeText(result.url).then(
+          () => true,
+          () => false
+        );
+        setNotice({
+          ok: true,
+          text: `${copied ? "Copied" : "Here's"} ${user.username}'s link to set their password. Text it to them; it works once, for 3 days.`,
+          url: result.url,
+        });
+      }
+    } catch {
+      setNotice({ ok: false, text: "Couldn't reach the app." });
+    } finally {
+      setBusyId(null);
     }
   }
 
@@ -226,42 +298,117 @@ function UsersManager() {
     <Card>
       <SectionHeader
         title="Users"
-        description="Employee accounts see no financial numbers anywhere in the app (profit, COGS, revenue, sourcing agent bid decisions), and can't delete records or reach this Settings page."
+        description="Employee accounts see no financial numbers anywhere in the app (profit, COGS, revenue, sourcing agent bid decisions), and can't delete records or reach this Settings page. Add someone's email to send them a link to set (or reset) their own password."
       />
+
+      {!emailReady && (
+        <Alert tone="warning" title="Email isn't set up" className="mb-4">
+          The app can&apos;t send emails until EPIC_STEALS_GMAIL_USER and EPIC_STEALS_GMAIL_APP_PASSWORD are added in Vercel.
+          Until then, use Copy link and text it.
+        </Alert>
+      )}
+
+      {notice && (
+        <Alert tone={notice.ok ? "success" : "warning"} className="mb-4">
+          <p>{notice.text}</p>
+          {notice.url && (
+            <p className="mt-2 flex flex-wrap items-center gap-2">
+              <code className="min-w-0 break-all rounded bg-white/70 px-1.5 py-0.5 text-xs">{notice.url}</code>
+              <Button variant="outline" size="sm" onClick={() => navigator.clipboard.writeText(notice.url!).catch(() => {})}>
+                <Copy className="size-4" aria-hidden />
+                Copy
+              </Button>
+            </p>
+          )}
+        </Alert>
+      )}
 
       {!users ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : (
         <ul className="mb-5 divide-y divide-border rounded-lg border border-border">
           {users.map((user) => (
-            <li key={user.id} className="flex items-center justify-between gap-3 px-3 py-2.5">
-              <div className="min-w-0">
-                <p className="flex items-center gap-2 font-medium text-foreground">
-                  {user.username}
-                  <Badge tone={user.role === "owner" ? "primary" : "neutral"}>{user.role}</Badge>
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Since {new Date(user.createdAt).toLocaleDateString()} ·{" "}
-                  {user.pinLocked ? (
-                    <span className="font-medium text-danger">PIN locked (too many wrong tries)</span>
-                  ) : user.hasPin ? (
-                    "Station PIN set"
+            <li key={user.id} className="flex flex-col gap-2 px-3 py-2.5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="flex items-center gap-2 font-medium text-foreground">
+                    {user.username}
+                    <Badge tone={user.role === "owner" ? "primary" : "neutral"}>{user.role}</Badge>
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Since {new Date(user.createdAt).toLocaleDateString()} ·{" "}
+                    {user.pinLocked ? (
+                      <span className="font-medium text-danger">PIN locked (too many wrong tries)</span>
+                    ) : user.hasPin ? (
+                      "Station PIN set"
+                    ) : (
+                      "No station PIN yet"
+                    )}
+                  </p>
+                  {editingEmail?.id === user.id ? (
+                    <form
+                      className="mt-1.5 flex flex-wrap items-center gap-2"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        void saveEmail(user, editingEmail.value);
+                      }}
+                    >
+                      <Input
+                        type="email"
+                        size="sm"
+                        autoFocus
+                        placeholder="name@example.com"
+                        className="w-64 max-w-full"
+                        value={editingEmail.value}
+                        onChange={(e) => setEditingEmail({ id: user.id, value: e.target.value })}
+                      />
+                      <Button type="submit" size="sm">
+                        Save
+                      </Button>
+                      <Button type="button" variant="ghost" size="sm" onClick={() => setEditingEmail(null)}>
+                        Cancel
+                      </Button>
+                    </form>
                   ) : (
-                    "No station PIN yet"
+                    <p className="mt-0.5 flex items-center gap-1.5 text-sm text-foreground">
+                      <Mail className="size-3.5 text-muted-foreground" aria-hidden />
+                      {user.email ?? <span className="text-muted-foreground">No email</span>}
+                      <button
+                        type="button"
+                        className="text-xs font-medium text-primary hover:underline"
+                        onClick={() => setEditingEmail({ id: user.id, value: user.email ?? "" })}
+                      >
+                        {user.email ? "Change" : "Add email"}
+                      </button>
+                    </p>
                   )}
-                </p>
+                </div>
+                <Button variant="danger-ghost" size="sm" onClick={() => removeUser(user)}>
+                  <Trash2 className="size-4" aria-hidden />
+                  Remove
+                </Button>
               </div>
-              <div className="flex shrink-0 items-center gap-1">
+              <div className="flex flex-wrap items-center gap-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => passwordLink(user, true)}
+                  disabled={!user.email || !emailReady || busyId === user.id}
+                  title={!user.email ? "Add their email first" : undefined}
+                >
+                  <Send className="size-4" aria-hidden />
+                  {busyId === user.id ? "Sending…" : "Email password link"}
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => passwordLink(user, false)} disabled={busyId === user.id}>
+                  <Link2 className="size-4" aria-hidden />
+                  Copy link
+                </Button>
                 {(user.hasPin || user.pinLocked) && (
                   <Button variant="ghost" size="sm" onClick={() => resetPin(user)}>
                     <KeyRound className="size-4" aria-hidden />
                     Reset PIN
                   </Button>
                 )}
-                <Button variant="danger-ghost" size="sm" onClick={() => removeUser(user)}>
-                  <Trash2 className="size-4" aria-hidden />
-                  Remove
-                </Button>
               </div>
             </li>
           ))}
@@ -269,11 +416,14 @@ function UsersManager() {
       )}
 
       <p className="mb-3 text-sm font-medium text-foreground">Add a user</p>
-      <div className="grid gap-3 sm:grid-cols-[1fr_1fr_9rem]">
+      <div className="grid gap-3 sm:grid-cols-2">
         <Field label="Username">
           <Input type="text" autoCapitalize="off" value={newUsername} onChange={(e) => setNewUsername(e.target.value)} />
         </Field>
-        <Field label="Password" hint="At least 8 characters.">
+        <Field label="Email" hint="They get a link to set their own password.">
+          <Input type="email" autoComplete="off" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} />
+        </Field>
+        <Field label="Password (optional)" hint="Leave blank to let them set it from the email.">
           <Input type="password" autoComplete="new-password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
         </Field>
         <Field label="Role">
@@ -283,8 +433,8 @@ function UsersManager() {
           </Select>
         </Field>
       </div>
-      <Button className="mt-1" onClick={addUser} disabled={saving || !newUsername.trim() || !newPassword}>
-        {saving ? "Adding…" : "Add user"}
+      <Button className="mt-1" onClick={addUser} disabled={saving || !newUsername.trim() || (!newPassword && !newEmail.trim())}>
+        {saving ? "Adding…" : !newPassword && newEmail.trim() ? "Add user and email them" : "Add user"}
       </Button>
       {error && <p className="mt-3 text-sm font-medium text-danger">{error}</p>}
     </Card>

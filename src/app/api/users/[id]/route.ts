@@ -1,5 +1,6 @@
 import { logActivity } from "@/lib/activityLog";
 import { AuthError, requireOwner } from "@/lib/auth";
+import { looksLikeEmail } from "@/lib/passwordReset";
 import { prisma } from "@/lib/prisma";
 import { NextResponse } from "next/server";
 
@@ -35,8 +36,10 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
   return NextResponse.json({ ok: true });
 }
 
-// Owner: clear someone's station PIN (forgotten, or locked out). They set
-// a new one with their password the next time they scan a station.
+// Owner, any of:
+//   clearPin: true  clear their station PIN (forgotten, or locked out);
+//                   they set a new one with their password next scan
+//   email: string   where set-password links go ("" removes it)
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     requireOwner(request);
@@ -47,9 +50,19 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 
   const { id } = await params;
   const body = await request.json().catch(() => ({}));
-  if (body.clearPin !== true) return NextResponse.json({ error: "Send clearPin: true." }, { status: 400 });
-  const target = await prisma.user.findUnique({ where: { id }, select: { username: true } });
+  const target = await prisma.user.findUnique({ where: { id }, select: { username: true, email: true } });
   if (!target) return NextResponse.json({ error: "User not found." }, { status: 404 });
+  if (typeof body.email === "string") {
+    const email = body.email.trim() || null;
+    if (email && !looksLikeEmail(email)) return NextResponse.json({ error: "That email doesn't look right." }, { status: 400 });
+    await prisma.user.update({ where: { id }, data: { email } });
+    await logActivity(
+      { request },
+      { action: "user.email", summary: `${target.username}'s email: ${email ?? "removed"}`, targetType: "user", targetId: target.username, before: { email: target.email }, after: { email } }
+    );
+    return NextResponse.json({ ok: true, email });
+  }
+  if (body.clearPin !== true) return NextResponse.json({ error: "Send clearPin: true or email." }, { status: 400 });
   await prisma.user.update({ where: { id }, data: { pinHash: null, pinSalt: null, pinFailures: 0, pinLockedUntil: null } });
   await logActivity({ request }, { action: "user.pin_reset", summary: `Reset ${target.username}'s station PIN`, targetType: "user", targetId: target.username });
   return NextResponse.json({ ok: true });

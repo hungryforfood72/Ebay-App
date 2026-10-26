@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Field, Input } from "@/components/ui/Input";
 import { ScanBarcode } from "lucide-react";
+import Link from "next/link";
 import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
@@ -74,6 +75,9 @@ function LoginForm() {
           </Button>
         </form>
       </Card>
+      <Link href="/login/forgot" className="mt-6 text-center text-sm text-muted-foreground underline">
+        Forgot password?
+      </Link>
     </main>
   );
 }

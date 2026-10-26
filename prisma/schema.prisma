@@ -66,9 +66,31 @@ model User {
   pinSalt        String?
   pinFailures    Int       @default(0)
   pinLockedUntil DateTime?
+  // Where set-your-password links go (Cristian, 2026-10-26: people set
+  // their own passwords instead of him making them). Username stays as is.
+  email          String?
 
   sessions       Session[]
   stationSignIns StationSignIn[]
+  passwordResets PasswordReset[]
+}
+
+// A one-time link to set your own password (src/lib/passwordReset.ts):
+// emailed (or copied) by the owner from Settings, or by the person from
+// "Forgot password?" on the sign-in page. Only the SHA-256 of the token is
+// stored, so the database alone can't be used to open a link.
+model PasswordReset {
+  id        String    @id @default(uuid())
+  tokenHash String    @unique
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  expiresAt DateTime
+  usedAt    DateTime?
+  // "owner:<username>" or "self" (forgot password)
+  requestedBy String
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
 }
 
 // DB-backed, not a stateless signed cookie — Next.js 16 runs proxy.ts on
