@@ -37,6 +37,13 @@ export async function PATCH(
   for (const field of EDITABLE_FIELDS) {
     if (field in body) data[field] = body[field];
   }
+  // "Not Rx only" on the Review page: the draft thought the package said Rx
+  // Only and it doesn't. Only clearing it; the draft is what sets it. The
+  // note keeps a regenerate from setting it again (draftItem.ts).
+  if (body.rxOnly === false) {
+    data.rxOnly = false;
+    data.rxOnlyNote = "Cleared on the Review page";
+  }
   if ("expirationDate" in data) {
     const value = data.expirationDate;
     const date = typeof value === "string" && value ? new Date(value) : null;

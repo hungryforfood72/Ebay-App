@@ -44,7 +44,7 @@ const SPECIFICS_SCHEMA = {
   additionalProperties: false,
 } as const;
 
-const DRAFT_SCHEMA = {
+export const DRAFT_SCHEMA = {
   type: "object",
   properties: {
     title: {
@@ -61,8 +61,19 @@ const DRAFT_SCHEMA = {
       description:
         "How many pieces are inside ONE unit of this listing, as printed on the package in the photos: 30 for a box of 30 bandages ('30 ct'), 60 for a bottle of 60 tablets, 10 for a box of 10 drink-mix sticks, 1 for something sold as one piece (an individually wrapped beef stick, a single tube of lotion). If this is a multi-pack or lot, count inside one of its units, not the whole lot. Null if the photo and UPC data don't make it clear.",
     },
+    // eBay doesn't allow prescription devices (Cristian, 2026-10-25: a Bard
+    // leg bag listing was removed). Read off the package, like the count.
+    rxOnly: {
+      type: "boolean",
+      description:
+        "true only if a photo visibly shows the package marked prescription-only: 'Rx Only', 'Rx only', '℞ only', or 'Caution: Federal law restricts this device to sale by or on the order of a physician'. false otherwise.",
+    },
+    rxOnlyNote: {
+      type: ["string", "null"],
+      description: "When rxOnly is true, the exact marking you see and where on the package (e.g. 'Rx Only, top right of the front'). Null otherwise.",
+    },
   },
-  required: ["title", "description", "specifics", "countPerPackage"],
+  required: ["title", "description", "specifics", "countPerPackage", "rxOnly", "rxOnlyNote"],
   additionalProperties: false,
 } as const;
 
@@ -71,6 +82,8 @@ type Draft = {
   description?: string;
   specifics?: Record<string, string | null>;
   countPerPackage?: number | null;
+  rxOnly?: boolean;
+  rxOnlyNote?: string | null;
 };
 
 // Shared by draftItem and draftBundleItem: truncates the title, respects
@@ -272,7 +285,12 @@ Describe the item's state the way a seller who has it in hand would: state what 
 
   const countPerPackage =
     Number.isInteger(draft.countPerPackage) && draft.countPerPackage! >= 1 ? draft.countPerPackage! : null;
-  return applyDraft(item, draft, { ...(upcLookupData ? { upcLookupData } : {}), countPerPackage });
+  // "Not Rx only" pressed on the Review page sticks through a regenerate.
+  const rxCleared = item.rxOnly === false && Boolean(item.rxOnlyNote?.startsWith("Cleared"));
+  const rx = rxCleared
+    ? {}
+    : { rxOnly: draft.rxOnly === true, rxOnlyNote: draft.rxOnly === true ? (draft.rxOnlyNote?.slice(0, 300) ?? "Rx Only on the package") : null };
+  return applyDraft(item, draft, { ...(upcLookupData ? { upcLookupData } : {}), countPerPackage, ...rx });
 }
 
 type BundleComponent = {

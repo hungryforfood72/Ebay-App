@@ -10,6 +10,9 @@ type PackPlanGroup = { packSize: number; listings: number };
 
 type PackSuggestion = {
   isOwner: boolean;
+  // The package says Rx Only (taken down before): eBay won't allow it, and
+  // the rest of the card isn't sent.
+  rxOnly?: boolean;
   alreadyMultipack: boolean;
   manifestPackSize: number;
   available: number | null;
@@ -162,6 +165,17 @@ export function PackSuggestionCard({
   }
 
   const data = result?.data;
+  if (data?.rxOnly) {
+    return (
+      <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-950">
+        <p className="font-semibold">Rx only: don&apos;t list this</p>
+        <p className="mt-0.5">
+          The package says Rx Only and eBay doesn&apos;t allow prescription devices. Set it aside to go back to the
+          supplier.
+        </p>
+      </div>
+    );
+  }
   const rec = data?.recommendation;
   if (data?.alreadyMultipack) return <AlreadyMultipackCard data={data} onApply={onApply} onChangeCount={changeCount} />;
   if (!data || !rec) return null;

@@ -49,6 +49,13 @@ export async function GET(request: NextRequest) {
   const noUpc = isExactKey(upc);
   let itemNumber: string | null = null;
 
+  // A product already taken down because its package says Rx Only (on this
+  // load, or anywhere for a real UPC): say so and skip the web check.
+  const rxOnly =
+    (manifestId ? await prisma.consignmentReturnEntry.count({ where: { manifestId, upc, reason: "rx_only" } }) : 0) > 0 ||
+    (!noUpc && (await prisma.item.count({ where: { upc, OR: [{ rxOnly: true }, { pullReason: "rx_return" }] } })) > 0);
+  if (rxOnly) return NextResponse.json({ upc, isOwner, rxOnly: true });
+
   // Which manifest to count against: the one being scanned into, when it
   // lists this UPC. Otherwise (no manifest picked on the scanner, or a
   // different load) the newest bought load that has units of it left, or

@@ -5,6 +5,7 @@ import { formatLbOz, formatOz, LiveWeightReadout, packageWeight, useStationWeigh
 import { ExpirationPicker } from "@/components/ExpirationPicker";
 import { ManifestSearch, type ManifestSearchResult } from "@/components/ManifestSearch";
 import { PackSuggestionCard } from "@/components/PackSuggestionCard";
+import { PullBanner } from "@/components/PullBanner";
 import { ScanField } from "@/components/ScanField";
 import { StationOnline, StationPicker, useChosenStation } from "@/components/StationPicker";
 import { Alert } from "@/components/ui/Alert";
@@ -1691,6 +1692,9 @@ function ScanPageInner() {
               </div>
             )
           ))}
+
+        {/* Listings that came off eBay (date, or Rx only) waiting to be pulled from their bins. */}
+        {warehouseMode && <PullBanner />}
 
         {warehouseMode && lastSaved && (
           <div className="rounded-xl border border-green-200 bg-green-50 px-3 py-2.5 text-sm text-green-950">

@@ -69,6 +69,16 @@ export async function POST(
     return NextResponse.json({ error: "Item not found." }, { status: 404 });
   }
 
+  // The draft saw "Rx Only" on the package: eBay removes prescription
+  // devices (Cristian, 2026-10-25), so it never goes up. "Not Rx only" on
+  // the Review page clears it if the draft got it wrong.
+  if (item.rxOnly) {
+    return NextResponse.json(
+      { error: `The package says Rx Only${item.rxOnlyNote ? ` (${item.rxOnlyNote})` : ""}, and eBay doesn't allow prescription devices. Set it aside instead.` },
+      { status: 400 }
+    );
+  }
+
   // Server-side belt-and-suspenders, same reasoning as the CSV export
   // route's exportableItems filter — a past real upload failure taught the
   // team client-side gating alone isn't enough to trust.

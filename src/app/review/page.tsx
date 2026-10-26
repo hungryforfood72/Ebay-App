@@ -78,6 +78,10 @@ type Item = {
   localPickupOnly: boolean;
   // Shopify & Whatnot only: never listed on eBay (see Item.shopifyOnly).
   shopifyOnly: boolean;
+  // The draft saw "Rx Only" on the package (draftItem.ts): eBay and the
+  // store both refuse it. rxOnlyNote = what it saw.
+  rxOnly?: boolean | null;
+  rxOnlyNote?: string | null;
   shopifyError: string | null;
   ebayListingId: string | null;
   ebayPublishError: string | null;
@@ -882,6 +886,19 @@ function ItemCard({
           )}
         </div>
 
+        {item.rxOnly && (
+          <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-950">
+            <p className="font-semibold">The package says Rx Only</p>
+            <p className="mt-0.5">
+              {item.rxOnlyNote ? `${item.rxOnlyNote}. ` : ""}eBay doesn&apos;t allow prescription devices, so this can&apos;t
+              be published (and won&apos;t go on the store). Delete it here and set the units aside for the supplier.
+            </p>
+            <Button variant="outline" size="sm" className="mt-2" onClick={() => onChange({ rxOnly: false, rxOnlyNote: "Cleared on the Review page" })}>
+              It&apos;s not Rx only
+            </Button>
+          </div>
+        )}
+
         {item.isBundle && item.bundleComponents && item.bundleComponents.length > 0 && (
           <div className="mb-4 rounded-lg bg-background p-3">
             <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Bundle contents</p>
@@ -1450,7 +1467,11 @@ function ItemCard({
           <Trash2 className="size-4" aria-hidden />
           Delete
         </Button>
-        <Button onClick={onMarkReady} disabled={binHold(item) != null} title={binHold(item) ?? undefined}>
+        <Button
+          onClick={onMarkReady}
+          disabled={binHold(item) != null || Boolean(item.rxOnly)}
+          title={item.rxOnly ? "The package says Rx Only" : (binHold(item) ?? undefined)}
+        >
           <Check className="size-4" aria-hidden />
           {binHold(item) ? "Waiting for a bin" : "Mark ready"}
         </Button>

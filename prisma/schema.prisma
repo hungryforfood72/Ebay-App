@@ -262,6 +262,15 @@ model Item {
   ebayEndError            String?
   shelfPullAcknowledgedAt DateTime?
   shelfPullAcknowledgedBy String?
+  // Why an expired item needs pulling when it isn't its date: "rx_return"
+  // = taken down because the package says Rx Only (eBay doesn't allow
+  // prescription devices), going back to the supplier (Cristian,
+  // 2026-10-25: the medical load's Bard leg bags). null = expired by date.
+  pullReason              String?
+  // The AI draft saw "Rx Only" (or the Rx symbol) on the package: eBay
+  // publishing is blocked for it. null = not checked (older items).
+  rxOnly                  Boolean?
+  rxOnlyNote              String?
 
   // Set when the order sync ended this item's listing because it sold out
   // (src/lib/endSoldOutListings.ts). Cristian never restocks a listing —

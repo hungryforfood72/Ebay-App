@@ -68,6 +68,9 @@ type ExpiredNeedingPullItem = {
   location: ItemLocation | null;
   // A multi-date listing pulled because only some units hit their date.
   expirySplit: (ExpirySplit & { relisted?: RelistProgress }) | null;
+  // "rx_return" = taken down because the package says Rx Only, going back
+  // to the supplier (src/lib/warehouse/rxReturn.ts). null = its date.
+  pullReason: string | null;
 };
 
 type ExpiredEndFailedItem = {
@@ -300,11 +303,13 @@ export default function DashboardPage() {
         </Card>
 
         {expiredNeedingPull.length > 0 && (
-          <Alert tone="danger" title={`Expired — needs shelf pull (${expiredNeedingPull.length})`}>
+          <Alert tone="danger" title={`Needs pulling from the shelf (${expiredNeedingPull.length})`} className="scroll-mt-20">
+            <span id="pulls" />
             <p>
-              These listings were automatically removed from eBay ahead of their expiration date (per the removal
-              buffer in Settings, to stay compliant with eBay&apos;s food policy — items must be delivered before
-              they expire). Pull the physical stock off the shelf, then mark it done below.
+              These listings came off eBay: most ahead of their expiration date (per the removal buffer in Settings,
+              to stay compliant with eBay&apos;s food policy, items must be delivered before they expire), and any
+              marked Rx only because eBay doesn&apos;t allow prescription devices. Pull the physical stock off the
+              shelf or out of its bins, then mark it done below.
             </p>
             <div className="mt-3 flex flex-col gap-2">
               {expiredNeedingPull.map((item) => (
@@ -444,10 +449,16 @@ function ShelfPullRow({
         <p className="font-medium text-foreground">{item.finalTitle ?? item.sku}</p>
         <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
           <LocationBadge location={item.location} fallbackShelf={item.shelfLocation} />
-          Expired{" "}
-          {item.expirationDate
-            ? new Date(item.expirationDate).toLocaleDateString(undefined, { timeZone: "UTC" })
-            : new Date(item.expiredAt).toLocaleDateString()}
+          {item.pullReason === "rx_return" ? (
+            <span className="font-medium text-danger">Rx only: eBay won&apos;t allow it. Set it aside to go back to the supplier.</span>
+          ) : (
+            <>
+              Expired{" "}
+              {item.expirationDate
+                ? new Date(item.expirationDate).toLocaleDateString(undefined, { timeZone: "UTC" })
+                : new Date(item.expiredAt).toLocaleDateString()}
+            </>
+          )}
         </p>
         {item.location && item.location.bins.length > 0 && (
           <p className="mt-1.5 text-xs text-foreground">

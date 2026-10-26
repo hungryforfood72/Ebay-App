@@ -143,5 +143,7 @@ export async function returnList(manifestId: string) {
     description: r.description,
     units: r._sum.quantity ?? 0,
     notOnManifest: r.reason === "not_on_manifest",
+    // Taken down because the package says Rx Only (rxReturn.ts).
+    rxOnly: r.reason === "rx_only",
   }));
 }

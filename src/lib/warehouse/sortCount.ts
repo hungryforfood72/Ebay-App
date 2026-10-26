@@ -27,7 +27,7 @@ export async function sortedLeft(
   const sorted = stored.reduce((sum, [, v]) => sum + v.sorted, 0);
   if (sorted === 0) return null;
   const returnEntry = { startsWith: RETURN_NOTE_PREFIX };
-  const [latest, items, bundles, walkups, duds, returned, returnDamaged, returnDud] = await Promise.all([
+  const [latest, items, bundles, walkups, duds, returned, returnDamaged, returnDud, rxReturned] = await Promise.all([
     prisma.sortBoxEntry.findFirst({
       where: { manifestId, upc: { in: stored.map(([u]) => u) } },
       orderBy: { createdAt: "desc" },
@@ -41,6 +41,13 @@ export async function sortedLeft(
     returnedUnitsByUpc(manifestId),
     prisma.manifestDamagedEntry.aggregate({ where: { manifestId, upc, note: returnEntry }, _sum: { quantity: true } }),
     prisma.manifestDudEntry.aggregate({ where: { manifestId, upc, note: returnEntry }, _sum: { quantity: true } }),
+    // Taken down as Rx only and going back to the supplier (rxReturn.ts):
+    // those listings' quantity dropped to what sold, so add the units back
+    // here as gone, or they'd show as left to list again.
+    prisma.consignmentReturnEntry.aggregate({
+      where: { manifestId, upc: { in: [...new Set([upc, ...stored.map(([u]) => u)])] }, reason: "rx_only" },
+      _sum: { quantity: true },
+    }),
   ]);
   const inBundles = bundles.reduce(
     (sum, b) =>
@@ -60,6 +67,7 @@ export async function sortedLeft(
     (duds._sum.listedUnits ?? 0) -
     (returned.get(upc) ?? 0) +
     (returnDamaged._sum.quantity ?? 0) +
-    (returnDud._sum.quantity ?? 0);
+    (returnDud._sum.quantity ?? 0) +
+    (rxReturned._sum.quantity ?? 0);
   return { sorted, left: Math.max(0, sorted - saved), latestAt: latest?.createdAt ?? new Date(0) };
 }

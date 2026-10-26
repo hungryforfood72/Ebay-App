@@ -35,7 +35,7 @@ export type SortingSummary = {
   consignment?: boolean;
   // Consignment: set aside to go back to the supplier.
   returned?: number;
-  returns?: { upc: string; description: string; units: number; notOnManifest: boolean }[];
+  returns?: { upc: string; description: string; units: number; notOnManifest: boolean; rxOnly?: boolean }[];
   shortCost?: number;
   shortRetail?: number;
 };
@@ -153,9 +153,10 @@ export function SortingSection({
             </p>
             <ul className="text-sm text-muted-foreground">
               {sorting.returns.map((r) => (
-                <li key={r.upc} className="tabular-nums">
+                <li key={`${r.upc}|${r.notOnManifest}|${r.rxOnly}`} className="tabular-nums">
                   {r.units} × {r.description}
                   {r.notOnManifest ? " (not on the manifest)" : ""}
+                  {r.rxOnly ? " (Rx only, eBay won't allow it)" : ""}
                 </li>
               ))}
             </ul>

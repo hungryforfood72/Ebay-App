@@ -244,6 +244,10 @@ function waitingForShopifyWhere(): Prisma.ItemWhereInput {
     finalTitle: { not: null },
     price: { not: null },
     NOT: { photoUrls: { isEmpty: true } },
+    // Package says Rx Only: not on the store either (an Rx device sold
+    // without a prescription breaks FDA labeling rules). Spelled out as
+    // null-or-false: "not true" in SQL drops the nulls (every older item).
+    AND: [{ OR: [{ rxOnly: null }, { rxOnly: false }] }],
   };
 }
 
