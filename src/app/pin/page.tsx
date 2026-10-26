@@ -5,8 +5,13 @@ import { AppShell } from "@/components/ui/AppShell";
 import { Button } from "@/components/ui/Button";
 import { Card, SectionHeader } from "@/components/ui/Card";
 import { Field, Input } from "@/components/ui/Input";
+import { useStationChosen } from "@/components/StationSignIn";
 import { PIN_PATTERN } from "@/lib/stationSignInCode";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+
+// Long enough to read "Signed in at ..." before going back.
+const BACK_AFTER_MS = 1_500;
 
 // Station sign-in from the handheld (src/lib/stationSignIn.ts): scan a
 // station PC's sign-in screen here (any scan box in the app works too),
@@ -20,6 +25,16 @@ export default function PinPage() {
   const [pin2, setPin2] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const router = useRouter();
+
+  // Signed in at a station from here: back to wherever they were before
+  // (Cristian, 2026-10-26), or Home if this page was opened on its own.
+  useStationChosen(() => {
+    setTimeout(() => {
+      if (window.history.length > 1) router.back();
+      else router.replace("/");
+    }, BACK_AFTER_MS);
+  });
 
   useEffect(() => {
     fetch("/api/station-signin/pin")
