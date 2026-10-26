@@ -3,6 +3,7 @@
 import { ScanField } from "@/components/ScanField";
 import { ShippingLabelsCard } from "@/components/ShippingLabelsCard";
 import { StationOnline, StationPicker } from "@/components/StationPicker";
+import { useStationChosen } from "@/components/StationSignIn";
 import { Alert } from "@/components/ui/Alert";
 import { AppShell } from "@/components/ui/AppShell";
 import { Button } from "@/components/ui/Button";
@@ -81,6 +82,7 @@ export default function ShippingPage() {
   const [stations, setStations] = useState<StationStatus[] | null>(null);
   const [stationsError, setStationsError] = useState<string | null>(null);
   const [stationId, setStationId] = useState<string | null>(() => (typeof window === "undefined" ? null : loadStationId()));
+  useStationChosen(setStationId);
   const [picking, setPicking] = useState(false);
   const [code, setCode] = useState("");
   const [result, setResult] = useState<Result | null>(null);

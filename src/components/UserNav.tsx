@@ -22,8 +22,10 @@ export function useCurrentUser() {
 
 // A full page load rather than a client-side route change on purpose: it
 // guarantees every bit of in-memory client state from the signed-out
-// session is dropped.
+// session is dropped. A station PC set up for scanner sign-in goes back to
+// its scan screen, ready for the next person.
 export async function logout() {
-  await fetch("/api/auth", { method: "DELETE" });
-  window.location.href = "/login";
+  const res = await fetch("/api/auth", { method: "DELETE" });
+  const data = await res.json().catch(() => null);
+  window.location.href = data?.stationPc ? "/station-pc" : "/login";
 }

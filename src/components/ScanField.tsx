@@ -2,6 +2,8 @@
 
 import { Check, Keyboard, ScanBarcode } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { isStationSignInCode, normalizeSignInCode } from "@/lib/stationSignInCode";
+import { StationSignInDialog } from "./StationSignIn";
 import { cn } from "./ui/cn";
 
 // A field meant to be filled by the handheld scanner, not typed into.
@@ -23,6 +25,9 @@ import { cn } from "./ui/cn";
 //     faster than anyone types, or a whole barcode committed in one event.
 //   Detection is off entirely in manual typing mode: Android keyboards can
 //   commit a whole autocompleted word at once, which would look like a scan.
+// - A station PC's sign-in code (SIGNIN-...) scanned into any of these
+//   opens the PIN prompt (StationSignInDialog) instead of reaching the
+//   page, so people sign in at a station from whatever screen they're on.
 //
 // Can't be verified from a desktop browser against the real Wasp unit —
 // the ⌨ fallback is there in case its scan service delivers input in some
@@ -72,6 +77,7 @@ export function ScanField({
   const inputRef = useRef<HTMLInputElement>(null);
   const [typing, setTyping] = useState(false);
   const [focused, setFocused] = useState(false);
+  const [signInCode, setSignInCode] = useState<string | null>(null);
 
   // The timer fires after the component re-renders with the final
   // character, so it has to call the *latest* onScan — the one closing over
@@ -99,7 +105,14 @@ export function ScanField({
     clearTimeout(settleTimer.current ?? undefined);
     settleTimer.current = null;
     fastRun.current = 0;
-    handledValue.current = inputRef.current?.value ?? null;
+    const scanned = inputRef.current?.value ?? "";
+    if (isStationSignInCode(scanned)) {
+      handledValue.current = null;
+      onChange("");
+      setSignInCode(normalizeSignInCode(scanned));
+      return;
+    }
+    handledValue.current = scanned;
     onScanRef.current();
   }
 
@@ -244,6 +257,15 @@ export function ScanField({
               ? `${prompt}…`
               : (hint ?? "Scans submit on their own — no need to tap search.")}
         </p>
+      )}
+      {signInCode && (
+        <StationSignInDialog
+          code={signInCode}
+          onClose={() => {
+            setSignInCode(null);
+            inputRef.current?.focus();
+          }}
+        />
       )}
     </div>
   );

@@ -10,6 +10,7 @@ import {
   History,
   HandCoins,
   House,
+  KeyRound,
   LogOut,
   Menu,
   Monitor,
@@ -93,6 +94,8 @@ const NAV: NavEntry[] = [
   },
 ];
 const SETTINGS: NavItem = { href: "/settings", label: "Settings", icon: Settings, ownerOnly: true };
+// Scan-to-sign-in at a station PC, and your PIN (src/app/pin).
+const STATION_PIN: NavItem = { href: "/pin", label: "Station sign-in & PIN", icon: KeyRound };
 
 // The phone-width bottom bar fits four destinations plus "More" — the rest
 // live in the More sheet, under the same group headings as the desktop menus.
@@ -229,6 +232,7 @@ export function AppShell({
               <NavDropdown label={user.username} align="right" active={isActive(pathname, SETTINGS.href)}>
                 <div className="px-3 pb-1.5 pt-1 text-xs capitalize text-muted-foreground">{user.role}</div>
                 {isOwner && <DropdownLink item={SETTINGS} active={isActive(pathname, SETTINGS.href)} />}
+                <DropdownLink item={STATION_PIN} active={isActive(pathname, STATION_PIN.href)} />
                 <button
                   type="button"
                   onClick={logout}
@@ -369,6 +373,16 @@ export function AppShell({
             </div>
             {user && (
               <div className="mt-2 border-t border-border pt-2">
+                <Link
+                  href={STATION_PIN.href}
+                  className={cn(
+                    "flex h-11 items-center gap-3 rounded-lg px-3 text-base font-medium transition-colors",
+                    isActive(pathname, STATION_PIN.href) ? "bg-blue-50 text-primary" : "text-foreground hover:bg-muted"
+                  )}
+                >
+                  <STATION_PIN.icon className="size-5" aria-hidden />
+                  {STATION_PIN.label}
+                </Link>
                 <button
                   type="button"
                   onClick={logout}

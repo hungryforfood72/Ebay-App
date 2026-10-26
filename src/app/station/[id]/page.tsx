@@ -4,6 +4,7 @@ import { LabelPreview } from "@/components/labels/LabelPreview";
 import { isLabelKind, itemMetaLine } from "@/components/labels/labelMarkup";
 import { Alert } from "@/components/ui/Alert";
 import { AppShell } from "@/components/ui/AppShell";
+import { logout, useCurrentUser } from "@/components/UserNav";
 import { Badge, type BadgeTone } from "@/components/ui/Badge";
 import { Button, buttonClasses } from "@/components/ui/Button";
 import { Card, SectionHeader } from "@/components/ui/Card";
@@ -25,7 +26,7 @@ import {
   type PrintJobPayload,
   type StationStatus,
 } from "@/lib/warehouse/types";
-import { Copy, Download, Power, Printer, RefreshCw, RotateCcw, Scale, Usb } from "lucide-react";
+import { Copy, Download, LogOut, Power, Printer, QrCode, RefreshCw, RotateCcw, Scale, Usb } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useScale, type ScaleState } from "./useScale";
@@ -150,6 +151,11 @@ export default function StationPage() {
   const helperLabelsRef = useRef(false);
   const labelSizeRef = useRef<LabelSize>(DEFAULT_LABEL_SIZE);
   const stationLoadedAt = useRef(0);
+  // This PC shows a QR code for the next person after a log out
+  // (ScannerSignInCard; src/lib/stationSignIn.ts).
+  const [scannerSignIn, setScannerSignIn] = useState<{ thisStation: boolean; otherStation: string | null } | null>(null);
+  const scannerSignInRef = useRef(false);
+  const user = useCurrentUser();
 
   const weightOz = scale.connection === "connected" ? (scale.reading?.weightOz ?? null) : null;
   const stable = weightOz !== null && Boolean(scale.reading?.stable);
@@ -183,6 +189,10 @@ export default function StationPage() {
     if (status === 401) {
       halted.current = true;
       setServer("signed-out");
+      // Reloading signed out lands a PC set up for scanner sign-in on its
+      // QR screen (proxy.ts) for the next person; any other PC on the
+      // password form, which brings it back here.
+      if (scannerSignInRef.current) window.location.reload();
     } else if (status === 404) {
       halted.current = true;
       setServer("deleted");
@@ -262,8 +272,21 @@ export default function StationPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadStation(true);
     loadLog();
+    void deviceRequest("GET");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  async function deviceRequest(method: "GET" | "POST" | "DELETE") {
+    try {
+      const res = await fetch(`/api/stations/${id}/device`, { method, cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      scannerSignInRef.current = data.thisStation;
+      setScannerSignIn(data);
+    } catch {
+      // Card stays as it was; try again with its button.
+    }
+  }
 
   async function sendHeartbeat(key: string, reading: { weightOz: number | null; stable: boolean }) {
     const state = hb.current;
@@ -444,7 +467,24 @@ export default function StationPage() {
   }
 
   return (
-    <AppShell width="wide" title={station?.name ?? "Station"} subtitle="Leave this page open on the station PC.">
+    <AppShell
+      width="wide"
+      title={station?.name ?? "Station"}
+      subtitle="Leave this page open on the station PC."
+      actions={
+        scannerSignIn?.thisStation && user ? (
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-muted-foreground">
+              Signed in: <span className="font-semibold text-foreground">{user.username}</span>
+            </span>
+            <Button size="lg" variant="outline" onClick={logout}>
+              <LogOut className="size-5" aria-hidden />
+              Log out
+            </Button>
+          </div>
+        ) : undefined
+      }
+    >
       {server === "signed-out" && (
         <Alert tone="danger" title="Signed out" className="mb-4">
           This PC got signed out, so weights and labels stopped. Reload the page and sign in again.
@@ -590,6 +630,7 @@ export default function StationPage() {
           {station && (
             <PrinterCard station={station} onChange={patchStation} disabled={stopped} />
           )}
+          <ScannerSignInCard state={scannerSignIn} onChange={deviceRequest} />
           <SetupHelp stationId={id} />
         </div>
       </div>
@@ -1005,6 +1046,54 @@ function PrintLog({ log, onReprint }: { log: PrintJobRow[] | null; onReprint: (j
         </li>
       ))}
     </ul>
+  );
+}
+
+// Scanner sign-in on this PC (Cristian, 2026-10-26; src/lib/stationSignIn.ts):
+// on, Log out shows a QR code, and the next person scans it with their own
+// handheld and types their PIN there instead of a password here. Per PC
+// (a cookie), so his own PC opening this page isn't affected.
+function ScannerSignInCard({
+  state,
+  onChange,
+}: {
+  state: { thisStation: boolean; otherStation: string | null } | null;
+  onChange: (method: "POST" | "DELETE") => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  async function run(method: "POST" | "DELETE") {
+    setBusy(true);
+    try {
+      await onChange(method);
+    } finally {
+      setBusy(false);
+    }
+  }
+  if (!state) return null;
+  return (
+    <Card>
+      <SectionHeader
+        title="Scanner sign-in"
+        description={
+          state.thisStation
+            ? "On for this PC. Log out (top right) shows a QR code; the next person scans it with their scanner and types their PIN."
+            : "Let people sign in here by scanning a QR code with their own scanner and typing their PIN, instead of a password. Turn it on from the station PC itself."
+        }
+      />
+      {state.otherStation && !state.thisStation && (
+        <p className="mb-3 text-sm text-foreground">This PC is set up as {state.otherStation} now. Turning it on here moves it to this station.</p>
+      )}
+      {state.thisStation ? (
+        <Button variant="ghost" size="sm" onClick={() => run("DELETE")} disabled={busy}>
+          Turn off on this PC
+        </Button>
+      ) : (
+        <Button size="sm" onClick={() => run("POST")} disabled={busy}>
+          <QrCode className="size-4" aria-hidden />
+          Turn on for this PC
+        </Button>
+      )}
+    </Card>
   );
 }
 

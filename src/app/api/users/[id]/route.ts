@@ -34,3 +34,23 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
   await logActivity({ request }, { action: "user.delete", summary: `Deleted ${target.role} account "${target.username}"`, targetType: "user", targetId: target.username, before: { username: target.username, role: target.role } });
   return NextResponse.json({ ok: true });
 }
+
+// Owner: clear someone's station PIN (forgotten, or locked out). They set
+// a new one with their password the next time they scan a station.
+export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    requireOwner(request);
+  } catch (e) {
+    if (e instanceof AuthError) return NextResponse.json({ error: e.message }, { status: e.status });
+    throw e;
+  }
+
+  const { id } = await params;
+  const body = await request.json().catch(() => ({}));
+  if (body.clearPin !== true) return NextResponse.json({ error: "Send clearPin: true." }, { status: 400 });
+  const target = await prisma.user.findUnique({ where: { id }, select: { username: true } });
+  if (!target) return NextResponse.json({ error: "User not found." }, { status: 404 });
+  await prisma.user.update({ where: { id }, data: { pinHash: null, pinSalt: null, pinFailures: 0, pinLockedUntil: null } });
+  await logActivity({ request }, { action: "user.pin_reset", summary: `Reset ${target.username}'s station PIN`, targetType: "user", targetId: target.username });
+  return NextResponse.json({ ok: true });
+}

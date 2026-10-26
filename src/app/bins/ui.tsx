@@ -3,6 +3,7 @@
 import type { BinDetail, BinSummary, ItemRow } from "@/app/api/bins/shared";
 import BarcodeScanner from "@/components/BarcodeScanner";
 import { ScanField } from "@/components/ScanField";
+import { useStationChosen } from "@/components/StationSignIn";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Select } from "@/components/ui/Input";
@@ -240,6 +241,9 @@ export function PrintToStation({
   const [stationId, setStationId] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  useStationChosen((id) => {
+    if (stations?.some((s) => s.id === id)) setStationId(id);
+  });
 
   useEffect(() => {
     let cancelled = false;

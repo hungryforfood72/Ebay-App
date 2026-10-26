@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextFetchEvent, NextRequest } from "next/server";
 import { logRequest } from "@/lib/activityLog";
 import { AUTH_COOKIE_NAME, getUserForSessionToken } from "@/lib/auth";
+import { STATION_DEVICE_COOKIE } from "@/lib/stationSignIn";
 
 // Header names proxy.ts attaches after verifying a session — routes/pages
 // read these instead of re-deriving the session themselves. Always SET
@@ -24,6 +25,11 @@ const PUBLIC_PAGES = ["/about", "/privacy"];
 // newShareToken's (32 URL-safe characters). Exact patterns, not prefixes,
 // so no other page or API can ever be reached signed-out through them.
 const SHARE_PATHS = [/^\/s\/[A-Za-z0-9_-]{32}$/, /^\/api\/share\/[A-Za-z0-9_-]{32}$/];
+
+// A station PC's scan-to-sign-in screen (src/lib/stationSignIn.ts): the
+// page, and the one API it calls, which checks the PC's station_device
+// cookie itself. Exact paths.
+const STATION_PC_PATHS = ["/station-pc", "/api/station-pc/code"];
 
 // Per-user session gate for the whole site, since it holds inventory
 // photos, pricing, and (for the owner) financial data. Next.js 16 runs
@@ -90,8 +96,21 @@ export async function proxy(request: NextRequest, event: NextFetchEvent) {
       headers.delete(USERNAME_HEADER);
       return NextResponse.next({ request: { headers } });
     }
+    if (STATION_PC_PATHS.includes(pathname)) {
+      const headers = new Headers(request.headers);
+      headers.delete(USER_ID_HEADER);
+      headers.delete(USER_ROLE_HEADER);
+      headers.delete(USERNAME_HEADER);
+      return NextResponse.next({ request: { headers } });
+    }
     if (pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "Not signed in." }, { status: 401 });
+    }
+    // A station PC (it has the station_device cookie) goes to its scan
+    // sign-in screen instead of the password form. /login itself still
+    // works there, linked from that screen.
+    if (pathname.startsWith("/station") && request.cookies.has(STATION_DEVICE_COOKIE)) {
+      return NextResponse.redirect(new URL("/station-pc", request.url));
     }
     const loginUrl = new URL("/login", request.url);
     loginUrl.searchParams.set("next", pathname);

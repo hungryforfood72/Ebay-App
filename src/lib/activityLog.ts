@@ -96,6 +96,13 @@ const QUIET_REQUESTS: RegExp[] = [
   /^\/api\/items\/[^/]+\/category-lookup$/,
   /^\/api\/returns\/advice$/,
   /^\/api\/auth$/, // logged by the route itself, with the outcome
+  // Bodies with a password or PIN in them: each route logs its own row
+  // without it.
+  /^\/api\/users$/,
+  /^\/api\/station-signin\/(claim|pin)$/,
+  // Station PCs asking for a sign-in code / marking themselves a station.
+  /^\/api\/station-pc\/code$/,
+  /^\/api\/stations\/[^/]+\/device$/,
   // Shipping label uploads carry buyer addresses (page text, page images):
   // the upload route logs its own row without them.
   /^\/api\/ship\/labels\/match$/,

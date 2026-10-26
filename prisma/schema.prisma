@@ -58,8 +58,17 @@ model User {
   passwordSalt String
   role         UserRole
   createdAt    DateTime @default(now())
+  // A short number PIN for signing in at a station PC by scanning its
+  // screen with your own handheld (Cristian, 2026-10-26). Set by the person
+  // themselves (needs their password); the owner can only clear it. After
+  // PIN_MAX_FAILURES wrong tries in a row it's locked for a while.
+  pinHash        String?
+  pinSalt        String?
+  pinFailures    Int       @default(0)
+  pinLockedUntil DateTime?
 
-  sessions Session[]
+  sessions       Session[]
+  stationSignIns StationSignIn[]
 }
 
 // DB-backed, not a stateless signed cookie — Next.js 16 runs proxy.ts on
@@ -1595,9 +1604,39 @@ model Station {
   // "Print automatically" off on the station page: nothing is handed out to
   // print, to the page or the helper, until it's back on.
   printPaused   Boolean   @default(false)
+  // Secret in the station PC's "station_device" cookie, set the first time
+  // someone opens the station page there signed in. It's what lets that
+  // PC show the scan-to-sign-in screen (/station-pc) while no one is
+  // signed in. New key = every PC holding the old one has to be set up
+  // again with a password sign-in.
+  signInKey     String?
   createdAt    DateTime  @default(now())
 
   printJobs PrintJob[]
+  signIns   StationSignIn[]
+}
+
+// One code shown on a station PC's sign-in screen (Cristian, 2026-10-26):
+// someone scans it with their own handheld (already signed in as them),
+// types their PIN there, and the PC signs in as them on its next check.
+// Single use and short-lived; the PC asks for a fresh one before it runs
+// out. scannedBy = who scanned it (the PC says "type your PIN" and checks
+// faster); claimedBy = whose PIN went in; usedAt = the PC picked it up.
+model StationSignIn {
+  id          String    @id @default(uuid())
+  code        String    @unique
+  station     Station   @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  stationId   String
+  expiresAt   DateTime
+  scannedAt   DateTime?
+  scannedBy   String?
+  claimedBy   User?     @relation(fields: [claimedById], references: [id], onDelete: Cascade)
+  claimedById String?
+  claimedAt   DateTime?
+  usedAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([stationId])
 }
 
 // A label waiting to be printed at a station. payload shape depends on kind

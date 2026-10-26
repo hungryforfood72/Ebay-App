@@ -8,7 +8,7 @@ import { Field, Input, Select } from "@/components/ui/Input";
 import type { BoxSizeDto } from "@/lib/warehouse/boxSizes";
 import { printLabelBatch } from "@/lib/warehouse/labelPrint";
 import type { StationStatus } from "@/lib/warehouse/types";
-import { Check, ExternalLink, Pencil, Printer, Trash2, X } from "lucide-react";
+import { Check, ExternalLink, KeyRound, Pencil, Printer, Trash2, X } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState, type ReactNode } from "react";
 
@@ -132,7 +132,15 @@ function LabelChips({ entries, onRemove }: { entries: LabeledEntry[]; onRemove: 
   );
 }
 
-type AppUser = { id: string; username: string; role: "owner" | "employee"; createdAt: string };
+type AppUser = {
+  id: string;
+  username: string;
+  role: "owner" | "employee";
+  createdAt: string;
+  // Station PIN (scan-to-sign-in at station PCs): set, and locked out.
+  hasPin: boolean;
+  pinLocked: boolean;
+};
 
 // Owner-only (this whole page is — proxy.ts blocks /settings entirely for
 // employees). Employees get their own accounts here so stock/scan changes
@@ -180,6 +188,25 @@ function UsersManager() {
     }
   }
 
+  async function resetPin(user: AppUser) {
+    if (!confirm(`Reset ${user.username}'s station PIN? They set a new one (with their password) the next time they scan a station.`)) return;
+    setError(null);
+    try {
+      const res = await fetch(`/api/users/${user.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clearPin: true }),
+      });
+      if (!res.ok) {
+        const result = await res.json().catch(() => ({}));
+        throw new Error(result.error ?? "Failed to reset the PIN.");
+      }
+      load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong.");
+    }
+  }
+
   async function removeUser(user: AppUser) {
     if (!confirm(`Remove "${user.username}"? They'll be signed out immediately.`)) return;
     setError(null);
@@ -213,12 +240,29 @@ function UsersManager() {
                   {user.username}
                   <Badge tone={user.role === "owner" ? "primary" : "neutral"}>{user.role}</Badge>
                 </p>
-                <p className="text-xs text-muted-foreground">Since {new Date(user.createdAt).toLocaleDateString()}</p>
+                <p className="text-xs text-muted-foreground">
+                  Since {new Date(user.createdAt).toLocaleDateString()} ·{" "}
+                  {user.pinLocked ? (
+                    <span className="font-medium text-danger">PIN locked (too many wrong tries)</span>
+                  ) : user.hasPin ? (
+                    "Station PIN set"
+                  ) : (
+                    "No station PIN yet"
+                  )}
+                </p>
               </div>
-              <Button variant="danger-ghost" size="sm" onClick={() => removeUser(user)}>
-                <Trash2 className="size-4" aria-hidden />
-                Remove
-              </Button>
+              <div className="flex shrink-0 items-center gap-1">
+                {(user.hasPin || user.pinLocked) && (
+                  <Button variant="ghost" size="sm" onClick={() => resetPin(user)}>
+                    <KeyRound className="size-4" aria-hidden />
+                    Reset PIN
+                  </Button>
+                )}
+                <Button variant="danger-ghost" size="sm" onClick={() => removeUser(user)}>
+                  <Trash2 className="size-4" aria-hidden />
+                  Remove
+                </Button>
+              </div>
             </li>
           ))}
         </ul>

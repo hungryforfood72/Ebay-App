@@ -14,10 +14,16 @@ export async function GET(request: Request) {
     throw e;
   }
 
-  const users = await prisma.user.findMany({
-    select: { id: true, username: true, role: true, createdAt: true },
+  const rows = await prisma.user.findMany({
+    select: { id: true, username: true, role: true, createdAt: true, pinHash: true, pinLockedUntil: true },
     orderBy: { createdAt: "asc" },
   });
+  // The PIN itself never leaves the server: just whether there is one.
+  const users = rows.map(({ pinHash, pinLockedUntil, ...u }) => ({
+    ...u,
+    hasPin: Boolean(pinHash),
+    pinLocked: Boolean(pinLockedUntil && pinLockedUntil.getTime() > Date.now()),
+  }));
   return NextResponse.json({ users });
 }
 

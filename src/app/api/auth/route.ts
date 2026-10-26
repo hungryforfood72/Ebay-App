@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { AUTH_COOKIE_NAME, createSession, deleteSession, getRequestUser, getUserForSessionToken, verifyPassword } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { logActivity } from "@/lib/activityLog";
+import { STATION_DEVICE_COOKIE } from "@/lib/stationSignIn";
 
 const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60; // 30 days — matches createSession's own expiry
 
@@ -72,7 +73,10 @@ export async function DELETE(request: Request) {
     if (who) await logActivity({ request, user: who }, { action: "auth.logout", summary: `${who.username} signed out`, targetType: "user", targetId: who.username });
   }
 
-  const res = NextResponse.json({ ok: true });
+  // A station PC set up for scanner sign-in goes to its scan screen next
+  // (logout() in UserNav.tsx), not the password form.
+  const stationPc = request.headers.get("cookie")?.includes(`${STATION_DEVICE_COOKIE}=`) ?? false;
+  const res = NextResponse.json({ ok: true, stationPc });
   res.cookies.delete(AUTH_COOKIE_NAME);
   return res;
 }
