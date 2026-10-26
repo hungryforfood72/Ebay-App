@@ -1,6 +1,7 @@
 import { after } from "next/server";
 import { descriptionBodyHtml } from "./listingDescription";
 import {
+  endFixedPriceItem,
   getEbayEnvironment,
   getLiveAvailableQuantity,
   reviseFixedPriceItemQuantity,
@@ -589,6 +590,13 @@ async function pushSaleToEbay(saleId: string, result: ShopifySyncResult): Promis
       const newAvailable = Math.max(0, live - sale.quantity);
       if (item.ebayOfferId) {
         await updateOfferQuantity(item.ebayOfferId, { sku: item.sku, soldQuantity: item.soldQuantity }, newAvailable);
+      } else if (newAvailable === 0) {
+        // An older listing (Trading API) can't be revised to 0 available
+        // ("The quantity must be a valid number greater than 0"), so the
+        // last one selling on Shopify ends it instead (Cristian, 2026-10-26:
+        // Liquid I.V. sold on Shopify #1225 and stayed buyable on eBay).
+        await endFixedPriceItem(item.ebayListingId!);
+        await prisma.item.update({ where: { id: item.id }, data: { listingEndedAt: new Date() } });
       } else {
         await reviseFixedPriceItemQuantity(item.ebayListingId!, newAvailable);
       }
