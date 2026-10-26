@@ -29,7 +29,7 @@ const SHARE_PATHS = [/^\/s\/[A-Za-z0-9_-]{32}$/, /^\/api\/share\/[A-Za-z0-9_-]{3
 // A station PC's scan-to-sign-in screen (src/lib/stationSignIn.ts): the
 // page, and the one API it calls, which checks the PC's station_device
 // cookie itself. Exact paths.
-const STATION_PC_PATHS = ["/station-pc", "/api/station-pc/code"];
+const STATION_PC_PATHS = ["/station-pc", "/api/station-pc/code", "/api/station-pc/setup"];
 
 // Per-user session gate for the whole site, since it holds inventory
 // photos, pricing, and (for the owner) financial data. Next.js 16 runs

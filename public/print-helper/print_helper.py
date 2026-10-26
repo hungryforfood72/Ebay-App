@@ -76,7 +76,7 @@ try:
 except Exception:
     hid = None
 
-VERSION = "2026-10-25.3"
+VERSION = "2026-10-26.1"
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE / "config.json"
 # The code this process is running, as it was when it started. Updates are
@@ -577,6 +577,28 @@ def send_scale(scale: Scale, stations: list[Station]):
 # ---------------------------------------------------------------------------
 
 
+def key_rejected(e: BaseException) -> bool:
+    """The app said this station's key isn't valid (the station was deleted,
+    or set up again with a new key)."""
+    return isinstance(e, urllib.error.HTTPError) and e.code == 401
+
+
+def forget_station(station_id: str):
+    """Takes a station out of config.json, so a station with a dead key
+    doesn't stop the helper from running for the ones that work (Cristian,
+    2026-10-26: a reinstall on the Shipping PC failed on an old station
+    still listed there, and the helper didn't start at all)."""
+    try:
+        cfg = json.loads(CONFIG.read_text(encoding="utf-8-sig"))
+        stations = cfg.get("stations") or []
+        if isinstance(stations, dict):
+            stations = [stations]
+        cfg["stations"] = [x for x in stations if x.get("station_id") != station_id]
+        CONFIG.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    except Exception:
+        log.exception("Couldn't update config.json")
+
+
 def load_config() -> tuple[str, list[dict]]:
     cfg = json.loads(CONFIG.read_text(encoding="utf-8-sig"))
     stations = cfg.get("stations") or []
@@ -642,10 +664,21 @@ def check() -> int:
         if not configs:
             raise RuntimeError("config.json has no stations.")
         printers = list_printers()
+        good = 0
         for c in configs:
             st = Station(base, c)
-            st.checkin(printers)
+            try:
+                st.checkin(printers)
+            except Exception as e:
+                if not key_rejected(e):
+                    raise
+                forget_station(st.id)
+                print(f"{st.name}: its key isn't valid anymore (station deleted or set up again), so this PC stops printing for it.")
+                continue
+            good += 1
             print(f"{st.name}: checked in OK as {VERSION}. Printers: {', '.join(printers) or '(none)'}")
+        if not good:
+            raise RuntimeError("None of the stations in config.json are valid anymore. Download the installer from the station page again.")
         print(f"Scale setting in Chrome: {scale_policy(base)}")
         return 0
     except Exception:
@@ -709,6 +742,11 @@ def keep_checking_in(stations: list[Station]):
                 st.checkin(printers)
                 errors.pop(st.id, None)
             except Exception as e:
+                if key_rejected(e) and st in stations:
+                    log.warning("%s: key isn't valid anymore, removing it from this PC", st.name)
+                    forget_station(st.id)
+                    stations.remove(st)
+                    continue
                 # The main loop's claim hits the same problem and logs it;
                 # here only log a check-in problem once.
                 text = f"{type(e).__name__}: {e}"
@@ -770,8 +808,11 @@ def run():
                 if text != st.last_error:
                     log.warning("%s: %s", st.name, text)
                     st.last_error = text
-                if isinstance(e, urllib.error.HTTPError) and e.code == 401:
-                    time.sleep(30)
+                if key_rejected(e):
+                    log.warning("%s: key isn't valid anymore, removing it from this PC", st.name)
+                    forget_station(st.id)
+                    stations.remove(st)
+                    break
         if time.time() - last_update >= UPDATE_SECONDS:
             last_update = time.time()
             if update_self(base):

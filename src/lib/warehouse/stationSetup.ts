@@ -12,8 +12,15 @@ import { DYMO_M25_NEW_PRODUCT_ID, DYMO_M25_PRODUCT_ID, DYMO_VENDOR_ID } from "./
 // clicking the page first.
 export const STATION_PROFILE_DIR = "C:\\ChromeStation";
 
-export function stationShortcutArgs(origin: string, stationId: string): string {
-  return `--user-data-dir=${STATION_PROFILE_DIR} --kiosk-printing --autoplay-policy=no-user-gesture-required --app=${origin}/station/${stationId}`;
+// signInKey (from the installer): the shortcut opens through
+// /api/station-pc/setup, which sets this PC up for scanner sign-in
+// (src/lib/stationSignIn.ts) and then shows the station page, or its QR
+// screen when no one is signed in. No password needed on a station PC.
+export function stationShortcutArgs(origin: string, stationId: string, signInKey?: string): string {
+  const url = signInKey
+    ? `${origin}/api/station-pc/setup?d=${encodeURIComponent(`${stationId}.${signInKey}`)}`
+    : `${origin}/station/${stationId}`;
+  return `--user-data-dir=${STATION_PROFILE_DIR} --kiosk-printing --autoplay-policy=no-user-gesture-required --app=${url}`;
 }
 
 export const DEFAULT_CHROME_PATH = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";

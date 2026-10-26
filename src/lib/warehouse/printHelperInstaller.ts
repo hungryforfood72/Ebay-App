@@ -55,6 +55,9 @@ export function printHelperInstaller(args: {
   token: string;
   // A PC that opens the station page (not the Wi-Fi slip printer).
   browserStation: boolean;
+  // Station.signInKey: the desktop shortcut sets the PC up for scanner
+  // sign-in with it (stationShortcutArgs).
+  signInKey?: string;
 }): string {
   const [printPolicy, hidPolicy] = stationChromePolicies(args.baseUrl);
   const encodedPolicy = Buffer.from(policyScript(args.baseUrl), "utf16le").toString("base64");
@@ -71,7 +74,7 @@ $Dir = Join-Path $env:LOCALAPPDATA 'PrintHelper'
 $TaskName = 'Print Helper'
 $BrowserStation = ${args.browserStation ? "$true" : "$false"}
 $ShortcutName = ${psQuote(shortcutName)}
-$ShortcutArgs = ${psQuote(stationShortcutArgs(args.baseUrl, args.stationId))}
+$ShortcutArgs = ${psQuote(stationShortcutArgs(args.baseUrl, args.stationId, args.signInKey))}
 $PolicyScript = ${psQuote(encodedPolicy)}
 $WantPrintPolicy = ${printPolicy.value}
 $WantHidPolicy = ${psQuote(String(hidPolicy.value))}

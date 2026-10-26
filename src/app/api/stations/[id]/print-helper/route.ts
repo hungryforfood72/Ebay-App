@@ -1,4 +1,5 @@
 import { requireUser } from "@/lib/auth";
+import { ensureSignInKey } from "@/lib/stationSignIn";
 import { helperTokenFor } from "@/lib/warehouse/printHelper";
 import { printHelperInstaller } from "@/lib/warehouse/printHelperInstaller";
 import { errorResponse } from "@/lib/warehouse/stations";
@@ -12,7 +13,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     requireUser(request);
     const { id } = await params;
     const { token, name, slipPrinter } = await helperTokenFor(id);
+    // Its desktop shortcut sets the PC up for scanner sign-in.
+    const signInKey = slipPrinter ? undefined : ((await ensureSignInKey(id)) ?? undefined);
     const body = printHelperInstaller({
+      signInKey,
       baseUrl: request.nextUrl.origin,
       stationId: id,
       stationName: name,

@@ -53,7 +53,12 @@ export function readCookie(request: Request, name: string): string | null {
 // The station this PC is set up as, or null (no cookie, a stale key, or
 // the station was deleted).
 export async function stationForDevice(request: Request): Promise<{ id: string; name: string } | null> {
-  const value = readCookie(request, STATION_DEVICE_COOKIE);
+  return stationForDeviceValue(readCookie(request, STATION_DEVICE_COOKIE));
+}
+
+// Same check for a "<stationId>.<key>" value from anywhere (the cookie, or
+// the installer's shortcut URL).
+export async function stationForDeviceValue(value: string | null): Promise<{ id: string; name: string } | null> {
   if (!value) return null;
   const dot = value.indexOf(".");
   if (dot <= 0) return null;
