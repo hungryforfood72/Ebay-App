@@ -417,7 +417,8 @@ async function getOpenLines(fresh = false) {
 // Matching order lines to Items
 // ---------------------------------------------------------------------------
 
-const ITEM_SELECT = {
+// Shared with shelf pulls (pulls.ts).
+export const ITEM_SELECT = {
   id: true,
   sku: true,
   ebaySku: true,
@@ -437,7 +438,7 @@ const ITEM_SELECT = {
   shelfLocation: true,
 } as const;
 
-type MatchedItem = {
+export type MatchedItem = {
   id: string;
   sku: string;
   ebaySku: string | null;
@@ -541,13 +542,13 @@ export function monthYear(d: Date | null | undefined): string | null {
   return `${String(d.getUTCMonth() + 1).padStart(2, "0")}/${d.getUTCFullYear()}`;
 }
 
-function itemTitle(item: MatchedItem): string {
+export function itemTitle(item: MatchedItem): string {
   return itemDisplayTitle(item);
 }
 
 // Every UPC that identifies this listing: its own, or for a bundle, its
 // parts' (any part in hand means the bundle is in hand).
-function itemUpcKeys(item: { upc: string | null; isBundle: boolean; bundleComponents: unknown }): string[] {
+export function itemUpcKeys(item: { upc: string | null; isBundle: boolean; bundleComponents: unknown }): string[] {
   const codes = item.isBundle ? parseBundleComponentUnits(item.bundleComponents).map((c) => c.upc) : [item.upc];
   return [...new Set(codes.flatMap((c) => upcMatchKeys(c)))];
 }
@@ -556,7 +557,7 @@ function hasLabel(item: { sku: string }): boolean {
   return classifyScan(item.sku) === "item";
 }
 
-function verifyFor(item: MatchedItem): VerifyBy {
+export function verifyFor(item: MatchedItem): VerifyBy {
   if (hasLabel(item)) return "label";
   return itemUpcKeys(item).length > 0 ? "upc" : "tap";
 }
@@ -565,7 +566,7 @@ export function lineKey(channel: string, lineItemId: string): string {
   return `${channel}:${lineItemId}`;
 }
 
-function packText(item: { isBundle: boolean; bundleComponents: unknown; isMultipack: boolean; packSize: number | null }): string {
+export function packText(item: { isBundle: boolean; bundleComponents: unknown; isMultipack: boolean; packSize: number | null }): string {
   if (item.isBundle) {
     const n = Array.isArray(item.bundleComponents) ? item.bundleComponents.length : 0;
     return n > 0 ? `Bundle: ${n} different ${n === 1 ? "item" : "items"}` : "Bundle";

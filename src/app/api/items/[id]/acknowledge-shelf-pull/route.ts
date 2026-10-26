@@ -1,11 +1,13 @@
 import { AuthError, getRequestUser, requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { removeUnitsBestEffort } from "@/lib/warehouse/bins";
+import { finishPull } from "@/lib/warehouse/pulls";
 import { NextRequest, NextResponse } from "next/server";
 
-// Either role can acknowledge — whoever physically pulled the item off the
-// shelf, owner or employee, same as walk-up sales and stock adjustments.
-// recordedBy comes from the session, not the request body.
+// Finishes a shelf pull without scanning what's left. Since 2026-10-26
+// pulls are scanned unit by unit on the Pull page (src/lib/warehouse/pulls.ts);
+// this is its "Can't find the rest" ({ notFound: true }): the pull is done
+// with what was found and the bins stop counting the rest. Either role,
+// whoever is doing the pull. recordedBy comes from the session.
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
     requireUser(request);
@@ -15,26 +17,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   }
 
   const { id } = await params;
-  const item = await prisma.item.findUnique({ where: { id } });
-  if (!item) {
-    return NextResponse.json({ error: "Item not found." }, { status: 404 });
-  }
-  if (item.status !== "expired") {
-    return NextResponse.json({ error: "This item isn't marked expired." }, { status: 400 });
-  }
-  if (item.shelfPullAcknowledgedAt) {
-    return NextResponse.json(item);
-  }
-
+  const body = await request.json().catch(() => ({}));
   const username = getRequestUser(request)?.username ?? null;
-  const updated = await prisma.item.update({
-    where: { id },
-    data: { shelfPullAcknowledgedAt: new Date(), shelfPullAcknowledgedBy: username },
-  });
-  // Warehouse mode: everything still in a bin for this listing came out
-  // with the pull, so the bins stop counting it (and an emptied bin shows
-  // up for reuse). After the pull is recorded, and never failing it if
-  // the bins are busy. Nothing to do for items with no bins.
-  await removeUnitsBestEffort({ itemId: id, units: "all", kind: "pull", by: username, note: "Pulled (expired)" });
-  return NextResponse.json(updated);
+  const result = await finishPull(id, username, body?.notFound === true);
+  if ("error" in result) return NextResponse.json({ error: result.error }, { status: result.status });
+  return NextResponse.json(await prisma.item.findUnique({ where: { id } }));
 }

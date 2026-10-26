@@ -198,12 +198,6 @@ export default function DashboardPage() {
     );
   }
 
-  function removeExpiredNeedingPull(id: string) {
-    setData((prev) =>
-      prev ? { ...prev, expiredNeedingPull: prev.expiredNeedingPull.filter((i) => i.id !== id) } : prev
-    );
-  }
-
   if (!data) {
     return (
       <AppShell title="Dashboard" subtitle="Sticker Peak eBay tool — overview">
@@ -308,12 +302,17 @@ export default function DashboardPage() {
             <p>
               These listings came off eBay: most ahead of their expiration date (per the removal buffer in Settings,
               to stay compliant with eBay&apos;s food policy, items must be delivered before they expire), and any
-              marked Rx only because eBay doesn&apos;t allow prescription devices. Pull the physical stock off the
-              shelf or out of its bins, then mark it done below.
+              marked Rx only because eBay doesn&apos;t allow prescription devices. Pull them on the Pull page: it
+              shows where each one is and you scan every unit as it comes off the shelf.
             </p>
+            {expiredNeedingPull.some((i) => !i.expirySplit) && (
+              <Link href="/pulls" className={cn(buttonClasses({ size: "sm" }), "mt-3 w-fit")}>
+                Start pulling
+              </Link>
+            )}
             <div className="mt-3 flex flex-col gap-2">
               {expiredNeedingPull.map((item) => (
-                <ShelfPullRow key={item.id} item={item} onAcknowledged={() => removeExpiredNeedingPull(item.id)} />
+                <ShelfPullRow key={item.id} item={item} />
               ))}
             </div>
           </Alert>
@@ -417,32 +416,9 @@ export default function DashboardPage() {
   );
 }
 
-function ShelfPullRow({
-  item,
-  onAcknowledged,
-}: {
-  item: ExpiredNeedingPullItem;
-  onAcknowledged: () => void;
-}) {
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function acknowledge() {
-    setSaving(true);
-    setError(null);
-    try {
-      const res = await fetch(`/api/items/${item.id}/acknowledge-shelf-pull`, { method: "POST" });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error ?? "Failed to acknowledge.");
-      }
-      onAcknowledged();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Something went wrong.");
-      setSaving(false);
-    }
-  }
-
+// Pulls are scanned on the Pull page now (Cristian, 2026-10-26), so a row
+// only says what and where; split listings still Relist from here.
+function ShelfPullRow({ item }: { item: ExpiredNeedingPullItem }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-200 bg-surface p-3">
       <div className="min-w-0">
@@ -488,16 +464,11 @@ function ShelfPullRow({
             </ul>
           </div>
         )}
-        {error && <p className="mt-1 text-xs text-danger">{error}</p>}
       </div>
-      {item.expirySplit ? (
+      {item.expirySplit && (
         <Link href={`/scan?relist=${item.id}`} className={cn(buttonClasses({ size: "sm" }), "shrink-0")}>
           {item.expirySplit.relisted?.good ? "Continue relist" : "Relist"}
         </Link>
-      ) : (
-        <Button size="sm" onClick={acknowledge} disabled={saving} className="shrink-0">
-          {saving ? "Saving…" : "Mark as pulled"}
-        </Button>
       )}
     </div>
   );

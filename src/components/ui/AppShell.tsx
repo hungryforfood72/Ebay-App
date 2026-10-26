@@ -16,6 +16,7 @@ import {
   Monitor,
   Package,
   PackageCheck,
+  PackageMinus,
   PackageX,
   ScanBarcode,
   Settings,
@@ -64,6 +65,7 @@ const NAV: NavEntry[] = [
       { href: "/sort", label: "Sort", icon: SplitSquareHorizontal, warehouseOnly: true },
       { href: "/bins", label: "Bins", icon: Archive, warehouseOnly: true },
       { href: "/ship", label: "Pick orders", icon: PackageCheck, warehouseOnly: true },
+      { href: "/pulls", label: "Pull from shelves", icon: PackageMinus, warehouseOnly: true },
       // Scan a box's pick slip, its shipping label prints.
       { href: "/shipping", label: "Shipping", icon: Tag, warehouseOnly: true },
       // Epic Steals local delivery runs; any signed-in user can drive.
