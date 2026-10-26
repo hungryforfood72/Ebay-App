@@ -74,6 +74,12 @@ export function StationSignOutButton({ stationId, stationName }: { stationId: st
         window.location.reload();
         return;
       }
+      // Nobody was signed in there as you through the app (or it was by a
+      // password before stations were tracked): say so instead of looking
+      // like it worked.
+      if (data.signedOut === 0) {
+        alert(`You weren't signed in on the ${stationName} PC, so nothing changed there. If it still shows someone signed in, use Log out on the PC. This scanner stopped printing there.`);
+      }
       forgetHandheldStation(stationId);
     } catch {
       alert("Couldn't reach the app. Check the Wi-Fi.");
