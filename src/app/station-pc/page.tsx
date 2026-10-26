@@ -1,6 +1,6 @@
 "use client";
 
-import { QrCode, ScreenBarcode } from "@/components/ScreenCodes";
+import { QrCode } from "@/components/ScreenCodes";
 import { LoaderCircle, Monitor, ScanBarcode, Smartphone } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
@@ -125,8 +125,7 @@ export default function StationPcSignIn() {
       ) : shown ? (
         <>
           <div className="rounded-2xl border border-border bg-white p-5 shadow-sm">
-            <QrCode text={shown.code} size={260} className="mx-auto block" />
-            <ScreenBarcode text={shown.code} height={60} moduleWidth={2} className="mx-auto mt-3 block" />
+            <QrCode text={shown.code} size={300} className="mx-auto block" />
             <p className="mt-2 font-mono text-lg tracking-widest text-zinc-700">{shown.code}</p>
           </div>
           {scannedBy ? (

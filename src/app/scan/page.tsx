@@ -7,7 +7,7 @@ import { ManifestSearch, type ManifestSearchResult } from "@/components/Manifest
 import { PackSuggestionCard } from "@/components/PackSuggestionCard";
 import { PullBanner } from "@/components/PullBanner";
 import { ScanField } from "@/components/ScanField";
-import { StationOnline, StationPicker, useChosenStation } from "@/components/StationPicker";
+import { ScanStationCard, StationOnline, useChosenStation } from "@/components/StationPicker";
 import { StationSignOutButton } from "@/components/StationSignIn";
 import { Alert } from "@/components/ui/Alert";
 import { AppShell } from "@/components/ui/AppShell";
@@ -357,7 +357,6 @@ function ScanPageInner() {
   const [modeUnknown, setModeUnknown] = useState(false);
   const stationChoice = useChosenStation(warehouseMode);
   const station = stationChoice.station;
-  const [pickingStation, setPickingStation] = useState(false);
   const [boxScan, setBoxScan] = useState("");
   // The item's own weight off the scale, before the box is added. null =
   // the weight wasn't taken from the scale (typed in, or not yet).
@@ -965,7 +964,7 @@ function ScanPageInner() {
   async function reprintLabels(copies?: number) {
     if (!lastSaved) return;
     if (!station) {
-      setPickingStation(true);
+      setReprintMessage("Scan your station's QR code first, so the labels print there.");
       return;
     }
     setReprinting(true);
@@ -1088,8 +1087,8 @@ function ScanPageInner() {
     // shelf location.
     if (warehouseMode) {
       if (!station) {
-        setPickingStation(true);
-        return setMessage("Pick this handheld's station first, so the labels print in the right place.");
+        window.scrollTo({ top: 0, behavior: "smooth" });
+        return setMessage("Scan your station's QR code first, so the labels print in the right place.");
       }
     } else if (!shelfLocation.trim()) return setMessage("Shelf location is required.");
 
@@ -1662,37 +1661,19 @@ function ScanPageInner() {
         )}
 
         {warehouseMode &&
-          (pickingStation || stationChoice.needsStation || stationChoice.error ? (
-            <StationPicker
-              stations={stationChoice.stations}
-              selectedId={station?.id ?? null}
-              error={stationChoice.error}
-              onReload={stationChoice.reload}
-              onPick={(s) => {
-                stationChoice.choose(s.id);
-                setPickingStation(false);
-                setMessage(null);
-              }}
-              onCancel={station ? () => setPickingStation(false) : undefined}
-            />
+          // No picking from a list: a station is set by scanning its QR
+          // code (Cristian, 2026-10-26).
+          (stationChoice.needsStation || stationChoice.error ? (
+            <ScanStationCard error={stationChoice.error} onReload={stationChoice.reload} />
           ) : (
             station && (
               <div className="flex items-center justify-between gap-2 rounded-xl border border-border bg-surface px-3 py-2 text-sm shadow-sm">
                 <span className="flex min-w-0 items-center gap-2">
                   <span className="hidden text-muted-foreground sm:inline">Station</span>
                   <span className="truncate font-medium text-foreground">{station.name}</span>
-                  <StationOnline online={liveWeight.status?.scaleOnline ?? station.online} />
+                  <StationOnline online={Boolean(liveWeight.status?.scaleOnline) || station.online || station.helperOnline} />
                 </span>
-                <span className="flex shrink-0 items-center gap-3">
-                  <button
-                    type="button"
-                    className="shrink-0 text-sm font-medium text-primary hover:underline"
-                    onClick={() => setPickingStation(true)}
-                  >
-                    Change
-                  </button>
-                  <StationSignOutButton stationId={station.id} stationName={station.name} />
-                </span>
+                <StationSignOutButton stationId={station.id} stationName={station.name} />
               </div>
             )
           ))}
@@ -2269,15 +2250,8 @@ function ScanPageInner() {
                 }}
               />
             ) : (
-              <Alert
-                tone="warning"
-                action={
-                  <Button variant="outline" size="sm" onClick={() => setPickingStation(true)}>
-                    Pick a station
-                  </Button>
-                }
-              >
-                Pick this handheld&apos;s station to get the live weight. Or type it in below.
+              <Alert tone="warning">
+                Scan your station&apos;s QR code (top of this page) to get the live weight. Or type it in below.
               </Alert>
             )}
 

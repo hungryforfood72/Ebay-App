@@ -7,7 +7,8 @@ import type { StationStatus } from "@/lib/warehouse/types";
 import { Check, LoaderCircle, Monitor } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { useStationChosen, useStationLeft } from "./StationSignIn";
+import { ScanField } from "./ScanField";
+import { rememberHandheldStation, useStationChosen, useStationLeft } from "./StationSignIn";
 
 // Which listing station (PC with the scale and label printer) this handheld
 // works at. Picked once and remembered on the device, since a handheld
@@ -68,6 +69,26 @@ export function useChosenStation(enabled: boolean) {
   // A remembered station that's since been deleted counts as none.
   const station = stations?.find((s) => s.id === stationId) ?? null;
 
+  // Nothing remembered: this browser may be a station PC itself, or the
+  // person is signed in at one right now. Then that's the station, with no
+  // scan needed (GET /api/stations/mine).
+  const [askedMine, setAskedMine] = useState(false);
+  useEffect(() => {
+    if (!enabled || stations == null || station != null || askedMine) return;
+    let cancelled = false;
+    fetch("/api/stations/mine")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { stationId: string | null } | null) => {
+        if (cancelled) return;
+        setAskedMine(true);
+        if (d?.stationId && stations.some((s) => s.id === d.stationId)) rememberHandheldStation(d.stationId);
+      })
+      .catch(() => !cancelled && setAskedMine(true));
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, stations, station, askedMine]);
+
   function choose(id: string | null) {
     saveStationId(id);
     setStationId(id);
@@ -87,8 +108,9 @@ export function useChosenStation(enabled: boolean) {
   return {
     station,
     stations,
-    // Loaded and this device has no (existing) station picked.
-    needsStation: enabled && stations != null && station == null,
+    // Loaded and this device has no (existing) station, and it isn't signed
+    // in at one either.
+    needsStation: enabled && stations != null && station == null && askedMine,
     error,
     choose,
     reload: () => setReloadKey((k) => k + 1),
@@ -157,7 +179,7 @@ export function StationPicker({
                 >
                   <Monitor className="size-5 shrink-0" aria-hidden />
                   <span className="min-w-0 flex-1 truncate text-base font-medium">{s.name}</span>
-                  <StationOnline online={s.online} />
+                  <StationOnline online={s.online || s.helperOnline} />
                   {selected && <Check className="size-5 shrink-0" aria-hidden />}
                 </button>
               </li>
@@ -185,5 +207,53 @@ export function StationOnline({ online }: { online: boolean }) {
       <span className={cn("size-2 rounded-full", online ? "bg-green-500" : "bg-zinc-300")} aria-hidden />
       {online ? "Online" : "Offline"}
     </span>
+  );
+}
+
+// Where a handheld's station comes from now (Cristian, 2026-10-26): no
+// list to pick from, only scanning the QR code on a station PC's screen
+// (sign in there with your PIN). Any scan box takes it; this one is here so
+// there's an obvious place to scan.
+export function ScanStationCard({
+  description = "The weight comes from its scale and your labels print there.",
+  error,
+  onReload,
+}: {
+  description?: string;
+  error?: string | null;
+  onReload?: () => void;
+}) {
+  const [code, setCode] = useState("");
+  const [note, setNote] = useState<string | null>(null);
+  return (
+    <Card>
+      <SectionHeader title="Scan your station's QR code" description={description} />
+      {error ? (
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-danger">{error}</p>
+          {onReload && (
+            <Button variant="outline" onClick={onReload}>
+              Try again
+            </Button>
+          )}
+        </div>
+      ) : (
+        <>
+          <ScanField
+            id="station-qr-scan"
+            label="Station QR code"
+            prompt="Scan the QR code on the station PC's screen"
+            value={code}
+            onChange={(v) => {
+              setCode(v);
+              setNote(null);
+            }}
+            onScan={() => setNote("That's not a station code. Scan the QR code on the station PC's screen.")}
+            hint="Signed in at the PC already? Press Log out there to get the code."
+          />
+          {note && <p className="mt-2 text-sm font-medium text-danger">{note}</p>}
+        </>
+      )}
+    </Card>
   );
 }

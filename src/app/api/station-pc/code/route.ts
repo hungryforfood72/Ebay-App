@@ -65,6 +65,21 @@ export async function GET(request: Request) {
     }
   }
 
+  // One station at a time: their sign-ins on other station PCs end, and
+  // those PCs go back to their QR screens (Cristian, 2026-10-26).
+  const elsewhere = await prisma.session.findMany({
+    where: { userId: user.id, stationId: { not: null, notIn: [station.id] } },
+    select: { token: true, stationId: true },
+  });
+  if (elsewhere.length) {
+    await prisma.session.deleteMany({ where: { token: { in: elsewhere.map((s) => s.token) } } });
+    const names = await prisma.station.findMany({ where: { id: { in: elsewhere.map((s) => s.stationId!) } }, select: { name: true } });
+    await logActivity(
+      { request, user },
+      { action: "auth.logout", summary: `${user.username} signed out of ${names.map((n) => n.name).join(", ")} (moved to ${station.name})`, targetType: "user", targetId: user.username }
+    );
+  }
+
   const { token, expiresAt } = await createSession(user.id, STATION_SESSION_MS, station.id);
   await logActivity(
     { request, user },

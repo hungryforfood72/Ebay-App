@@ -2,11 +2,10 @@
 
 import { ScanField } from "@/components/ScanField";
 import { ShippingLabelsCard } from "@/components/ShippingLabelsCard";
-import { StationOnline, StationPicker } from "@/components/StationPicker";
+import { ScanStationCard, StationOnline } from "@/components/StationPicker";
 import { StationSignOutButton, useStationChosen, useStationLeft } from "@/components/StationSignIn";
 import { Alert } from "@/components/ui/Alert";
 import { AppShell } from "@/components/ui/AppShell";
-import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { cn } from "@/components/ui/cn";
 import { normalizeCode } from "@/lib/warehouse/codes";
@@ -17,10 +16,9 @@ import { CircleCheck, CircleX, Info, Monitor, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 // Shipping (Cristian, 2026-10-21): the shipping station's own page, split
-// off Pick orders. Whoever ships connects their scanner here by picking
-// the station whose printer the labels come out of (remembered on this
-// device, separately from the listing station a handheld uses on the List
-// page; the packing station until one is picked). Then: upload eBay's bulk
+// off Pick orders. Labels print at the station this device signed in at
+// by scanning its QR code (Cristian, 2026-10-26: no picking from a list),
+// or this PC's own station; the packing station until then. Then: upload eBay's bulk
 // label PDF, and scan each box's pick slip: that order's label prints at
 // the station right away (warehouse/shippingLabels.ts).
 
@@ -84,7 +82,6 @@ export default function ShippingPage() {
   const [stationId, setStationId] = useState<string | null>(() => (typeof window === "undefined" ? null : loadStationId()));
   useStationChosen(setStationId);
   useStationLeft((id) => setStationId((current) => (current === id ? null : current)));
-  const [picking, setPicking] = useState(false);
   const [code, setCode] = useState("");
   const [result, setResult] = useState<Result | null>(null);
   const [busy, setBusy] = useState(false);
@@ -126,9 +123,31 @@ export default function ShippingPage() {
     return () => clearInterval(timer);
   }, [loadStations, loadLabels]);
 
-  // The picked station, else the one marked for packing slips.
+  // The scanned-into station, else the one marked for packing slips.
   const picked = stations?.find((s) => s.id === stationId) ?? null;
   const station = picked ?? stations?.find((s) => s.packingSlips) ?? null;
+
+  // Nothing remembered: this browser may be a station PC itself, or the
+  // person is signed in at one (GET /api/stations/mine).
+  const [askedMine, setAskedMine] = useState(false);
+  useEffect(() => {
+    if (stations == null || picked != null || askedMine) return;
+    let cancelled = false;
+    fetch("/api/stations/mine")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { stationId: string | null } | null) => {
+        if (cancelled) return;
+        setAskedMine(true);
+        if (d?.stationId && stations.some((s) => s.id === d.stationId)) {
+          saveStationId(d.stationId);
+          setStationId(d.stationId);
+        }
+      })
+      .catch(() => !cancelled && setAskedMine(true));
+    return () => {
+      cancelled = true;
+    };
+  }, [stations, picked, askedMine]);
 
   function show(r: Result) {
     setResult(r);
@@ -209,23 +228,14 @@ export default function ShippingPage() {
     focusScan();
   }
 
-  if (picking || (stations && stations.length > 0 && !station)) {
+  // Stations change only by scanning one's QR code (Cristian, 2026-10-26).
+  if (stationsError || (stations && stations.length > 0 && !station && askedMine)) {
     return (
-      <AppShell title="Shipping" width="narrow" subtitle="Pick the station where the labels should print.">
-        <StationPicker
-          title="Which station are you shipping from?"
-          description="Labels print on its 4x6 printer. This scanner remembers it."
-          stations={stations}
-          selectedId={station?.id ?? null}
+      <AppShell title="Shipping" width="narrow" subtitle="Scan the station where the labels should print.">
+        <ScanStationCard
+          description="Labels print on its 4x6 printer."
           error={stationsError}
           onReload={() => void loadStations()}
-          onPick={(s) => {
-            saveStationId(s.id);
-            setStationId(s.id);
-            setPicking(false);
-            focusScan();
-          }}
-          onCancel={station ? () => setPicking(false) : undefined}
         />
       </AppShell>
     );
@@ -248,9 +258,6 @@ export default function ShippingPage() {
               </p>
             </div>
             <StationOnline online={station.online || station.helperActive} />
-            <Button variant="outline" size="sm" onClick={() => setPicking(true)}>
-              Change
-            </Button>
             <StationSignOutButton stationId={station.id} stationName={station.name} />
           </Card>
         )}

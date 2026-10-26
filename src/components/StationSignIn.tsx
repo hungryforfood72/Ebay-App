@@ -115,12 +115,25 @@ export function useStationChosen(onChosen: (stationId: string) => void) {
 
 type Step =
   | { kind: "checking" }
-  | { kind: "pin"; stationName: string; username: string }
-  | { kind: "setup"; stationName: string; username: string }
+  // otherStations: where they're signed in now; signing in here signs
+  // them out there.
+  | { kind: "pin"; stationName: string; username: string; otherStations: string[] }
+  | { kind: "setup"; stationName: string; username: string; otherStations: string[] }
   | { kind: "done"; stationName: string }
   | { kind: "error"; message: string };
 
 const DONE_CLOSE_MS = 2_500;
+
+// "You're signed in at X: signing in here signs you out there."
+function MovingNote({ from, to }: { from: string[]; to: string }) {
+  if (from.length === 0) return null;
+  return (
+    <p className="mt-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+      You&apos;re signed in at <span className="font-semibold">{from.join(", ")}</span>. Signing in at {to} signs you out
+      there.
+    </p>
+  );
+}
 
 export function StationSignInDialog({ code, onClose }: { code: string; onClose: () => void }) {
   const [step, setStep] = useState<Step>({ kind: "checking" });
@@ -145,7 +158,13 @@ export function StationSignInDialog({ code, onClose }: { code: string; onClose: 
         const data = await res.json().catch(() => ({}));
         if (cancelled) return;
         if (!res.ok) setStep({ kind: "error", message: data.error ?? "Couldn't read that station code." });
-        else setStep({ kind: data.hasPin ? "pin" : "setup", stationName: data.stationName, username: data.username });
+        else
+          setStep({
+            kind: data.hasPin ? "pin" : "setup",
+            stationName: data.stationName,
+            username: data.username,
+            otherStations: data.otherStations ?? [],
+          });
       })
       .catch(() => !cancelled && setStep({ kind: "error", message: "Couldn't reach the app. Check the Wi-Fi." }));
     return () => {
@@ -263,6 +282,7 @@ export function StationSignInDialog({ code, onClose }: { code: string; onClose: 
                 Sign in at {step.stationName}
               </p>
               <p className="mt-1 text-sm text-muted-foreground">As {step.username}. Not you? Cancel and sign this scanner out.</p>
+              <MovingNote from={step.otherStations} to={step.stationName} />
             </div>
             <Field label="Your PIN">
               <Input
@@ -298,6 +318,7 @@ export function StationSignInDialog({ code, onClose }: { code: string; onClose: 
                 {step.username}: pick 4 to 6 numbers. From now on you sign in at any station by scanning its screen and
                 typing this PIN. Your password is needed just this once.
               </p>
+              <MovingNote from={step.otherStations} to={step.stationName} />
             </div>
             <Field label="Your password">
               <Input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />

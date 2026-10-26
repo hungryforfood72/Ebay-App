@@ -1,7 +1,7 @@
 "use client";
 
 import { ScanField } from "@/components/ScanField";
-import { StationOnline, StationPicker, useChosenStation } from "@/components/StationPicker";
+import { ScanStationCard, StationOnline, useChosenStation } from "@/components/StationPicker";
 import { StationSignOutButton } from "@/components/StationSignIn";
 import { useCurrentUser } from "@/components/UserNav";
 import { Alert } from "@/components/ui/Alert";
@@ -147,7 +147,6 @@ export default function ReturnsPage() {
   const isOwner = useCurrentUser()?.role === "owner";
   const stationChoice = useChosenStation(true);
   const station = stationChoice.station;
-  const [pickingStation, setPickingStation] = useState(false);
 
   const [phase, setPhase] = useState<Phase>("scan");
   const [code, setCode] = useState("");
@@ -287,8 +286,8 @@ export default function ReturnsPage() {
   async function saveSameCondition() {
     if (!item || !checkUnits()) return;
     if (item.listing !== "live" && !station) {
-      setPickingStation(true);
-      setMessage("Pick your station first, so the new labels print there.");
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      setMessage("Scan your station's QR code first, so the new labels print there.");
       return;
     }
     setBusy(true);
@@ -412,7 +411,8 @@ export default function ReturnsPage() {
   async function reprint() {
     if (!result?.reprint) return;
     if (!station) {
-      setPickingStation(true);
+      window.scrollTo({ top: 0, behavior: "smooth" });
+      setMessage("Scan your station's QR code first, so the labels print there.");
       return;
     }
     setBusy(true);
@@ -458,18 +458,12 @@ export default function ReturnsPage() {
       }
     >
       <div className="flex flex-col gap-4">
-        {pickingStation || stationChoice.needsStation || stationChoice.error ? (
-          <StationPicker
-            stations={stationChoice.stations}
-            selectedId={station?.id ?? null}
+        {/* A station is set by scanning its QR code, never picked (Cristian, 2026-10-26). */}
+        {stationChoice.needsStation || stationChoice.error ? (
+          <ScanStationCard
+            description="New labels for returned items print there."
             error={stationChoice.error}
             onReload={stationChoice.reload}
-            onPick={(s) => {
-              stationChoice.choose(s.id);
-              setPickingStation(false);
-              setMessage(null);
-            }}
-            onCancel={station ? () => setPickingStation(false) : undefined}
           />
         ) : (
           station && (
@@ -477,18 +471,9 @@ export default function ReturnsPage() {
               <span className="flex min-w-0 items-center gap-2">
                 <span className="text-muted-foreground">Labels print at</span>
                 <span className="truncate font-medium text-foreground">{station.name}</span>
-                <StationOnline online={station.online} />
+                <StationOnline online={station.online || station.helperOnline} />
               </span>
-              <span className="flex shrink-0 items-center gap-3">
-                <button
-                  type="button"
-                  className="shrink-0 text-sm font-medium text-primary hover:underline"
-                  onClick={() => setPickingStation(true)}
-                >
-                  Change
-                </button>
-                <StationSignOutButton stationId={station.id} stationName={station.name} />
-              </span>
+              <StationSignOutButton stationId={station.id} stationName={station.name} />
             </div>
           )
         )}
