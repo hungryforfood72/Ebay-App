@@ -143,7 +143,8 @@ Rules:
 - Describe the product itself, not its packaging (no bottle color or container material) and not the listing (one unit's features, not the lot).
 - Manufacturer is the company that makes it (Procter & Gamble), not the brand, and only if it's printed.
 - MPN / Model: the manufacturer's part, model, REF or catalog number printed on the package. Never the UPC.
-- Where one of eBay's usual values fits, use it exactly as written.
+- Use one of eBay's usual values only when it says exactly the same thing as the package. Never round to the nearest one: a 0.44 fl oz tube is "0.44 fl oz", not "0.4 fl oz".
+- Volume is for liquids measured in fl oz or mL. Leave it out for a solid sold by weight (a 2.6 oz deodorant stick).
 - Keep each value short, a few words at most. Never "N/A", "Various", "Unknown" or "See description".`;
 
   const photoBlocks = await Promise.all(
