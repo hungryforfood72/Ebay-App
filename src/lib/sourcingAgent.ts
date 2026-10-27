@@ -1404,7 +1404,7 @@ async function estimateLine(
   }
 
   if (group.strictPricing) {
-    if (!compliant) return estimateOtherSupplierLine(group, receiveRate, limits, calibration);
+    if (!compliant) return await estimateOtherSupplierLine(group, receiveRate, limits, calibration);
     group = perBoxGroup(group);
   }
 

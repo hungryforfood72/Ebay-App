@@ -197,7 +197,7 @@ export async function slipStation() {
   if (printer?.lastSeenAt && Date.now() - printer.lastSeenAt.getTime() <= STATION_ONLINE_MS) {
     return { id: printer.id, name: printer.name, online: true };
   }
-  return packingStation();
+  return await packingStation();
 }
 
 export type SlipResult =

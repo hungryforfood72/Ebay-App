@@ -155,7 +155,7 @@ function escapeHtml(text: string): string {
 export async function draftItem(itemId: string) {
   const item = await prisma.item.findUniqueOrThrow({ where: { id: itemId } });
 
-  if (item.isBundle) return draftBundleItem(item);
+  if (item.isBundle) return await draftBundleItem(item);
 
   // No UPC (custom/handmade items, e.g. our own t-shirts) — nothing to look
   // up, draft from the photo and whatever else was entered instead.
@@ -290,7 +290,7 @@ Describe the item's state the way a seller who has it in hand would: state what 
   const rx = rxCleared
     ? {}
     : { rxOnly: draft.rxOnly === true, rxOnlyNote: draft.rxOnly === true ? (draft.rxOnlyNote?.slice(0, 300) ?? "Rx Only on the package") : null };
-  return applyDraft(item, draft, { ...(upcLookupData ? { upcLookupData } : {}), countPerPackage, ...rx });
+  return await applyDraft(item, draft, { ...(upcLookupData ? { upcLookupData } : {}), countPerPackage, ...rx });
 }
 
 type BundleComponent = {
@@ -474,7 +474,7 @@ Write a title (80 characters max) and a short intro paragraph (2-4 sentences) de
     .join("");
   const description = `<p>${parsed.introDescription ?? ""}</p><p>This bundle includes:</p><ul>${manifestListHtml}</ul>`;
 
-  return applyDraft(
+  return await applyDraft(
     item,
     { title: parsed.title, description, specifics: parsed.specifics },
     { bundleComponents: components as unknown as Prisma.InputJsonValue }

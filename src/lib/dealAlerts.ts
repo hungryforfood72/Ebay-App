@@ -148,7 +148,7 @@ export async function sendNewDealsAlert(now: Date = new Date()): Promise<{ count
 // Right after the 8 PM expiry check moves items onto the past-date page.
 export async function sendPastDateAlert(count: number): Promise<SendResult | null> {
   if (count <= 0) return null;
-  return sendToAll({
+  return await sendToAll({
     title: count === 1 ? "1 item just hit the past-date page" : `${count} items just hit the past-date page`,
     body: "Short-dated deals at an extra 65% off our prices. Every date is shown.",
     path: "/collections/past-date-deals",

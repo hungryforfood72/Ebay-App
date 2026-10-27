@@ -161,7 +161,7 @@ export async function exchangeCodeForToken(
 // reconnect. getValidAccessToken always passes the scope actually stored
 // on that row.
 async function refreshAccessToken(refreshToken: string, scope: string): Promise<TokenResult> {
-  return requestToken(new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken, scope }));
+  return await requestToken(new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken, scope }));
 }
 
 // Reads the stored token for the current environment, refreshing it first if
@@ -407,7 +407,7 @@ export async function searchActiveListings(query: {
 }): Promise<ActiveListingComp[]> {
   if (!query.upc) {
     const params = new URLSearchParams({ limit: "50", q: query.keywords });
-    return fetchActiveListingComps(params, query.excludeListingId);
+    return await fetchActiveListingComps(params, query.excludeListingId);
   }
 
   const gtinParams = new URLSearchParams({ limit: "50", gtin: query.upc });
@@ -426,7 +426,7 @@ export async function searchActiveListings(query: {
 // listings came from an exact UPC match (see estimateOtherSupplierLine).
 export async function searchActiveListingsBy(query: { gtin: string } | { keywords: string }): Promise<ActiveListingComp[]> {
   const params = new URLSearchParams({ limit: "50", ...("gtin" in query ? { gtin: query.gtin } : { q: query.keywords }) });
-  return fetchActiveListingComps(params);
+  return await fetchActiveListingComps(params);
 }
 
 export type LiveListingPrice = { price: number; originalPrice: number | null };
@@ -818,7 +818,7 @@ async function buildOfferBody(item: ItemForEbayPublish, price: number) {
 }
 
 export async function createOffer(item: ItemForEbayPublish): Promise<string> {
-  return withEbayRetry(
+  return await withEbayRetry(
     async () => {
       const result = (await ebayFetch(`/sell/inventory/v1/offer`, {
         method: "POST",
@@ -995,7 +995,7 @@ export async function getLiveAvailableQuantity(item: {
 }
 
 export async function publishOffer(offerId: string): Promise<string> {
-  return withEbayRetry(
+  return await withEbayRetry(
     async () => {
       const result = (await ebayFetch(`/sell/inventory/v1/offer/${encodeURIComponent(offerId)}/publish`, {
         method: "POST",
@@ -1940,7 +1940,7 @@ export async function getListingStatus(
 // listing backup (src/lib/listingBackup.ts), which keeps it all in case the
 // account is ever lost.
 export async function getFullListingXml(itemId: string): Promise<string> {
-  return tradingApiFetch(
+  return await tradingApiFetch(
     "GetItem",
     `<GetItemRequest xmlns="urn:ebay:apis:eBLBaseComponents"><ItemID>${xmlEscape(itemId)}</ItemID><DetailLevel>ReturnAll</DetailLevel><IncludeItemSpecifics>true</IncludeItemSpecifics></GetItemRequest>`
   );

@@ -16,7 +16,7 @@ export type SheetGrid = {
 };
 
 export async function readSpreadsheet(file: File): Promise<SheetGrid> {
-  if (/\.xlsx$/i.test(file.name)) return readXlsx(await file.arrayBuffer());
+  if (/\.xlsx$/i.test(file.name)) return await readXlsx(await file.arrayBuffer());
   if (/\.xls$/i.test(file.name)) {
     throw new Error("That's an old .xls file. Open it in Excel and Save As .xlsx (or .csv), then upload that.");
   }

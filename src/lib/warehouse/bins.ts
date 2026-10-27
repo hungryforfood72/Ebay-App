@@ -219,7 +219,7 @@ async function removeResolved(
     args.units === "all"
       ? ((await tx.binContent.aggregate({ where: { itemId: args.itemId }, _sum: { units: true } }))._sum.units ?? 0)
       : args.units;
-  return removeUnits(tx, { ...args, units });
+  return await removeUnits(tx, { ...args, units });
 }
 
 // Settles pending bin removals (all of them, or one item's). Each one is

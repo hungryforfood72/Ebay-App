@@ -72,7 +72,7 @@ async function settleInTx(tx: Tx, box: { id: string; status: string }): Promise<
 export async function settleDudBox(tx: Tx, boxId: string): Promise<DudBoxStatus> {
   const box = await tx.dudBox.findUnique({ where: { id: boxId }, select: { id: true, status: true } });
   if (!box) throw new WarehouseError("That dud box doesn't exist anymore.", 404);
-  return settleInTx(tx, box);
+  return await settleInTx(tx, box);
 }
 
 async function lockBox(tx: Tx, rawCode: string) {
