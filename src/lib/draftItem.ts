@@ -258,7 +258,11 @@ Describe the item's state the way a seller who has it in hand would: state what 
   const response = await anthropic.messages.create(
     {
       model: "claude-opus-5-5",
-      max_tokens: 1024,
+      // Was 1024. Drafts grew (every photo, Rx check, sectioned
+      // description) to ~800 tokens on average, and some hit 1024 and got
+      // cut off mid-JSON, so the parse failed and the item sat with no
+      // draft or category (2026-10-26). Billed by tokens used, not this cap.
+      max_tokens: 4096,
       output_config: { format: { type: "json_schema", schema: DRAFT_SCHEMA } },
       messages: [{ role: "user", content }],
     },
@@ -268,6 +272,7 @@ Describe the item's state the way a seller who has it in hand would: state what 
     { timeout: 45_000, maxRetries: 0 }
   );
   await logAiUsage("draft.item", response, { itemId });
+  if (response.stop_reason === "max_tokens") throw new Error("AI draft was cut off (hit max_tokens)");
 
   const textBlock = response.content.find((b) => b.type === "text");
   const draft = JSON.parse(
@@ -446,13 +451,14 @@ Write a title (80 characters max) and a short intro paragraph (2-4 sentences) de
   const response = await anthropic.messages.create(
     {
       model: "claude-opus-5-5",
-      max_tokens: 1024,
+      max_tokens: 4096,
       output_config: { format: { type: "json_schema", schema: BUNDLE_SUMMARY_SCHEMA } },
       messages: [{ role: "user", content }],
     },
     { timeout: 45_000, maxRetries: 0 }
   );
   await logAiUsage("draft.bundle", response, { itemId: item.id });
+  if (response.stop_reason === "max_tokens") throw new Error("AI draft was cut off (hit max_tokens)");
 
   const textBlock = response.content.find((b) => b.type === "text");
   const parsed = JSON.parse(
