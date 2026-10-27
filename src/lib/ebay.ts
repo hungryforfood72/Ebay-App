@@ -1,6 +1,7 @@
 import { prisma } from "./prisma";
 import { ebayDescriptionHtml } from "./listingDescription";
 import { truncateTitle } from "./ebayTitle";
+import { formatExpiration } from "./formatExpiration";
 
 // Single toggle for which eBay environment the whole app talks to. Flipping
 // this (and redeploying) points every OAuth/Inventory API call at Sandbox or
@@ -244,6 +245,87 @@ export async function getCategorySuggestions(query: string): Promise<string[]> {
   if (!res.ok) throw new Error(`eBay category suggestions failed (${res.status}): ${(await res.text()).slice(0, 200)}`);
   const data = (await res.json()) as { categorySuggestions?: { category: { categoryId: string } }[] };
   return (data.categorySuggestions ?? []).map((s) => s.category.categoryId);
+}
+
+// One item specific a category takes, from eBay's own list for it.
+export type CategoryAspect = {
+  name: string;
+  required: boolean;
+  // eBay's "recommended" mark: the specifics its search filters and Best
+  // Match lean on for that category.
+  recommended: boolean;
+  // Only one of `values` is accepted (otherwise they're just suggestions).
+  selectionOnly: boolean;
+  multi: boolean;
+  maxLength: number | null;
+  values: string[];
+};
+
+// Category aspect lists change rarely; a cached copy saves a call per item.
+const CATEGORY_ASPECTS_KEY = (categoryId: string) => `ebay.categoryAspects.${categoryId}`;
+const CATEGORY_ASPECTS_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+// Brand alone lists ~4,000 suggestions; the prompt only needs a sample of
+// a free-text list, but all of a fixed one (Country of Origin is 244).
+const MAX_SUGGESTED_VALUES = 40;
+const MAX_SELECTION_VALUES = 300;
+
+// Every item specific eBay lists for a category, required and recommended
+// ones flagged (Taxonomy API, the same app token as the suggestions above).
+// Checked 2026-10-26 on 31774 (sunscreen): 23 aspects, of which Features,
+// Product Line, Active Ingredients, MPN and SPF were recommended and never
+// sent before.
+export async function getCategoryAspects(categoryId: string): Promise<CategoryAspect[]> {
+  const cached = await prisma.appSetting.findUnique({ where: { key: CATEGORY_ASPECTS_KEY(categoryId) } });
+  if (cached) {
+    try {
+      const parsed = JSON.parse(cached.value) as { fetchedAt: number; aspects: CategoryAspect[] };
+      if (Date.now() - parsed.fetchedAt < CATEGORY_ASPECTS_MAX_AGE_MS) return parsed.aspects;
+    } catch {
+      // Unreadable copy: fetch a fresh one.
+    }
+  }
+  const config = getEbayConfig();
+  const token = await getAppAccessToken();
+  const res = await fetch(
+    `${config.apiBase}/commerce/taxonomy/v1/category_tree/0/get_item_aspects_for_category?category_id=${encodeURIComponent(categoryId)}`,
+    { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000) }
+  );
+  if (!res.ok) throw new Error(`eBay category aspects failed (${res.status}): ${(await res.text()).slice(0, 200)}`);
+  const data = (await res.json()) as {
+    aspects?: {
+      localizedAspectName: string;
+      aspectConstraint: {
+        aspectRequired?: boolean;
+        aspectUsage?: string;
+        aspectMode?: string;
+        itemToAspectCardinality?: string;
+        aspectMaxLength?: number;
+      };
+      aspectValues?: { localizedValue: string }[];
+    }[];
+  };
+  const aspects: CategoryAspect[] = (data.aspects ?? []).map((a) => {
+    const c = a.aspectConstraint;
+    const selectionOnly = c.aspectMode === "SELECTION_ONLY";
+    return {
+      name: a.localizedAspectName,
+      required: Boolean(c.aspectRequired),
+      recommended: c.aspectUsage === "RECOMMENDED",
+      selectionOnly,
+      multi: c.itemToAspectCardinality === "MULTI",
+      maxLength: c.aspectMaxLength ?? null,
+      values: (a.aspectValues ?? [])
+        .map((v) => v.localizedValue)
+        .slice(0, selectionOnly ? MAX_SELECTION_VALUES : MAX_SUGGESTED_VALUES),
+    };
+  });
+  const value = JSON.stringify({ fetchedAt: Date.now(), aspects });
+  await prisma.appSetting.upsert({
+    where: { key: CATEGORY_ASPECTS_KEY(categoryId) },
+    create: { key: CATEGORY_ASPECTS_KEY(categoryId), value },
+    update: { value },
+  });
+  return aspects;
 }
 
 // ---------------------------------------------------------------------------
@@ -637,22 +719,30 @@ export function ebayAspectNameToSpecificsKey(aspectName: string): string {
 // as often a weight.
 const LIQUID_VOLUME_PATTERN = /\d+(?:\.\d+)?\s*(?:ml|fl\.?\s*oz|l|liters?|litres?)\b/i;
 
-function buildAspects(specifics: Record<string, string> | null, expirationDate?: Date | null): Record<string, string[]> {
+// Some aspects take several values (Features: "Odor Barrier | Drainable").
+// Specifics are stored as one string each, so those are kept joined by
+// this, which no single real value contains (commas and semicolons do:
+// Dosage "Zinc Acetate 2X, Zinc Gluconate 2X").
+export const MULTI_VALUE_SEPARATOR = " | ";
+
+export function buildAspects(specifics: Record<string, string> | null, expirationDate?: Date | null): Record<string, string[]> {
   const s = specifics ?? {};
   const aspects: Record<string, string[]> = {};
   for (const [key, value] of Object.entries(s)) {
     if (!value) continue;
     const aspectName = KNOWN_ASPECT_NAMES[key] ?? key;
-    aspects[aspectName] = [value];
+    aspects[aspectName] = value.split(MULTI_VALUE_SEPARATOR).map((v) => v.trim()).filter(Boolean);
   }
   // Several health & beauty categories require it (confirmed live
   // 2026-09-29: an OGX scalp serum in 109075 was rejected with "The item
   // specific Expiration Date is missing"), and the date scanned off the
-  // package was never being sent. MM/YYYY, the way it's printed on most
-  // packaging; stored at UTC midnight, so read in UTC.
+  // package was never being sent. The full MM/DD/YYYY, the same as the
+  // description's "Best by" line: eBay pulled a listing over a day-less
+  // "09/2026" specific next to a full date in the description (commit
+  // 462d20d fixed that for the CSV; this was still sending MM/YYYY until
+  // 2026-10-26).
   if (expirationDate && !aspects["Expiration Date"]) {
-    const d = new Date(expirationDate);
-    aspects["Expiration Date"] = [`${String(d.getUTCMonth() + 1).padStart(2, "0")}/${d.getUTCFullYear()}`];
+    aspects["Expiration Date"] = [formatExpiration(expirationDate)];
   }
   // Liquids keep their amount under "size", but some categories require it
   // as "Volume" (confirmed live 2026-10-05: a 50 ml perfume in 31753 was
@@ -858,6 +948,30 @@ export async function updateOfferDescription(offerId: string, html: string): Pro
   void _listing;
   void _status;
   await withEbayRetry(() => ebayFetch(path, { method: "PUT", body: JSON.stringify({ ...body, listingDescription: html }) }));
+}
+
+// Changes only a live listing's title and item specifics (the live-listing
+// search tune-up, scripts/optimize-live-listings.ts). Same idea as
+// updateOfferDescription: reads the inventory item as eBay has it and sends
+// it back with just those swapped, so the live quantity, condition and
+// photos stay exactly as they are. A PUT to a published item revises the
+// listing. Specifics only eBay has (some listings carry Unit Quantity the
+// app never stored) are kept; the app's win where both have one.
+export async function updateLiveTitleAndAspects(
+  ebaySku: string,
+  title: string,
+  aspects: Record<string, string[]>
+): Promise<void> {
+  const path = `/sell/inventory/v1/inventory_item/${encodeURIComponent(ebaySku)}`;
+  const current = (await ebayFetch(path)) as { product?: Record<string, unknown> } & Record<string, unknown>;
+  // Read-only fields eBay returns but doesn't take back.
+  const { sku: _sku, groupIds: _groups, inventoryItemGroupKeys: _keys, ...body } = current;
+  void _sku;
+  void _groups;
+  void _keys;
+  const liveAspects = (body.product?.aspects as Record<string, string[]> | undefined) ?? {};
+  const product = { ...body.product, title: truncateTitle(title), aspects: { ...liveAspects, ...aspects } };
+  await withEbayRetry(() => ebayFetch(path, { method: "PUT", body: JSON.stringify({ ...body, product }) }));
 }
 
 async function existingOfferId(ebaySku: string): Promise<string | null> {

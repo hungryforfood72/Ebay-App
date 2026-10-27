@@ -4,7 +4,8 @@ import { normalizeBreakdown } from "@/lib/expirationBreakdown";
 import { prisma } from "@/lib/prisma";
 import { AuthError, requireOwner } from "@/lib/auth";
 import { binGateError } from "@/lib/warehouse/binGate";
-import { NextRequest, NextResponse } from "next/server";
+import { fillCategorySpecifics } from "@/lib/categorySpecifics";
+import { after, NextRequest, NextResponse } from "next/server";
 
 const EDITABLE_FIELDS = [
   "finalTitle",
@@ -94,6 +95,18 @@ export async function PATCH(
       targetType: "item",
       targetId: id,
       ...change,
+    });
+  }
+  // Picked a different category on Review: it can recommend different
+  // specifics (categorySpecifics.ts). After the response, so the save
+  // isn't held up by the AI call.
+  if (change && "categoryId" in change.after && item.categoryId) {
+    after(async () => {
+      try {
+        await fillCategorySpecifics(id);
+      } catch (e) {
+        console.error(`[items PATCH] ${id}: category specifics failed`, e);
+      }
     });
   }
 

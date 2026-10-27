@@ -1,11 +1,13 @@
 import { lookupCategoryForItem } from "@/lib/categoryLookup";
-import { NextResponse } from "next/server";
+import { fillCategorySpecifics } from "@/lib/categorySpecifics";
+import { after, NextResponse } from "next/server";
 
 // Give Vercel's function enough room for the full worst-case chain in
 // lookupCategoryForItem: local pick (20s) + generic-terms (15s) +
 // broadened local pick (20s) + web search fallback (35s) = 90s max, all with
-// maxRetries: 0 so each SDK timeout can't multiply. 100 leaves a buffer.
-export const maxDuration = 100;
+// maxRetries: 0 so each SDK timeout can't multiply. Plus the category
+// specifics fill after it (up to 40s).
+export const maxDuration = 140;
 
 export async function POST(
   _request: Request,
@@ -26,6 +28,16 @@ export async function POST(
         { status: 404 }
       );
     }
+
+    // A new category can recommend different specifics. After the
+    // response, like the items route, so the button isn't held up.
+    after(async () => {
+      try {
+        await fillCategorySpecifics(id);
+      } catch (e) {
+        console.error(`[category-lookup route] ${id}: category specifics failed`, e);
+      }
+    });
 
     return NextResponse.json(result);
   } catch (e) {

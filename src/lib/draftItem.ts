@@ -142,6 +142,22 @@ async function imageContentBlock(url: string): Promise<Anthropic.Messages.Conten
   }
 }
 
+// How a title gets found (Cristian, 2026-10-26: show up to the buyers who
+// are looking). eBay search matches the words in the title, and phone
+// search results cut titles short, so the product leads and the pack count
+// follows it. Live titles before this often opened with "Lot of 3" or "2x"
+// and spent ~15 characters on "Exp MM/DD/YYYY", a thing nobody searches.
+// Not used for bundles: a mixed lot has no one product to lead with.
+export const TITLE_RULES = `Title rules (it's how buyers find the listing in eBay search):
+- Lead with what a buyer types: brand, product line, then what the item is, in the plain words shoppers search ("Ostomy Pouch", "Cold Remedy Drops").
+- Then the facts that narrow a search: model, MPN or REF number, size, count, strength, scent or flavor, color.
+- The pack or lot count ("2 Pack", "Lot of 3", "2 Boxes") goes after the product name and its size, never first.
+- When there's room, add one other common name buyers search for the same thing (e.g. "Colostomy Bag" after "Ostomy Pouch"). Never another brand's name, and no repeated words.
+- It should read as a product name: no stray single word tacked on the end to fill space.
+- Use the space: aim for 70 to 80 characters, never more than 80.
+- No filler or hype ("L@@K", "Wow", "Must Have", "Fast Shipping", "Great Deal"), no punctuation runs, not all caps.
+- An expiration or best-by date goes in only if it still fits after all of that, at the very end, as "Exp MM/DD/YYYY". The date is always in the item specifics and the description either way.`;
+
 const MAX_DRAFT_PHOTOS = 8;
 // Per bundle component, each in its own request (see nameComponent).
 const MAX_COMPONENT_PHOTOS = 4;
@@ -190,9 +206,9 @@ export async function draftItem(itemId: string) {
 
   const breakdown = normalizeBreakdown(item.expirationBreakdown);
   const expirationNote = breakdown
-    ? `Expiration dates: the units in this listing don't all share one date (${describeBreakdown(breakdown)}). The full list of dates with unit counts is added to the end of the description automatically, so don't list them yourself; just say plainly that the units have different expiration dates and the earliest is ${formatExpiration(breakdown[0].date)}. If there's room in the title, use that earliest date there, as the full MM/DD/YYYY.`
+    ? `Expiration dates: the units in this listing don't all share one date (${describeBreakdown(breakdown)}). The full list of dates with unit counts is added to the end of the description automatically, so don't list them yourself; just say plainly that the units have different expiration dates and the earliest is ${formatExpiration(breakdown[0].date)}. If it fits in the title (see the title rules), use that earliest date there, as the full MM/DD/YYYY.`
     : item.expirationDate
-    ? `Expiration date: ${item.expirationDate.toISOString().slice(0, 10)} — state this plainly in the description so the buyer knows exactly what they're getting (e.g. "Best by MM/DD/YYYY"). Work it into the title too if there's room within the character limit — use the same full MM/DD/YYYY date there too, not just the month and year (eBay pulled a real listing over the title/specifics only showing month/year while the description had the full date).`
+    ? `Expiration date: ${item.expirationDate.toISOString().slice(0, 10)} — state this plainly in the description so the buyer knows exactly what they're getting (e.g. "Best by MM/DD/YYYY"). If it fits in the title (see the title rules), use the same full MM/DD/YYYY date there too, not just the month and year (eBay pulled a real listing over the title/specifics only showing month/year while the description had the full date).`
     : "";
 
   // A customer return listed again in its real condition (Returns mode,
@@ -225,7 +241,9 @@ Condition: ${item.condition ?? "not specified yet (set by hand in review)"}
 ${expirationNote}
 ${returnNote ? `\n${returnNote}\n` : ""}
 ${photos.length > 1 ? `\nThere are ${photos.length} photos of this exact item. The first is the main shot; the others are usually taken to show condition (a dented box, a torn seal, scuffs, wear) or other sides of the package (ingredients, count, size). Use details from all of them, and if any shows a flaw, say so plainly in the description so the buyer isn't surprised.\n` : ""}
-Write a clear, keyword-appropriate eBay title (80 characters max) and a short, honest description a buyer would find helpful. Do not invent specifics (model numbers, exact materials) that aren't supported by the UPC data or the photos.
+Write an eBay title buyers will find (80 characters max) and a short, honest description a buyer would find helpful. Do not invent specifics (model numbers, exact materials) that aren't supported by the UPC data or the photos.
+
+${TITLE_RULES}
 
 Lay the description out as plain text in this shape (no HTML, no markdown like ** or #; it's turned into headings and bullet lists for eBay):
 One or two sentences saying exactly what the buyer gets (how many, what it is).
@@ -296,6 +314,68 @@ Describe the item's state the way a seller who has it in hand would: state what 
     ? {}
     : { rxOnly: draft.rxOnly === true, rxOnlyNote: draft.rxOnly === true ? (draft.rxOnlyNote?.slice(0, 300) ?? "Rx Only on the package") : null };
   return await applyDraft(item, draft, { ...(upcLookupData ? { upcLookupData } : {}), countPerPackage, ...rx });
+}
+
+const RETITLE_SCHEMA = {
+  type: "object",
+  properties: { title: { type: "string", description: "The new eBay title, 80 characters or fewer" } },
+  required: ["title"],
+  additionalProperties: false,
+} as const;
+
+// A new title for a listing that's already written, by the title rules
+// above (the live-listing tune-up, scripts/optimize-live-listings.ts).
+// Text only: the old title, specifics and description already hold what
+// the photos showed, and every fact has to come from them. Returns the
+// title without saving it.
+export async function retitleItem(item: Item, extraSpecifics: Record<string, string> = {}): Promise<string> {
+  const specifics = { ...extraSpecifics, ...((item.itemSpecifics as Record<string, string> | null) ?? {}) };
+  const specificsText = Object.entries(specifics)
+    .filter(([, v]) => v)
+    .map(([k, v]) => `${k}: ${v}`)
+    .join("\n");
+  const breakdown = normalizeBreakdown(item.expirationBreakdown);
+  const expiration = breakdown
+    ? `Units have different expiration dates; the earliest is ${formatExpiration(breakdown[0].date)}.`
+    : item.expirationDate
+      ? `Expiration date: ${formatExpiration(item.expirationDate.toISOString().slice(0, 10))}`
+      : "No expiration date.";
+  const prompt = `Rewrite this eBay listing's title so more of the buyers searching for it find it.
+
+Current title: ${item.finalTitle}
+${item.isMultipack ? `This is a multi-pack of ${item.packSize} units.` : "This is a single unit, not a multi-pack."}
+${expiration}
+${specificsText ? `\nItem specifics:\n${specificsText}\n` : ""}${item.finalDescription ? `\nDescription:\n${item.finalDescription.slice(0, 1500)}\n` : ""}
+Keep every fact the current title gets right (pack count, size, count, model or REF number). Don't add a fact that isn't in the title, the item specifics or the description. If the current title already follows the rules, return it unchanged.
+
+${TITLE_RULES}`;
+
+  // Over 80 gets one more try, told its length: cutting it to fit drops
+  // whatever came last, which was a real fact ("2 Boxes of" with the 5 cut
+  // off, in the first sample run).
+  let feedback = "";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const response = await anthropic.messages.create(
+      {
+        model: "claude-opus-5-5",
+        // 512 cut half the first sample run off mid-answer.
+        max_tokens: 2048,
+        output_config: { effort: "low", format: { type: "json_schema", schema: RETITLE_SCHEMA } },
+        messages: [{ role: "user", content: prompt + feedback }],
+      },
+      { timeout: 30_000, maxRetries: 0 }
+    );
+    await logAiUsage("draft.retitle", response, { itemId: item.id });
+    if (response.stop_reason === "max_tokens") throw new Error("Retitle was cut off (hit max_tokens)");
+    const textBlock = response.content.find((b) => b.type === "text");
+    const { title } = JSON.parse(textBlock && "text" in textBlock ? textBlock.text : "{}") as { title?: string };
+    const clean = removeBlockedPhrases(title?.trim() ?? "", await getBlockedPhrases()).trim();
+    if (!clean) throw new Error("Retitle came back empty");
+    if (clean.length <= 80) return clean;
+    feedback = `\n\nYour last title was ${clean.length} characters: "${clean}". Give one of 80 or fewer that keeps every fact, by dropping the least searched words.`;
+  }
+  // Still too long twice: keep the title that's live.
+  return item.finalTitle ?? "";
 }
 
 type BundleComponent = {

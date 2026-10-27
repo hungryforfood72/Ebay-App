@@ -6,6 +6,7 @@ import { after } from "next/server";
 import { randomUUID } from "node:crypto";
 import { draftItem } from "@/lib/draftItem";
 import { lookupCategoryForItem } from "@/lib/categoryLookup";
+import { fillCategorySpecifics } from "@/lib/categorySpecifics";
 import { earliestBundleExpiration } from "@/lib/csv";
 import { normalizeBreakdown } from "@/lib/expirationBreakdown";
 import { inheritedFields, recordRelistPart, relistPlan, type RelistPart } from "@/lib/relist";
@@ -20,10 +21,11 @@ import { binProgress } from "@/lib/warehouse/binGate";
 
 // Draft (up to 45s for a single item, or up to ~90s for a bundle — parallel
 // per-component naming calls plus one final synthesis call) + category
-// lookup (up to 100s worst case) can together take a while — give the
-// function room to actually finish that work in after(), not just respond
-// to the initial POST.
-export const maxDuration = 190;
+// lookup (up to 100s worst case) + the category specifics fill (up to 40s,
+// skipped for bundles) can together take a while — give the function room
+// to actually finish that work in after(), not just respond to the
+// initial POST.
+export const maxDuration = 240;
 
 // List items for the review queue, optionally filtered by status.
 export async function GET(request: NextRequest) {
@@ -370,11 +372,18 @@ export async function POST(request: NextRequest) {
       return;
     }
     // A relist already has the original's category.
-    if (keepCategory) return;
+    if (!keepCategory) {
+      try {
+        await lookupCategoryForItem(item.id);
+      } catch (e) {
+        console.error(`[items after()] ${item.id}: category lookup failed`, e);
+      }
+    }
+    // Needs the category, so last.
     try {
-      await lookupCategoryForItem(item.id);
+      await fillCategorySpecifics(item.id);
     } catch (e) {
-      console.error(`[items after()] ${item.id}: category lookup failed`, e);
+      console.error(`[items after()] ${item.id}: category specifics failed`, e);
     }
   });
 
