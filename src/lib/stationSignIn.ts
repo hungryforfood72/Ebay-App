@@ -53,7 +53,7 @@ export function readCookie(request: Request, name: string): string | null {
 // The station this PC is set up as, or null (no cookie, a stale key, or
 // the station was deleted).
 export async function stationForDevice(request: Request): Promise<{ id: string; name: string } | null> {
-  return stationForDeviceValue(readCookie(request, STATION_DEVICE_COOKIE));
+  return await stationForDeviceValue(readCookie(request, STATION_DEVICE_COOKIE));
 }
 
 // Same check for a "<stationId>.<key>" value from anywhere (the cookie, or
@@ -149,4 +149,24 @@ export async function setPin(userId: string, pin: string): Promise<void> {
     where: { id: userId },
     data: { pinHash: hash, pinSalt: salt, pinFailures: 0, pinLockedUntil: null },
   });
+}
+
+// The station someone is working at right now: this browser's own station
+// (a station PC), else the station PC they're signed in at (Session.stationId,
+// newest first). null = not at a station. Used to find a handheld's station
+// (GET /api/stations/mine) and where restock labels print.
+export async function stationForUser(
+  request: Request,
+  userId: string
+): Promise<{ id: string; name: string; via: "this-pc" | "signed-in" } | null> {
+  const pc = await stationForDevice(request);
+  if (pc) return { ...pc, via: "this-pc" };
+  const session = await prisma.session.findFirst({
+    where: { userId, stationId: { not: null }, expiresAt: { gt: new Date() } },
+    orderBy: { createdAt: "desc" },
+    select: { stationId: true },
+  });
+  if (!session?.stationId) return null;
+  const station = await prisma.station.findUnique({ where: { id: session.stationId }, select: { id: true, name: true } });
+  return station ? { ...station, via: "signed-in" } : null;
 }

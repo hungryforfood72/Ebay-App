@@ -8,9 +8,10 @@ import { Card } from "@/components/ui/Card";
 import { cn } from "@/components/ui/cn";
 import { Input } from "@/components/ui/Input";
 import { ExternalLink, LoaderCircle, Minus, Package, Plus, Search } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useCurrentUser } from "@/components/UserNav";
 import { LocationBadge } from "@/components/LocationBadge";
+import { classifyScan } from "@/lib/warehouse/codes";
 import type { ItemLocation } from "@/lib/warehouse/types";
 import Link from "next/link";
 
@@ -78,15 +79,41 @@ export default function InventoryPage() {
   const [rowError, setRowError] = useState<string | null>(null);
   // Added stock on an item that lives in bins: a reminder to scan the new
   // units into a bin (the server doesn't guess which one).
-  const [putAwayNotice, setPutAwayNotice] = useState<{ itemId: string; code: string; units: number } | null>(null);
+  const [putAwayNotice, setPutAwayNotice] = useState<{
+    itemId: string;
+    code: string;
+    units: number;
+    // Restock: labels sent to a station, or why they weren't.
+    labels?: { queued: number; stationId: string; stationName: string; error?: string };
+  } | null>(null);
+  // Restocking a labelled listing prints its labels at the station you're
+  // signed in at (Cristian, 2026-10-26); no station = no restock.
+  const [myStation, setMyStation] = useState<{ id: string; name: string } | null | undefined>(undefined);
+  const [reprinting, setReprinting] = useState(false);
 
+  function loadMyStation() {
+    fetch("/api/stations/mine")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { stationId: string | null; stationName: string | null } | null) =>
+        setMyStation(d?.stationId ? { id: d.stationId, name: d.stationName ?? "your station" } : null)
+      )
+      .catch(() => setMyStation(null));
+  }
+
+  // Only the newest search's answer counts: the full list loading on open
+  // used to land after a quick search and replace its results.
+  const loadSeq = useRef(0);
   function load(q: string) {
+    const seq = ++loadSeq.current;
     fetch(`/api/inventory${q ? `?q=${encodeURIComponent(q)}` : ""}`)
       .then((r) => r.json())
-      .then((data: { items: InventoryItem[] }) => setItems(data.items));
+      .then((data: { items: InventoryItem[] }) => {
+        if (seq === loadSeq.current) setItems(data.items);
+      });
   }
 
   useEffect(() => load(""), []);
+  useEffect(loadMyStation, []);
 
   function search(e: React.FormEvent) {
     e.preventDefault();
@@ -94,6 +121,7 @@ export default function InventoryPage() {
   }
 
   async function startEdit(item: InventoryItem) {
+    if (isLabelled(item)) loadMyStation();
     setEditingId(item.id);
     setRowError(null);
     setLiveCheck(null);
@@ -125,18 +153,29 @@ export default function InventoryPage() {
       setRowError("Enter a whole number greater than 0.");
       return;
     }
-    if (!noteInput.trim()) {
+    const restock = direction === "add" && isLabelled(item);
+    if (restock && !myStation) {
+      setRowError("Sign in at the listing station first, so the labels print there.");
+      return;
+    }
+    if (!restock && !noteInput.trim()) {
       setRowError("A note is required — say why this stock is changing.");
       return;
     }
     setSaving(true);
     setRowError(null);
     try {
-      const res = await fetch(`/api/items/${item.id}/quantity`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ direction, amount, note: noteInput.trim() }),
-      });
+      const res = restock
+        ? await fetch(`/api/items/${item.id}/restock`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ amount, note: noteInput.trim() }),
+          })
+        : await fetch(`/api/items/${item.id}/quantity`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ direction, amount, note: noteInput.trim() }),
+          });
       const result = await res.json();
       if (!res.ok) throw new Error(result.error ?? "Failed to update quantity.");
       // Units taken out of bins by a removal come off the badges too.
@@ -165,13 +204,47 @@ export default function InventoryPage() {
             )
           : prev
       );
-      setPutAwayNotice(result.putAway ? { itemId: item.id, code: item.sku, units: result.putAway.units } : null);
+      setPutAwayNotice(
+        result.putAway
+          ? {
+              itemId: item.id,
+              code: item.sku,
+              units: result.putAway.units,
+              labels: restock
+                ? { queued: result.labelsQueued ?? 0, stationId: result.stationId, stationName: result.stationName, error: result.labelError }
+                : undefined,
+            }
+          : null
+      );
       setEditingId(null);
       setLiveCheck(null);
     } catch (e) {
       setRowError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  // A restock's labels didn't print: send them again.
+  async function reprintRestock() {
+    const n = putAwayNotice;
+    if (!n?.labels) return;
+    setReprinting(true);
+    try {
+      const res = await fetch(`/api/items/${n.itemId}/labels`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stationId: n.labels.stationId, copies: n.units }),
+      });
+      const data = await res.json().catch(() => ({}));
+      setPutAwayNotice({
+        ...n,
+        labels: res.ok
+          ? { ...n.labels, queued: data.labelsQueued ?? n.units, error: undefined }
+          : { ...n.labels, error: data.error ?? "Couldn't print the labels." },
+      });
+    } finally {
+      setReprinting(false);
     }
   }
 
@@ -226,6 +299,7 @@ export default function InventoryPage() {
                   : `https://sandbox.ebay.com/itm/${item.ebayListingId}`
                 : null;
               const isEditing = editingId === item.id;
+              const restocking = isEditing && direction === "add" && isLabelled(item);
               const currentKnown =
                 liveCheck?.liveAvailableQuantity ?? liveCheck?.storedAvailableQuantity ?? item.availableQuantity;
               const amount = Number(amountInput);
@@ -291,9 +365,27 @@ export default function InventoryPage() {
                   {putAwayNotice?.itemId === item.id && !isEditing && (
                     <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-amber-50 p-3 text-sm text-amber-950">
                       <span>
-                        Added {putAwayNotice.units}. Scan {putAwayNotice.units === 1 ? "it" : "them"} into a bin so
-                        pickers can find {putAwayNotice.units === 1 ? "it" : "them"}.
+                        Added {putAwayNotice.units}.{" "}
+                        {putAwayNotice.labels && !putAwayNotice.labels.error && (
+                          <>
+                            {putAwayNotice.labels.queued} {putAwayNotice.labels.queued === 1 ? "label" : "labels"} printing at{" "}
+                            {putAwayNotice.labels.stationName}. Bag {putAwayNotice.units === 1 ? "it" : "them"}, then{" "}
+                          </>
+                        )}
+                        {putAwayNotice.labels?.error && (
+                          <span className="font-medium text-danger">
+                            The labels didn&apos;t print ({putAwayNotice.labels.error}).{" "}
+                          </span>
+                        )}
+                        {putAwayNotice.labels && !putAwayNotice.labels.error ? "scan" : "Scan"}{" "}
+                        {putAwayNotice.units === 1 ? "it" : "them"} into a bin so pickers can find{" "}
+                        {putAwayNotice.units === 1 ? "it" : "them"}.
                       </span>
+                      {putAwayNotice.labels?.error && (
+                        <Button size="sm" variant="outline" onClick={reprintRestock} disabled={reprinting}>
+                          {reprinting ? "Printing…" : "Print again"}
+                        </Button>
+                      )}
                       <Link
                         href={`/bins?tab=putaway&item=${encodeURIComponent(putAwayNotice.code)}`}
                         className="font-medium text-primary hover:underline"
@@ -372,17 +464,42 @@ export default function InventoryPage() {
                         )}
                       </div>
 
+                      {restocking &&
+                        (myStation ? (
+                          <p className="rounded-lg bg-blue-50 px-3 py-2 text-sm text-blue-950">
+                            Restock: a label for each one prints at <span className="font-semibold">{myStation.name}</span>.
+                          </p>
+                        ) : (
+                          <p className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                            {myStation === undefined ? (
+                              "Checking which station you're at…"
+                            ) : (
+                              <>
+                                New ones need labels, and they print at the station you&apos;re signed in at.{" "}
+                                <Link href="/pin" className="font-medium text-primary underline">
+                                  Sign in at the listing station
+                                </Link>{" "}
+                                (scan the QR on its screen), then come back.
+                              </>
+                            )}
+                          </p>
+                        ))}
+
                       <Input
                         type="text"
                         value={noteInput}
                         onChange={(e) => setNoteInput(e.target.value)}
-                        placeholder="Why is this stock changing? (required)"
+                        placeholder={restocking ? "Note (optional), e.g. second case came in" : "Why is this stock changing? (required)"}
                         aria-label="Note"
                       />
 
                       <div className="flex items-center gap-2">
-                        <Button onClick={() => saveAdjustment(item)} disabled={saving}>
-                          {saving ? "Saving…" : "Save to eBay"}
+                        <Button onClick={() => saveAdjustment(item)} disabled={saving || (restocking && !myStation)}>
+                          {saving
+                            ? "Saving…"
+                            : restocking && Number.isInteger(amount) && amount > 0
+                              ? `Add ${amount} & print ${amount} ${amount === 1 ? "label" : "labels"}`
+                              : "Save to eBay"}
                         </Button>
                         <Button variant="ghost" onClick={cancelEdit}>
                           Cancel
@@ -423,4 +540,9 @@ export default function InventoryPage() {
       </div>
     </AppShell>
   );
+}
+
+// A warehouse listing (ES label): restocking it prints labels.
+function isLabelled(item: { sku: string }): boolean {
+  return classifyScan(item.sku) === "item";
 }

@@ -1,6 +1,5 @@
 import { requireUser } from "@/lib/auth";
-import { prisma } from "@/lib/prisma";
-import { stationForDevice } from "@/lib/stationSignIn";
+import { stationForUser } from "@/lib/stationSignIn";
 import { NextRequest, NextResponse } from "next/server";
 
 // The station this device works at when it hasn't remembered one
@@ -11,12 +10,6 @@ import { NextRequest, NextResponse } from "next/server";
 //     handheld that lost its station finds it again by itself.
 export async function GET(request: NextRequest) {
   const user = requireUser(request);
-  const pc = await stationForDevice(request);
-  if (pc) return NextResponse.json({ stationId: pc.id, via: "this-pc" });
-  const session = await prisma.session.findFirst({
-    where: { userId: user.id, stationId: { not: null }, expiresAt: { gt: new Date() } },
-    orderBy: { createdAt: "desc" },
-    select: { stationId: true },
-  });
-  return NextResponse.json({ stationId: session?.stationId ?? null, via: session ? "signed-in" : null });
+  const station = await stationForUser(request, user.id);
+  return NextResponse.json({ stationId: station?.id ?? null, stationName: station?.name ?? null, via: station?.via ?? null });
 }
