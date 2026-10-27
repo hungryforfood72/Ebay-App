@@ -20,11 +20,14 @@ import type Anthropic from "@anthropic-ai/sdk";
 // the draft: a value has to be on the package, in the UPC data or in the
 // description.
 
-// Read off this exact unit or set elsewhere, never from the product.
+// Read off this exact unit or set elsewhere, never from the product. A
+// warranty (Durability Guarantee) reads as our promise, not the maker's:
+// the live run proposed "Lifetime Warranty" for a blood pressure cuff.
 const SKIP_ASPECTS = new Set(
-  ["Expiration Date", "UPC", "EAN", "ISBN", "GTIN", "Unit Quantity", "Unit Type", "California Prop 65 Warning"].map((n) =>
-    n.toLowerCase()
-  )
+  [
+    "Expiration Date", "UPC", "EAN", "ISBN", "GTIN", "Unit Quantity", "Unit Type", "California Prop 65 Warning",
+    "Durability Guarantee", "Warranty", "Manufacturer Warranty",
+  ].map((n) => n.toLowerCase())
 );
 // Filler eBay shoppers can't filter on, and that only hides a real gap.
 const FILLER_VALUE = /^(n\/?a|none|unknown|various|assorted|mixed|multiple|see (description|photos?)|does not apply|not applicable|other)$/i;
