@@ -17,6 +17,7 @@ import {
   ScanStep,
   type Banner,
   type BinSummary,
+  type ItemRow,
   type ShelfState,
 } from "./ui";
 
@@ -33,6 +34,10 @@ const FIELD = "shelve-scan";
 // Warehouse cutover: a shelf still holding old-system items refuses bins.
 // Each shelf scan asks the server for its state; one that "looks empty"
 // gets a Confirm button right here, for whoever is looking at it.
+//
+// An oversized shelf takes no bins: after its label, each item label
+// scanned puts one unit on it, loose or out of whatever bin it was in
+// (Cristian, 2026-10-28).
 export function ShelvePanel({
   bins,
   onShelved,
@@ -41,6 +46,8 @@ export function ShelvePanel({
   onShelved: () => void;
 }) {
   const [shelf, setShelf] = useState<string | null>(null);
+  // The picked shelf is oversized: scan items onto it, not bins.
+  const [oversized, setOversized] = useState(false);
   const [waitingBin, setWaitingBin] = useState<string | null>(null);
   const [banner, setBanner] = useState<Banner | null>(null);
   const [done, setDone] = useState<{ code: string; shelf: string; counts: string }[]>([]);
@@ -49,6 +56,7 @@ export function ShelvePanel({
 
   function pickShelf(label: string) {
     setShelf(label);
+    setOversized(false);
     setConfirmShelf(null);
     if (waitingBin) {
       setWaitingBin(null);
@@ -63,6 +71,7 @@ export function ShelvePanel({
   async function checkShelf(raw: string) {
     try {
       const { shelf: state } = await api<{ shelf: ShelfState }>(`/api/bins/shelves?label=${encodeURIComponent(raw.trim())}`);
+      if (state.oversized) return pickOversized(state);
       if (state.state === "free" || state.state === "bins") return pickShelf(state.label);
       beep("error");
       setShelf(null);
@@ -79,6 +88,52 @@ export function ShelvePanel({
     } catch (e) {
       beep("error");
       setBanner({ tone: "danger", title: `No shelf called "${raw.trim()}"`, lines: [errorText(e)] });
+    } finally {
+      focusField(FIELD);
+    }
+  }
+
+  function pickOversized(state: ShelfState) {
+    setShelf(state.label);
+    setOversized(true);
+    setConfirmShelf(null);
+    const bin = waitingBin;
+    setWaitingBin(null);
+    beep(bin ? "error" : "next");
+    setBanner({
+      tone: bin ? "danger" : "info",
+      title: `Oversized shelf ${state.label}`,
+      lines: [
+        bin ? `${bin} didn't go on it: bins don't go on an oversized shelf. To move what's in it here, use Combine.` : "",
+        `${plural(state.oversizedUnits, "unit")} on it now. Scan each item label going on it.`,
+      ],
+    });
+    focusField(FIELD);
+  }
+
+  // One item label = one unit onto the oversized shelf. Like bins, not
+  // blocked while saving.
+  async function putOnShelf(itemCode: string, shelfLabel: string) {
+    try {
+      const res = await api<{ item: ItemRow; bin: BinSummary; fromBinCode: string | null; fromEmpty: boolean }>(
+        "/api/bins/shelve/item",
+        { shelfLabel, itemCode }
+      );
+      beep("ok");
+      setBanner({
+        tone: "success",
+        title: `${res.item.code} on shelf ${shelfLabel}`,
+        lines: [
+          res.item.title,
+          res.fromBinCode ? `Took it out of ${res.fromBinCode}${res.fromEmpty ? `, which is empty now: put it with the empty bins` : ""}.` : "",
+          `${binCounts(res.bin)} on the shelf. Scan the next item.`,
+        ],
+      });
+      setDone((prev) => [{ code: res.item.code, shelf: shelfLabel, counts: res.item.title }, ...prev].slice(0, 30));
+      onShelved();
+    } catch (e) {
+      beep("error");
+      setBanner({ tone: "danger", title: "Not put on the shelf", lines: [errorText(e)] });
     } finally {
       focusField(FIELD);
     }
@@ -115,6 +170,28 @@ export function ShelvePanel({
   function handleScan(raw: string) {
     const code = normalizeCode(raw);
     const kind = classifyScan(code);
+    if (shelf && oversized) {
+      if (kind === "item") return void putOnShelf(code, shelf);
+      if (kind === "bin") {
+        beep("error");
+        setBanner({
+          tone: "danger",
+          title: `${code} didn't go on shelf ${shelf}`,
+          lines: ["Bins don't go on an oversized shelf. Scan the item labels instead, or use Combine to move the whole bin here."],
+        });
+        return;
+      }
+      if (kind === "upc" || kind === "box") {
+        beep("error");
+        setBanner({
+          tone: "danger",
+          title: kind === "box" ? "That's a box label" : "That's a product barcode",
+          lines: ["Scan the item's label (starts with ES). Older items with no label go on with Put away."],
+        });
+        return;
+      }
+      return void checkShelf(raw);
+    }
     if (kind === "bin") {
       if (shelf) {
         void shelve(code, shelf);
@@ -141,7 +218,9 @@ export function ShelvePanel({
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-surface p-4">
         <div className="min-w-0">
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Shelving onto</p>
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            {oversized ? "Items onto oversized shelf" : "Shelving onto"}
+          </p>
           <p className="text-3xl font-bold tracking-tight text-foreground">{shelf ? `Shelf ${shelf}` : "No shelf yet"}</p>
           {waitingBin && <p className="mt-1 text-sm text-primary">{waitingBin} is waiting for a shelf scan.</p>}
         </div>
@@ -150,6 +229,7 @@ export function ShelvePanel({
             variant="outline"
             onClick={() => {
               setShelf(null);
+              setOversized(false);
               setWaitingBin(null);
               setConfirmShelf(null);
               setBanner(null);
@@ -163,12 +243,22 @@ export function ShelvePanel({
 
       <ScanStep
         id={FIELD}
-        label={shelf ? "Bin" : "Shelf or bin"}
-        prompt={shelf ? `Scan a bin for shelf ${shelf}` : waitingBin ? "Scan the shelf" : "Scan the shelf first"}
+        label={shelf ? (oversized ? "Item" : "Bin") : "Shelf or bin"}
+        prompt={
+          shelf
+            ? oversized
+              ? `Scan each item going on shelf ${shelf}`
+              : `Scan a bin for shelf ${shelf}`
+            : waitingBin
+              ? "Scan the shelf"
+              : "Scan the shelf first"
+        }
         hint={
           shelf
-            ? "Each bin you scan goes on this shelf. Scan another shelf to switch."
-            : "Shelf first, then each bin going on it. A bin then its shelf works too."
+            ? oversized
+              ? "One scan = one unit on the shelf, loose or out of its bin. Scan another shelf to switch."
+              : "Each bin you scan goes on this shelf. Scan another shelf to switch."
+            : "Shelf first, then each bin going on it. A bin then its shelf works too. Oversized shelf: scan it, then the items."
         }
         onScan={handleScan}
       />
@@ -186,7 +276,7 @@ export function ShelvePanel({
             {done.map((d, i) => (
               <li key={`${d.code}-${i}`} className="flex items-center justify-between gap-3 px-4 py-2.5">
                 <span className="font-mono font-medium text-foreground">{d.code}</span>
-                <span className="text-muted-foreground">
+                <span className="min-w-0 truncate text-muted-foreground">
                   Shelf {d.shelf} · {d.counts}
                 </span>
               </li>

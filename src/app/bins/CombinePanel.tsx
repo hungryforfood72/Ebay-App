@@ -11,6 +11,7 @@ import {
   BannerPanel,
   beep,
   binCounts,
+  binName,
   BinStatusBadge,
   errorText,
   focusField,
@@ -31,6 +32,8 @@ type MoveResult = { itemsMoved: number; unitsMoved: number; fromEmpty: boolean; 
 //   2. either scan the bin to move into right away (moves everything), or
 //      first scan the item labels to move only those, then the bin
 //   3. check what will move, confirm
+// Either bin can be an oversized shelf (scan the shelf's own label): a
+// bin's items go onto the shelf, or come off it into a bin.
 // Nothing moves until the confirm tap. The counts after are what really
 // moved, in case someone picked from the bin in the meantime.
 export function CombinePanel() {
@@ -59,7 +62,7 @@ export function CombinePanel() {
     try {
       return await api<BinDetail>(`/api/bins/${encodeURIComponent(code)}`);
     } catch (e) {
-      fail("Couldn't find that bin", errorText(e));
+      fail("Couldn't find that bin or shelf", errorText(e));
       return null;
     } finally {
       setLoading(false);
@@ -71,11 +74,15 @@ export function CombinePanel() {
     const kind = classifyScan(code);
     if (to) return; // On the confirm step: confirm or go back first.
 
+    // "other" is usually a shelf label: an oversized shelf counts as a bin
+    // here (the server says if it's a bin shelf).
+    const binLike = kind === "bin" || kind === "other";
+
     if (!from) {
-      if (kind !== "bin") return fail("Scan a bin label", "Start with the bin you're taking items out of.");
-      const bin = await loadBin(code);
+      if (!binLike) return fail("Scan a bin label", "Start with the bin (or oversized shelf) you're taking items out of.");
+      const bin = await loadBin(raw);
       if (!bin) return;
-      if (bin.contents.length === 0) return fail(`${bin.bin.code} is already empty`, "Scan a bin that has items in it.");
+      if (bin.contents.length === 0) return fail(`${binName(bin.bin)} is already empty`, "Scan one that has items in it.");
       beep("next");
       setBanner(null);
       setFrom(bin);
@@ -83,10 +90,11 @@ export function CombinePanel() {
       return;
     }
 
-    if (kind === "bin") {
+    if (binLike) {
       if (code === from.bin.code) return fail("That's the same bin", "Scan the bin you're moving items into.");
-      const bin = await loadBin(code);
+      const bin = await loadBin(raw);
       if (!bin) return;
+      if (bin.bin.code === from.bin.code) return fail("That's the same shelf", "Scan the bin you're moving items into.");
       beep("next");
       setBanner(null);
       setTo(bin);
@@ -96,7 +104,7 @@ export function CombinePanel() {
     // An item to move on its own: its label, or the UPC for an older item
     // that has no label.
     const matches = from.contents.filter((c) => c.code.toUpperCase() === code || c.upc === code);
-    if (matches.length === 0) return fail(`Not in ${from.bin.code}`, `${code} isn't in this bin.`);
+    if (matches.length === 0) return fail(`Not in ${binName(from.bin)}`, `${code} isn't ${from.bin.oversizedShelf ? "on this shelf" : "in this bin"}.`);
     if (matches.length > 1) return fail("More than one match", "Several items here share that UPC. Tap the right one below.");
     const id = matches[0].id;
     beep("next");
@@ -141,15 +149,27 @@ export function CombinePanel() {
       beep("ok");
       setBanner({
         tone: "success",
-        title: res.fromEmpty ? `${from.bin.code} is empty` : `Moved into ${to.bin.code}`,
+        title: res.fromEmpty
+          ? from.bin.oversizedShelf
+            ? `${binName(from.bin)} is clear`
+            : `${from.bin.code} is empty`
+          : `Moved ${to.bin.oversizedShelf ? "onto" : "into"} ${binName(to.bin)}`,
         lines: [
-          `${plural(res.unitsMoved, "unit")} (${plural(res.itemsMoved, "item")}) now in ${to.bin.code}${
-            res.to?.shelfLabel ? ` on shelf ${res.to.shelfLabel}` : ""
+          `${plural(res.unitsMoved, "unit")} (${plural(res.itemsMoved, "item")}) now ${
+            to.bin.oversizedShelf
+              ? `on oversized shelf ${to.bin.oversizedShelf}`
+              : `in ${to.bin.code}${res.to?.shelfLabel ? ` on shelf ${res.to.shelfLabel}` : ""}`
           }.`,
           res.unitsMoved !== movingUnits
             ? `That's ${movingUnits - res.unitsMoved > 0 ? "fewer" : "more"} than shown: someone changed the bin while you were moving it.`
             : "",
-          res.fromEmpty ? `Put ${from.bin.code} with the empty bins for reuse.` : res.from ? `${from.bin.code} still has ${binCounts(res.from).toLowerCase()}.` : "",
+          res.fromEmpty
+            ? from.bin.oversizedShelf
+              ? ""
+              : `Put ${from.bin.code} with the empty bins for reuse.`
+            : res.from
+              ? `${binName(from.bin)} still has ${binCounts(res.from).toLowerCase()}.`
+              : "",
         ],
       });
       reset();
@@ -169,8 +189,8 @@ export function CombinePanel() {
           prompt={!from ? "Scan the bin you're emptying" : moveAll ? "Scan the bin to move everything into" : "Scan more items, or the bin to move into"}
           hint={
             from
-              ? "Scan item labels to move only some. Scan the other bin when you're ready."
-              : "Then scan the bin it's going into."
+              ? "Scan item labels to move only some. Scan the other bin (or an oversized shelf's label) when you're ready."
+              : "Then scan the bin it's going into. Oversized shelves work too: scan the shelf's label."
           }
           onScan={handleScan}
           disabled={loading}
@@ -183,11 +203,11 @@ export function CombinePanel() {
         <Card padded={false}>
           <div className="flex flex-wrap items-center justify-between gap-2 p-4 pb-3">
             <div>
-              <p className="font-mono text-lg font-semibold text-foreground">{from.bin.code}</p>
+              <p className="font-mono text-lg font-semibold text-foreground">{binName(from.bin)}</p>
               <p className="text-sm text-muted-foreground">{binCounts(from.bin)}</p>
             </div>
             <div className="flex items-center gap-2">
-              <BinStatusBadge bin={from.bin} />
+              {!from.bin.oversizedShelf && <BinStatusBadge bin={from.bin} />}
               <Button variant="ghost" size="sm" onClick={reset}>
                 Start over
               </Button>
@@ -243,16 +263,16 @@ export function CombinePanel() {
           <p className="text-sm font-medium text-muted-foreground">Check, then confirm</p>
           <div className="mt-3 flex flex-col items-stretch gap-2">
             <div className="rounded-lg border border-border p-3">
-              <p className="font-mono text-xl font-semibold text-foreground">{from.bin.code}</p>
+              <p className="font-mono text-xl font-semibold text-foreground">{binName(from.bin)}</p>
               <p className="text-sm text-muted-foreground">
                 {moveAll ? `All ${plural(movingUnits, "unit")} (${plural(moving.length, "item")})` : `${plural(moving.length, "item")}, ${plural(movingUnits, "unit")}`}
               </p>
             </div>
             <ArrowDown className="mx-auto size-6 text-muted-foreground" aria-hidden />
             <div className="rounded-lg border border-border p-3">
-              <p className="font-mono text-xl font-semibold text-foreground">{to.bin.code}</p>
+              <p className="font-mono text-xl font-semibold text-foreground">{binName(to.bin)}</p>
               <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-                {binCounts(to.bin)} now <BinStatusBadge bin={to.bin} />
+                {to.bin.oversizedShelf ? `Oversized shelf, ${binCounts(to.bin).toLowerCase()} on it now` : <>{binCounts(to.bin)} now <BinStatusBadge bin={to.bin} /></>}
               </p>
             </div>
           </div>
@@ -267,7 +287,7 @@ export function CombinePanel() {
           )}
           <div className="mt-4 flex flex-col gap-2">
             <Button size="xl" block onClick={confirm} disabled={saving}>
-              {saving ? "Moving…" : `Move ${plural(movingUnits, "unit")} into ${to.bin.code}`}
+              {saving ? "Moving…" : `Move ${plural(movingUnits, "unit")} ${to.bin.oversizedShelf ? "onto" : "into"} ${binName(to.bin)}`}
             </Button>
             <Button
               variant="ghost"

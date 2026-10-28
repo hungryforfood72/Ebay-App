@@ -2,10 +2,12 @@ import { getRequestUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { findBin, moveBinContents, WarehouseError } from "@/lib/warehouse/bins";
 import { normalizeCode } from "@/lib/warehouse/codes";
+import { resolveBinScan } from "@/lib/warehouse/shelves";
 import { NextRequest, NextResponse } from "next/server";
 import { binsErrorResponse, readCode, summarizeBins } from "../shared";
 
-// Moves only some items from one bin to another:
+// Moves only some items from one bin to another (either can be an
+// oversized shelf's label):
 // { fromBinCode, toBinCode, itemIds?: string[], itemCodes?: string[] } ->
 // { itemsMoved, unitsMoved, fromEmpty, from, to }. itemCodes are what the
 // handheld scanned: an item label (ES000123), or the UPC for an older item
@@ -28,7 +30,7 @@ export async function POST(request: NextRequest) {
 
   try {
     if (itemCodes.length > 0) {
-      const from = await findBin(prisma, fromBinCode);
+      const from = await findBin(prisma, await resolveBinScan(prisma, fromBinCode));
       const contents = await prisma.binContent.findMany({
         where: { binId: from.id },
         select: { item: { select: { id: true, sku: true, upc: true } } },
@@ -49,11 +51,11 @@ export async function POST(request: NextRequest) {
       by: getRequestUser(request)?.username ?? null,
       unshelveEmptiedFrom: true,
     });
-    const bins = await summarizeBins({ code: { in: [normalizeCode(fromBinCode), normalizeCode(toBinCode)] } });
+    const bins = await summarizeBins({ code: { in: [result.fromCode, result.toCode] } });
     return NextResponse.json({
       ...result,
-      from: bins.find((b) => b.code === normalizeCode(fromBinCode)) ?? null,
-      to: bins.find((b) => b.code === normalizeCode(toBinCode)) ?? null,
+      from: bins.find((b) => b.code === result.fromCode) ?? null,
+      to: bins.find((b) => b.code === result.toCode) ?? null,
     });
   } catch (e) {
     return binsErrorResponse(e);

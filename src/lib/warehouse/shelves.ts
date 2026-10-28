@@ -159,7 +159,7 @@ export function shelfTakesBins(state: ShelfState): boolean {
 // Why a shelf can't take bins yet, in words for the handheld. null = it can.
 export function shelfRefusal(state: ShelfState): string | null {
   if (state.oversized) {
-    return `Shelf ${state.label} is for oversized items, no bins. To put an item on it, scan the shelf's label at Fill bins, then the item.`;
+    return `Shelf ${state.label} is for oversized items, no bins. To put items on it, scan the shelf's label at Shelve or Fill bins, then the item labels. To move a whole bin onto it, use Combine.`;
   }
   if (state.state === "old_items") {
     return `Shelf ${state.label} still has ${state.oldItems} old-system ${state.oldItems === 1 ? "item" : "items"} (${state.oldUnits} ${state.oldUnits === 1 ? "unit" : "units"}). Bins can go here once it's empty.`;

@@ -1,10 +1,10 @@
 import { getRequestUser } from "@/lib/auth";
 import { moveBinContents } from "@/lib/warehouse/bins";
-import { normalizeCode } from "@/lib/warehouse/codes";
 import { NextRequest, NextResponse } from "next/server";
 import { binsErrorResponse, readCode, summarizeBins } from "../shared";
 
-// Empties one bin into another: { fromBinCode, toBinCode } ->
+// Empties one bin into another (either can be an oversized shelf's
+// label): { fromBinCode, toBinCode } ->
 // { itemsMoved, unitsMoved, fromEmpty, from, to }. The counts are what
 // actually moved when it saved, which can be less than the preview showed
 // if someone picked from the bin in between, so the page shows these.
@@ -22,11 +22,11 @@ export async function POST(request: NextRequest) {
       by: getRequestUser(request)?.username ?? null,
       unshelveEmptiedFrom: true,
     });
-    const bins = await summarizeBins({ code: { in: [normalizeCode(fromBinCode), normalizeCode(toBinCode)] } });
+    const bins = await summarizeBins({ code: { in: [result.fromCode, result.toCode] } });
     return NextResponse.json({
       ...result,
-      from: bins.find((b) => b.code === normalizeCode(fromBinCode)) ?? null,
-      to: bins.find((b) => b.code === normalizeCode(toBinCode)) ?? null,
+      from: bins.find((b) => b.code === result.fromCode) ?? null,
+      to: bins.find((b) => b.code === result.toCode) ?? null,
     });
   } catch (e) {
     return binsErrorResponse(e);

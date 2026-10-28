@@ -1,7 +1,7 @@
 import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "../prisma";
 import { BIN_CODE_PREFIX, codeNumber, formatBinCode, formatItemCode, normalizeCode } from "./codes";
-import { assertShelfTakesBins } from "./shelves";
+import { assertShelfTakesBins, resolveBinScan } from "./shelves";
 import type { ItemLocation } from "./types";
 
 // Every change to what's in a bin goes through this file, so the BinMove log
@@ -120,15 +120,7 @@ export async function removeUnits(
   // Bin locks first (see the lock order at the top). The bins are read,
   // locked, then read again: if a combine was moving this item, the lock
   // waited for it, and the item may now be in a bin we haven't locked yet.
-  const locked = new Set<string>();
-  for (let round = 0; round < 5; round++) {
-    const holding = await tx.$queryRaw<{ code: string }[]>`
-      SELECT DISTINCT b.code FROM "BinContent" bc JOIN "Bin" b ON b.id = bc."binId" WHERE bc."itemId" = ${args.itemId}`;
-    const missing = holding.map((h) => h.code).filter((c) => !locked.has(c));
-    if (missing.length === 0) break;
-    await lockBins(tx, missing);
-    missing.forEach((c) => locked.add(c));
-  }
+  await lockItemBins(tx, args.itemId);
   const rows = await tx.$queryRaw<{ id: string; binId: string; units: number; code: string }[]>`
     SELECT bc.id, bc."binId", bc.units, b.code
     FROM "BinContent" bc JOIN "Bin" b ON b.id = bc."binId"
@@ -277,17 +269,18 @@ export async function moveBinContents(args: {
   itemIds?: string[];
   by: string | null;
   unshelveEmptiedFrom?: boolean;
-}): Promise<{ itemsMoved: number; unitsMoved: number; fromEmpty: boolean }> {
+}): Promise<{ itemsMoved: number; unitsMoved: number; fromEmpty: boolean; fromCode: string; toCode: string }> {
   // Any bin count still owed from an earlier failed update gets settled
   // first, so the combine moves the true contents.
   await applyPendingRemovals();
+  // Either side can be an oversized shelf's label (its hidden shelf bin):
+  // a bin emptied onto the shelf, or items taken off it into a bin.
+  const fromCode = await resolveBinScan(prisma, args.fromBinCode);
+  const toCode = await resolveBinScan(prisma, args.toBinCode);
   return prisma.$transaction(async (tx) => {
-    const from = await findBin(tx, args.fromBinCode);
-    const to = await findBin(tx, args.toBinCode);
-    if (from.id === to.id) throw new WarehouseError("That's the same bin twice.");
-    if (from.shelfBin || to.shelfBin) {
-      throw new WarehouseError("Items on an oversized shelf stay on the shelf: they can't be combined with a bin.");
-    }
+    const from = await findBin(tx, fromCode);
+    const to = await findBin(tx, toCode);
+    if (from.id === to.id) throw new WarehouseError(from.shelfBin ? "That's the same shelf twice." : "That's the same bin twice.");
     // Two people combining the same bins at once (A into B while someone
     // does B into A, or both emptying A) would otherwise each read the
     // same rows and move the units twice. A per-bin lock, always taken in
@@ -340,14 +333,77 @@ export async function moveBinContents(args: {
     const unitsMoved = rows.reduce((sum, r) => sum + r.units, 0);
     if (toNow.emptiedAt) await tx.bin.update({ where: { id: to.id }, data: { emptiedAt: null } });
     const fromEmpty = await markEmptyIfEmpty(tx, from.id);
-    if (fromEmpty && args.unshelveEmptiedFrom && fromNow.shelfLabel) {
+    // An oversized shelf's own bin never leaves its shelf.
+    if (fromEmpty && args.unshelveEmptiedFrom && fromNow.shelfLabel && !fromNow.shelfBin) {
       await tx.bin.update({ where: { id: from.id }, data: { shelfLabel: null, shelvedAt: null, shelvedBy: null } });
       await tx.binMove.create({
         data: { kind: "unshelve", fromBinCode: from.code, shelfLabel: fromNow.shelfLabel, note: "Emptied by combine", by: args.by },
       });
     }
-    return { itemsMoved: rows.length, unitsMoved, fromEmpty };
+    return { itemsMoved: rows.length, unitsMoved, fromEmpty, fromCode: from.code, toCode: to.code };
   }, { timeout: 30_000, maxWait: 10_000 });
+}
+
+// Locks every bin holding an item, plus `extra` bins, the way removeUnits
+// does: read, lock, read again, in case a combine moved the item into a
+// bin not locked yet. Returns the codes locked.
+export async function lockItemBins(tx: Tx, itemId: string, extra: string[] = []): Promise<Set<string>> {
+  const locked = new Set<string>();
+  const first = extra.map(normalizeCode);
+  for (let round = 0; round < 5; round++) {
+    const holding = await tx.$queryRaw<{ code: string }[]>`
+      SELECT DISTINCT b.code FROM "BinContent" bc JOIN "Bin" b ON b.id = bc."binId" WHERE bc."itemId" = ${itemId}`;
+    const missing = [...first, ...holding.map((h) => h.code)].filter((c) => !locked.has(c));
+    if (missing.length === 0) break;
+    await lockBins(tx, missing);
+    missing.forEach((c) => locked.add(c));
+  }
+  return locked;
+}
+
+// Moves some units of one item from one bin to another (one bag scanned off
+// a bin onto an oversized shelf). The caller holds both bins' locks
+// (lockItemBins). A bin emptied this way is in someone's hands, so it comes
+// off its shelf, same as Combine; an oversized shelf's own bin never does.
+export async function moveUnits(
+  tx: Tx,
+  args: { itemId: string; fromBinCode: string; toBinCode: string; units: number; by: string | null; note?: string }
+): Promise<{ fromEmpty: boolean }> {
+  if (!Number.isInteger(args.units) || args.units < 1) throw new WarehouseError("Units must be at least 1.");
+  await lockBins(tx, [args.fromBinCode, args.toBinCode]);
+  const from = await findBin(tx, args.fromBinCode);
+  const to = await findBin(tx, args.toBinCode);
+  if (from.id === to.id) throw new WarehouseError("That's the same bin twice.");
+  const [row] = await tx.$queryRaw<{ id: string; units: number }[]>`
+    SELECT id, units FROM "BinContent" WHERE "binId" = ${from.id} AND "itemId" = ${args.itemId} FOR UPDATE`;
+  if (!row || row.units < args.units) throw new WarehouseError(`That item isn't in ${from.code} anymore.`, 409);
+  if (row.units === args.units) await tx.binContent.delete({ where: { id: row.id } });
+  else await tx.binContent.update({ where: { id: row.id }, data: { units: { decrement: args.units } } });
+  await tx.binContent.upsert({
+    where: { binId_itemId: { binId: to.id, itemId: args.itemId } },
+    create: { binId: to.id, itemId: args.itemId, units: args.units },
+    update: { units: { increment: args.units } },
+  });
+  if (to.emptiedAt) await tx.bin.update({ where: { id: to.id }, data: { emptiedAt: null } });
+  await tx.binMove.create({
+    data: {
+      kind: "transfer",
+      itemId: args.itemId,
+      fromBinCode: from.code,
+      toBinCode: to.code,
+      units: args.units,
+      note: args.note,
+      by: args.by,
+    },
+  });
+  const fromEmpty = await markEmptyIfEmpty(tx, from.id);
+  if (fromEmpty && from.shelfLabel && !from.shelfBin) {
+    await tx.bin.update({ where: { id: from.id }, data: { shelfLabel: null, shelvedAt: null, shelvedBy: null } });
+    await tx.binMove.create({
+      data: { kind: "unshelve", fromBinCode: from.code, shelfLabel: from.shelfLabel, note: "Emptied onto oversized shelf", by: args.by },
+    });
+  }
+  return { fromEmpty };
 }
 
 // Records which shelf a bin is on (or null to take it off). Shelving a bin
