@@ -112,7 +112,9 @@ export function CounterSaleCheckout({
     for (const file of Array.from(files)) {
       const id = `${Date.now()}-${Math.random()}`;
       setPhotos((prev) => [...prev, { id, previewUrl: URL.createObjectURL(file), status: "uploading" }]);
-      uploadPhoto(file)
+      uploadPhoto(file, (image) =>
+        setPhotos((prev) => prev.map((p) => (p.id === id ? { ...p, previewUrl: URL.createObjectURL(image) } : p)))
+      )
         .then((url) => setPhotos((prev) => prev.map((p) => (p.id === id ? { ...p, status: "done", url } : p))))
         .catch(() => setPhotos((prev) => prev.map((p) => (p.id === id ? { ...p, status: "error" } : p))));
     }

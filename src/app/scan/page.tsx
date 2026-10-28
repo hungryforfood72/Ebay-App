@@ -148,10 +148,14 @@ const ACTIVE_MANIFEST_KEY = "ebay-tool.activeManifestId";
 function startSinglePhotoUpload(file: File, setPhoto: (p: Photo | null) => void) {
   const id = `${Date.now()}-${Math.random()}`;
   const previewUrl = URL.createObjectURL(file);
+  let shownUrl = previewUrl;
   setPhoto({ id, previewUrl, status: "uploading" });
-  uploadPhoto(file)
-    .then((url) => setPhoto({ id, previewUrl, status: "done", cloudinaryUrl: url }))
-    .catch(() => setPhoto({ id, previewUrl, status: "error" }));
+  uploadPhoto(file, (image) => {
+    shownUrl = URL.createObjectURL(image);
+    setPhoto({ id, previewUrl: shownUrl, status: "uploading" });
+  })
+    .then((url) => setPhoto({ id, previewUrl: shownUrl, status: "done", cloudinaryUrl: url }))
+    .catch(() => setPhoto({ id, previewUrl: shownUrl, status: "error" }));
 }
 
 // The walk-up sale's floor/ideal/near-expiry prices come from the manifest
@@ -631,7 +635,10 @@ function ScanPageInner() {
       const previewUrl = URL.createObjectURL(file);
       setPhotos((prev) => [...prev, { id, previewUrl, status: "uploading" }]);
 
-      uploadPhoto(file)
+      uploadPhoto(file, (image) => {
+        const shownUrl = URL.createObjectURL(image);
+        setPhotos((prev) => prev.map((p) => (p.id === id ? { ...p, previewUrl: shownUrl } : p)));
+      })
         .then((url) => {
           setPhotos((prev) =>
             prev.map((p) =>
