@@ -42,6 +42,8 @@ type SourcingLineEstimate = {
   monthsToSellThrough: number | null;
   sellRateSource: "own" | "ebay_listings" | "web_demand" | "quick_demand" | "category" | null;
   longTail: boolean;
+  // This line's share of the max bid, per unit (see the manifest route).
+  maxBidPerUnit: number | null;
 };
 
 type SourcingEvaluation = {
@@ -288,6 +290,8 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
   // Other-supplier manifests are priced by the box (see
   // estimateOtherSupplierLine), so their counts are boxes, not pieces.
   const unitsLabel = candidate.supplier === "unknown" ? "Boxes" : "Units";
+  // Per-item share of the max bid; a consignment load has no bid at all.
+  const showBidColumn = !candidate.consignment;
 
   return (
     <AppShell
@@ -711,7 +715,12 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
                       >
                         <p className="text-sm font-medium leading-snug text-foreground">{e.description}</p>
                         <EstimateTags estimate={e} />
-                        <dl className="mt-2 grid grid-cols-4 gap-2 text-xs tabular-nums">
+                        <dl
+                          className={cn(
+                            "mt-2 grid gap-2 text-xs tabular-nums",
+                            showBidColumn ? "grid-cols-5" : "grid-cols-4"
+                          )}
+                        >
                           <MiniStat
                             label="Sale/unit"
                             value={e.estimatedUnitSalePrice != null ? `$${e.estimatedUnitSalePrice.toFixed(2)}` : "—"}
@@ -720,6 +729,12 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
                             label="Net/unit"
                             value={e.estimatedNetPerUnit != null ? `$${e.estimatedNetPerUnit.toFixed(2)}` : "—"}
                           />
+                          {showBidColumn && (
+                            <MiniStat
+                              label="Bid/unit"
+                              value={e.maxBidPerUnit != null ? `$${e.maxBidPerUnit.toFixed(2)}` : "—"}
+                            />
+                          )}
                           <MiniStat label={unitsLabel} value={String(e.effectiveUnits)} />
                           <MiniStat label="Sell as" value={sellAs(e)} />
                         </dl>
@@ -734,6 +749,7 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
                           <th className="px-3 py-3 text-right">Est. sale/unit</th>
                           <th className="px-3 py-3 text-right">Sell as</th>
                           <th className="px-3 py-3 text-right">Est. net/unit</th>
+                          {showBidColumn && <th className="px-3 py-3 text-right">Max bid/unit</th>}
                           <th className="px-3 py-3 text-right">{unitsLabel}</th>
                           <th className="px-4 py-3">Confidence</th>
                         </tr>
@@ -752,6 +768,20 @@ export default function AnalyzerDetailPage({ params }: { params: Promise<{ id: s
                             <td className="px-3 text-right">
                               {e.estimatedNetPerUnit != null ? `$${e.estimatedNetPerUnit.toFixed(2)}` : "—"}
                             </td>
+                            {showBidColumn && (
+                              <td className="px-3 py-2.5 text-right">
+                                {e.maxBidPerUnit != null ? (
+                                  <>
+                                    <span className="font-medium text-foreground">${e.maxBidPerUnit.toFixed(2)}</span>
+                                    <span className="block text-xs text-muted-foreground">
+                                      ${(e.maxBidPerUnit * e.effectiveUnits).toFixed(2)} total
+                                    </span>
+                                  </>
+                                ) : (
+                                  "—"
+                                )}
+                              </td>
+                            )}
                             <td className="px-3 text-right">{e.effectiveUnits}</td>
                             <td className="px-4">
                               <ConfidenceBadge confidence={e.dataConfidence} />

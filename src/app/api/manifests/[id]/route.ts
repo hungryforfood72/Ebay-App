@@ -144,6 +144,22 @@ export async function GET(
   // clears Cristian's configured margin — skip the lookup when there's no
   // evaluation to attach it to.
   const targetMarginPct = latestEvaluation ? await getTargetMarginPct() : null;
+  // Each line's share of the max bid, worked out the way evaluateManifestChunk
+  // sums it (sourcingAgent.ts): net ÷ (1 + margin), at the unproven margin for
+  // lines with no sell-speed evidence or slow-but-kept stock. Uses the margins
+  // that run snapshotted, so the lines add back up to its max bid.
+  const bidTargetPct = latestEvaluation?.targetMarginPct ?? targetMarginPct ?? 0;
+  const bidCheapPct = latestEvaluation?.unprovenMarginPct ?? bidTargetPct;
+  const maxBidPerUnit = (e: {
+    estimatedNetPerUnit: unknown;
+    flaggedDud: boolean;
+    sellRateSource: string | null;
+    longTail: boolean;
+  }) => {
+    if (e.estimatedNetPerUnit == null) return null;
+    const cheap = (!e.flaggedDud && e.sellRateSource == null) || e.longTail;
+    return Math.max(0, Number(e.estimatedNetPerUnit) / (1 + (cheap ? bidCheapPct : bidTargetPct) / 100));
+  };
 
   const receivedByUpc = new Map<string, number>();
   const unmatchedReceived: { upc: string | null; units: number }[] = [];
@@ -664,6 +680,7 @@ export async function GET(
         monthsToSellThrough: e.monthsToSellThrough,
         sellRateSource: e.sellRateSource,
         longTail: e.longTail,
+        maxBidPerUnit: maxBidPerUnit(e),
       })),
     },
     summary: {
