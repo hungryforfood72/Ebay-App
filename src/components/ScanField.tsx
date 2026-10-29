@@ -25,6 +25,14 @@ import { cn } from "./ui/cn";
 //     faster than anyone types, or a whole barcode committed in one event.
 //   Detection is off entirely in manual typing mode: Android keyboards can
 //   commit a whole autocompleted word at once, which would look like a scan.
+// - On the handheld, the field holds on to the cursor in scan mode
+//   (Cristian, 2026-10-29: tapping the screen took the cursor out of the
+//   bin scan and the next scans went nowhere). Tapping anything that isn't
+//   another text box puts it straight back. And the on-screen keyboard
+//   only ever comes up from the ⌨ button: every focus in scan mode goes
+//   through a brief readOnly (Android never opens the keyboard for a
+//   read-only field), coming back from another app re-focuses the same
+//   way, and a typed-in code drops back to scan mode once it's entered.
 // - A station PC's sign-in code (SIGNIN-...) scanned into any of these
 //   opens the PIN prompt (StationSignInDialog) instead of reaching the
 //   page, so people sign in at a station from whatever screen they're on.
@@ -41,6 +49,39 @@ const SCAN_SETTLE_MS = 120;
 // A single input event adding at least this many characters is a scanner
 // committing the whole barcode at once (or a paste — same intent).
 const BULK_INSERT_CHARS = 4;
+// How long a scan-mode field stays read-only after it gets the focus:
+// long enough for Chrome to see it as read-only and skip the keyboard,
+// short enough that no scan arrives before it's writable again.
+const QUIET_FOCUS_MS = 100;
+
+// Where focus went counts as "somewhere else to type": the scan field
+// leaves it alone instead of taking the cursor back.
+function isTextEntry(el: Element | null): boolean {
+  if (!el || el === document.body) return false;
+  if (el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) return true;
+  if (el instanceof HTMLInputElement) {
+    return !["button", "submit", "reset", "checkbox", "radio", "range", "color", "file", "image"].includes(el.type);
+  }
+  return (el as HTMLElement).isContentEditable;
+}
+
+type Timer = { current: ReturnType<typeof setTimeout> | null };
+
+// Read-only for QUIET_FOCUS_MS: Chrome on Android never opens the keyboard
+// for a read-only field, and it's writable again before the next scan.
+function makeQuiet(input: HTMLInputElement, timer: Timer) {
+  input.readOnly = true;
+  clearTimeout(timer.current ?? undefined);
+  timer.current = setTimeout(() => {
+    input.readOnly = false;
+  }, QUIET_FOCUS_MS);
+}
+
+// Gives a scan-mode field the cursor without the on-screen keyboard.
+function focusQuietly(input: HTMLInputElement, timer: Timer) {
+  makeQuiet(input, timer);
+  input.focus();
+}
 
 export function ScanField({
   id,
@@ -93,6 +134,42 @@ export function ScanField({
     touchDevice.current = window.matchMedia("(pointer: coarse)").matches;
   }, []);
 
+  // Latest typing mode for the listeners below.
+  const typingRef = useRef(typing);
+  useEffect(() => {
+    typingRef.current = typing;
+  });
+
+  // Read-only for a moment around each scan-mode focus (see the top).
+  const quietTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => clearTimeout(quietTimer.current ?? undefined), []);
+
+  // Leaving the app parks the cursor (so Android has no focused field to
+  // open the keyboard for on the way back) and ends typing mode; coming
+  // back puts the cursor back quietly.
+  useEffect(() => {
+    let parked = false;
+    const onVisibility = () => {
+      const input = inputRef.current;
+      if (!input || !touchDevice.current) return;
+      if (document.visibilityState === "hidden") {
+        if (document.activeElement !== input) return;
+        parked = true;
+        typingRef.current = false;
+        setTyping(false);
+        input.blur();
+      } else if (parked) {
+        parked = false;
+        setTimeout(() => {
+          if (!input.isConnected || isTextEntry(document.activeElement)) return;
+          focusQuietly(input, quietTimer);
+        }, 150);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
+
   const lastInputAt = useRef(0);
   const fastRun = useRef(0);
   const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -114,6 +191,14 @@ export function ScanField({
     }
     handledValue.current = scanned;
     onScanRef.current();
+    // Typed it in on the handheld: back to scanning, keyboard away.
+    const input = inputRef.current;
+    if (typingRef.current && touchDevice.current && input) {
+      typingRef.current = false;
+      setTyping(false);
+      input.blur();
+      requestAnimationFrame(() => focusQuietly(input, quietTimer));
+    }
   }
 
   function handleChange(raw: string) {
@@ -145,13 +230,21 @@ export function ScanField({
 
   function toggleTyping() {
     const nowTyping = !typing;
+    typingRef.current = nowTyping;
     setTyping(nowTyping);
     // Android only re-reads inputmode on focus, so blur and refocus to make
     // the keyboard actually appear (or go away) right now.
     const input = inputRef.current;
     if (!input) return;
     input.blur();
-    requestAnimationFrame(() => input.focus());
+    if (nowTyping) {
+      // The ⌨ button is the one way the keyboard comes up: never read-only.
+      clearTimeout(quietTimer.current ?? undefined);
+      input.readOnly = false;
+      requestAnimationFrame(() => input.focus());
+    } else {
+      requestAnimationFrame(() => focusQuietly(input, quietTimer));
+    }
   }
 
   const waiting = !value && focused && !typing;
@@ -199,6 +292,9 @@ export function ScanField({
             }}
             onFocus={(e) => {
               setFocused(true);
+              if (touchDevice.current && !typingRef.current && !e.currentTarget.readOnly) {
+                makeQuiet(e.currentTarget, quietTimer);
+              }
               // Coming back to a field that already has a scan in it (the
               // Back button remounts it, which forgets the scan above): on
               // the handheld the next scan replaces it, and on a desktop
@@ -207,7 +303,22 @@ export function ScanField({
               if (touchDevice.current) handledValue.current = value;
               else e.currentTarget.select();
             }}
-            onBlur={() => setFocused(false)}
+            onBlur={(e) => {
+              setFocused(false);
+              // Handheld, scan mode: a tap on the screen, a button, or a
+              // card takes the cursor back here so the next scan lands.
+              // Not when they tapped another text box, left the app, or a
+              // popup (menu, PIN pad) took over the screen.
+              const input = e.currentTarget;
+              if (!touchDevice.current || typingRef.current) return;
+              setTimeout(() => {
+                if (!input.isConnected || input.disabled || document.activeElement === input) return;
+                if (document.visibilityState === "hidden" || !document.hasFocus()) return;
+                if (typingRef.current || isTextEntry(document.activeElement)) return;
+                if (document.querySelector('[aria-modal="true"]')) return;
+                focusQuietly(input, quietTimer);
+              }, 0);
+            }}
             // The full prompt is in the hint line below — too long to fit
             // in the box itself at the scanner's width.
             placeholder={typing ? "Type it in" : focused ? "Waiting for scan…" : "Tap here, then scan"}
