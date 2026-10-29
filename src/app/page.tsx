@@ -13,6 +13,7 @@ import { cn } from "@/components/ui/cn";
 import { Input, Select } from "@/components/ui/Input";
 import { ChevronRight, ClipboardCheck, ExternalLink, HandCoins, RefreshCw, ScanBarcode } from "lucide-react";
 import { describeBreakdown, type ExpirySplit } from "@/lib/expirationBreakdown";
+import type { PickLine, ShipOrdersResponse } from "@/lib/warehouse/picking";
 import type { ItemLocation } from "@/lib/warehouse/types";
 import type { RelistProgress } from "@/lib/relist";
 import Link from "next/link";
@@ -87,9 +88,10 @@ type DashboardData = {
   // expiring. The API routes behind them enforce owner-only on their own.
   isOwner: boolean;
   stats: {
-    pendingReview: number;
-    readyToPublish: number;
-    listed: number;
+    // Owner only: an employee just gets the expiring count.
+    pendingReview?: number;
+    readyToPublish?: number;
+    listed?: number;
     expiringCount: number;
   };
   ebay: { connected: boolean; missingScopes: string[] };
@@ -242,15 +244,22 @@ export default function DashboardPage() {
 
         <section>
           <SectionHeader title="Inventory" />
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <Stat label="Pending review" value={stats.pendingReview} />
-            <Stat label="Ready to publish" value={stats.readyToPublish} />
-            <Stat label="Listed" value={stats.listed} />
+          {/* Employees get the work counts only, nothing about sales
+              (Cristian, 2026-10-29). */}
+          <div className={cn("grid grid-cols-2 gap-3", isOwner ? "lg:grid-cols-5" : "sm:max-w-md")}>
+            <OrdersToPickStat />
+            {isOwner && (
+              <>
+                <Stat label="Pending review" value={stats.pendingReview ?? 0} />
+                <Stat label="Ready to publish" value={stats.readyToPublish ?? 0} />
+                <Stat label="Listed" value={stats.listed ?? 0} />
+              </>
+            )}
             <Stat label="Expiring ≤21 days" value={stats.expiringCount} highlight={stats.expiringCount > 0} />
           </div>
         </section>
 
-        <SalesSection isOwner={isOwner} refreshKey={salesRefresh} />
+        {isOwner && <SalesSection refreshKey={salesRefresh} />}
 
         {isOwner && <InPersonCard />}
 
@@ -258,43 +267,45 @@ export default function DashboardPage() {
 
         {isOwner && <SendOffersSection />}
 
-        <Card>
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="min-w-0">
-              <p className="font-medium text-foreground">Sold-order sync</p>
-              <p className="text-sm text-muted-foreground">Runs automatically every 4 hours — or trigger it now.</p>
+        {isOwner && (
+          <Card>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="font-medium text-foreground">Sold-order sync</p>
+                <p className="text-sm text-muted-foreground">Runs automatically every 4 hours — or trigger it now.</p>
+              </div>
+              <Button variant="outline" onClick={syncNow} disabled={syncing}>
+                <RefreshCw className={cn("size-4", syncing && "animate-spin")} aria-hidden />
+                {syncing ? "Syncing…" : "Sync now"}
+              </Button>
             </div>
-            <Button variant="outline" onClick={syncNow} disabled={syncing}>
-              <RefreshCw className={cn("size-4", syncing && "animate-spin")} aria-hidden />
-              {syncing ? "Syncing…" : "Sync now"}
-            </Button>
-          </div>
-          {syncResult && (
-            <div className="mt-3 border-t border-border pt-3 text-sm text-muted-foreground">
-              {syncResult.skipped ? (
-                <p className="text-warning">{syncResult.skipped}</p>
-              ) : (
-                <p>
-                  Scanned {syncResult.ordersScanned} order(s) — {syncResult.itemsUpdated} item(s) updated,{" "}
-                  {syncResult.itemsAlreadySynced} already synced, {syncResult.itemsUnmatched} unmatched,{" "}
-                  {syncResult.refundsRecorded} refund(s) recorded
-                  {syncResult.salesReversed > 0
-                    ? `, ${syncResult.salesReversed} sale(s) reversed (cancelled after being recorded)`
-                    : ""}
-                  {syncResult.listingsEnded ? `, ${syncResult.listingsEnded} sold-out listing(s) ended` : ""}
-                  {syncResult.shopifySalesRecorded
-                    ? `, ${syncResult.shopifySalesRecorded} Shopify/Whatnot sale(s) recorded`
-                    : ""}
-                  .
-                </p>
-              )}
-              {syncResult.soldOutLeftUp && syncResult.soldOutLeftUp.length > 0 && (
-                <p className="mt-1 text-warning">Sold out here but not on eBay: {syncResult.soldOutLeftUp.join(" · ")}</p>
-              )}
-              {syncResult.errors.length > 0 && <p className="mt-1 text-danger">{syncResult.errors.join(" · ")}</p>}
-            </div>
-          )}
-        </Card>
+            {syncResult && (
+              <div className="mt-3 border-t border-border pt-3 text-sm text-muted-foreground">
+                {syncResult.skipped ? (
+                  <p className="text-warning">{syncResult.skipped}</p>
+                ) : (
+                  <p>
+                    Scanned {syncResult.ordersScanned} order(s) — {syncResult.itemsUpdated} item(s) updated,{" "}
+                    {syncResult.itemsAlreadySynced} already synced, {syncResult.itemsUnmatched} unmatched,{" "}
+                    {syncResult.refundsRecorded} refund(s) recorded
+                    {syncResult.salesReversed > 0
+                      ? `, ${syncResult.salesReversed} sale(s) reversed (cancelled after being recorded)`
+                      : ""}
+                    {syncResult.listingsEnded ? `, ${syncResult.listingsEnded} sold-out listing(s) ended` : ""}
+                    {syncResult.shopifySalesRecorded
+                      ? `, ${syncResult.shopifySalesRecorded} Shopify/Whatnot sale(s) recorded`
+                      : ""}
+                    .
+                  </p>
+                )}
+                {syncResult.soldOutLeftUp && syncResult.soldOutLeftUp.length > 0 && (
+                  <p className="mt-1 text-warning">Sold out here but not on eBay: {syncResult.soldOutLeftUp.join(" · ")}</p>
+                )}
+                {syncResult.errors.length > 0 && <p className="mt-1 text-danger">{syncResult.errors.join(" · ")}</p>}
+              </div>
+            )}
+          </Card>
+        )}
 
         {expiredNeedingPull.length > 0 && (
           <Alert tone="danger" title={`Needs pulling from the shelf (${expiredNeedingPull.length})`} className="scroll-mt-20">
@@ -474,16 +485,16 @@ function ShelfPullRow({ item }: { item: ExpiredNeedingPullItem }) {
   );
 }
 
+// Owner only: /api/dashboard/sales turns employees away.
 type SalesSummary = {
   units: number;
-  // Owner only — /api/dashboard/sales leaves these out for an employee.
-  revenue?: number;
-  fees?: number;
-  shipping?: number;
-  cogs?: number;
-  refunded?: number;
-  profit?: number;
-  revenueByChannel?: Record<string, number>;
+  revenue: number;
+  fees: number;
+  shipping: number;
+  cogs: number;
+  refunded: number;
+  profit: number;
+  revenueByChannel: Record<string, number>;
 };
 
 const CHANNEL_LABEL: Record<string, string> = {
@@ -551,7 +562,7 @@ function formatRange(from: Date | null, to: Date | null): string {
   return `${start} – ${lastDay.toLocaleDateString(undefined, full)}`;
 }
 
-function SalesSection({ isOwner, refreshKey }: { isOwner: boolean; refreshKey: number }) {
+function SalesSection({ refreshKey }: { refreshKey: number }) {
   const [preset, setPreset] = useState<SalesPreset>("mtd");
   const today = toDateInput(new Date());
   const [customFrom, setCustomFrom] = useState(() => toDateInput(presetRange("mtd").from!));
@@ -648,27 +659,23 @@ function SalesSection({ isOwner, refreshKey }: { isOwner: boolean; refreshKey: n
       {summary ? (
         <div className={cn("grid grid-cols-2 gap-3 transition-opacity sm:grid-cols-3", loading && "opacity-50")}>
           <Stat label="Units sold" value={summary.units} />
-          {summary.revenue != null && <Stat label="Revenue" value={summary.revenue} format="currency" />}
-          {summary.fees != null && <Stat label="Fees" value={summary.fees} format="currency" />}
-          {summary.shipping != null && <Stat label="Shipping" value={summary.shipping} format="currency" />}
-          {summary.cogs != null && <Stat label="COGS" value={summary.cogs} format="currency" />}
-          {summary.refunded != null && (
-            <Stat label="Refunds" value={summary.refunded} format="currency" highlight={summary.refunded > 0} />
-          )}
-          {summary.profit != null && (
-            <Stat
-              label="Profit"
-              value={summary.profit}
-              format="currency"
-              highlight={summary.units > 0 && summary.profit < 0}
-              className="col-span-2 sm:col-span-3"
-            />
-          )}
+          <Stat label="Revenue" value={summary.revenue} format="currency" />
+          <Stat label="Fees" value={summary.fees} format="currency" />
+          <Stat label="Shipping" value={summary.shipping} format="currency" />
+          <Stat label="COGS" value={summary.cogs} format="currency" />
+          <Stat label="Refunds" value={summary.refunded} format="currency" highlight={summary.refunded > 0} />
+          <Stat
+            label="Profit"
+            value={summary.profit}
+            format="currency"
+            highlight={summary.units > 0 && summary.profit < 0}
+            className="col-span-2 sm:col-span-3"
+          />
         </div>
       ) : (
         !error && <p className="text-sm text-muted-foreground">Loading…</p>
       )}
-      {summary?.revenueByChannel && Object.keys(summary.revenueByChannel).some((c) => c !== "ebay") && (
+      {summary && Object.keys(summary.revenueByChannel).some((c) => c !== "ebay") && (
         <p className="mt-2 text-sm text-muted-foreground">
           Revenue by store:{" "}
           {Object.entries(summary.revenueByChannel)
@@ -677,14 +684,12 @@ function SalesSection({ isOwner, refreshKey }: { isOwner: boolean; refreshKey: n
             .join(" · ")}
         </p>
       )}
-      {isOwner && (
-        <p className="mt-2 text-xs text-muted-foreground">
-          Only counts items scanned and listed through this app. Profit uses manifest COGS where available, $0 for
-          anything with no manifest. Whatnot fees are estimated from Whatnot&apos;s published rates (Whatnot doesn&apos;t
-          share the real ones with Shopify), and Shopify sales have no shipping cost since the buyer pays for the label. In-person shelf and walk-up
-          sales have no fees or shipping.
-        </p>
-      )}
+      <p className="mt-2 text-xs text-muted-foreground">
+        Only counts items scanned and listed through this app. Profit uses manifest COGS where available, $0 for
+        anything with no manifest. Whatnot fees are estimated from Whatnot&apos;s published rates (Whatnot doesn&apos;t
+        share the real ones with Shopify), and Shopify sales have no shipping cost since the buyer pays for the label. In-person shelf and walk-up
+        sales have no fees or shipping.
+      </p>
     </section>
   );
 }
@@ -1216,4 +1221,33 @@ function InPersonCard() {
       </Card>
     </Link>
   );
+}
+
+// Everyone sees this one: how many orders are still waiting to be picked,
+// counted the way /ship lists them (no old VA orders, no counter sales,
+// which have nothing to pull). An order the app can't check by scanning
+// counts until its pick slip is printed.
+function OrdersToPickStat() {
+  const [count, setCount] = useState<number | null>(null);
+  useEffect(() => {
+    fetch("/api/ship/orders")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: ShipOrdersResponse | null) => setCount(data ? countOrdersToPick(data.lines) : null))
+      .catch(() => setCount(null));
+  }, []);
+  return (
+    <Link href="/ship" className="block min-w-0">
+      <Stat label="Orders to pick" value={count ?? "…"} className="h-full transition-colors hover:bg-muted" />
+    </Link>
+  );
+}
+
+function countOrdersToPick(lines: PickLine[]): number {
+  const waiting = new Set<string>();
+  for (const l of lines) {
+    if (l.status === "va" || l.handoff === "counter") continue;
+    const open = l.item != null ? l.picked < l.quantity : l.status === "not_in_app" && !l.slipPrinted;
+    if (open) waiting.add(`${l.channel}:${l.orderId}`);
+  }
+  return waiting.size;
 }

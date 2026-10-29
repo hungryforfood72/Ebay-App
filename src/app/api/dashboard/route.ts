@@ -9,10 +9,10 @@ export const maxDuration = 30;
 const EXPIRING_WINDOW_DAYS = 21;
 
 export async function GET(request: Request) {
-  // Cristian's explicit instruction: employees see workflow counts
-  // (pending review, ready to publish, listed, expiring) and nothing
-  // about money. Sales/profit figures live in /api/dashboard/sales (for a
-  // chosen date range), which applies the same rule.
+  // Cristian's explicit instruction: employees see nothing about money or
+  // sales, and of the inventory counts only "expiring soon" (2026-10-29:
+  // pending review / ready to publish / listed are manager numbers).
+  // Sales figures live in /api/dashboard/sales, which is owner-only.
   const isOwner = getRequestUser(request)?.role === "owner";
 
   const expiringCutoff = new Date(Date.now() + EXPIRING_WINDOW_DAYS * 24 * 60 * 60 * 1000);
@@ -124,12 +124,9 @@ export async function GET(request: Request) {
     // expiring cards) without a second request — the routes behind those
     // controls enforce owner-only themselves regardless.
     isOwner,
-    stats: {
-      pendingReview,
-      readyToPublish,
-      listed,
-      expiringCount: expiringListed.length,
-    },
+    stats: isOwner
+      ? { pendingReview, readyToPublish, listed, expiringCount: expiringListed.length }
+      : { expiringCount: expiringListed.length },
     ebay: {
       connected: Boolean(token),
       missingScopes,
