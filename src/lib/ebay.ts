@@ -2,6 +2,7 @@ import { prisma } from "./prisma";
 import { ebayDescriptionHtml } from "./listingDescription";
 import { truncateTitle } from "./ebayTitle";
 import { formatExpiration } from "./formatExpiration";
+import { ebayProductCode } from "./upcMatch";
 
 // Single toggle for which eBay environment the whole app talks to. Flipping
 // this (and redeploying) points every OAuth/Inventory API call at Sandbox or
@@ -856,6 +857,14 @@ async function policiesFor(
   return { fulfillmentPolicyId, paymentPolicyId };
 }
 
+// eBay's product identifier: the item's barcode as a UPC or EAN, or
+// nothing when it isn't one (see ebayProductCode).
+function productCodeField(code: string | null): { upc: string[] } | { ean: string[] } | Record<string, never> {
+  const c = ebayProductCode(code);
+  if (!c) return {};
+  return "upc" in c ? { upc: [c.upc] } : { ean: [c.ean] };
+}
+
 async function putInventoryItem(item: ItemForEbayPublish): Promise<void> {
   const totalWeightLbs = (item.weightLbs ?? 0) + (item.weightOz ?? 0) / 16;
   await ebayFetch(`/sell/inventory/v1/inventory_item/${encodeURIComponent(toEbaySku(item.sku))}`, {
@@ -867,7 +876,7 @@ async function putInventoryItem(item: ItemForEbayPublish): Promise<void> {
         description: ebayDescriptionHtml(item),
         imageUrls: item.photoUrls.slice(0, 12),
         aspects: buildAspects(item.itemSpecifics, item.expirationDate),
-        ...(item.upc ? { upc: [item.upc] } : {}),
+        ...productCodeField(item.upc),
       },
       ...(totalWeightLbs > 0
         ? { packageWeightAndSize: { weight: { value: totalWeightLbs, unit: "POUND" } } }

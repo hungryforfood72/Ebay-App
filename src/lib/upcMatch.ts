@@ -60,3 +60,39 @@ export function upcMatchKeys(code: string | null | undefined): string[] {
   keys.delete("");
   return [...keys];
 }
+
+// The barcode as eBay's UPC/EAN field takes it, or null to leave the field
+// blank. eBay rejects the whole listing over a bad one (2026-10-29: a BD
+// syringe bag from the medical load carried "0130382903052180", a GS1
+// DataMatrix read: "01" + the case-level GTIN-14 30382903052180). Takes:
+// - a GS1 read ("01" + GTIN-14, maybe with expiry/lot after it),
+// - a GTIN-14 whose indicator digit is 0 (the retail code with padding),
+// - 12-digit UPCs, 11-digit ones Excel dropped the leading zero from, and
+//   13-digit EANs (a leading-0 EAN is a UPC).
+// Case codes (indicator 1-8) and anything with a wrong check digit have no
+// UPC to give: guessing one would put a different product's code on it.
+export function ebayProductCode(code: string | null | undefined): { upc: string } | { ean: string } | null {
+  // Digits only, so Item # and row keys ("item:...") fall out here too.
+  let d = code?.trim() ?? "";
+  if (!/^[\d\s-]+$/.test(d)) return null;
+  d = d.replace(/\D/g, "");
+  if (d.length >= 16 && d.startsWith("01") && validCheckDigit(d.slice(2, 16))) d = d.slice(2, 16);
+  if (d.length === 14) {
+    if (!d.startsWith("0")) return null;
+    d = d.slice(1);
+  }
+  if (d.length === 13 && d.startsWith("0")) d = d.slice(1);
+  if (d.length === 11) d = "0" + d;
+  if (!validCheckDigit(d)) return null;
+  if (d.length === 12) return { upc: d };
+  if (d.length === 13) return { ean: d };
+  return null;
+}
+
+// GS1 mod-10 check digit (UPC-A, EAN-13, GTIN-14 all use it).
+function validCheckDigit(d: string): boolean {
+  if (!/^\d{8,14}$/.test(d)) return false;
+  let sum = 0;
+  for (let i = d.length - 2, w = 3; i >= 0; i--, w = w === 3 ? 1 : 3) sum += Number(d[i]) * w;
+  return (10 - (sum % 10)) % 10 === Number(d[d.length - 1]);
+}

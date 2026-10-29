@@ -1,5 +1,6 @@
 import { truncateTitle } from "@/lib/ebayTitle";
 import { formatExpiration } from "@/lib/formatExpiration";
+import { ebayProductCode } from "@/lib/upcMatch";
 
 // eBay File Exchange "Create Listings" (Add) format, matched to the real
 // template Cristian downloaded from Seller Hub. Shipping, returns, and
@@ -169,7 +170,9 @@ export function itemsToFileExchangeCsv(items: ExportableItem[]): string {
       // recognized value for "no identifier applies here", not just a
       // blank field (which can trigger a GTIN-required error in some
       // categories).
-      "C:UPC": item.upc ?? "Does Not Apply",
+      // A barcode that isn't a real UPC/EAN (a case code, a bad check
+      // digit) gets the same: eBay rejects the row over it.
+      "C:UPC": productCodeText(item.upc),
       "C:Color": specifics.color ?? "",
       "C:Type": specifics.type ?? "",
       // Some categories require a literal "Product" item specific ("The
@@ -199,4 +202,9 @@ export function itemsToFileExchangeCsv(items: ExportableItem[]): string {
   });
 
   return [HEADERS.join(","), ...rows].join("\r\n");
+}
+
+function productCodeText(code: string | null): string {
+  const c = ebayProductCode(code);
+  return c ? ("upc" in c ? c.upc : c.ean) : "Does Not Apply";
 }
