@@ -1369,8 +1369,14 @@ export default function SortPage() {
           </Card>
         )}
 
+        {/* Pinned to the bottom of the screen so the buttons never need a
+            scroll to reach (Cristian, 2026-10-29); the product info above
+            scrolls under it. */}
         {showActions && scan && result && (
-          <>
+          <div
+            className="sticky bottom-0 z-20 -mx-4 flex flex-col gap-2 border-t border-border bg-surface/95 px-4 pt-2 pb-2 backdrop-blur"
+            style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}
+          >
             <div className="grid grid-cols-[auto_3rem_1fr_3rem] items-center gap-2">
               <span className="text-sm font-medium text-foreground">How many</span>
               <Button
@@ -1461,7 +1467,7 @@ export default function SortPage() {
                 Already saved. Scan the next one, or tap Undo below to redo it.
               </p>
             )}
-          </>
+          </div>
         )}
 
         {message && (
