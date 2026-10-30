@@ -1062,6 +1062,11 @@ function ItemCard({
                               Sold by UPC <ExternalLink className="size-3.5" aria-hidden />
                             </a>
                           )}
+                          {item.upc && (
+                            <a href={terapeakUrl(item.upc)} target="_blank" rel="noopener noreferrer" className={link}>
+                              Terapeak <ExternalLink className="size-3.5" aria-hidden />
+                            </a>
+                          )}
                           {item.upc && <CopyUpcButton upc={item.upc} className={link} />}
                         </>
                       );
@@ -1591,6 +1596,25 @@ function RetailCheckSection() {
       </Card>
     </section>
   );
+}
+
+// Terapeak (Seller Hub research) for this UPC: sold over the last 180
+// days, same URL shape as eBay's own (Cristian, 2026-10-29). Opens in his
+// signed-in browser; nothing is read back into the app.
+function terapeakUrl(upc: string): string {
+  const end = Date.now();
+  const params = new URLSearchParams({
+    marketplace: "EBAY-US",
+    keywords: upc,
+    dayRange: "180",
+    endDate: String(end),
+    startDate: String(end - 180 * 24 * 60 * 60 * 1000),
+    offset: "0",
+    limit: "50",
+    tabName: "SOLD",
+    tz: "America/Chicago",
+  });
+  return `https://www.ebay.com/sh/research?${params}`;
 }
 
 // Copies the UPC for pasting into Terapeak or a search (Cristian,
