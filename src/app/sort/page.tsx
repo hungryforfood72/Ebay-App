@@ -1143,10 +1143,13 @@ export default function SortPage() {
               setStarting(true);
             }}
             onReprint={(which) => reprint(which)}
+            compact={showActions}
           />
         )}
 
-        <div className="grid grid-cols-5 gap-1 text-center">
+        {/* Hidden while an item is on screen, so it and the pinned buttons
+            fit without scrolling (Cristian, 2026-10-29). */}
+        <div className={cn("grid grid-cols-5 gap-1 text-center", showActions && "hidden")}>
           <TallyTile label="Good" value={tally.good} tone="success" />
           <TallyTile label="Extra" value={tally.extra} tone="primary" />
           {consignment ? (
@@ -1298,21 +1301,15 @@ export default function SortPage() {
         )}
 
         {line && isDud && (
-          <div role="alert" className="rounded-xl border-2 border-amber-400 bg-amber-50 px-3 py-2 text-amber-950">
+          <div role="alert" className="rounded-xl border-2 border-amber-400 bg-amber-50 px-3 py-1.5 text-amber-950">
             <div className="flex gap-2">
-              <Ban className="mt-0.5 size-6 shrink-0 text-amber-600" aria-hidden />
+              <Ban className="mt-0.5 size-5 shrink-0 text-amber-600" aria-hidden />
               <div className="min-w-0">
-                <p className="text-lg font-bold leading-tight">DUD: put it in the dud box</p>
-                {result?.dudReason && <p className="mt-0.5 text-sm font-medium">{result.dudReason}</p>}
-                <p className="mt-1 text-sm">
-                  {dudBox ? (
-                    <>
-                      Dud box <span className="font-mono font-bold">{dudBox.code}</span>
-                    </>
-                  ) : (
-                    "No dud box yet. Tapping below starts one."
-                  )}
+                <p className="text-base font-bold leading-tight">
+                  DUD: put it in {dudBox ? <span className="font-mono">{dudBox.code}</span> : "the dud box"}
                 </p>
+                {result?.dudReason && <p className="text-sm leading-snug">{result.dudReason}</p>}
+                {!dudBox && <p className="text-sm">No dud box yet. Tapping below starts one.</p>}
               </div>
             </div>
           </div>
@@ -1638,6 +1635,8 @@ function ActiveBoxesBar(props: {
   onCloseDud: () => void;
   onStartDud: () => void;
   onReprint: (which: "good" | "dud") => void;
+  // An item is on screen: one slim line per box, no buttons, to leave room.
+  compact?: boolean;
 }) {
   return (
     <Card padded={false}>
@@ -1655,6 +1654,7 @@ function ActiveBoxesBar(props: {
             busy={props.busy}
             onFull={props.onGoodFull}
             onReprint={() => props.onReprint("good")}
+            compact={props.compact}
           />
         )}
         {props.showDud && (
@@ -1669,6 +1669,7 @@ function ActiveBoxesBar(props: {
             onFull={props.onDudFull}
             onReprint={() => props.onReprint("dud")}
             onStart={props.onStartDud}
+            compact={props.compact}
           />
         )}
       </div>
@@ -1702,7 +1703,17 @@ function BoxSlot(props: {
   onFull: () => void;
   onReprint: () => void;
   onStart?: () => void;
+  compact?: boolean;
 }) {
+  if (props.compact && props.checked && props.code) {
+    return (
+      <div className="flex min-w-0 items-center gap-1.5 px-3 py-1.5">
+        {props.icon}
+        <p className="font-mono text-sm font-bold text-foreground">{props.code}</p>
+        <p className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">{props.units} in it</p>
+      </div>
+    );
+  }
   return (
     <div className="flex min-w-0 flex-col gap-2 p-3">
       <p className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
