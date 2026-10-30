@@ -253,6 +253,11 @@ export default function SortPage() {
   // totals; this is "what I did").
   const [tally, setTally] = useState<Record<Kind, number>>(EMPTY_TALLY);
   const [log, setLog] = useState<LogEntry[]>([]);
+  // The product on screen was already logged (by this log entry): its
+  // action buttons stay off so a second tap can't log it twice (Cristian,
+  // 2026-10-29: easy to forget you already tapped). Back on with the next
+  // scan, or when that entry is undone.
+  const [savedLogId, setSavedLogId] = useState<number | null>(null);
   const logId = useRef(0);
 
   // The good (sort) box and dud box this device is filling. *Checked = the
@@ -459,6 +464,7 @@ export default function SortPage() {
     if (!quiet) {
       setScan({ code: raw, loading: true, result: null, error: null });
       setQuantity("1");
+      setSavedLogId(null);
     }
     try {
       const res = await fetch(
@@ -523,6 +529,8 @@ export default function SortPage() {
   function addToLog(entry: Omit<LogEntry, "id">) {
     const id = ++logId.current;
     setLog((prev) => [{ id, ...entry }, ...prev].slice(0, 12));
+    // Saved (failed ones carry no ref): lock the buttons for this scan.
+    if (entry.ref) setSavedLogId(id);
   }
 
   // ---- Good (sort) box -------------------------------------------------
@@ -788,7 +796,7 @@ export default function SortPage() {
   // ---- Logging ---------------------------------------------------------
 
   async function record(kind: Kind) {
-    if (!scan || !manifestId || saving) return;
+    if (!scan || !manifestId || saving || savedLogId != null) return;
     const qty = Number(quantity);
     if (!Number.isInteger(qty) || qty < 1) {
       setMessage({ tone: "warning", text: "Enter how many, at least 1." });
@@ -903,6 +911,7 @@ export default function SortPage() {
         "Couldn't undo that."
       );
       setLog((prev) => prev.map((e) => (e.id === entry.id ? { ...e, undone: true } : e)));
+      if (entry.id === savedLogId) setSavedLogId(null);
       setTally((t) => ({ ...t, [entry.kind]: Math.max(0, t[entry.kind] - entry.quantity) }));
       const back = entry.ref.boxCode ? ` Take ${entry.quantity} back out of ${entry.ref.boxCode}.` : "";
       setMessage({ tone: "success", text: `Undone.${back}` });
@@ -1061,6 +1070,8 @@ export default function SortPage() {
   // leave it, or it isn't on the manifest).
   const goesBack = Boolean(consignment && result && (!line || result.consignmentCall?.decision === "leave"));
   const showActions = Boolean(scan && !scan.loading && result);
+  // Already logged this scan: buttons off until the next scan or an undo.
+  const logged = savedLogId != null;
   const stationList = stations.stations;
   // Unknown while loading counts as "has stations" so the no-label button
   // doesn't flash; a failed load counts as none so a box can still start.
@@ -1394,22 +1405,22 @@ export default function SortPage() {
             </div>
 
             {goesBack ? (
-              <Button variant="warning" size="xl" block onClick={() => record("return")} disabled={saving}>
+              <Button variant="warning" size="xl" block onClick={() => record("return")} disabled={saving || logged}>
                 <PackageX className="size-5" aria-hidden />
                 Set aside for the supplier
               </Button>
             ) : isDud ? (
-              <Button variant="warning" size="xl" block onClick={() => record("dud")} disabled={saving || boxBusy}>
+              <Button variant="warning" size="xl" block onClick={() => record("dud")} disabled={saving || logged || boxBusy}>
                 <PackageX className="size-5" aria-hidden />
                 {dudBox ? `Put in dud box ${dudBox.code}` : "Start a dud box"}
               </Button>
             ) : line ? (
-              <Button variant="success" size="xl" block onClick={() => record("good")} disabled={saving}>
+              <Button variant="success" size="xl" block onClick={() => record("good")} disabled={saving || logged}>
                 <ThumbsUp className="size-5" aria-hidden />
                 {noBoxes ? "Good, count it in" : goodBox ? `Good, into ${goodBox.code}` : "Good, pass to lister"}
               </Button>
             ) : (
-              <Button variant="success" size="xl" block onClick={() => record("extra")} disabled={saving}>
+              <Button variant="success" size="xl" block onClick={() => record("extra")} disabled={saving || logged}>
                 <PackageCheck className="size-5" aria-hidden />
                 {noBoxes ? "Count it in as extra" : goodBox ? `Box it as extra, into ${goodBox.code}` : "Box it as extra"}
               </Button>
@@ -1420,7 +1431,7 @@ export default function SortPage() {
                 size="md"
                 className="border border-red-200 px-1"
                 onClick={() => record("damaged")}
-                disabled={saving}
+                disabled={saving || logged}
               >
                 {isDud ? "It's damaged" : "Damaged"}
               </Button>
@@ -1429,7 +1440,7 @@ export default function SortPage() {
                 size="md"
                 className="border border-red-200 px-1"
                 onClick={() => record("expired")}
-                disabled={saving}
+                disabled={saving || logged}
               >
                 {isDud ? "It's expired" : "Expired"}
               </Button>
@@ -1439,12 +1450,17 @@ export default function SortPage() {
                   size="md"
                   className="px-1"
                   onClick={() => record(otherAction.kind)}
-                  disabled={saving || (otherAction.kind === "dud" && boxBusy)}
+                  disabled={saving || logged || (otherAction.kind === "dud" && boxBusy)}
                 >
                   {otherAction.label}
                 </Button>
               )}
             </div>
+            {logged && (
+              <p className="text-center text-sm text-muted-foreground">
+                Already saved. Scan the next one, or tap Undo below to redo it.
+              </p>
+            )}
           </>
         )}
 
