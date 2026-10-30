@@ -258,6 +258,9 @@ export default function SortPage() {
   // 2026-10-29: easy to forget you already tapped). Back on with the next
   // scan, or when that entry is undone.
   const [savedLogId, setSavedLogId] = useState<number | null>(null);
+  // The box bar shrinks while an item is on screen; tapping it opens it
+  // back up (Full, new one / reprint) until the next scan.
+  const [boxesOpen, setBoxesOpen] = useState(false);
   const logId = useRef(0);
 
   // The good (sort) box and dud box this device is filling. *Checked = the
@@ -465,6 +468,7 @@ export default function SortPage() {
       setScan({ code: raw, loading: true, result: null, error: null });
       setQuantity("1");
       setSavedLogId(null);
+      setBoxesOpen(false);
     }
     try {
       const res = await fetch(
@@ -1143,7 +1147,8 @@ export default function SortPage() {
               setStarting(true);
             }}
             onReprint={(which) => reprint(which)}
-            compact={showActions}
+            compact={showActions && !boxesOpen && !confirmCloseDud}
+            onExpand={() => setBoxesOpen(true)}
           />
         )}
 
@@ -1637,7 +1642,43 @@ function ActiveBoxesBar(props: {
   onReprint: (which: "good" | "dud") => void;
   // An item is on screen: one slim line per box, no buttons, to leave room.
   compact?: boolean;
+  onExpand?: () => void;
 }) {
+  // Slim only when every box shown is set: an empty slot needs its buttons.
+  const slim =
+    props.compact &&
+    (!props.showGood || (props.goodChecked && props.goodBox)) &&
+    (!props.showDud || (props.dudChecked && props.dudBox));
+  if (slim) {
+    return (
+      <Card padded={false}>
+        <button
+          type="button"
+          onClick={props.onExpand}
+          aria-label="Show box buttons"
+          className={cn(
+            "grid w-full divide-x divide-border text-left",
+            props.showGood && props.showDud ? "grid-cols-2" : "grid-cols-1"
+          )}
+        >
+          {props.showGood && props.goodBox && (
+            <SlimBox
+              icon={<PackageCheck className="size-4 text-success" aria-hidden />}
+              code={props.goodBox.code}
+              units={props.goodBox.unitsLeft}
+            />
+          )}
+          {props.showDud && props.dudBox && (
+            <SlimBox
+              icon={<PackageX className="size-4 text-amber-600" aria-hidden />}
+              code={props.dudBox.code}
+              units={props.dudBox.units}
+            />
+          )}
+        </button>
+      </Card>
+    );
+  }
   return (
     <Card padded={false}>
       <div
@@ -1654,7 +1695,6 @@ function ActiveBoxesBar(props: {
             busy={props.busy}
             onFull={props.onGoodFull}
             onReprint={() => props.onReprint("good")}
-            compact={props.compact}
           />
         )}
         {props.showDud && (
@@ -1669,7 +1709,6 @@ function ActiveBoxesBar(props: {
             onFull={props.onDudFull}
             onReprint={() => props.onReprint("dud")}
             onStart={props.onStartDud}
-            compact={props.compact}
           />
         )}
       </div>
@@ -1692,6 +1731,17 @@ function ActiveBoxesBar(props: {
   );
 }
 
+// One box on the slim bar: icon, code, units. Tap the bar for its buttons.
+function SlimBox(props: { icon: ReactNode; code: string; units: number }) {
+  return (
+    <div className="flex min-w-0 items-center gap-1.5 px-3 py-1.5">
+      {props.icon}
+      <span className="font-mono text-sm font-bold text-foreground">{props.code}</span>
+      <span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">{props.units} in it</span>
+    </div>
+  );
+}
+
 function BoxSlot(props: {
   label: string;
   icon: ReactNode;
@@ -1703,17 +1753,7 @@ function BoxSlot(props: {
   onFull: () => void;
   onReprint: () => void;
   onStart?: () => void;
-  compact?: boolean;
 }) {
-  if (props.compact && props.checked && props.code) {
-    return (
-      <div className="flex min-w-0 items-center gap-1.5 px-3 py-1.5">
-        {props.icon}
-        <p className="font-mono text-sm font-bold text-foreground">{props.code}</p>
-        <p className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">{props.units} in it</p>
-      </div>
-    );
-  }
   return (
     <div className="flex min-w-0 flex-col gap-2 p-3">
       <p className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
