@@ -10,6 +10,7 @@ import { cn } from "@/components/ui/cn";
 import { CheckboxRow, Field, Input, Select, Textarea } from "@/components/ui/Input";
 import {
   Check,
+  Copy,
   Download,
   ExternalLink,
   Package,
@@ -1061,6 +1062,7 @@ function ItemCard({
                               Sold by UPC <ExternalLink className="size-3.5" aria-hidden />
                             </a>
                           )}
+                          {item.upc && <CopyUpcButton upc={item.upc} className={link} />}
                         </>
                       );
                     })()}
@@ -1588,5 +1590,30 @@ function RetailCheckSection() {
         ))}
       </Card>
     </section>
+  );
+}
+
+// Copies the UPC for pasting into Terapeak or a search (Cristian,
+// 2026-10-29). Says "Copied" for a moment so you know it took.
+function CopyUpcButton({ upc, className }: { upc: string; className: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      className={className}
+      title={`Copy ${upc}`}
+      onClick={() =>
+        navigator.clipboard.writeText(upc).then(
+          () => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          },
+          () => {}
+        )
+      }
+    >
+      {copied ? "Copied" : "Copy UPC"}
+      {copied ? <Check className="size-3.5" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
+    </button>
   );
 }
