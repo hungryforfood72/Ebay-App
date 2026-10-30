@@ -78,7 +78,7 @@ export function SortingSection({
 }: {
   sorting: SortingSummary;
   lines: SortLine[];
-  extras: { upc: string; units: number }[];
+  extras: { upc: string; units: number; name: string | null }[];
   isOwner: boolean;
 }) {
   const [showAll, setShowAll] = useState(false);
@@ -168,7 +168,7 @@ export function SortingSection({
             <ul className="text-sm text-muted-foreground">
               {extras.map((e) => (
                 <li key={e.upc} className="tabular-nums">
-                  UPC {e.upc}: {e.units} {e.units === 1 ? "unit" : "units"}
+                  {e.units} × {e.name ?? "Name not found yet"} (UPC {e.upc})
                 </li>
               ))}
             </ul>

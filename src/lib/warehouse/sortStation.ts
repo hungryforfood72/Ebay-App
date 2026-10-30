@@ -1,4 +1,5 @@
 import { prisma } from "../prisma";
+import { lookupUpc } from "../upcLookup";
 import { WarehouseError } from "./bins";
 import { normalizeCode } from "./codes";
 import { findSortBox, logSorted, undoSorted } from "./sortBoxes";
@@ -97,6 +98,41 @@ export async function logGood(args: {
     by: args.by,
   });
   return { entry, box: args.boxCode ? await getSortBoxSummary(args.boxCode) : null };
+}
+
+// Names an extra after it's boxed (run after the response, so the sorter
+// never waits on it): the newest listing of that UPC's title if we've had
+// it before, else the UPC database's. Saved on every unnamed extra of that
+// UPC on the load. Nothing found = stays unnamed (the manifest page then
+// shows the UPC, or the title once it's listed).
+export async function nameExtra(entryId: string) {
+  try {
+    const entry = await prisma.sortBoxEntry.findUnique({
+      where: { id: entryId },
+      select: { manifestId: true, upc: true, extra: true, name: true },
+    });
+    if (!entry?.extra || entry.name) return;
+    const d = entry.upc.replace(/\D/g, "");
+    if (d.length < 6) return;
+    const variants = [...new Set([d, d.replace(/^0+/, ""), d.padStart(12, "0"), d.padStart(13, "0")])];
+    const listed = await prisma.item.findFirst({
+      where: { upc: { in: variants }, OR: [{ finalTitle: { not: null } }, { aiTitle: { not: null } }] },
+      orderBy: { createdAt: "desc" },
+      select: { finalTitle: true, aiTitle: true },
+    });
+    let name = listed?.finalTitle?.trim() || listed?.aiTitle?.trim() || null;
+    if (!name) {
+      const found = (await lookupUpc(d)) as { items?: { title?: string }[] };
+      name = found.items?.[0]?.title?.trim() || null;
+    }
+    if (!name) return;
+    await prisma.sortBoxEntry.updateMany({
+      where: { manifestId: entry.manifestId, upc: entry.upc, extra: true, name: null },
+      data: { name },
+    });
+  } catch (e) {
+    console.error(`[sortStation] naming extra ${entryId} failed`, e);
+  }
 }
 
 export type UndoKind = "good" | "dud" | "damaged";

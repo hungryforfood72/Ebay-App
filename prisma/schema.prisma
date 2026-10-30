@@ -1890,6 +1890,10 @@ model SortBoxEntry {
   pulledAt    DateTime?
   pulledBy    String?
   extra       Boolean   @default(false)
+  // Extras only: what the product is, looked up after "Box it as extra"
+  // (an earlier listing's title, else the UPC database), so the manifest
+  // page can say what came that wasn't on it (Cristian, 2026-10-29).
+  name        String?
   recordedBy  String?
   createdAt   DateTime  @default(now())
 

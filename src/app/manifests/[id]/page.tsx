@@ -99,7 +99,7 @@ type ManifestDetail = {
   unmatchedSold: { upc: string | null; units: number; revenue?: number; fees?: number }[];
   sourcingEvaluation?: SourcingEvaluation | null;
   sorting?: SortingSummary;
-  sortExtras?: { upc: string; units: number }[];
+  sortExtras?: { upc: string; units: number; name: string | null }[];
   summary: {
     totalExpectedUnits: number;
     totalReceivedUnits: number;

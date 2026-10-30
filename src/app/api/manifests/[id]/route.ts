@@ -302,11 +302,30 @@ export async function GET(
     if (match) returnedByLineUpc.set(match, (returnedByLineUpc.get(match) ?? 0) + units);
   }
   const sortedByLineUpc = new Map<string, number>();
-  const sortExtras: { upc: string; units: number }[] = [];
+  const sortExtras: { upc: string; units: number; name: string | null }[] = [];
   for (const [stored, s] of sorted) {
     const match = matchLineUpc(lineUpcList, stored);
     if (match) sortedByLineUpc.set(match, (sortedByLineUpc.get(match) ?? 0) + s.sorted);
-    else sortExtras.push({ upc: stored, units: s.sorted });
+    else sortExtras.push({ upc: stored, units: s.sorted, name: null });
+  }
+  // What each extra is: the name looked up when it was boxed (nameExtra),
+  // else the title of its listing from this load once it's listed.
+  if (sortExtras.length > 0) {
+    const [named, listed] = await Promise.all([
+      prisma.sortBoxEntry.findMany({
+        where: { manifestId: id, extra: true, name: { not: null } },
+        select: { upc: true, name: true },
+      }),
+      prisma.item.findMany({
+        where: { manifestId: id, upc: { in: sortExtras.map((e) => e.upc) } },
+        orderBy: { createdAt: "desc" },
+        select: { upc: true, finalTitle: true, aiTitle: true },
+      }),
+    ]);
+    for (const e of sortExtras) {
+      const item = listed.find((i) => i.upc === e.upc && (i.finalTitle || i.aiTitle));
+      e.name = named.find((n) => n.upc === e.upc)?.name ?? item?.finalTitle ?? item?.aiTitle ?? null;
+    }
   }
   const dudLoggedByUpc = new Map<string, number>();
   for (const d of manifest.duds) dudLoggedByUpc.set(d.upc, (dudLoggedByUpc.get(d.upc) ?? 0) + d.quantity);
@@ -553,7 +572,19 @@ export async function GET(
   const totalSoldRefunds = lines.reduce((sum, l) => sum + l.soldRefunds, 0) +
     unmatchedSold.reduce((sum, u) => sum + u.refunds, 0);
   const totalSoldCogs = lines.reduce((sum, l) => sum + (l.soldCogs ?? 0), 0);
-  const totalProfit = lines.reduce((sum, l) => sum + (l.profit ?? 0), 0);
+  // Sold units not on the manifest (extras the supplier didn't list) carry
+  // no share of the landed cost, so their profit is the whole net. Counted
+  // once costs are known (landed cost entered, or consignment), the same
+  // condition a line's profit has; consignment still takes the supplier's
+  // share. Was left out of the total before (Cristian, 2026-10-29).
+  const unmatchedProfit =
+    supplierPct != null || totalLandedCost != null
+      ? unmatchedSold.reduce((sum, u) => {
+          const net = u.revenue - u.fees - u.shipping - u.refunds;
+          return sum + (supplierPct != null ? net - Math.max(0, net) * (supplierPct / 100) : net);
+        }, 0)
+      : 0;
+  const totalProfit = lines.reduce((sum, l) => sum + (l.profit ?? 0), 0) + unmatchedProfit;
 
   const blendedCogsPerUnit =
     supplierPct != null ? 0 : totalLandedCost != null && totalReceivedUnits > 0 ? totalLandedCost / totalReceivedUnits : null;
