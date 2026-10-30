@@ -25,9 +25,17 @@ export type SortingSummary = {
   sortedAt: string | null;
   sortedBy: string | null;
   expectedUnits: number;
+  // Counted against a line (good, damaged, dud, set aside from a taken
+  // line) and expected units of lines not reached yet. Expected = counted +
+  // notSorted + short - over. Optional: older API responses lack them.
+  counted?: number;
+  notSorted?: number;
   sortedGood: number;
+  // On the manifest only; what wasn't on it is damagedExtras/dudExtras.
   damaged: number;
   dud: number;
+  damagedExtras?: number;
+  dudExtras?: number;
   short: number;
   over: number;
   extras: number;
@@ -70,6 +78,16 @@ function money(n: number): string {
   return `$${n.toFixed(2)}`;
 }
 
+// Extras is the good ones boxed; damaged (trash) and dud ones not on the
+// manifest are only counted, under it.
+function extrasHint(sorting: SortingSummary): string | undefined {
+  const parts = [
+    sorting.damagedExtras ? `${sorting.damagedExtras} damaged` : null,
+    sorting.dudExtras ? `${sorting.dudExtras} dud` : null,
+  ].filter(Boolean);
+  return parts.length > 0 ? `plus ${parts.join(", ")}` : undefined;
+}
+
 export function SortingSection({
   sorting,
   lines,
@@ -98,6 +116,7 @@ export function SortingSection({
       />
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8">
         <Stat label="Expected units" value={sorting.expectedUnits} />
+        {sorting.notSorted != null && <Stat label="Not sorted yet" value={sorting.notSorted} />}
         <Stat label="Sorted good" value={sorting.sortedGood} />
         <Stat label="Damaged/expired" value={sorting.damaged} />
         {sorting.consignment ? (
@@ -105,18 +124,26 @@ export function SortingSection({
         ) : (
           <Stat label="Dud" value={sorting.dud} />
         )}
-        <Stat label="Short" value={sorting.short} highlight={sorting.short > 0} />
+        <Stat
+          label={sorting.sortedAt ? "Short" : "Short so far"}
+          value={sorting.short}
+          highlight={sorting.short > 0}
+          hint={
+            isOwner && sorting.shortCost
+              ? `${money(sorting.shortCost)} cost${sorting.shortRetail ? `, ${money(sorting.shortRetail)} retail` : ""}`
+              : undefined
+          }
+        />
         <Stat label="Over" value={sorting.over} highlight={sorting.over > 0} />
-        <Stat label="Extras" value={sorting.extras} highlight={sorting.extras > 0} />
-        {isOwner && sorting.shortCost != null && (
-          <Stat
-            label="Short, cost"
-            value={sorting.shortCost}
-            format="currency"
-            hint={sorting.shortRetail ? `${money(sorting.shortRetail)} retail` : undefined}
-          />
-        )}
+        <Stat label="Extras" value={sorting.extras} highlight={sorting.extras > 0} hint={extrasHint(sorting)} />
       </div>
+      {sorting.counted != null && sorting.notSorted != null && (
+        <p className="mt-2 text-xs tabular-nums text-muted-foreground">
+          {sorting.expectedUnits} expected = {sorting.counted} counted on manifest lines (good, damaged, dud
+          {sorting.consignment ? ", set aside" : ""}) + {sorting.notSorted} not sorted yet + {sorting.short} short
+          {" "}- {sorting.over} over. Extras aren&apos;t in it, they weren&apos;t expected.
+        </p>
+      )}
 
       <Card padded={false} className="mt-3">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">

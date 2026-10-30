@@ -498,16 +498,35 @@ export async function GET(
     };
   });
 
+  // Damaged/dud units whose UPC isn't on the manifest: kept out of the
+  // damaged and dud tiles so those plus not sorted, short and over add up to
+  // expected. Damaged extras are trash, so they're only counted, never named.
+  const offManifest = (byUpc: Map<string, number>) =>
+    [...byUpc].reduce((sum, [upc, n]) => sum + (lineIndexesByUpc.has(upc) ? 0 : n), 0);
+  const damagedExtras = offManifest(damagedByUpc);
+  const dudExtras = offManifest(dudLoggedByUpc);
   const sorting = {
     sortedAt: manifest.sortedAt,
     sortedBy: manifest.sortedBy,
     expectedUnits: manifest.lines.reduce((sum, l) => sum + sortExpected(l), 0),
+    // Everything counted against a line (good, damaged, dud, and on a
+    // consignment load set aside from a taken line), and the expected units
+    // of lines nothing has been counted for yet (plus the few lines with no
+    // UPC or Item #, which can't be scanned). Expected = counted + not
+    // sorted + short - over.
+    counted: sortCountedAllocation.reduce((sum, n) => sum + n, 0),
+    notSorted: manifest.lines.reduce(
+      (sum, l, i) => sum + (!lines[i].sortStatus || lines[i].sortStatus!.kind === "not_sorted" ? sortExpected(l) : 0),
+      0
+    ),
     sortedGood: lines.reduce((sum, l) => sum + l.sortedGood, 0),
     consignment: manifest.consignment,
     returned: consignmentReturns.reduce((sum, r) => sum + r.units, 0),
     returns: consignmentReturns,
-    damaged: [...damagedByUpc.values()].reduce((sum, n) => sum + n, 0),
-    dud: [...dudLoggedByUpc.values()].reduce((sum, n) => sum + n, 0),
+    damaged: [...damagedByUpc.values()].reduce((sum, n) => sum + n, 0) - damagedExtras,
+    dud: [...dudLoggedByUpc.values()].reduce((sum, n) => sum + n, 0) - dudExtras,
+    damagedExtras,
+    dudExtras,
     short: lines.reduce((sum, l) => sum + (l.sortStatus?.kind === "short" ? l.sortStatus.units : 0), 0),
     over: lines.reduce((sum, l) => sum + (l.sortStatus?.kind === "over" ? l.sortStatus.units : 0), 0),
     extras: sortExtras.reduce((sum, e) => sum + e.units, 0),

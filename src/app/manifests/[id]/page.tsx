@@ -241,9 +241,10 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
 
   const s = manifest.summary;
   const evaluation = manifest.sourcingEvaluation;
+  // Damaged units not on the manifest are trash, so they're only counted in
+  // the Sorting section's Extras tile, not listed here.
   const hasUnmatched =
     manifest.unmatchedReceived.length > 0 ||
-    manifest.unmatchedDamaged.length > 0 ||
     manifest.unmatchedDud.length > 0 ||
     manifest.unmatchedSold.length > 0;
 
@@ -547,11 +548,6 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
               {manifest.unmatchedReceived.map((u) => (
                 <li key={`r-${u.upc}`}>
                   Received {u.units} unit(s) of UPC {u.upc ?? "(none)"} — not on the manifest.
-                </li>
-              ))}
-              {manifest.unmatchedDamaged.map((u) => (
-                <li key={`d-${u.upc}`}>
-                  Marked {u.units} unit(s) damaged for UPC {u.upc} — not on the manifest.
                 </li>
               ))}
               {manifest.unmatchedDud.map((u) => (
