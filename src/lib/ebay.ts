@@ -2135,6 +2135,11 @@ export async function getPendingBestOffers(): Promise<ReceivedBestOffer[]> {
       for (const block of group.split("<BestOffer>").slice(1)) {
         const status = xmlField(block, "Status");
         if (status !== "Pending") continue;
+        // Seen live 2026-10-31: our own counter, still waiting on the buyer,
+        // can come back here as Pending too. It isn't ours to answer, and
+        // eBay refuses any response to it with "Sorry, you are not
+        // authorized to perform this operation!"
+        if (xmlField(block, "BestOfferCodeType") === "SellerCounterOffer") continue;
         const zip = xmlField(block, "PostalCode")?.match(/^(\d{3})/)?.[1] ?? null;
         const feedback = xmlField(block, "FeedbackScore");
         offers.push({
