@@ -1712,14 +1712,18 @@ export async function createMarkdownPromotion(
 export async function findMarkdownOnListing(
   listingId: string
 ): Promise<{ promotionId: string; name: string; endDate: Date } | null> {
-  return (await markdownsOnListing(listingId))[0] ?? null;
+  return (await markdownsOnListing(listingId)).find((p) => !p.skipped) ?? null;
 }
 
-// Every running or scheduled sale event that includes the listing.
+// Every running or scheduled sale event that includes the listing. skipped
+// = eBay skipped the listing in that sale, so it never touches the price
+// and doesn't block a new one (Coloplast pouch, 2026-11-01: a skipped 35%
+// sale stays RUNNING until its end date, and eBay won't end it before it's
+// a day old).
 export async function markdownsOnListing(
   listingId: string
-): Promise<{ promotionId: string; name: string; endDate: Date }[]> {
-  const found: { promotionId: string; name: string; endDate: Date }[] = [];
+): Promise<{ promotionId: string; name: string; endDate: Date; skipped: boolean }[]> {
+  const found: { promotionId: string; name: string; endDate: Date; skipped: boolean }[] = [];
   for (const status of ["RUNNING", "SCHEDULED"]) {
     const result = (await ebayFetch(
       `/sell/marketing/v1/promotion?marketplace_id=EBAY_US&promotion_type=MARKDOWN_SALE&promotion_status=${status}&limit=200`
@@ -1727,10 +1731,11 @@ export async function markdownsOnListing(
     for (const p of result.promotions ?? []) {
       const set = (await ebayFetch(
         `/sell/marketing/v1/promotion/${encodeURIComponent(p.promotionId)}/get_listing_set?limit=200`
-      )) as { listings?: { listingId: string }[] };
-      if (set.listings?.some((l) => l.listingId === listingId)) {
-        found.push({ promotionId: p.promotionId, name: p.name, endDate: new Date(p.endDate) });
-      }
+      )) as { listings?: { listingId: string; listingPromotionStatuses?: { statusChangedDate: string; listingMarkdownStatus: string }[] }[] };
+      const listing = set.listings?.find((l) => l.listingId === listingId);
+      if (!listing) continue;
+      const latest = [...(listing.listingPromotionStatuses ?? [])].sort((x, y) => y.statusChangedDate.localeCompare(x.statusChangedDate))[0];
+      found.push({ promotionId: p.promotionId, name: p.name, endDate: new Date(p.endDate), skipped: latest?.listingMarkdownStatus === "SKIPPED" });
     }
   }
   return found;

@@ -126,7 +126,7 @@ async function restartSale(item: CheckedItem, reason: string): Promise<boolean> 
   const endDate = item.markdownEndsAt;
   const photo = item.photoUrls[0];
   if (!percentOff || !endDate || !photo || endDate.getTime() - Date.now() < 60 * 60 * 1000) return false;
-  const others = (await markdownsOnListing(listingId)).filter((p) => p.promotionId !== item.ebayMarkdownId);
+  const others = (await markdownsOnListing(listingId)).filter((p) => p.promotionId !== item.ebayMarkdownId && !p.skipped);
   if (others.length > 0) return false;
 
   const soonest = Date.now() + 2 * 60 * 1000;
