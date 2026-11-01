@@ -136,7 +136,7 @@ export async function supplierStats(supplier: ManifestSupplier): Promise<Supplie
   // (repeats of another load) have no real arrivals to learn from.
   const loads = await prisma.manifest.findMany({
     where: { supplier, purchased: true, analyzerBeta: false },
-    select: { ...LOAD_SELECT, sortedAt: true, consignment: true },
+    select: { ...LOAD_SELECT, sortedAt: true, consignment: true, _count: { select: { sortBoxEntries: true, items: true } } },
   });
 
   const s: SupplierStats = {
@@ -158,6 +158,15 @@ export async function supplierStats(supplier: ManifestSupplier): Promise<Supplie
   };
 
   for (const load of loads) {
+    // Only loads that have really been processed: a load still sitting
+    // unopened would count as one with no damage (10/14 Pallet 1, 1,521
+    // units, nothing logged yet, on 2026-11-01). A load sorted at the sort
+    // station counts once sorting is marked done; an older one (scanned
+    // straight to listings, no sort station) once anything was logged.
+    if (load._count.sortBoxEntries > 0 ? !load.sortedAt : load._count.items + load.damaged.length + load.duds.length === 0) {
+      s.loads--;
+      continue;
+    }
     const counts = await sortCountsFor(load);
     const damaged = load.damaged
       .filter((d) => !d.note?.startsWith(RETURN_NOTE_PREFIX))
