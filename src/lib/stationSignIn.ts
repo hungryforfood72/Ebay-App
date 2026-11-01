@@ -1,5 +1,5 @@
 import { randomBytes, randomInt, timingSafeEqual } from "crypto";
-import { hashPassword, verifyPassword } from "./auth";
+import { STATION_SESSION_MS, hashPassword, verifyPassword } from "./auth";
 import { prisma } from "./prisma";
 import { PIN_PATTERN, SIGN_IN_CODE_ALPHABET, SIGN_IN_CODE_LENGTH, SIGN_IN_CODE_PREFIX } from "./stationSignInCode";
 
@@ -22,9 +22,7 @@ export const STATION_DEVICE_COOKIE = "station_device";
 const STATION_DEVICE_MAX_AGE_SECONDS = 365 * 24 * 60 * 60;
 
 export const SIGN_IN_CODE_MINUTES = 10;
-// A shift, not the 30 days a password sign-in lasts: a station nobody
-// logged out of is back on the sign-in screen the next morning.
-export const STATION_SESSION_MS = 14 * 60 * 60 * 1000;
+export { STATION_SESSION_MS };
 
 export const PIN_MAX_FAILURES = 5;
 const PIN_LOCK_MINUTES = 15;

@@ -1,7 +1,7 @@
 "use client";
 
 import { QrCode } from "@/components/ScreenCodes";
-import { LoaderCircle, Monitor, ScanBarcode, Smartphone } from "lucide-react";
+import { LoaderCircle, Monitor, MousePointer2, ScanBarcode, Smartphone } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
@@ -18,6 +18,10 @@ const IDLE_CHECK_MS = 4_000;
 const FAST_CHECK_MS = 1_000;
 // Swap in a new code this long before the old one runs out.
 const RENEW_BEFORE_MS = 60_000;
+// Nobody scanned or touched this PC for this long: stop checking and ask
+// for a mouse move or a key instead (Cristian, 2026-11-01: a QR screen
+// left up all night was still calling the app every 4s).
+const SLEEP_AFTER_MS = 15 * 60_000;
 
 type Shown = { code: string; expiresAt: number; stationId: string; stationName: string };
 
@@ -27,8 +31,10 @@ export default function StationPcSignIn() {
   const [notStation, setNotStation] = useState(false);
   const [scannedBy, setScannedBy] = useState<string | null>(null);
   const [signedIn, setSignedIn] = useState<string | null>(null);
+  const [asleep, setAsleep] = useState(false);
   const shownRef = useRef<Shown | null>(null);
   const scannedRef = useRef(false);
+  const lastInputAt = useRef(0);
 
   async function newCode() {
     try {
@@ -81,10 +87,33 @@ export default function StationPcSignIn() {
     }
   }
 
+  // Mouse or keys: someone's here. Wakes a sleeping screen.
   useEffect(() => {
+    let last = 0;
+    function touched() {
+      const t = Date.now();
+      if (t - last < 1000) return;
+      last = t;
+      lastInputAt.current = t;
+      setAsleep(false);
+    }
+    const events = ["pointermove", "pointerdown", "keydown", "wheel", "touchstart"] as const;
+    for (const e of events) window.addEventListener(e, touched, { passive: true });
+    return () => {
+      for (const e of events) window.removeEventListener(e, touched);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (asleep) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
+    lastInputAt.current = Date.now();
     async function loop() {
+      if (!scannedRef.current && Date.now() - lastInputAt.current >= SLEEP_AFTER_MS) {
+        setAsleep(true);
+        return;
+      }
       const result = await check();
       if (stopped || result === "done") return;
       timer = setTimeout(loop, scannedRef.current ? FAST_CHECK_MS : IDLE_CHECK_MS);
@@ -94,9 +123,10 @@ export default function StationPcSignIn() {
       stopped = true;
       clearTimeout(timer);
     };
-    // Runs once; check() reads the latest code through shownRef.
+    // Runs on load and on each wake; check() reads the latest code through
+    // shownRef (one that ran out is swapped for a new one).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [asleep]);
 
   if (notStation) {
     return (
@@ -117,7 +147,12 @@ export default function StationPcSignIn() {
         <h1 className="text-4xl font-bold tracking-tight text-foreground">{shown?.stationName ?? "this station"}</h1>
       </div>
 
-      {signedIn ? (
+      {asleep && !signedIn ? (
+        <p className="flex max-w-md items-center gap-3 rounded-xl bg-blue-50 px-6 py-5 text-2xl font-semibold text-primary">
+          <MousePointer2 className="size-8 shrink-0" aria-hidden />
+          Move the mouse or press a key to sign in
+        </p>
+      ) : signedIn ? (
         <p className="flex items-center gap-2 text-2xl font-semibold text-success">
           <LoaderCircle className="size-6 animate-spin" aria-hidden />
           Signing in as {signedIn}…

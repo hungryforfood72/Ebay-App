@@ -76,7 +76,7 @@ try:
 except Exception:
     hid = None
 
-VERSION = "2026-10-26.1"
+VERSION = "2026-11-01.1"
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE / "config.json"
 # The code this process is running, as it was when it started. Updates are
@@ -86,6 +86,11 @@ CONFIG = HERE / "config.json"
 RUNNING = Path(__file__).read_bytes().replace(b"\r\n", b"\n")
 POLL_SECONDS = 2
 CHECKIN_SECONDS = 10
+# The app says how often to check in (see helperPace in printHelper.ts):
+# every 10s while people are working, every 20s when nobody is. Kept in
+# this range whatever it sends, so the station never looks offline (30s).
+CHECKIN_MIN_SECONDS = 5
+CHECKIN_MAX_SECONDS = 20
 UPDATE_SECONDS = 6 * 60 * 60
 RENDER_DPI = 300
 # 4x6 in tenths of a millimetre, as DeviceCapabilities reports paper sizes.
@@ -139,6 +144,10 @@ class Station:
         # Whether the app wants this station's scale readings (not a Wi-Fi
         # slip printer). Assumed yes until the first check-in says.
         self.wants_scale = True
+        # Fast: ask for jobs every POLL_SECONDS. Slow (nobody's working):
+        # don't ask at all, the check-in says when a job is waiting.
+        self.fast = True
+        self.checkin_every = CHECKIN_SECONDS
 
     def call(self, method: str, path: str, body: dict | None = None, raw: bool = False):
         return request(self.base, self.token, method, path, body, raw)
@@ -158,10 +167,16 @@ class Station:
         self.paused = bool(state.get("paused"))
         self.update_requested = self.update_requested or bool(state.get("checkUpdate"))
         self.wants_scale = state.get("wantsScale", True) is not False
+        fast = state.get("pace") != "slow"
+        if fast != self.fast:
+            log.info("%s: %s", self.name, "people are working, checking for jobs every %ss" % POLL_SECONDS if fast else "quiet, checking in less often")
+        self.fast = fast
+        every = state.get("checkinSeconds")
+        self.checkin_every = min(max(every, CHECKIN_MIN_SECONDS), CHECKIN_MAX_SECONDS) if isinstance(every, (int, float)) else CHECKIN_SECONDS
         self.last_checkin = time.time()
 
     def claim(self) -> list[dict]:
-        if not (self.printer or self.label_printer) or self.paused:
+        if not (self.printer or self.label_printer) or self.paused or not self.fast:
             return []
         return self.call("GET", "/api/print-helper/jobs") or []
 
@@ -723,7 +738,8 @@ def setup_logging():
 
 
 def keep_checking_in(stations: list[Station]):
-    """Checks in every 10s from its own thread, printing or not. When the
+    """Checks in every 10s (20s while nobody's working) from its own
+    thread, printing or not. When the
     main loop did it between jobs, a batch of labels (20 took ~23s) went
     quiet long enough that the station looked offline, and the station
     page printed the next batch itself on the Windows default printer
@@ -731,7 +747,7 @@ def keep_checking_in(stations: list[Station]):
     printers: list[str] = []
     errors: dict[str, str] = {}
     while True:
-        due = [st for st in stations if time.time() - st.last_checkin >= CHECKIN_SECONDS]
+        due = [st for st in stations if time.time() - st.last_checkin >= st.checkin_every]
         if due:
             try:
                 printers = list_printers()
@@ -753,7 +769,7 @@ def keep_checking_in(stations: list[Station]):
                 if errors.get(st.id) != text:
                     log.warning("%s: check-in failed: %s", st.name, text)
                     errors[st.id] = text
-                st.last_checkin = time.time() - CHECKIN_SECONDS + 3  # try again in 3s
+                st.last_checkin = time.time() - st.checkin_every + 3  # try again in 3s
         time.sleep(1)
 
 

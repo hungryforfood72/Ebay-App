@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { AUTH_COOKIE_NAME, createSession, deleteSession, getRequestUser, getUserForSessionToken, verifyPassword } from "@/lib/auth";
+import { AUTH_COOKIE_NAME, STATION_SESSION_MS, createSession, deleteSession, getRequestUser, getUserForSessionToken, verifyPassword } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { logActivity } from "@/lib/activityLog";
 import { STATION_DEVICE_COOKIE, stationForDevice } from "@/lib/stationSignIn";
@@ -38,9 +38,10 @@ export async function POST(request: Request) {
   }
 
   // On a station PC (set up for scanner sign-in), tagged with the station
-  // so Sign out on the handheld can end it too.
+  // so Sign out on the handheld can end it too, and only for a shift
+  // (STATION_SESSION_MS), like a scanner + PIN sign-in there.
   const station = await stationForDevice(request);
-  const { token, expiresAt } = await createSession(user.id, undefined, station?.id ?? null);
+  const { token, expiresAt } = await createSession(user.id, station ? STATION_SESSION_MS : undefined, station?.id ?? null);
   await logActivity(
     { request, user: { id: user.id, username: user.username, role: user.role } },
     { action: "auth.login", summary: `${user.username} signed in`, targetType: "user", targetId: user.username }
@@ -51,7 +52,7 @@ export async function POST(request: Request) {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
-    maxAge: SESSION_MAX_AGE_SECONDS,
+    maxAge: station ? Math.floor(STATION_SESSION_MS / 1000) : SESSION_MAX_AGE_SECONDS,
     expires: expiresAt,
     path: "/",
   });

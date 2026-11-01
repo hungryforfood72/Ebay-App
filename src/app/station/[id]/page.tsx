@@ -46,28 +46,36 @@ import { useTicker } from "./useTicker";
 //      only the small code labels (Cristian, 2026-10-21).
 //   3. Shows what's going on, with a print log and Reprint buttons.
 //
-// Timing (all driven by one 250ms worker tick, see useTicker):
-//   heartbeat: right after the weight changes, at most 4 a second, and at
-//     least every 10s so the station stays "online".
-//   labels: every 1.5s if anything happened in the last 2 minutes (a label
-//     printed, the weight moved), every 5s otherwise. Saves Vercel calls
-//     while the station sits idle.
+// Timing (all driven by one 250ms worker tick, see useTicker). One call,
+// the heartbeat, does it all: sends the weight, takes waiting labels, and
+// brings back the station's settings and print helper status (Cristian,
+// 2026-11-01: it was three calls on their own timers, a big part of the
+// Vercel bill). Sent:
+//   right after the weight changes, at most 4 a second;
+//   otherwise, while this page prints labels: every 1.5s if anything
+//     happened in the last 2 minutes (a label printed, the weight moved,
+//     the mouse), every 5s if not;
+//   while the print helper prints everything: every 10s, or every second
+//     while someone's weighing on the helper's scale (this page shows its
+//     weight from the heartbeat's answer).
+// The print log is re-read after this page prints, and every 15s (60s
+// when quiet) for what the helper printed.
+// After an hour with nobody doing anything here, a station sign-in ends
+// and the PC goes back to its sign-in screen (src/lib/stationIdle.ts);
+// anyone else's page just goes to sleep until someone touches it.
 
 const TICK_MS = 250;
 const HEARTBEAT_MIN_GAP_MS = 250;
-const HEARTBEAT_IDLE_MS = 10_000;
 const HEARTBEAT_RETRY_MS = 2_000;
-const POLL_ACTIVE_MS = 1_500;
-const POLL_IDLE_MS = 5_000;
+const BEAT_ACTIVE_MS = 1_500;
+const BEAT_IDLE_MS = 5_000;
+const BEAT_HELPER_MS = 10_000;
+const HELPER_SCALE_ACTIVE_MS = 1_000;
+const LOG_ACTIVE_MS = 15_000;
+const LOG_IDLE_MS = 60_000;
 const ACTIVE_WINDOW_MS = 2 * 60_000;
 // A weight change at least this big counts as someone working here.
 const ACTIVITY_OZ = 0.2;
-// How often the station's settings and print helper status are re-read.
-// While the helper has the scale, that's also where this page gets the
-// weight it shows: every second while someone's weighing, else every 3s.
-const STATION_REFRESH_MS = 10_000;
-const HELPER_SCALE_ACTIVE_MS = 1_000;
-const HELPER_SCALE_IDLE_MS = 3_000;
 
 // Two short beeps when the scale turns itself off, so whoever's weighing
 // presses its power button before the next item instead of after. Chrome
@@ -96,7 +104,7 @@ function beepScaleOff() {
   }
 }
 
-type ServerState = "connecting" | "online" | "offline" | "signed-out" | "deleted";
+type ServerState = "connecting" | "online" | "offline" | "signed-out" | "deleted" | "asleep";
 
 type QueuedJob = { id: string; kind: string; payload: PrintJobPayload; copies: number };
 
@@ -150,7 +158,6 @@ export default function StationPage() {
   const helperPagesRef = useRef(false);
   const helperLabelsRef = useRef(false);
   const labelSizeRef = useRef<LabelSize>(DEFAULT_LABEL_SIZE);
-  const stationLoadedAt = useRef(0);
   // This PC shows a QR code for the next person after a log out
   // (ScannerSignInCard; src/lib/stationSignIn.ts).
   const [scannerSignIn, setScannerSignIn] = useState<{ thisStation: boolean; otherStation: string | null } | null>(null);
@@ -171,9 +178,17 @@ export default function StationPage() {
   // Latest values for the tick, which runs outside React's render cycle.
   const readingRef = useRef({ weightOz, stable });
   const hb = useRef({ sentKey: "", sentAt: 0, inFlight: false });
-  const poll = useRef({ busy: false, lastAt: 0 });
+  // Printing what a heartbeat brought back: the next ones don't take more
+  // until it's done.
+  const printing = useRef(false);
+  const logLoadedAt = useRef(0);
   // Set on mount so a freshly opened page starts out checking quickly.
   const lastActivityAt = useRef(0);
+  // Anyone doing anything here (mouse, keys, scale, a label), for the
+  // hour-idle sign-out. The server can move it later (activeAt): a label
+  // queued from a handheld counts too.
+  const lastInputAt = useRef(0);
+  const asleep = useRef(false);
   const lastWeight = useRef<number | null>(null);
   const halted = useRef(false);
 
@@ -181,9 +196,34 @@ export default function StationPage() {
     readingRef.current = { weightOz, stable };
     if (weightOz !== null && (lastWeight.current === null || Math.abs(weightOz - lastWeight.current) >= ACTIVITY_OZ)) {
       lastActivityAt.current = Date.now();
+      lastInputAt.current = Date.now();
     }
     lastWeight.current = weightOz;
   }, [weightOz, stable]);
+
+  // Mouse or keys on this PC: someone's here. Wakes a sleeping page.
+  useEffect(() => {
+    let last = 0;
+    function touched() {
+      const t = Date.now();
+      // pointermove fires constantly; once a second is plenty.
+      if (t - last < 1000) return;
+      last = t;
+      lastInputAt.current = t;
+      lastActivityAt.current = t;
+      if (asleep.current) {
+        asleep.current = false;
+        hb.current.sentAt = 0;
+        logLoadedAt.current = 0;
+        setServer("connecting");
+      }
+    }
+    const events = ["pointermove", "pointerdown", "keydown", "wheel", "touchstart"] as const;
+    for (const e of events) window.addEventListener(e, touched, { passive: true });
+    return () => {
+      for (const e of events) window.removeEventListener(e, touched);
+    };
+  }, []);
 
   function handleStatus(status: number) {
     if (status === 401) {
@@ -202,6 +242,7 @@ export default function StationPage() {
   }
 
   async function loadLog() {
+    logLoadedAt.current = Date.now();
     try {
       const res = await fetch(`/api/stations/${id}/log?limit=25`, { cache: "no-store" });
       if (res.ok) setLog(await res.json());
@@ -223,7 +264,6 @@ export default function StationPage() {
   }
 
   async function loadStation(first = false) {
-    stationLoadedAt.current = Date.now();
     try {
       const r = await fetch(`/api/stations/${id}`, { cache: "no-store" });
       const data = await r.json();
@@ -262,12 +302,13 @@ export default function StationPage() {
     }
     if (on) {
       lastActivityAt.current = Date.now();
-      poll.current.lastAt = 0; // print what's waiting right away
+      hb.current.sentAt = 0; // print what's waiting right away
     }
   }
 
   useEffect(() => {
     lastActivityAt.current = Date.now();
+    lastInputAt.current = Date.now();
     // Both set state only after their fetch comes back.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadStation(true);
@@ -288,6 +329,16 @@ export default function StationPage() {
     }
   }
 
+  // What this page takes from the queue: whatever no helper printer is
+  // picked for. Nothing while printing is paused, or still printing the
+  // last batch.
+  function claimKinds(): "all" | "page" | "label" | undefined {
+    if (!autoPrintRef.current || printing.current) return undefined;
+    const pages = !helperPagesRef.current;
+    const labels = !helperLabelsRef.current;
+    return pages && labels ? "all" : pages ? "page" : labels ? "label" : undefined;
+  }
+
   async function sendHeartbeat(key: string, reading: { weightOz: number | null; stable: boolean }) {
     const state = hb.current;
     state.inFlight = true;
@@ -297,19 +348,51 @@ export default function StationPage() {
       const res = await fetch(`/api/stations/${id}/heartbeat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // The helper's weight isn't this page's to send.
-        body: JSON.stringify(helperScaleRef.current ? {} : reading),
+        body: JSON.stringify({
+          // The helper's weight isn't this page's to send.
+          ...(helperScaleRef.current ? {} : reading),
+          claim: claimKinds(),
+          idleMs: Date.now() - lastInputAt.current,
+        }),
       });
-      if (res.ok) setServer("online");
-      else {
+      if (!res.ok) {
         handleStatus(res.status);
-        state.sentAt = Date.now() - HEARTBEAT_IDLE_MS + HEARTBEAT_RETRY_MS;
+        state.sentAt = Date.now() - BEAT_HELPER_MS + HEARTBEAT_RETRY_MS;
+        return;
       }
+      const data = await res.json().catch(() => null);
+      if (data?.idle) {
+        // Not a station sign-in, so nobody's signed out: the page just
+        // stops calling the app until someone moves the mouse.
+        asleep.current = true;
+        setServer("asleep");
+        return;
+      }
+      setServer("online");
+      if (typeof data?.activeAt === "number") lastInputAt.current = Math.max(lastInputAt.current, data.activeAt);
+      if (data?.station) applyStation(data.station as StationStatus);
+      const jobs: QueuedJob[] = Array.isArray(data?.jobs) ? data.jobs : [];
+      if (jobs.length) void printJobs(jobs);
     } catch {
       setServer("offline");
-      state.sentAt = Date.now() - HEARTBEAT_IDLE_MS + HEARTBEAT_RETRY_MS;
+      state.sentAt = Date.now() - BEAT_HELPER_MS + HEARTBEAT_RETRY_MS;
     } finally {
       state.inFlight = false;
+    }
+  }
+
+  async function printJobs(jobs: QueuedJob[]) {
+    printing.current = true;
+    try {
+      lastActivityAt.current = Date.now();
+      for (const job of jobs) await printJob(job);
+      lastActivityAt.current = Date.now();
+      lastInputAt.current = Date.now();
+      await loadLog();
+    } finally {
+      printing.current = false;
+      // Check again right away: there may be more waiting.
+      hb.current.sentAt = 0;
     }
   }
 
@@ -336,67 +419,27 @@ export default function StationPage() {
     setNowPrinting(null);
   }
 
-  async function pollJobs() {
-    const state = poll.current;
-    // The helper takes whatever it has a printer for; this page the rest.
-    const pages = !helperPagesRef.current;
-    const labels = !helperLabelsRef.current;
-    if (!pages && !labels) {
-      state.lastAt = Date.now();
-      void loadLog();
-      return;
-    }
-    state.busy = true;
-    try {
-      const kinds = pages && labels ? "" : pages ? "?kinds=page" : "?kinds=label";
-      const res = await fetch(`/api/stations/${id}/jobs${kinds}`, { cache: "no-store" });
-      if (!res.ok) {
-        handleStatus(res.status);
-        return;
-      }
-      const jobs: QueuedJob[] = await res.json();
-      if (jobs.length === 0) return;
-      lastActivityAt.current = Date.now();
-      for (const job of jobs) await printJob(job);
-      lastActivityAt.current = Date.now();
-      await loadLog();
-    } catch {
-      // Network blip; the next poll tries again.
-    } finally {
-      state.busy = false;
-      state.lastAt = Date.now();
-    }
-  }
-
   useTicker(TICK_MS, () => {
-    if (halted.current) return;
+    if (halted.current || asleep.current) return;
     const t = Date.now();
+
+    const active = t - lastActivityAt.current < ACTIVE_WINDOW_MS;
+    setPollActive(active);
+    const pageClaims = autoPrintRef.current && (!helperPagesRef.current || !helperLabelsRef.current);
+    let every = pageClaims ? (active ? BEAT_ACTIVE_MS : BEAT_IDLE_MS) : BEAT_HELPER_MS;
+    // The weight on screen comes from the helper's readings, through the
+    // heartbeat's answer.
+    if (helperScaleRef.current) every = Math.min(every, active ? HELPER_SCALE_ACTIVE_MS : BEAT_IDLE_MS);
 
     const reading = readingRef.current;
     const key = helperScaleRef.current ? "helper" : `${reading.weightOz}|${reading.stable}`;
     const h = hb.current;
-    if (
-      !h.inFlight &&
-      ((key !== h.sentKey && t - h.sentAt >= HEARTBEAT_MIN_GAP_MS) || t - h.sentAt >= HEARTBEAT_IDLE_MS)
-    ) {
+    if (!h.inFlight && ((key !== h.sentKey && t - h.sentAt >= HEARTBEAT_MIN_GAP_MS) || t - h.sentAt >= every)) {
       void sendHeartbeat(key, reading);
     }
 
-    const p = poll.current;
-    const active = t - lastActivityAt.current < ACTIVE_WINDOW_MS;
-    setPollActive(active);
-    if (!autoPrintRef.current) {
-      // Paused: don't take any jobs, just keep the log's Waiting rows fresh.
-      if (!p.busy && t - p.lastAt >= POLL_IDLE_MS) {
-        p.lastAt = t;
-        void loadLog();
-      }
-    } else if (!p.busy && t - p.lastAt >= (active ? POLL_ACTIVE_MS : POLL_IDLE_MS)) void pollJobs();
-
-    // The print helper's status and the picked printer (and the helper's
-    // scale reading).
-    const refreshMs = helperScaleRef.current ? (active ? HELPER_SCALE_ACTIVE_MS : HELPER_SCALE_IDLE_MS) : STATION_REFRESH_MS;
-    if (t - stationLoadedAt.current >= refreshMs) void loadStation();
+    // What the print helper printed, and the Waiting rows while paused.
+    if (!printing.current && t - logLoadedAt.current >= (active ? LOG_ACTIVE_MS : LOG_IDLE_MS)) void loadLog();
 
     // Re-render once a second for "last reading 12s ago".
     if (Math.floor(t / 1000) !== Math.floor(now / 1000)) setNow(t);
@@ -422,7 +465,7 @@ export default function StationPage() {
     try {
       await queue("item", TEST_LABEL);
       lastActivityAt.current = Date.now();
-      poll.current.lastAt = 0; // check right away
+      hb.current.sentAt = 0; // check right away
       setMessage("Test label sent. It should print in a second or two.");
     } catch (e) {
       setMessage(e instanceof Error ? e.message : "Couldn't send the test label.");
@@ -446,7 +489,7 @@ export default function StationPage() {
         throw new Error(data.error ?? "Couldn't reprint.");
       }
       lastActivityAt.current = Date.now();
-      poll.current.lastAt = 0;
+      hb.current.sentAt = 0;
     } catch (e) {
       setMessage(e instanceof Error ? e.message : "Couldn't reprint.");
     }
@@ -488,6 +531,12 @@ export default function StationPage() {
       {server === "signed-out" && (
         <Alert tone="danger" title="Signed out" className="mb-4">
           This PC got signed out, so weights and labels stopped. Reload the page and sign in again.
+        </Alert>
+      )}
+      {server === "asleep" && (
+        <Alert tone="warning" title="Asleep" className="mb-4">
+          Nobody&apos;s used this station for an hour, so it stopped checking for labels and weights. Move the mouse or
+          press a key to wake it.
         </Alert>
       )}
       {server === "deleted" && (
@@ -603,7 +652,9 @@ export default function StationPage() {
                         ? "Can't reach the app. Check the internet."
                         : server === "signed-out"
                           ? "Signed out"
-                          : "Station deleted"
+                          : server === "asleep"
+                            ? "Asleep. Move the mouse to wake it."
+                            : "Station deleted"
                 }
               />
               <StatusRow
@@ -622,7 +673,7 @@ export default function StationPage() {
                         `4x6 labels: ${station.helperTakesPages ? `${station.printerName} (print helper)` : "this page"}.`,
                         `Small labels: ${station.helperTakesLabels ? `${station.labelPrinterName} (print helper)` : "this page"}.`,
                       ].join(" ")
-                    : `Checking for labels every ${(pollActive ? POLL_ACTIVE_MS : POLL_IDLE_MS) / 1000}s`
+                    : `Checking for labels every ${(pollActive ? BEAT_ACTIVE_MS : BEAT_IDLE_MS) / 1000}s`
               }
               />
             </ul>

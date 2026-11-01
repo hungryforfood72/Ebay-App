@@ -33,6 +33,46 @@ export function helperPrintsLabels(
   return helperOnline(s.helperSeenAt, now) && s.labelPrinterName != null && helperCanPrintLabels(s.helperVersion);
 }
 
+// How fast the helper checks in (Cristian, 2026-11-01: Vercel usage). It
+// used to ask for jobs every 2s and check in every 10s, per station, all
+// night and all weekend: most of the app's calls. Now:
+//   fast: someone's working (a station page is signed in and open, anyone
+//     changed something in the app in the last 15 minutes, or this station
+//     has a job waiting): jobs every 2s, check-in every 10s, as before.
+//   slow: nobody's around: no job checks at all, a check-in every 20s.
+//     The check-in says when a job is waiting, so the helper goes fast and
+//     takes it: a label queued while it's slow prints within ~20s.
+// 20s stays under STATION_ONLINE_MS, so a slow helper still counts as
+// online and keeps getting its packing slips and labels.
+export const HELPER_FAST = { pollSeconds: 2, checkinSeconds: 10 } as const;
+export const HELPER_SLOW = { pollSeconds: 0, checkinSeconds: 20 } as const;
+const PAGE_OPEN_MS = 2 * 60_000;
+const RECENT_WORK_MS = 15 * 60_000;
+const BUSY_CACHE_MS = 10_000;
+
+let busyCache: { at: number; busy: boolean } | null = null;
+
+// Anyone working anywhere in the warehouse. Shared by every station's
+// check-in, so kept for 10s instead of asked each time.
+async function warehouseBusy(now: number): Promise<boolean> {
+  if (busyCache && now - busyCache.at < BUSY_CACHE_MS) return busyCache.busy;
+  const [pageOpen, recentWork] = await Promise.all([
+    // A slip printer station's lastSeenAt is its helper's own check-in, so
+    // it doesn't count.
+    prisma.station.findFirst({ where: { slipPrinter: false, lastSeenAt: { gt: new Date(now - PAGE_OPEN_MS) } }, select: { id: true } }),
+    prisma.activityLog.findFirst({ where: { at: { gt: new Date(now - RECENT_WORK_MS) }, username: { not: null } }, select: { id: true } }),
+  ]);
+  const busy = pageOpen != null || recentWork != null;
+  busyCache = { at: now, busy };
+  return busy;
+}
+
+export async function helperPace(stationId: string, now = Date.now()) {
+  const waiting = await prisma.printJob.findFirst({ where: { stationId, status: "queued" }, select: { id: true } });
+  if (waiting || (await warehouseBusy(now))) return { pace: "fast" as const, ...HELPER_FAST };
+  return { pace: "slow" as const, ...HELPER_SLOW };
+}
+
 // The station a helper request is for, by its key.
 export async function stationForHelper(request: Request) {
   const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "").trim() ?? "";

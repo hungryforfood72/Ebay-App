@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { helperScaleData, stationForHelper } from "@/lib/warehouse/printHelper";
+import { helperPace, helperScaleData, stationForHelper } from "@/lib/warehouse/printHelper";
 import { errorResponse } from "@/lib/warehouse/stations";
 import { labelSizeOf } from "@/lib/warehouse/types";
 import { NextRequest, NextResponse } from "next/server";
@@ -15,6 +15,8 @@ import { NextRequest, NextResponse } from "next/server";
 // helper that can't start, { scalePolicy } (the PC's Chrome scale
 // policy, see Station.scalePolicy) and { scale } (the helper's latest scale
 // reading, see /api/print-helper/scale).
+// The answer also carries { pace, pollSeconds, checkinSeconds } (see
+// helperPace): how often to ask for jobs and check in until the next one.
 export async function POST(request: NextRequest) {
   try {
     const station = await stationForHelper(request);
@@ -59,6 +61,7 @@ export async function POST(request: NextRequest) {
       paused: station.printPaused,
       checkUpdate: station.helperUpdateAt != null,
       wantsScale: !station.slipPrinter,
+      ...(await helperPace(station.id, now.getTime())),
     });
   } catch (e) {
     return errorResponse(e);

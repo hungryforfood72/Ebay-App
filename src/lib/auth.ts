@@ -7,6 +7,12 @@ const scryptAsync = promisify(scrypt);
 
 export const AUTH_COOKIE_NAME = "session";
 const SESSION_DURATION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days — matches the old shared-password cookie's lifetime
+// Any sign-in on a station PC (Session.stationId set), scanner + PIN or a
+// password: a shift, not a month, so a station nobody logged out of is
+// back on its sign-in screen the next morning. Checked against createdAt
+// too, so sign-ins from before 2026-11-01 (password ones got 30 days)
+// end on the same clock.
+export const STATION_SESSION_MS = 14 * 60 * 60 * 1000;
 
 const SCRYPT_KEY_LENGTH = 64;
 
@@ -122,5 +128,6 @@ export async function getUserForSessionToken(token: string | undefined | null): 
     include: { user: { select: { id: true, username: true, role: true } } },
   });
   if (!session || session.expiresAt.getTime() < Date.now()) return null;
+  if (session.stationId && session.createdAt.getTime() + STATION_SESSION_MS < Date.now()) return null;
   return session.user;
 }
