@@ -50,7 +50,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { describeBreakdown } from "@/lib/expirationBreakdown";
 import type { RelistPart, RelistPlan } from "@/lib/relist";
 import { upcMatchKeys } from "@/lib/upcMatch";
-import { classifyScan, normalizeCode } from "@/lib/warehouse/codes";
+import { classifyScan, dudBoxName, normalizeCode } from "@/lib/warehouse/codes";
 import type { ReturnListingPlan } from "@/lib/warehouse/returns";
 import type { SortLocation } from "@/lib/warehouse/sortBoxes";
 import { Suspense, useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
@@ -87,8 +87,8 @@ type DudBoxInfo = {
 function dudBoxRefusal(box: DudBoxInfo, upc: string): string | null {
   const keys = new Set(upcMatchKeys(upc));
   const shopify = box.entries.filter((e) => e.decision === "shopify" && upcMatchKeys(e.upc).some((k) => keys.has(k)));
-  if (shopify.length === 0) return `Not marked for Shopify in dud box ${box.code} yet.`;
-  if (shopify.every((e) => e.quantity - e.listedUnits <= 0)) return `All of this product in dud box ${box.code} is already listed.`;
+  if (shopify.length === 0) return `Not marked for Shopify in ${dudBoxName(box.code)} yet.`;
+  if (shopify.every((e) => e.quantity - e.listedUnits <= 0)) return `All of this product in ${dudBoxName(box.code)} is already listed.`;
   return null;
 }
 
@@ -1784,7 +1784,7 @@ function ScanPageInner() {
         {dudBox && (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
             <span className="min-w-0">
-              Listing from dud box <span className="font-semibold">{dudBox.code}</span>
+              Listing from <span className="font-semibold">{dudBoxName(dudBox.code)}</span>
               {dudBox.manifestTitle ? ` (${dudBox.manifestTitle})` : ""}
             </span>
             <button type="button" className="text-xs font-medium underline" onClick={leaveDudBox}>

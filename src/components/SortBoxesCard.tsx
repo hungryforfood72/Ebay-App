@@ -1,5 +1,6 @@
 "use client";
 
+import { boxShortName } from "@/lib/warehouse/codes";
 import type { SortLocation } from "@/lib/warehouse/sortBoxes";
 import { useState } from "react";
 import { Button } from "./ui/Button";
@@ -37,7 +38,7 @@ export function SortBoxesCard({
     setBusy(true);
     const error = await onPutBack(boxCode, n);
     setBusy(false);
-    setNote(error ?? `Put ${n} back in ${boxCode}.`);
+    setNote(error ?? `Put ${n} back in ${boxShortName(boxCode)}.`);
     if (!error) setOpenBox(null);
   }
 
@@ -46,7 +47,7 @@ export function SortBoxesCard({
       {headline && (
         <p className="mb-1.5 font-semibold">
           {total > 0
-            ? `${total} here: ${pull.pulled.map((p) => `${p.boxCode} x${p.units}`).join(", ")}. Grab them all.`
+            ? `${total} here: ${pull.pulled.map((p) => `${boxShortName(p.boxCode)} x${p.units}`).join(", ")}. Grab them all.`
             : `Already gathered${gatheredBy ? ` by ${gatheredBy}` : ""}: ${pulledBefore} at the table.`}
         </p>
       )}
@@ -56,7 +57,7 @@ export function SortBoxesCard({
             <li key={l.boxCode}>
               <div className="flex items-center justify-between gap-2">
                 <span className="tabular-nums">
-                  {l.boxCode}: {l.pulled} pulled
+                  {boxShortName(l.boxCode)}: {l.pulled} pulled
                   {l.inBox > 0 ? `, ${l.inBox} left in the box` : ""}
                 </span>
                 <button
@@ -78,7 +79,7 @@ export function SortBoxesCard({
                     min={1}
                     max={l.pulled}
                     inputMode="numeric"
-                    aria-label={`How many are still in ${l.boxCode}`}
+                    aria-label={`How many are still in ${boxShortName(l.boxCode)}`}
                     className="w-24"
                     value={units}
                     onChange={(e) => setUnits(e.target.value)}

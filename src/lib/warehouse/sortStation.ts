@@ -10,14 +10,14 @@ import type { CodeLabelPayload } from "./types";
 // good scan with the server deciding whether it's on the manifest, undoing
 // the last log, and marking a load's sorting finished. Server only.
 
-// What prints under the barcode: the load the box belongs to (boxes aren't
-// reused since 2026-11-01), so nobody has to write it on the box. Long
-// BStock titles get cut, same as dud box labels.
-const CAPTION_MAX = 48;
+// The label's small line: the load the box belongs to (boxes aren't reused
+// since 2026-11-01), so nobody has to write it on the box. The big line
+// ("SORT BOX 3") comes from the code itself. Long BStock titles get cut.
+const CAPTION_MAX = 70;
 
 export function sortBoxLabelPayload(code: string, manifestTitle: string | null): CodeLabelPayload {
-  if (!manifestTitle) return { code, caption: "SORT BOX" };
-  const caption = `SORT · ${manifestTitle.replace(/\s+/g, " ").trim()}`;
+  if (!manifestTitle) return { code };
+  const caption = manifestTitle.replace(/\s+/g, " ").trim();
   return { code, caption: caption.length > CAPTION_MAX ? `${caption.slice(0, CAPTION_MAX - 1).trimEnd()}…` : caption };
 }
 

@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/Button";
 import { Card, SectionHeader } from "@/components/ui/Card";
 import { cn } from "@/components/ui/cn";
 import { Input } from "@/components/ui/Input";
+import { boxShortName } from "@/lib/warehouse/codes";
 import type { SortLocation } from "@/lib/warehouse/sortBoxes";
 import { ChevronRight, CircleCheck, CircleX, FileSpreadsheet, Info, LoaderCircle, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -111,8 +112,11 @@ function resultFor(data: GatherResponse): Result {
   }
   // Boxes this scan took the last units out of (not reused, so done).
   const stillFull = new Set(data.boxes.map((b) => b.boxCode));
-  const emptied = data.pulled.map((p) => p.boxCode).filter((c) => c !== NO_BOX && !stillFull.has(c));
-  const where = data.pulled.map((p) => `${p.boxCode} x${p.units}`).join(" · ");
+  const emptied = data.pulled
+    .map((p) => p.boxCode)
+    .filter((c) => c !== NO_BOX && !stillFull.has(c))
+    .map(boxShortName);
+  const where = data.pulled.map((p) => `${boxShortName(p.boxCode)} x${p.units}`).join(" · ");
   return {
     tone: "good",
     headline: total === 1 ? "Just this one" : `Gather all ${total}`,
@@ -454,7 +458,7 @@ export default function GatherPage() {
             <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3">
               {boxes.map((b) => (
                 <li key={b.boxCode} className="rounded-xl border border-border bg-surface px-3 py-2 shadow-sm">
-                  <p className="font-semibold text-foreground">{b.boxCode}</p>
+                  <p className="font-semibold text-foreground">{boxShortName(b.boxCode)}</p>
                   <p className="text-xs text-muted-foreground">
                     {plural(b.units, "unit")} · {plural(b.products, "product")}
                   </p>

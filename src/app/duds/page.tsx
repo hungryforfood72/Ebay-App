@@ -6,7 +6,7 @@ import { AppShell } from "@/components/ui/AppShell";
 import { Badge } from "@/components/ui/Badge";
 import { Card } from "@/components/ui/Card";
 import { cn } from "@/components/ui/cn";
-import { classifyScan, normalizeCode } from "@/lib/warehouse/codes";
+import { classifyScan, dudBoxName, normalizeCode } from "@/lib/warehouse/codes";
 import type { DudBoxSummary } from "@/lib/warehouse/dudBoxTypes";
 import { ChevronRight, LoaderCircle, PackageX } from "lucide-react";
 import Link from "next/link";
@@ -138,7 +138,7 @@ export default function DudBoxesPage() {
                   </span>
                   <span className="min-w-0 flex-1">
                     <span className="flex flex-wrap items-center gap-2">
-                      <span className="font-mono text-base font-bold text-foreground">{b.code}</span>
+                      <span className="text-base font-bold text-foreground">{dudBoxName(b.code)}</span>
                       <Badge tone={STATUS_TONE[b.status]}>{STATUS_TEXT[b.status]}</Badge>
                     </span>
                     <span className="mt-0.5 block truncate text-sm text-foreground">{b.manifestTitle}</span>

@@ -3,8 +3,12 @@
 //   ES000123  item label (= the item's sku and eBay custom label)
 //   BN0001    bin
 //   BX001     box size
-//   DB0001    dud box (one manifest's duds, from the sort station)
-//   SB0001    sort box (good units sorted out of a load, reused load to load)
+//   DB-1A2B3C4D-2  dud box 2 of a load (one manifest's duds, from the sort station)
+//   SB-1A2B3C4D-2  sort box 2 of a load (good units sorted out of a load)
+// Box codes are QR codes since 2026-11-01 (Cristian): the code carries the
+// load (first 8 of its id) and the box's number within that load, so every
+// load counts its boxes from 1 again and two loads never share a code.
+// Boxes made before that keep their old codes (DB0001, SB0001) and labels.
 // Shelves keep whatever labels they already have in ShelfLocation ("A5").
 // UPCs are all digits, so they never collide with these.
 //
@@ -29,8 +33,9 @@ export function shelfBinCode(shelfLabel: string): string {
 const ITEM_RE = /^ES\d{6,}$/;
 const BIN_RE = /^BN\d{4,}$/;
 const BOX_RE = /^BX\d{3,}$/;
-const DUD_BOX_RE = /^DB\d{4,}$/;
-const SORT_BOX_RE = /^SB\d{4,}$/;
+const DUD_BOX_RE = /^DB(\d{4,}|-[0-9A-Z]{8}-\d+)$/;
+const SORT_BOX_RE = /^SB(\d{4,}|-[0-9A-Z]{8}-\d+)$/;
+const LOAD_BOX_RE = /^(SB|DB)-[0-9A-Z]{8}-(\d+)$/;
 const UPC_RE = /^\d{8,14}$/;
 
 export type ScanKind = "item" | "bin" | "box" | "dudbox" | "sortbox" | "upc" | "other";
@@ -60,12 +65,42 @@ export function formatBinCode(n: number): string {
   return `${BIN_CODE_PREFIX}${String(n).padStart(4, "0")}`;
 }
 
-export function formatDudBoxCode(n: number): string {
-  return `${DUD_BOX_CODE_PREFIX}${String(n).padStart(4, "0")}`;
+// A box's QR code: prefix, the load's tag, its number within the load.
+export function loadBoxCode(prefix: typeof SORT_BOX_CODE_PREFIX | typeof DUD_BOX_CODE_PREFIX, manifestId: string, n: number): string {
+  return `${prefix}-${manifestId.replace(/[^0-9a-zA-Z]/g, "").slice(0, 8).toUpperCase()}-${n}`;
 }
 
-export function formatSortBoxCode(n: number): string {
-  return `${SORT_BOX_CODE_PREFIX}${String(n).padStart(4, "0")}`;
+// The box's number within its load (3 for "SB-1A2B3C4D-3"), or null for an
+// old-style code (SB0001), which has no per-load number.
+export function loadBoxNumber(code: string): number | null {
+  const m = LOAD_BOX_RE.exec(normalizeCode(code));
+  return m ? Number(m[2]) : null;
+}
+
+// The next box number for a load, given its boxes' codes: after the
+// highest QR-style number, and after however many boxes it already has
+// (old-style SB0001 boxes have no number of their own; on the 10/14 pallet
+// SB0001-SB0010 are its first ten).
+export function nextLoadBoxNumber(codes: string[]): number {
+  return Math.max(codes.length, ...codes.map((c) => loadBoxNumber(c) ?? 0)) + 1;
+}
+
+// What people read for a box: "Sort Box 3" / "Dud Box 3", or the old code
+// itself for a box from before the QR labels (that's what its label says).
+export function sortBoxName(code: string): string {
+  const n = loadBoxNumber(code);
+  return n == null ? code : `Sort Box ${n}`;
+}
+
+export function dudBoxName(code: string): string {
+  const n = loadBoxNumber(code);
+  return n == null ? code : `Dud Box ${n}`;
+}
+
+// Short form for lists of sort boxes ("Box 2 x1 · Box 8 x3").
+export function boxShortName(code: string): string {
+  const n = loadBoxNumber(code);
+  return n == null ? code : `Box ${n}`;
 }
 
 export function formatBoxCode(n: number): string {

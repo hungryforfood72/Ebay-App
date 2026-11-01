@@ -7,7 +7,9 @@ import {
   type PrintJobKind,
   type PrintJobPayload,
 } from "@/lib/warehouse/types";
+import { dudBoxName, sortBoxName } from "@/lib/warehouse/codes";
 import { barcodeSvg } from "./barcode";
+import { qrSvg } from "./qr";
 
 // The 2" x 1" labels as HTML strings (bigger stock gets the same label,
 // zoomed to fill it: labelsDocument). Strings (not React) because the same
@@ -98,6 +100,38 @@ export const LABEL_CSS = `
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+}
+.wl-box {
+  flex-direction: row;
+  justify-content: flex-start;
+  gap: 0.06in;
+  text-align: left;
+}
+.wl-box-qr { flex: none; }
+.wl-box-text {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.wl-box-name {
+  font-size: 15pt;
+  font-weight: 700;
+  line-height: 1;
+  overflow-wrap: anywhere;
+}
+.wl-box-title {
+  margin-top: 3pt;
+  font-size: 7.5pt;
+  font-weight: 700;
+  line-height: 8.5pt;
+  max-height: 34pt;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
   word-break: break-word;
 }
@@ -219,21 +253,21 @@ function codeLabelHtml(kind: PrintJobKind, p: CodeLabelPayload, zoom: number): s
   );
 }
 
-// Dud and sort box labels: read from across the floor, so the box code is
-// the big line (like a bin label) and the caption sits under it, small, up
-// to two lines: the load the box belongs to ("DUDS · 10/14/26 Pallet 2 ...",
-// "SORT · ..."), or just "SORT BOX" for a retired bulk-made one with no load.
-function boxLabelHtml(p: CodeLabelPayload, fallbackCaption: string, zoom: number): string {
-  const caption = p.caption?.trim() || fallbackCaption;
-  // 0.32" of bars + 16pt code + two 8.5pt caption lines fits inside 1"
-  // with the padding (about 0.85").
-  const bars = barcodeSvg(p.code, 0.32, zoom);
-  if (!bars) return badLabel(p.code);
+// Dud and sort box labels (QR since 2026-11-01): the QR on the left (it
+// carries the load and the box number, see codes.ts), and what people read
+// on the right: "SORT BOX 3" / "DUD BOX 3" big, the load's title under it.
+// A box from before the QR labels shows its old code (SB0001) as the name,
+// since that's what everyone already calls it. caption = the load's title.
+function boxLabelHtml(p: CodeLabelPayload, name: string, zoom: number): string {
+  const qr = qrSvg(p.code, 0.88, zoom);
+  if (!qr) return badLabel(p.code);
   return (
-    `<div class="wl-label">` +
-    `<div class="wl-bars">${bars.svg}</div>` +
-    `<div class="wl-caption" style="font-size:16pt;max-height:18pt">${esc(p.code)}</div>` +
-    `<div class="wl-dud-caption">${esc(caption)}</div>` +
+    `<div class="wl-label wl-box">` +
+    `<div class="wl-box-qr">${qr}</div>` +
+    `<div class="wl-box-text">` +
+    `<div class="wl-box-name">${esc(name.toUpperCase())}</div>` +
+    (p.caption?.trim() ? `<div class="wl-box-title">${esc(p.caption.trim())}</div>` : "") +
+    `</div>` +
     `</div>`
   );
 }
@@ -243,8 +277,8 @@ function boxLabelHtml(p: CodeLabelPayload, fallbackCaption: string, zoom: number
 // on whole printer dots.
 function labelBody(kind: PrintJobKind, payload: PrintJobPayload, zoom: number): string {
   if (kind === "item") return itemLabelHtml(payload as ItemLabelPayload, zoom);
-  if (kind === "dud") return boxLabelHtml(payload as CodeLabelPayload, "DUDS", zoom);
-  if (kind === "sort") return boxLabelHtml(payload as CodeLabelPayload, "SORT BOX", zoom);
+  if (kind === "dud") return boxLabelHtml(payload as CodeLabelPayload, dudBoxName((payload as CodeLabelPayload).code), zoom);
+  if (kind === "sort") return boxLabelHtml(payload as CodeLabelPayload, sortBoxName((payload as CodeLabelPayload).code), zoom);
   return codeLabelHtml(kind, payload as CodeLabelPayload, zoom);
 }
 

@@ -2,7 +2,7 @@ import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "../prisma";
 import { upcMatchKeys } from "../upcMatch";
 import { WarehouseError } from "./bins";
-import { codeNumber, formatSortBoxCode, normalizeCode, SORT_BOX_CODE_PREFIX } from "./codes";
+import { loadBoxCode, nextLoadBoxNumber, normalizeCode, SORT_BOX_CODE_PREFIX, sortBoxName } from "./codes";
 
 // Sort boxes (SortBox / SortBoxEntry). Cristian's flow (2026-10-18): the
 // whole load is sorted into boxes before listing starts. The sorter scans a
@@ -23,16 +23,17 @@ export type SortLocation = { boxCode: string; inBox: number; pulled: number; sor
 // a "box" called this on the List page.
 export const NO_BOX = "Not boxed";
 
-// Starts a new sort box for a load (next free code, SB0001...), tied to it
-// from the start. Serialized so two sorters starting a box at once can't
-// get the same code.
+// Starts a new sort box for a load: the load's next box number (its old
+// SB0001-style boxes count too, so numbers never repeat within a load),
+// QR code SB-<load>-<n>. Serialized so two sorters starting a box at once
+// can't get the same number.
 export async function startSortBox(args: { manifestId: string }) {
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('warehouse_create_sort_boxes'))`;
-    const existing = await tx.sortBox.findMany({ select: { code: true } });
-    const next = Math.max(0, ...existing.map((b) => codeNumber(b.code, SORT_BOX_CODE_PREFIX) ?? 0)) + 1;
+    const existing = await tx.sortBox.findMany({ where: { manifestId: args.manifestId }, select: { code: true } });
+    const next = nextLoadBoxNumber(existing.map((b) => b.code));
     return tx.sortBox.create({
-      data: { code: formatSortBoxCode(next), manifestId: args.manifestId, assignedAt: new Date() },
+      data: { code: loadBoxCode(SORT_BOX_CODE_PREFIX, args.manifestId, next), manifestId: args.manifestId, assignedAt: new Date() },
     });
   });
 }
@@ -53,11 +54,11 @@ export async function activateSortBox(args: { boxCode: string; manifestId: strin
   const box = await findSortBox(prisma, args.boxCode);
   if (box.manifestId === args.manifestId) return { boxCode: box.code, reassigned: false };
   if (!box.manifestId) {
-    throw new WarehouseError(`${box.code} is retired (an old unused box). Start a new sort box for this load.`, 409);
+    throw new WarehouseError(`${sortBoxName(box.code)} is retired (an old unused box). Start a new sort box for this load.`, 409);
   }
   const other = await prisma.manifest.findUnique({ where: { id: box.manifestId }, select: { title: true } });
   throw new WarehouseError(
-    `${box.code} belongs to "${other?.title ?? "another load"}". Sort boxes aren't reused: start a new one for this load.`,
+    `${sortBoxName(box.code)} belongs to "${other?.title ?? "another load"}". Sort boxes aren't reused: start a new one for this load.`,
     409
   );
 }
@@ -88,7 +89,7 @@ export async function logSorted(args: {
       await tx.$executeRaw`SELECT id FROM "SortBox" WHERE id = ${box.id} FOR UPDATE`;
       const fresh = await tx.sortBox.findUniqueOrThrow({ where: { id: box.id } });
       if (fresh.manifestId !== args.manifestId) {
-        throw new WarehouseError(`${fresh.code} isn't this load's box. Scan it again to use it for this load.`, 409);
+        throw new WarehouseError(`${sortBoxName(fresh.code)} belongs to another load. Use a sort box for this load.`, 409);
       }
       boxId = fresh.id;
     }
@@ -200,7 +201,7 @@ export async function putBack(args: { manifestId: string; upc: string; boxCode: 
     const entries = (await productEntries(tx, args.manifestId, args.upc, true)).filter((e) => (e.box?.code ?? NO_BOX) === code);
     const pulled = entries.reduce((sum, e) => sum + e.pulledUnits, 0);
     if (pulled < args.units) {
-      throw new WarehouseError(`Only ${pulled} of this product were pulled from ${code}.`);
+      throw new WarehouseError(`Only ${pulled} of this product were pulled from ${code === NO_BOX ? code : sortBoxName(code)}.`);
     }
     let left = args.units;
     for (const e of [...entries].reverse()) {

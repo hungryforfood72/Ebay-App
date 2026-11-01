@@ -1,7 +1,7 @@
 import type { Prisma } from "@/generated/prisma/client";
 import { prisma } from "../prisma";
 import { WarehouseError } from "./bins";
-import { codeNumber, DUD_BOX_CODE_PREFIX, formatDudBoxCode, normalizeCode } from "./codes";
+import { DUD_BOX_CODE_PREFIX, dudBoxName, loadBoxCode, nextLoadBoxNumber, normalizeCode } from "./codes";
 import { upcMatchKeys } from "../upcMatch";
 
 // Dud boxes (DudBox, ManifestDudEntry.dudBoxId). The sorter puts duds in a
@@ -11,15 +11,16 @@ import { upcMatchKeys } from "../upcMatch";
 
 type Tx = Prisma.TransactionClient;
 
-// Next free dud box code (DB0001...). Serialized so two sorters starting a
-// box at once can't get the same code.
+// Starts a dud box for a load: the load's next box number (its old
+// DB0001-style boxes count too), QR code DB-<load>-<n>. Serialized so two
+// sorters starting a box at once can't get the same number.
 export async function createDudBox(args: { manifestId: string; by: string | null }) {
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('warehouse_create_dud_box'))`;
-    const existing = await tx.dudBox.findMany({ select: { code: true } });
-    const next = Math.max(0, ...existing.map((b) => codeNumber(b.code, DUD_BOX_CODE_PREFIX) ?? 0)) + 1;
+    const existing = await tx.dudBox.findMany({ where: { manifestId: args.manifestId }, select: { code: true } });
+    const next = nextLoadBoxNumber(existing.map((b) => b.code));
     return tx.dudBox.create({
-      data: { code: formatDudBoxCode(next), manifestId: args.manifestId, createdBy: args.by },
+      data: { code: loadBoxCode(DUD_BOX_CODE_PREFIX, args.manifestId, next), manifestId: args.manifestId, createdBy: args.by },
     });
   });
 }
@@ -57,10 +58,10 @@ export async function claimDudUnits(
   const matching = entries.filter((e) => upcMatchKeys(e.upc).some((k) => wanted.has(k)));
   const left = matching.reduce((sum, e) => sum + (e.quantity - e.listedUnits), 0);
   if (matching.length === 0) {
-    throw new WarehouseError(`This product isn't marked for Shopify in dud box ${box.code}. Ask whoever processes duds to decide it first.`);
+    throw new WarehouseError(`This product isn't marked for Shopify in ${dudBoxName(box.code)}. Ask whoever processes duds to decide it first.`);
   }
   if (left < args.units) {
-    throw new WarehouseError(`Dud box ${box.code} only has ${left} of this product left to list, not ${args.units}.`);
+    throw new WarehouseError(`${dudBoxName(box.code)} only has ${left} of this product left to list, not ${args.units}.`);
   }
   let need = args.units;
   for (const e of matching) {

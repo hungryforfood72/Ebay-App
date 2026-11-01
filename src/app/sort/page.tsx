@@ -12,7 +12,7 @@ import { cn } from "@/components/ui/cn";
 import { Input } from "@/components/ui/Input";
 import type { DudBoxDetail, DudBoxSummary } from "@/lib/warehouse/dudBoxTypes";
 import { keyLabel } from "@/lib/upcMatch";
-import { classifyScan, normalizeCode } from "@/lib/warehouse/codes";
+import { boxShortName, classifyScan, dudBoxName, normalizeCode, sortBoxName } from "@/lib/warehouse/codes";
 import {
   Ban,
   Boxes,
@@ -560,7 +560,7 @@ export default function SortPage() {
         setPendingGood(null);
         await saveGood(data.box.code, p);
       } else {
-        setMessage({ tone: "success", text: `Good box is ${data.box.code} now. Scan the next item.` });
+        setMessage({ tone: "success", text: `Good box is ${sortBoxName(data.box.code)} now. Scan the next item.` });
       }
     } catch (e) {
       beep("missing");
@@ -589,7 +589,7 @@ export default function SortPage() {
       });
       setMessage({
         tone: "success",
-        text: data.box ? `Put ${p.quantity} in ${data.box.code}. Scan the next one.` : `Counted ${p.quantity} in. Scan the next one.`,
+        text: data.box ? `Put ${p.quantity} in ${sortBoxName(data.box.code)}. Scan the next one.` : `Counted ${p.quantity} in. Scan the next one.`,
       });
       setQuantity("1");
       void refreshAfterSave(p.quantity);
@@ -616,7 +616,7 @@ export default function SortPage() {
 
   function goodBoxFull() {
     if (!goodBox) return;
-    setMessage({ tone: "success", text: `${goodBox.code} is full. Start the next sort box.` });
+    setMessage({ tone: "success", text: `${sortBoxName(goodBox.code)} is full. Start the next sort box.` });
     rememberGood(null);
     setStationFor("start");
     setStarting("good");
@@ -641,7 +641,7 @@ export default function SortPage() {
         : data.printError
           ? `The label didn't print: ${data.printError}`
           : "No label printed. Reprint it when you're at a station.";
-      setMessage({ tone: data.printError ? "warning" : "success", text: `Sort box ${data.box.code} started. ${where}` });
+      setMessage({ tone: data.printError ? "warning" : "success", text: `${sortBoxName(data.box.code)} started. ${where}` });
       if (pending) {
         setPendingGood(null);
         await saveGood(data.box.code, pending);
@@ -669,13 +669,13 @@ export default function SortPage() {
         beep("missing");
         setMessage({
           tone: "danger",
-          text: `${detail.box.code} is for a different load (${detail.box.manifestTitle}). Use a dud box for this load.`,
+          text: `${dudBoxName(detail.box.code)} is for a different load (${detail.box.manifestTitle}). Use a dud box for this load.`,
         });
         return;
       }
       if (detail.box.status === "done") {
         beep("missing");
-        setMessage({ tone: "danger", text: `${detail.box.code} was already processed. Start a new dud box.` });
+        setMessage({ tone: "danger", text: `${dudBoxName(detail.box.code)} was already processed. Start a new dud box.` });
         return;
       }
       if (detail.box.status === "closed") {
@@ -691,7 +691,7 @@ export default function SortPage() {
         setPendingDud(null);
         await saveDud(detail.box.code, p);
       } else {
-        setMessage({ tone: "success", text: `Dud box is ${detail.box.code} now. Scan the next item.` });
+        setMessage({ tone: "success", text: `Dud box is ${dudBoxName(detail.box.code)} now. Scan the next item.` });
       }
     } catch (e) {
       beep("missing");
@@ -736,7 +736,7 @@ export default function SortPage() {
         description: p.description,
         ref: { kind: "dud", id: data.entry.id, boxCode: data.box.code },
       });
-      setMessage({ tone: "success", text: `Put ${p.quantity} in dud box ${data.box.code}. Scan the next one.` });
+      setMessage({ tone: "success", text: `Put ${p.quantity} in ${dudBoxName(data.box.code)}. Scan the next one.` });
       setQuantity("1");
       void refreshAfterSave(p.quantity);
       return true;
@@ -773,7 +773,7 @@ export default function SortPage() {
         : data.printError
           ? `The label didn't print: ${data.printError}`
           : "No label printed. Reprint it when you're at a station.";
-      setMessage({ tone: data.printError ? "warning" : "success", text: `Dud box ${data.box.code} started. ${where}` });
+      setMessage({ tone: data.printError ? "warning" : "success", text: `${dudBoxName(data.box.code)} started. ${where}` });
       if (pending) {
         setPendingDud(null);
         await saveDud(data.box.code, pending);
@@ -796,7 +796,7 @@ export default function SortPage() {
       );
       setMessage({
         tone: "success",
-        text: `${dudBox.code} closed. Set it aside for processing and start the next dud box.`,
+        text: `${dudBoxName(dudBox.code)} closed. Set it aside for processing and start the next dud box.`,
       });
       rememberDud(null);
       setConfirmCloseDud(false);
@@ -827,7 +827,7 @@ export default function SortPage() {
           : `/api/dud-boxes/${encodeURIComponent(boxCode)}/print`;
       await readJson(await postJson(url, { stationId }), "Couldn't print the label.");
       const name = stations.stations?.find((s) => s.id === stationId)?.name ?? "the station";
-      setMessage({ tone: "success", text: `Label for ${boxCode} is printing at ${name}.` });
+      setMessage({ tone: "success", text: `Label for ${which === "good" ? sortBoxName(boxCode) : dudBoxName(boxCode)} is printing at ${name}.` });
     } catch (e) {
       setMessage({ tone: "danger", text: errorText(e, "Couldn't print the label.") });
     } finally {
@@ -1361,7 +1361,7 @@ export default function SortPage() {
               <Ban className="mt-0.5 size-5 shrink-0 text-amber-600" aria-hidden />
               <div className="min-w-0">
                 <p className="text-base font-bold leading-tight">
-                  DUD: put it in {dudBox ? <span className="font-mono">{dudBox.code}</span> : "the dud box"}
+                  DUD: put it in {dudBox ? <span className="font-mono">{dudBoxName(dudBox.code)}</span> : "the dud box"}
                 </p>
                 {result?.dudReason && <p className="text-sm leading-snug">{result.dudReason}</p>}
                 {!dudBox && <p className="text-sm">No dud box yet. Tapping below starts one.</p>}
@@ -1470,17 +1470,17 @@ export default function SortPage() {
             ) : isDud ? (
               <Button variant="warning" size="xl" block onClick={() => record("dud")} disabled={saving || logged || boxBusy}>
                 <PackageX className="size-5" aria-hidden />
-                {dudBox ? `Put in dud box ${dudBox.code}` : "Start a dud box"}
+                {dudBox ? `Put in ${dudBoxName(dudBox.code)}` : "Start a dud box"}
               </Button>
             ) : line ? (
               <Button variant="success" size="xl" block onClick={() => record("good")} disabled={saving || logged}>
                 <ThumbsUp className="size-5" aria-hidden />
-                {noBoxes ? "Good, count it in" : goodBox ? `Good, into ${goodBox.code}` : "Good, start a sort box"}
+                {noBoxes ? "Good, count it in" : goodBox ? `Good, into ${sortBoxName(goodBox.code)}` : "Good, start a sort box"}
               </Button>
             ) : (
               <Button variant="success" size="xl" block onClick={() => record("extra")} disabled={saving || logged}>
                 <PackageCheck className="size-5" aria-hidden />
-                {noBoxes ? "Count it in as extra" : goodBox ? `Box it as extra, into ${goodBox.code}` : "Extra, start a sort box"}
+                {noBoxes ? "Count it in as extra" : goodBox ? `Box it as extra, into ${sortBoxName(goodBox.code)}` : "Extra, start a sort box"}
               </Button>
             )}
             <div className={cn("grid gap-2", otherAction ? "grid-cols-3" : "grid-cols-2")}>
@@ -1549,7 +1549,7 @@ export default function SortPage() {
         {reopenCode && (
           <Alert
             tone="warning"
-            title={`${reopenCode} is closed`}
+            title={`${dudBoxName(reopenCode)} is closed`}
             action={
               <div className="flex flex-wrap gap-2">
                 <Button variant="warning" size="sm" onClick={() => reopenDudBox(reopenCode)} disabled={boxBusy}>
@@ -1716,14 +1716,14 @@ function ActiveBoxesBar(props: {
           {props.showGood && props.goodBox && (
             <SlimBox
               icon={<PackageCheck className="size-4 text-success" aria-hidden />}
-              code={props.goodBox.code}
+              code={boxShortName(props.goodBox.code)}
               units={props.goodBox.unitsLeft}
             />
           )}
           {props.showDud && props.dudBox && (
             <SlimBox
               icon={<PackageX className="size-4 text-amber-600" aria-hidden />}
-              code={props.dudBox.code}
+              code={boxShortName(props.dudBox.code)}
               units={props.dudBox.units}
             />
           )}
@@ -1740,7 +1740,7 @@ function ActiveBoxesBar(props: {
           <BoxSlot
             label="Good"
             icon={<PackageCheck className="size-4 text-success" aria-hidden />}
-            code={props.goodBox?.code ?? null}
+            code={props.goodBox ? boxShortName(props.goodBox.code) : null}
             units={props.goodBox?.unitsLeft ?? 0}
             checked={props.goodChecked}
             emptyText="None. Start one or scan one."
@@ -1754,7 +1754,7 @@ function ActiveBoxesBar(props: {
           <BoxSlot
             label="Dud"
             icon={<PackageX className="size-4 text-amber-600" aria-hidden />}
-            code={props.dudBox?.code ?? null}
+            code={props.dudBox ? boxShortName(props.dudBox.code) : null}
             units={props.dudBox?.units ?? 0}
             checked={props.dudChecked}
             emptyText="None. Scan one or start one."
@@ -1768,7 +1768,7 @@ function ActiveBoxesBar(props: {
       {props.confirmCloseDud && props.dudBox && (
         <div className="border-t border-amber-200 bg-amber-50 p-3">
           <p className="text-sm font-medium text-amber-950">
-            Close {props.dudBox.code}? It goes aside for processing and you start a new dud box.
+            Close {dudBoxName(props.dudBox.code)}? It goes aside for processing and you start a new dud box.
           </p>
           <div className="mt-2 grid grid-cols-2 gap-2">
             <Button variant="warning" onClick={props.onCloseDud} disabled={props.busy}>
@@ -1898,7 +1898,7 @@ function StartBoxCard(props: {
                   disabled={props.busy}
                   className="justify-between"
                 >
-                  <span className="font-mono font-bold">{b.code}</span>
+                  <span className="font-mono font-bold">{dudBoxName(b.code)}</span>
                   <span className="text-sm text-muted-foreground">
                     {b.units} {b.units === 1 ? "unit" : "units"} · Use it
                   </span>

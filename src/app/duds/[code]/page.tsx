@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button, buttonClasses } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { cn } from "@/components/ui/cn";
+import { dudBoxName } from "@/lib/warehouse/codes";
 import type { DudBoxDetail, DudBoxEntry, DudDecision, DudMoneyHint } from "@/lib/warehouse/dudBoxTypes";
 import {
   CircleCheck,
@@ -161,7 +162,7 @@ export default function DudBoxPage({ params }: { params: Promise<{ code: string 
   return (
     <AppShell
       width="medium"
-      title={<span className="font-mono">{data?.box.code ?? code.toUpperCase()}</span>}
+      title={dudBoxName(data?.box.code ?? decodeURIComponent(code).toUpperCase())}
       subtitle={data ? data.box.manifestTitle : error ? undefined : "Loading…"}
       actions={
         <Link href="/duds" className={buttonClasses({ variant: "outline", size: "sm" })}>

@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/Badge";
 import { Button, buttonClasses } from "@/components/ui/Button";
 import { Card, SectionHeader } from "@/components/ui/Card";
 import { LoaderCircle, Printer } from "lucide-react";
+import { sortBoxName } from "@/lib/warehouse/codes";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
@@ -89,7 +90,7 @@ export default function SortBoxesPage() {
     withStation((stationId) =>
       run(async () => {
         await send(`/api/sort-boxes/${encodeURIComponent(code)}/print`, { stationId });
-        return `Label for ${code} is printing at ${stationName(stationId)}.`;
+        return `Label for ${sortBoxName(code)} is printing at ${stationName(stationId)}.`;
       })
     );
   }
@@ -153,7 +154,7 @@ export default function SortBoxesPage() {
             <ul className="divide-y divide-border rounded-xl border border-border bg-surface text-sm">
               {boxes.map((b) => (
                 <li key={b.code} className="flex items-center gap-3 px-3 py-2">
-                  <span className="w-20 shrink-0 font-mono font-bold text-foreground">{b.code}</span>
+                  <span className="w-24 shrink-0 font-bold text-foreground">{sortBoxName(b.code)}</span>
                   <span className="min-w-0 flex-1">
                     {!b.manifestId ? (
                       <Badge>Retired</Badge>
@@ -171,7 +172,7 @@ export default function SortBoxesPage() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    aria-label={`Reprint ${b.code} label`}
+                    aria-label={`Reprint ${sortBoxName(b.code)} label`}
                     onClick={() => reprint(b.code)}
                     disabled={busy}
                   >

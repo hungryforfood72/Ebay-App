@@ -4,6 +4,7 @@ import { prisma } from "../prisma";
 import { getShopifyPricing, shopifyPriceFor, type ShopifyPricing } from "../shopifySync";
 import { upcMatchKeys } from "../upcMatch";
 import { WarehouseError } from "./bins";
+import { dudBoxName } from "./codes";
 import { findDudBox } from "./dudBoxes";
 import type { DudBoxDetail, DudBoxEntry, DudBoxStatus, DudBoxSummary, DudDecision, DudMoneyHint } from "./dudBoxTypes";
 import { DUD_ESTIMATE_SELECT, dudCall, latestCompleteEvaluationId, type DudEstimate } from "./sortCheck";
@@ -19,14 +20,13 @@ import type { CodeLabelPayload } from "./types";
 
 type Tx = Prisma.TransactionClient;
 
-// What prints under the barcode: which load the duds came from, so nobody
-// has to write it on the box. Long BStock titles get cut; the label shows
-// up to two small lines.
-const CAPTION_MAX = 48;
+// The label's small line: which load the duds came from, so nobody has to
+// write it on the box. The big line ("DUD BOX 3") comes from the code
+// itself. Long BStock titles get cut.
+const CAPTION_MAX = 70;
 
 export function dudBoxLabelPayload(code: string, manifestTitle: string): CodeLabelPayload {
-  const title = manifestTitle.replace(/\s+/g, " ").trim();
-  const caption = `DUDS · ${title}`;
+  const caption = manifestTitle.replace(/\s+/g, " ").trim();
   return { code, caption: caption.length > CAPTION_MAX ? `${caption.slice(0, CAPTION_MAX - 1).trimEnd()}…` : caption };
 }
 
@@ -100,11 +100,11 @@ export async function addDudEntry(args: {
   return prisma.$transaction(async (tx) => {
     const box = await lockBox(tx, args.code);
     if (box.manifestId !== args.manifestId) {
-      throw new WarehouseError(`Dud box ${box.code} is for a different load. Start a dud box for this one.`, 409);
+      throw new WarehouseError(`${dudBoxName(box.code)} is for a different load. Start a dud box for this one.`, 409);
     }
     if (box.status !== "open") {
       throw new WarehouseError(
-        `Dud box ${box.code} is ${box.status === "done" ? "already processed" : "closed"}. Start a new dud box.`,
+        `${dudBoxName(box.code)} is ${box.status === "done" ? "already processed" : "closed"}. Start a new dud box.`,
         409
       );
     }
@@ -159,7 +159,7 @@ export async function decideDudEntries(args: {
     await tx.$executeRaw`SELECT id FROM "ManifestDudEntry" WHERE "dudBoxId" = ${box.id} FOR UPDATE`;
     const entries = await tx.manifestDudEntry.findMany({ where: { id: { in: ids }, dudBoxId: box.id } });
     if (entries.length !== ids.length) {
-      throw new WarehouseError(`That product isn't in dud box ${box.code} anymore. Reload the box.`, 404);
+      throw new WarehouseError(`That product isn't in ${dudBoxName(box.code)} anymore. Reload the box.`, 404);
     }
     const listed = entries.reduce((sum, e) => sum + e.listedUnits, 0);
     if (args.decision !== "shopify" && listed > 0) {
