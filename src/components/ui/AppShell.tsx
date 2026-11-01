@@ -17,6 +17,7 @@ import {
   Package,
   PackageCheck,
   PackageMinus,
+  PackageOpen,
   PackageX,
   ScanBarcode,
   Settings,
@@ -63,6 +64,8 @@ const NAV: NavEntry[] = [
     label: "Warehouse",
     items: [
       { href: "/sort", label: "Sort", icon: SplitSquareHorizontal, warehouseOnly: true },
+      // The lister's helper: empties the sort boxes ahead of the lister.
+      { href: "/gather", label: "Gather for listing", icon: PackageOpen, warehouseOnly: true },
       { href: "/bins", label: "Bins", icon: Archive, warehouseOnly: true },
       { href: "/ship", label: "Pick orders", icon: PackageCheck, warehouseOnly: true },
       { href: "/pulls", label: "Pull from shelves", icon: PackageMinus, warehouseOnly: true },

@@ -14,7 +14,9 @@ import { codeNumber, formatSortBoxCode, normalizeCode, SORT_BOX_CODE_PREFIX } fr
 
 type Tx = Prisma.TransactionClient;
 
-export type SortLocation = { boxCode: string; inBox: number; pulled: number; sorted: number };
+// gatheredBy: who pulled this product's units out of the boxes most
+// recently (the lister's helper on /gather, or the lister).
+export type SortLocation = { boxCode: string; inBox: number; pulled: number; sorted: number; gatheredBy: string | null };
 
 // Where units sorted on a no-box load (Manifest.sortWithoutBoxes) show up:
 // a "box" called this on the List page.
@@ -150,14 +152,21 @@ async function productEntries(tx: Tx, manifestId: string, upc: string, lock: boo
   return matching;
 }
 
-function summarize(entries: { quantity: number; pulledUnits: number; box: { code: string } | null }[]): SortLocation[] {
+function summarize(
+  entries: { quantity: number; pulledUnits: number; pulledAt: Date | null; pulledBy: string | null; box: { code: string } | null }[]
+): SortLocation[] {
   const byBox = new Map<string, SortLocation>();
+  const lastPull = new Map<string, number>();
   for (const e of entries) {
     const code = e.box?.code ?? NO_BOX;
-    const loc = byBox.get(code) ?? { boxCode: code, inBox: 0, pulled: 0, sorted: 0 };
+    const loc = byBox.get(code) ?? { boxCode: code, inBox: 0, pulled: 0, sorted: 0, gatheredBy: null };
     loc.sorted += e.quantity;
     loc.pulled += e.pulledUnits;
     loc.inBox += e.quantity - e.pulledUnits;
+    if (e.pulledUnits > 0 && e.pulledAt && e.pulledAt.getTime() >= (lastPull.get(code) ?? 0)) {
+      lastPull.set(code, e.pulledAt.getTime());
+      loc.gatheredBy = e.pulledBy;
+    }
     byBox.set(code, loc);
   }
   return [...byBox.values()].sort((a, b) => a.boxCode.localeCompare(b.boxCode));
@@ -216,6 +225,49 @@ export async function putBack(args: { manifestId: string; upc: string; boxCode: 
     const after = await productEntries(tx, args.manifestId, args.upc, false);
     return { locations: summarize(after) };
   });
+}
+
+// Lister's helper (/gather, Cristian 2026-11-01): loads that still have
+// units sitting in sort boxes, so the helper's page can pick the load on
+// its own when there's only one. Not-boxed loads count too (same as the
+// List page treats them).
+export async function loadsToGather(): Promise<{ manifestId: string; title: string; products: number; units: number }[]> {
+  const rows = await prisma.$queryRaw<{ manifestId: string; products: number; units: number }[]>`
+    SELECT "manifestId", COUNT(DISTINCT upc)::int AS products, SUM(quantity - "pulledUnits")::int AS units
+    FROM "SortBoxEntry"
+    WHERE quantity > "pulledUnits"
+    GROUP BY "manifestId"`;
+  if (rows.length === 0) return [];
+  const titles = await prisma.manifest.findMany({
+    where: { id: { in: rows.map((r) => r.manifestId) } },
+    select: { id: true, title: true },
+  });
+  const titleOf = new Map(titles.map((m) => [m.id, m.title]));
+  return rows
+    .map((r) => ({ ...r, title: titleOf.get(r.manifestId) ?? "Untitled load" }))
+    .sort((a, b) => b.units - a.units);
+}
+
+// What's still in the boxes for one load, box by box, so the helper knows
+// which boxes still need emptying. Units of every product, not just one.
+export async function boxesLeft(manifestId: string): Promise<{ boxCode: string; products: number; units: number }[]> {
+  const entries = await prisma.sortBoxEntry.findMany({
+    where: { manifestId },
+    select: { upc: true, quantity: true, pulledUnits: true, box: { select: { code: true } } },
+  });
+  const byBox = new Map<string, { units: number; upcs: Set<string> }>();
+  for (const e of entries) {
+    const left = e.quantity - e.pulledUnits;
+    if (left <= 0) continue;
+    const code = e.box?.code ?? NO_BOX;
+    const b = byBox.get(code) ?? { units: 0, upcs: new Set<string>() };
+    b.units += left;
+    b.upcs.add(e.upc);
+    byBox.set(code, b);
+  }
+  return [...byBox.entries()]
+    .map(([boxCode, b]) => ({ boxCode, products: b.upcs.size, units: b.units }))
+    .sort((a, b) => a.boxCode.localeCompare(b.boxCode));
 }
 
 // Sorted good units per UPC on a load (as stored: the manifest line's UPC,
