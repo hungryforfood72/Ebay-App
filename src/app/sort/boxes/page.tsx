@@ -13,8 +13,8 @@ import { useCallback, useEffect, useState } from "react";
 // Sort boxes (SB0001...): the boxes good units go in at the sort station.
 // Since 2026-11-01 they aren't reused: the sorter starts a new one for the
 // load on the Sort page (label prints with the load's name), so this page
-// is just the list plus a reprint for a torn label. "Unused" = made in bulk
-// before that rule and never filled; one of those can still be claimed once.
+// is just the list plus a reprint for a torn label. "Retired" = made in bulk
+// before that rule and never used (SB0011-SB0040); they can't be used.
 
 // GET /api/sort-boxes
 type SortBoxRow = {
@@ -156,7 +156,7 @@ export default function SortBoxesPage() {
                   <span className="w-20 shrink-0 font-mono font-bold text-foreground">{b.code}</span>
                   <span className="min-w-0 flex-1">
                     {!b.manifestId ? (
-                      <Badge>Unused</Badge>
+                      <Badge>Retired</Badge>
                     ) : (
                       <>
                         <span className="block truncate text-foreground">{b.manifestTitle ?? "A load"}</span>

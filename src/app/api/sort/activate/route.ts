@@ -4,9 +4,9 @@ import { activateSortBox } from "@/lib/warehouse/sortBoxes";
 import { getSortBoxSummary } from "@/lib/warehouse/sortStation";
 import { NextRequest, NextResponse } from "next/server";
 
-// The sorter scanned a sort box label: { boxCode, manifestId } makes it this
-// load's box (an empty one is tied to the load; one still holding another
-// load's units is refused with a 409 naming that load).
+// The sorter scanned a sort box label: { boxCode, manifestId } makes it the
+// active box if it was started for this load. Another load's box, or a
+// retired old one, is refused with a 409 saying which.
 // -> { box: SortBoxSummary, reassigned }
 export async function POST(request: NextRequest) {
   try {

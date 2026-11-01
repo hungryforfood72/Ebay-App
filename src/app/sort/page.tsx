@@ -543,8 +543,8 @@ export default function SortPage() {
   // ---- Good (sort) box -------------------------------------------------
 
   // Scanned a sort box label: make it this device's good box for the load.
-  // A box of this load (or a never-used one) is fine; one that belongs to
-  // another load is refused (boxes aren't reused, the server says which).
+  // Only a box of this load; any other (another load's, or a retired old
+  // one) is refused, the server says why.
   async function activateGoodBox(boxCode: string) {
     if (!manifestId) return;
     try {

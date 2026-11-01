@@ -44,30 +44,22 @@ export async function findSortBox(tx: Tx | typeof prisma, rawCode: string) {
   return box;
 }
 
-// Makes a box the sorter's active box for a load. A box already tied to
-// this load (started for it, or claimed earlier) is fine. A box from before
-// the no-reuse rule that never held anything (SB0011-SB0040 were made in
-// bulk and sat unused) can be claimed once. A box tied to any other load is
-// refused, even if it's empty now: boxes aren't reused.
+// Makes a box the sorter's active box for a load: only a box started for
+// this load. A box of any other load is refused, even if it's empty now
+// (boxes aren't reused). A box with no load is one of the bulk-made ones
+// from before that rule (SB0011-SB0040, never used): retired 2026-11-01,
+// kept on record only so their codes are never handed out again.
 export async function activateSortBox(args: { boxCode: string; manifestId: string }) {
-  return prisma.$transaction(async (tx) => {
-    const box = await findSortBox(tx, args.boxCode);
-    await tx.$executeRaw`SELECT id FROM "SortBox" WHERE id = ${box.id} FOR UPDATE`;
-    const fresh = await tx.sortBox.findUniqueOrThrow({ where: { id: box.id } });
-    if (fresh.manifestId === args.manifestId) return { boxCode: fresh.code, reassigned: false };
-    const used = fresh.manifestId != null || (await tx.sortBoxEntry.count({ where: { boxId: fresh.id } })) > 0;
-    if (used) {
-      const other = fresh.manifestId
-        ? await tx.manifest.findUnique({ where: { id: fresh.manifestId }, select: { title: true } })
-        : null;
-      throw new WarehouseError(
-        `${fresh.code} belongs to "${other?.title ?? "another load"}". Sort boxes aren't reused: start a new one for this load.`,
-        409
-      );
-    }
-    await tx.sortBox.update({ where: { id: fresh.id }, data: { manifestId: args.manifestId, assignedAt: new Date() } });
-    return { boxCode: fresh.code, reassigned: true };
-  });
+  const box = await findSortBox(prisma, args.boxCode);
+  if (box.manifestId === args.manifestId) return { boxCode: box.code, reassigned: false };
+  if (!box.manifestId) {
+    throw new WarehouseError(`${box.code} is retired (an old unused box). Start a new sort box for this load.`, 409);
+  }
+  const other = await prisma.manifest.findUnique({ where: { id: box.manifestId }, select: { title: true } });
+  throw new WarehouseError(
+    `${box.code} belongs to "${other?.title ?? "another load"}". Sort boxes aren't reused: start a new one for this load.`,
+    409
+  );
 }
 
 // Logs good units into a box. upc should be the manifest line's UPC when the
