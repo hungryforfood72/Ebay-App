@@ -1,21 +1,20 @@
 "use client";
 
 import { StationPicker, useChosenStation } from "@/components/StationPicker";
-import { useCurrentUser } from "@/components/UserNav";
 import { Alert } from "@/components/ui/Alert";
 import { AppShell } from "@/components/ui/AppShell";
 import { Badge } from "@/components/ui/Badge";
 import { Button, buttonClasses } from "@/components/ui/Button";
 import { Card, SectionHeader } from "@/components/ui/Card";
-import { Input } from "@/components/ui/Input";
 import { LoaderCircle, Printer } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
-// Sort boxes (SB0001...): the reusable boxes good units go in at the sort
-// station. The owner makes them and prints their labels in a range; anyone
-// can reprint one torn label. A box is free again once everything in it has
-// been pulled to listing, even while it still shows its last load.
+// Sort boxes (SB0001...): the boxes good units go in at the sort station.
+// Since 2026-11-01 they aren't reused: the sorter starts a new one for the
+// load on the Sort page (label prints with the load's name), so this page
+// is just the list plus a reprint for a torn label. "Unused" = made in bulk
+// before that rule and never filled; one of those can still be claimed once.
 
 // GET /api/sort-boxes
 type SortBoxRow = {
@@ -24,7 +23,6 @@ type SortBoxRow = {
   manifestTitle: string | null;
   unitsLeft: number;
   unitsSorted: number;
-  free: boolean;
 };
 
 type Message = { tone: "success" | "danger"; text: string };
@@ -41,16 +39,11 @@ async function send(url: string, body: unknown) {
 }
 
 export default function SortBoxesPage() {
-  const user = useCurrentUser();
-  const isOwner = user?.role === "owner";
   const stations = useChosenStation(true);
   const [boxes, setBoxes] = useState<SortBoxRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<Message | null>(null);
   const [busy, setBusy] = useState(false);
-  const [count, setCount] = useState("20");
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
   // A print waiting for this device to pick its station.
   const [pendingPrint, setPendingPrint] = useState<((stationId: string) => void) | null>(null);
 
@@ -92,26 +85,6 @@ export default function SortBoxesPage() {
     else setPendingPrint(() => print);
   }
 
-  function makeBoxes() {
-    void run(async () => {
-      const d = await send("/api/sort-boxes", { count: Number(count) });
-      const codes = d.codes as string[];
-      setFrom(codes[0]);
-      setTo(codes[codes.length - 1]);
-      return `Made ${codes.length} boxes: ${codes[0]} to ${codes[codes.length - 1]}. Print their labels below.`;
-    });
-  }
-
-  function printRange() {
-    withStation((stationId) =>
-      run(async () => {
-        const d = await send("/api/sort-boxes/print", { from, to: to || from, stationId });
-        const printed = d.printed as string[];
-        return `Printing ${printed.length} ${printed.length === 1 ? "label" : "labels"} at ${stationName(stationId)}.`;
-      })
-    );
-  }
-
   function reprint(code: string) {
     withStation((stationId) =>
       run(async () => {
@@ -125,13 +98,13 @@ export default function SortBoxesPage() {
     return stations.stations?.find((s) => s.id === id)?.name ?? "the station";
   }
 
-  const freeCount = boxes?.filter((b) => b.free).length ?? 0;
+  const inUse = boxes?.filter((b) => b.unitsLeft > 0).length ?? 0;
 
   return (
     <AppShell
       width="medium"
       title="Sort boxes"
-      subtitle="Reusable boxes for good units at the sort station."
+      subtitle="Start new ones on the Sort page. Boxes aren't reused."
       actions={
         <Link href="/sort" className={buttonClasses({ variant: "outline", size: "sm" })}>
           Back to sorting
@@ -157,62 +130,10 @@ export default function SortBoxesPage() {
 
         {message && <Alert tone={message.tone}>{message.text}</Alert>}
 
-        {isOwner && (
-          <Card>
-            <SectionHeader title="Make and print boxes" description="Labels print at this device's station." />
-            <div className="flex flex-col gap-4">
-              <div className="flex items-end gap-2">
-                <label className="flex-1 text-sm font-medium text-foreground">
-                  How many new boxes
-                  <Input
-                    className="mt-1"
-                    type="number"
-                    min={1}
-                    max={500}
-                    inputMode="numeric"
-                    value={count}
-                    onChange={(e) => setCount(e.target.value)}
-                  />
-                </label>
-                <Button onClick={makeBoxes} disabled={busy}>
-                  Make boxes
-                </Button>
-              </div>
-              <div className="flex flex-wrap items-end gap-2">
-                <label className="min-w-24 flex-1 text-sm font-medium text-foreground">
-                  From
-                  <Input className="mt-1" placeholder="SB0001" value={from} onChange={(e) => setFrom(e.target.value)} />
-                </label>
-                <label className="min-w-24 flex-1 text-sm font-medium text-foreground">
-                  To
-                  <Input className="mt-1" placeholder="SB0020" value={to} onChange={(e) => setTo(e.target.value)} />
-                </label>
-                <Button variant="outline" onClick={printRange} disabled={busy || !from.trim()}>
-                  <Printer className="size-4" aria-hidden />
-                  Print labels
-                </Button>
-              </div>
-              {stations.station && (
-                <p className="text-xs text-muted-foreground">
-                  Printing at {stations.station.name}.{" "}
-                  <button
-                    type="button"
-                    className="font-medium text-primary hover:underline"
-                    // Opens the picker; picking just changes the station.
-                    onClick={() => setPendingPrint(() => () => {})}
-                  >
-                    Change
-                  </button>
-                </p>
-              )}
-            </div>
-          </Card>
-        )}
-
         <section>
           <SectionHeader
             title="All sort boxes"
-            action={boxes ? <Badge>{`${freeCount} free of ${boxes.length}`}</Badge> : undefined}
+            action={boxes ? <Badge>{`${inUse} with units in them`}</Badge> : undefined}
           />
           {error && <Alert tone="danger">{error}</Alert>}
           {!error && boxes === null && (
@@ -224,7 +145,7 @@ export default function SortBoxesPage() {
           {boxes && boxes.length === 0 && (
             <Card>
               <p className="text-sm text-muted-foreground">
-                {isOwner ? "No sort boxes yet. Make some above." : "No sort boxes yet. Ask the owner to make some."}
+                No sort boxes yet. Start one on the Sort page.
               </p>
             </Card>
           )}
@@ -234,13 +155,15 @@ export default function SortBoxesPage() {
                 <li key={b.code} className="flex items-center gap-3 px-3 py-2">
                   <span className="w-20 shrink-0 font-mono font-bold text-foreground">{b.code}</span>
                   <span className="min-w-0 flex-1">
-                    {b.free ? (
-                      <Badge tone="success">Free</Badge>
+                    {!b.manifestId ? (
+                      <Badge>Unused</Badge>
                     ) : (
                       <>
                         <span className="block truncate text-foreground">{b.manifestTitle ?? "A load"}</span>
                         <span className="block text-xs tabular-nums text-muted-foreground">
-                          {b.unitsLeft} {b.unitsLeft === 1 ? "unit" : "units"} still in it
+                          {b.unitsLeft > 0
+                            ? `${b.unitsLeft} ${b.unitsLeft === 1 ? "unit" : "units"} still in it`
+                            : "Empty, all pulled to listing"}
                         </span>
                       </>
                     )}

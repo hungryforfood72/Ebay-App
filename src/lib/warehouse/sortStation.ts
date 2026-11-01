@@ -1,7 +1,6 @@
 import { prisma } from "../prisma";
 import { lookupUpc } from "../upcLookup";
 import { WarehouseError } from "./bins";
-import { normalizeCode } from "./codes";
 import { findSortBox, logSorted, undoSorted } from "./sortBoxes";
 import { matchLineCode } from "./sortCheck";
 import type { CodeLabelPayload } from "./types";
@@ -11,21 +10,26 @@ import type { CodeLabelPayload } from "./types";
 // good scan with the server deciding whether it's on the manifest, undoing
 // the last log, and marking a load's sorting finished. Server only.
 
-// Sort boxes are reused load to load, so the label never names a load.
-export function sortBoxLabelPayload(code: string): CodeLabelPayload {
-  return { code, caption: "SORT BOX" };
+// What prints under the barcode: the load the box belongs to (boxes aren't
+// reused since 2026-11-01), so nobody has to write it on the box. Long
+// BStock titles get cut, same as dud box labels.
+const CAPTION_MAX = 48;
+
+export function sortBoxLabelPayload(code: string, manifestTitle: string | null): CodeLabelPayload {
+  if (!manifestTitle) return { code, caption: "SORT BOX" };
+  const caption = `SORT · ${manifestTitle.replace(/\s+/g, " ").trim()}`;
+  return { code, caption: caption.length > CAPTION_MAX ? `${caption.slice(0, CAPTION_MAX - 1).trimEnd()}…` : caption };
 }
 
 export type SortBoxSummary = {
   code: string;
-  // The load it's tied to (null = never used). A box whose units have all
-  // been pulled to listing is free again even while still tied.
+  // The load it belongs to (null = never used; boxes aren't reused, so a
+  // box keeps its load after it's emptied).
   manifestId: string | null;
   manifestTitle: string | null;
-  // Units still physically in it / sorted into it for its current load.
+  // Units still physically in it / sorted into it for its load.
   unitsLeft: number;
   unitsSorted: number;
-  free: boolean;
   assignedAt: string | null;
 };
 
@@ -45,7 +49,6 @@ function summarize(b: BoxRow): SortBoxSummary {
     manifestTitle: b.manifest?.title ?? null,
     unitsLeft,
     unitsSorted: b.entries.filter((e) => e.manifestId === b.manifestId).reduce((sum, e) => sum + e.quantity, 0),
-    free: unitsLeft === 0,
     assignedAt: b.assignedAt?.toISOString() ?? null,
   };
 }
@@ -183,21 +186,6 @@ export async function setSortingDone(args: { manifestId: string; done: boolean; 
     select: { sortedAt: true, sortedBy: true },
   });
   return { sortedAt: updated.sortedAt?.toISOString() ?? null, sortedBy: updated.sortedBy };
-}
-
-// Box codes from..to inclusive ("SB0001".."SB0040"), for printing a range.
-export async function sortBoxCodesInRange(fromRaw: string, toRaw: string): Promise<string[]> {
-  const from = normalizeCode(fromRaw);
-  const to = normalizeCode(toRaw || fromRaw);
-  const boxes = await prisma.sortBox.findMany({ select: { code: true } });
-  const num = (c: string) => Number(c.replace(/\D/g, ""));
-  const lo = Math.min(num(from), num(to));
-  const hi = Math.max(num(from), num(to));
-  if (!Number.isFinite(lo) || !Number.isFinite(hi) || lo <= 0) throw new WarehouseError("Enter box codes like SB0001.");
-  return boxes
-    .map((b) => b.code)
-    .filter((c) => num(c) >= lo && num(c) <= hi)
-    .sort((a, b) => num(a) - num(b));
 }
 
 // Who else logged anything on this load at the sort station lately (good,

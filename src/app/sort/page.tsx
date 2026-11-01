@@ -49,9 +49,10 @@ import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "rea
 // manifest: "Box it as extra" (good, counted separately).
 //
 // The handheld holds TWO active boxes at once, so the sorter never switches:
-//   - a sort box (SB0001, reusable, printed ahead of time): every good unit
-//     goes in it; the List page later says which boxes hold a product.
-//     Scanning an SB label makes it the good box.
+//   - a sort box (SB0001, one load's good units, label printed when
+//     started; never reused since 2026-11-01): every good unit goes in it;
+//     the List page later says which boxes hold a product. Scanning an SB
+//     label of this load makes it the good box, or start a new one here.
 //   - a dud box (DB0001, one load's duds, label printed when started):
 //     scanning a DB label makes it the dud box, or start a new one here.
 // Each has its own "full" button that only clears that one. Both are
@@ -274,9 +275,11 @@ export default function SortPage() {
   // Other open dud boxes for this load (another sorter's, or one this
   // device forgot), offered instead of starting yet another.
   const [openDudBoxes, setOpenDudBoxes] = useState<DudBoxSummary[]>([]);
-  const [starting, setStarting] = useState(false);
+  // Which kind of box the "Start a box" card is up for (sort boxes start
+  // new per load like dud boxes since 2026-11-01).
+  const [starting, setStarting] = useState<"good" | "dud" | null>(null);
   const [pickingStation, setPickingStation] = useState(false);
-  // What a station pick is for: starting a dud box, or reprinting a label.
+  // What a station pick is for: starting a box, or reprinting a label.
   const [stationFor, setStationFor] = useState<"start" | "reprint-good" | "reprint-dud">("start");
   const [confirmCloseDud, setConfirmCloseDud] = useState(false);
   // A closed dud box of this load was scanned: offer to reopen it.
@@ -366,8 +369,8 @@ export default function SortPage() {
     };
   }, [manifestId]);
 
-  // Re-check the remembered boxes: a sort box may have been emptied and
-  // taken by another load, a dud box closed from another device.
+  // Re-check the remembered boxes: a sort box may have been started for
+  // another load, a dud box closed from another device.
   useEffect(() => {
     if (!manifestId) return;
     let cancelled = false;
@@ -442,7 +445,7 @@ export default function SortPage() {
     setDudChecked(false);
     setPendingDud(null);
     setOpenDudBoxes([]);
-    setStarting(false);
+    setStarting(null);
     setConfirmCloseDud(false);
     setReopenCode(null);
     setConfirmDone(false);
@@ -540,8 +543,8 @@ export default function SortPage() {
   // ---- Good (sort) box -------------------------------------------------
 
   // Scanned a sort box label: make it this device's good box for the load.
-  // An empty box is tied to this load; one still holding another load's
-  // units is refused (the server says which load).
+  // A box of this load (or a never-used one) is fine; one that belongs to
+  // another load is refused (boxes aren't reused, the server says which).
   async function activateGoodBox(boxCode: string) {
     if (!manifestId) return;
     try {
@@ -550,6 +553,7 @@ export default function SortPage() {
         "Couldn't use that sort box."
       );
       rememberGood({ code: data.box.code, unitsLeft: data.box.unitsLeft });
+      setStarting((k) => (k === "good" ? null : k));
       beep("good");
       if (pendingGood) {
         const p = pendingGood;
@@ -592,12 +596,14 @@ export default function SortPage() {
       return true;
     } catch (e) {
       addToLog({ kind: p.extra ? "extra" : "good", quantity: p.quantity, description: p.description, failed: true });
-      // The box got tied to another load (emptied and reused elsewhere):
-      // stop using it and keep these for the next box scanned.
+      // The box isn't this load's anymore: stop using it and keep these for
+      // the next box started or scanned.
       if (e instanceof ApiError && (e.status === 409 || e.status === 404)) {
         rememberGood(null);
         setPendingGood(p);
-        setMessage({ tone: "danger", text: `${e.message} Scan a sort box for this load; these go in it.` });
+        setStationFor("start");
+        setStarting("good");
+        setMessage({ tone: "danger", text: `${e.message} Start a sort box for this load; these go in it.` });
       } else {
         setMessage({ tone: "danger", text: errorText(e, "Something went wrong. Try again.") });
       }
@@ -610,9 +616,42 @@ export default function SortPage() {
 
   function goodBoxFull() {
     if (!goodBox) return;
-    setMessage({ tone: "success", text: `${goodBox.code} is full. Scan the next empty sort box.` });
+    setMessage({ tone: "success", text: `${goodBox.code} is full. Start the next sort box.` });
     rememberGood(null);
+    setStationFor("start");
+    setStarting("good");
     focusScan();
+  }
+
+  // A new sort box for this load (boxes aren't reused): label at this
+  // handheld's station, then the waiting good units go in it.
+  async function startGoodBox(print: boolean, pending = pendingGood) {
+    if (!manifestId || boxBusy) return;
+    setBoxBusy(true);
+    try {
+      const data = await readJson<{ box: SortBoxSummary; printed: boolean; printError: string | null }>(
+        await postJson("/api/sort-boxes", { manifestId, stationId: print ? stations.station?.id : null }),
+        "Couldn't start a sort box."
+      );
+      rememberGood({ code: data.box.code, unitsLeft: 0 });
+      setStarting((k) => (k === "good" ? null : k));
+      setPickingStation(false);
+      const where = data.printed
+        ? `Its label is printing at ${stations.station?.name ?? "the station"}. Stick it on the box.`
+        : data.printError
+          ? `The label didn't print: ${data.printError}`
+          : "No label printed. Reprint it when you're at a station.";
+      setMessage({ tone: data.printError ? "warning" : "success", text: `Sort box ${data.box.code} started. ${where}` });
+      if (pending) {
+        setPendingGood(null);
+        await saveGood(data.box.code, pending);
+      }
+    } catch (e) {
+      setMessage({ tone: "danger", text: errorText(e, "Couldn't start a sort box.") });
+    } finally {
+      setBoxBusy(false);
+      focusScan();
+    }
   }
 
   // ---- Dud box ---------------------------------------------------------
@@ -645,7 +684,7 @@ export default function SortPage() {
         return;
       }
       rememberDud({ code: detail.box.code, units: boxUnits(detail) });
-      setStarting(false);
+      setStarting((k) => (k === "dud" ? null : k));
       beep("good");
       if (pendingDud) {
         const p = pendingDud;
@@ -708,7 +747,7 @@ export default function SortPage() {
       if (e instanceof ApiError && (e.status === 409 || e.status === 404)) {
         rememberDud(null);
         setPendingDud(p);
-        setStarting(true);
+        setStarting("dud");
       }
       setMessage({ tone: "danger", text: errorText(e, "Something went wrong. Try again.") });
       return false;
@@ -727,7 +766,7 @@ export default function SortPage() {
         "Couldn't start a dud box."
       );
       rememberDud({ code: data.box.code, units: 0 });
-      setStarting(false);
+      setStarting((k) => (k === "dud" ? null : k));
       setPickingStation(false);
       const where = data.printed
         ? `Its label is printing at ${stations.station?.name ?? "the station"}. Stick it on the box.`
@@ -762,7 +801,7 @@ export default function SortPage() {
       rememberDud(null);
       setConfirmCloseDud(false);
       setStationFor("start");
-      setStarting(true);
+      setStarting("dud");
     } catch (e) {
       setMessage({ tone: "danger", text: errorText(e, "Couldn't close the box.") });
     } finally {
@@ -824,11 +863,18 @@ export default function SortPage() {
         return;
       }
       if (!goodBox) {
-        // One more scan: the sort box label. These go in as soon as it's
-        // active.
-        setPendingGood(p);
-        setMessage({ tone: "warning", text: "Scan a sort box first. These go in as soon as you scan one." });
-        focusScan();
+        // No box yet: the same tap starts one (label at this handheld's
+        // station) and puts these in it. Without a station, it asks for one
+        // first and these wait (scanning this load's SB label works too).
+        if (stations.station) {
+          void startGoodBox(true, p);
+        } else {
+          setPendingGood(p);
+          setStationFor("start");
+          setStarting("good");
+          setMessage({ tone: "warning", text: "Start a sort box (or scan one). These go in as soon as there is one." });
+          focusScan();
+        }
         return;
       }
       await saveGood(goodBox.code, p);
@@ -870,7 +916,7 @@ export default function SortPage() {
       } else {
         setPendingDud(p);
         setStationFor("start");
-        setStarting(true);
+        setStarting("dud");
         setMessage({
           tone: "warning",
           text: "Start a dud box (or scan one). This one goes in as soon as there is one.",
@@ -1142,9 +1188,13 @@ export default function SortPage() {
             onDudFull={() => setConfirmCloseDud(true)}
             onCancelCloseDud={() => setConfirmCloseDud(false)}
             onCloseDud={closeDudBox}
+            onStartGood={() => {
+              setStationFor("start");
+              setStarting("good");
+            }}
             onStartDud={() => {
               setStationFor("start");
-              setStarting(true);
+              setStarting("dud");
             }}
             onReprint={(which) => reprint(which)}
             compact={showActions && !boxesOpen && !confirmCloseDud}
@@ -1425,12 +1475,12 @@ export default function SortPage() {
             ) : line ? (
               <Button variant="success" size="xl" block onClick={() => record("good")} disabled={saving || logged}>
                 <ThumbsUp className="size-5" aria-hidden />
-                {noBoxes ? "Good, count it in" : goodBox ? `Good, into ${goodBox.code}` : "Good, pass to lister"}
+                {noBoxes ? "Good, count it in" : goodBox ? `Good, into ${goodBox.code}` : "Good, start a sort box"}
               </Button>
             ) : (
               <Button variant="success" size="xl" block onClick={() => record("extra")} disabled={saving || logged}>
                 <PackageCheck className="size-5" aria-hidden />
-                {noBoxes ? "Count it in as extra" : goodBox ? `Box it as extra, into ${goodBox.code}` : "Box it as extra"}
+                {noBoxes ? "Count it in as extra" : goodBox ? `Box it as extra, into ${goodBox.code}` : "Extra, start a sort box"}
               </Button>
             )}
             <div className={cn("grid gap-2", otherAction ? "grid-cols-3" : "grid-cols-2")}>
@@ -1529,28 +1579,29 @@ export default function SortPage() {
               }}
               onCancel={() => {
                 setPickingStation(false);
-                if (!stations.station) setStarting(false);
+                if (!stations.station) setStarting(null);
               }}
               onReload={stations.reload}
             />
           ) : (
-            starting &&
-            !dudBox && (
-              <StartDudBoxCard
-                openBoxes={openDudBoxes}
+            ((starting === "dud" && !dudBox) || (starting === "good" && !goodBox)) && (
+              <StartBoxCard
+                kind={starting}
+                openBoxes={starting === "dud" ? openDudBoxes : []}
                 busy={boxBusy}
                 stationName={stations.station?.name ?? null}
                 hasStations={hasStations}
-                pendingDud={pendingDud != null}
+                pending={starting === "dud" ? pendingDud != null : pendingGood != null}
                 onUse={(c) => activateDudBox(c)}
                 onChangeStation={() => {
                   setStationFor("start");
                   setPickingStation(true);
                 }}
-                onConfirmStart={(print) => startDudBox(print)}
+                onConfirmStart={(print) => (starting === "dud" ? startDudBox(print) : startGoodBox(print))}
                 onCancel={() => {
-                  setStarting(false);
-                  setPendingDud(null);
+                  setStarting(null);
+                  if (starting === "dud") setPendingDud(null);
+                  else setPendingGood(null);
                 }}
               />
             )
@@ -1638,6 +1689,7 @@ function ActiveBoxesBar(props: {
   onDudFull: () => void;
   onCancelCloseDud: () => void;
   onCloseDud: () => void;
+  onStartGood: () => void;
   onStartDud: () => void;
   onReprint: (which: "good" | "dud") => void;
   // An item is on screen: one slim line per box, no buttons, to leave room.
@@ -1691,10 +1743,11 @@ function ActiveBoxesBar(props: {
             code={props.goodBox?.code ?? null}
             units={props.goodBox?.unitsLeft ?? 0}
             checked={props.goodChecked}
-            emptyText="None. Scan a sort box."
+            emptyText="None. Start one or scan one."
             busy={props.busy}
             onFull={props.onGoodFull}
             onReprint={() => props.onReprint("good")}
+            onStart={props.onStartGood}
           />
         )}
         {props.showDud && (
@@ -1802,27 +1855,34 @@ function BoxSlot(props: {
   );
 }
 
-// Starting a new dud box: use an open one of this load, or start one with
-// its label printed at this handheld's station.
-function StartDudBoxCard(props: {
+// Starting a new sort or dud box: for duds, use an open one of this load;
+// either way, start one with its label printed at this handheld's station.
+function StartBoxCard(props: {
+  kind: "good" | "dud";
   openBoxes: DudBoxSummary[];
   busy: boolean;
   stationName: string | null;
   hasStations: boolean;
-  pendingDud: boolean;
+  pending: boolean;
   onUse: (code: string) => void;
   onChangeStation: () => void;
   onConfirmStart: (print: boolean) => void;
   onCancel: () => void;
 }) {
+  const dud = props.kind === "dud";
+  const variant = dud ? "warning" : "success";
   return (
-    <Card className="border-amber-300">
+    <Card className={dud ? "border-amber-300" : "border-green-300"}>
       <SectionHeader
-        title="Start a dud box"
+        title={dud ? "Start a dud box" : "Start a sort box"}
         description={
-          props.pendingDud
-            ? "The dud you just scanned goes in it right away."
-            : "Grab an empty box. Its label prints now. Or scan a dud box label."
+          props.pending
+            ? dud
+              ? "The dud you just scanned goes in it right away."
+              : "What you just scanned goes in it right away."
+            : dud
+              ? "Grab an empty box. Its label prints now. Or scan a dud box label."
+              : "Grab a new box. Its label prints now, with this load's name on it."
         }
       />
       {props.openBoxes.length > 0 && (
@@ -1858,13 +1918,13 @@ function StartDudBoxCard(props: {
       )}
       <div className="flex flex-col gap-2">
         {props.stationName && (
-          <Button variant="warning" size="xl" block onClick={() => props.onConfirmStart(true)} disabled={props.busy}>
+          <Button variant={variant} size="xl" block onClick={() => props.onConfirmStart(true)} disabled={props.busy}>
             <Printer className="size-5" aria-hidden />
             Start box and print label
           </Button>
         )}
         {!props.hasStations && (
-          <Button variant="warning" size="xl" block onClick={() => props.onConfirmStart(false)} disabled={props.busy}>
+          <Button variant={variant} size="xl" block onClick={() => props.onConfirmStart(false)} disabled={props.busy}>
             Start box without a label
           </Button>
         )}

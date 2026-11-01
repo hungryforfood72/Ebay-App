@@ -221,8 +221,8 @@ function codeLabelHtml(kind: PrintJobKind, p: CodeLabelPayload, zoom: number): s
 
 // Dud and sort box labels: read from across the floor, so the box code is
 // the big line (like a bin label) and the caption sits under it, small, up
-// to two lines: the load for a dud box ("DUDS · 10/14/26 Pallet 2 ..."),
-// just "SORT BOX" for a sort box (they're reused load to load).
+// to two lines: the load the box belongs to ("DUDS · 10/14/26 Pallet 2 ...",
+// "SORT · ..."), or just "SORT BOX" for an old bulk-made sort box with no load.
 function boxLabelHtml(p: CodeLabelPayload, fallbackCaption: string, zoom: number): string {
   const caption = p.caption?.trim() || fallbackCaption;
   // 0.32" of bars + 16pt code + two 8.5pt caption lines fits inside 1"

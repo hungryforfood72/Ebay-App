@@ -8,9 +8,10 @@ import { codeNumber, formatSortBoxCode, normalizeCode, SORT_BOX_CODE_PREFIX } fr
 // whole load is sorted into boxes before listing starts. The sorter scans a
 // box to make it active and every "Good" goes into it; at the List page,
 // scanning a product shows which boxes hold it and pulls every unit of it to
-// the listing table. Boxes are reused: one whose units have all been pulled
-// is free for the next load. Every change to sort box contents goes through
-// this file.
+// the listing table. Since 2026-11-01 boxes are never reused (small space,
+// Cristian): like dud boxes, the sorter starts a new box for the load at the
+// sort station and it stays that load's box for good. Every change to sort
+// box contents goes through this file.
 
 type Tx = Prisma.TransactionClient;
 
@@ -22,18 +23,17 @@ export type SortLocation = { boxCode: string; inBox: number; pulled: number; sor
 // a "box" called this on the List page.
 export const NO_BOX = "Not boxed";
 
-// Makes `count` new boxes numbered after the highest existing one.
-export async function createSortBoxes(count: number): Promise<string[]> {
-  if (!Number.isInteger(count) || count < 1 || count > 500) {
-    throw new WarehouseError("Make between 1 and 500 sort boxes at a time.");
-  }
+// Starts a new sort box for a load (next free code, SB0001...), tied to it
+// from the start. Serialized so two sorters starting a box at once can't
+// get the same code.
+export async function startSortBox(args: { manifestId: string }) {
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('warehouse_create_sort_boxes'))`;
     const existing = await tx.sortBox.findMany({ select: { code: true } });
-    const start = Math.max(0, ...existing.map((b) => codeNumber(b.code, SORT_BOX_CODE_PREFIX) ?? 0)) + 1;
-    const codes = Array.from({ length: count }, (_, i) => formatSortBoxCode(start + i));
-    await tx.sortBox.createMany({ data: codes.map((code) => ({ code })) });
-    return codes;
+    const next = Math.max(0, ...existing.map((b) => codeNumber(b.code, SORT_BOX_CODE_PREFIX) ?? 0)) + 1;
+    return tx.sortBox.create({
+      data: { code: formatSortBoxCode(next), manifestId: args.manifestId, assignedAt: new Date() },
+    });
   });
 }
 
@@ -44,30 +44,26 @@ export async function findSortBox(tx: Tx | typeof prisma, rawCode: string) {
   return box;
 }
 
-// Units still physically in a box (sorted in, not yet pulled to listing).
-async function unitsLeft(tx: Tx, boxId: string): Promise<number> {
-  const rows = await tx.sortBoxEntry.findMany({ where: { boxId }, select: { quantity: true, pulledUnits: true } });
-  return rows.reduce((sum, r) => sum + r.quantity - r.pulledUnits, 0);
-}
-
-// Makes a box the sorter's active box for a load. An empty box (never used,
-// or everything in it already pulled) gets tied to this load; a box still
-// holding another load's units is refused, so two loads never mix in one box.
+// Makes a box the sorter's active box for a load. A box already tied to
+// this load (started for it, or claimed earlier) is fine. A box from before
+// the no-reuse rule that never held anything (SB0011-SB0040 were made in
+// bulk and sat unused) can be claimed once. A box tied to any other load is
+// refused, even if it's empty now: boxes aren't reused.
 export async function activateSortBox(args: { boxCode: string; manifestId: string }) {
   return prisma.$transaction(async (tx) => {
     const box = await findSortBox(tx, args.boxCode);
     await tx.$executeRaw`SELECT id FROM "SortBox" WHERE id = ${box.id} FOR UPDATE`;
     const fresh = await tx.sortBox.findUniqueOrThrow({ where: { id: box.id } });
     if (fresh.manifestId === args.manifestId) return { boxCode: fresh.code, reassigned: false };
-    if (fresh.manifestId) {
-      const left = await unitsLeft(tx, fresh.id);
-      if (left > 0) {
-        const other = await tx.manifest.findUnique({ where: { id: fresh.manifestId }, select: { title: true } });
-        throw new WarehouseError(
-          `${fresh.code} still has ${left} unit${left === 1 ? "" : "s"} from "${other?.title ?? "another load"}". Use an empty box.`,
-          409
-        );
-      }
+    const used = fresh.manifestId != null || (await tx.sortBoxEntry.count({ where: { boxId: fresh.id } })) > 0;
+    if (used) {
+      const other = fresh.manifestId
+        ? await tx.manifest.findUnique({ where: { id: fresh.manifestId }, select: { title: true } })
+        : null;
+      throw new WarehouseError(
+        `${fresh.code} belongs to "${other?.title ?? "another load"}". Sort boxes aren't reused: start a new one for this load.`,
+        409
+      );
     }
     await tx.sortBox.update({ where: { id: fresh.id }, data: { manifestId: args.manifestId, assignedAt: new Date() } });
     return { boxCode: fresh.code, reassigned: true };

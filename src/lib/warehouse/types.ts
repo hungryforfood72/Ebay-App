@@ -24,7 +24,7 @@ export type CodeLabelPayload = {
 };
 
 // dud = a dud box label (DB0001), caption = the manifest it belongs to.
-// sort = a sort box label (SB0001); reused load to load, so no manifest on it.
+// sort = a sort box label (SB0001), caption = the load it belongs to.
 export type PrintJobKind = "item" | "bin" | "shelf" | "box" | "dud" | "sort";
 
 export type PrintJobPayload = ItemLabelPayload | CodeLabelPayload;

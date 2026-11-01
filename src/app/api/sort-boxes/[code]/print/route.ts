@@ -18,10 +18,13 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       throw new WarehouseError("Pick the station to print at.");
     }
     const box = await findSortBox(prisma, code);
+    const manifest = box.manifestId
+      ? await prisma.manifest.findUnique({ where: { id: box.manifestId }, select: { title: true } })
+      : null;
     const job = await queuePrintJob({
       stationId: body.stationId,
       kind: "sort",
-      payload: sortBoxLabelPayload(box.code),
+      payload: sortBoxLabelPayload(box.code, manifest?.title ?? null),
       copies: body.copies == null ? 1 : Number(body.copies),
       by: user.username,
     });

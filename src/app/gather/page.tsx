@@ -109,7 +109,7 @@ function resultFor(data: GatherResponse): Result {
       product,
     };
   }
-  // Boxes this scan took the last units out of: free for the next load.
+  // Boxes this scan took the last units out of (not reused, so done).
   const stillFull = new Set(data.boxes.map((b) => b.boxCode));
   const emptied = data.pulled.map((p) => p.boxCode).filter((c) => c !== NO_BOX && !stillFull.has(c));
   const where = data.pulled.map((p) => `${p.boxCode} x${p.units}`).join(" · ");
