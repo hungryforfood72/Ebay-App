@@ -2660,6 +2660,13 @@ export async function updateSourcingKnowledge(): Promise<void> {
   }
 }
 
+// Lines Cristian put in a note himself (e.g. 2026-11-01, supplier:
+// liquidation_com: the 10/14 Pallet 2 "missing" units were mostly a no-UPC
+// Miscellaneous line, not a real shortage). The rewrite below never sees
+// them and they go back on the end word for word, so the 4-hourly rewrite
+// can't summarize them away.
+const OWNER_NOTE_PREFIX = "Owner note:";
+
 async function updateScopeKnowledge(scope: string, computeUpdate: (since: Date) => Promise<string | null>): Promise<void> {
   const existing = await prisma.sourcingKnowledge.findUnique({ where: { scope } });
   const since = existing?.updatedAt ?? new Date(0);
@@ -2671,6 +2678,11 @@ async function updateScopeKnowledge(scope: string, computeUpdate: (since: Date) 
     return;
   }
 
+  const lines = existing.notes.split("\n");
+  const ownerNotes = lines.filter((l) => l.trim().startsWith(OWNER_NOTE_PREFIX));
+  const notes = lines.filter((l) => !l.trim().startsWith(OWNER_NOTE_PREFIX)).join("\n").trim();
+  const withOwnerNotes = (text: string) => [text, ...ownerNotes].join("\n\n");
+
   try {
     const response = await anthropic.messages.create(
       {
@@ -2679,7 +2691,7 @@ async function updateScopeKnowledge(scope: string, computeUpdate: (since: Date) 
         messages: [
           {
             role: "user",
-            content: `You maintain a short running note about "${scope}" for a liquidation-reselling sourcing agent. Current notes:\n"${existing.notes}"\n\nNew data since last update:\n"${newFacts}"\n\nRewrite the notes to incorporate this, staying concise (3-4 sentences max) and focused on patterns useful for future buy/bid decisions — not a log of events.`,
+            content: `You maintain a short running note about "${scope}" for a liquidation-reselling sourcing agent. Current notes:\n"${notes}"\n\nNew data since last update:\n"${newFacts}"\n\nRewrite the notes to incorporate this, staying concise (3-4 sentences max) and focused on patterns useful for future buy/bid decisions — not a log of events.`,
           },
         ],
       },
@@ -2687,7 +2699,7 @@ async function updateScopeKnowledge(scope: string, computeUpdate: (since: Date) 
     );
     await logAiUsage("sourcing.knowledge_update", response);
     const updated = extractText(response.content).trim();
-    await prisma.sourcingKnowledge.update({ where: { scope }, data: { notes: updated || newFacts } });
+    await prisma.sourcingKnowledge.update({ where: { scope }, data: { notes: withOwnerNotes(updated || newFacts) } });
   } catch (e) {
     console.error(`[sourcingAgent] updateScopeKnowledge failed for ${scope}`, e);
   }
