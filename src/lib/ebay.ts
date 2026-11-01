@@ -1771,10 +1771,9 @@ export async function getMarkdownListingStatus(
 // still SCHEDULED in the minute before it starts. A running one is ended
 // by moving its end date to a moment from now (same body otherwise, since
 // it's a full-replace PUT; confirmed live). One already over is left alone.
-// endAt: end it then instead of 2 minutes from now. eBay refuses to end a
-// sale less than 1 day after it started ("Sale must be active for at least
-// 1 day.", confirmed live 2026-11-01), so a young sale needs a later end.
-export async function stopMarkdownPromotion(promotionId: string, endAt?: Date): Promise<void> {
+// eBay refuses to end a sale less than 1 day after it started ("Sale must be
+// active for at least 1 day.", confirmed live 2026-11-01).
+export async function stopMarkdownPromotion(promotionId: string): Promise<void> {
   const [token, config] = await Promise.all([getValidAccessToken(), Promise.resolve(getEbayConfig())]);
   const url = `${config.apiBase}/sell/marketing/v1/item_price_markdown/${encodeURIComponent(promotionId)}`;
   const headers = {
@@ -1789,7 +1788,7 @@ export async function stopMarkdownPromotion(promotionId: string, endAt?: Date): 
   const promotion = (await res.json()) as { promotionStatus?: string } & Record<string, unknown>;
 
   if (promotion.promotionStatus === "RUNNING") {
-    const endDate = (endAt ?? new Date(Date.now() + 2 * 60 * 1000)).toISOString();
+    const endDate = new Date(Date.now() + 2 * 60 * 1000).toISOString();
     const put = await fetch(url, { method: "PUT", headers, body: JSON.stringify({ ...promotion, endDate }) });
     if (!put.ok) throw await markdownError(put);
     return;

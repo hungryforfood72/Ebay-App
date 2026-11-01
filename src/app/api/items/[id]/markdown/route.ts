@@ -140,7 +140,9 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       : defaultEndDate(item);
 
   try {
-    await stopMarkdownPromotion(item.ebayMarkdownId);
+    // A sale eBay skipped never touched the price and doesn't block a new
+    // one; eBay won't end it before it's a day old anyway, so leave it.
+    if (!skipped) await stopMarkdownPromotion(item.ebayMarkdownId);
   } catch (e) {
     const message = e instanceof EbayApiError || e instanceof Error ? e.message : "Ending the current sale failed.";
     await prisma.item.update({ where: { id }, data: { ebayMarkdownError: message } });
@@ -179,7 +181,9 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
   }
 
   try {
-    await stopMarkdownPromotion(item.ebayMarkdownId);
+    // A sale eBay skipped never touched the price; eBay won't end it before
+    // it's a day old, so just stop tracking it.
+    if (!item.ebayMarkdownError?.startsWith(MARKDOWN_SKIPPED_PREFIX)) await stopMarkdownPromotion(item.ebayMarkdownId);
     const updated = await prisma.item.update({
       where: { id },
       data: { ebayMarkdownId: null, markdownPercentOff: null, markdownStartedAt: null, markdownEndsAt: null, ebayMarkdownError: null },
