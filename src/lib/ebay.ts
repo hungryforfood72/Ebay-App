@@ -1634,6 +1634,14 @@ export type MarkdownPromotion = {
   endDate: string;
 };
 
+// How long after an earlier sale's end a new one on the same listing starts.
+// eBay resets the price a few minutes AFTER a sale's end time, and skips a
+// new sale that starts while the listing still shows the old discount
+// ("We can't discount items that are already marked down."). Seen live
+// 2026-11-01: a 25% sale ending 17:22:07 wasn't reset until 17:25:31, so
+// the 35% sale starting at 17:23:07 (then 1 minute after) got skipped.
+const AFTER_PREVIOUS_SALE_MS = 5 * 60 * 1000;
+
 // createItemPriceMarkdownPromotion returns 201 with an empty body — the new
 // promotion's id is only in the Location header, not JSON, so this can't go
 // through the shared ebayFetch() (which always calls res.json()).
@@ -1654,7 +1662,7 @@ export async function createMarkdownPromotion(
 ): Promise<MarkdownPromotion> {
   const [token, config] = await Promise.all([getValidAccessToken(), Promise.resolve(getEbayConfig())]);
   const soonest = Date.now() + 60 * 1000; // eBay rejects a startDate that's already in the past by the time it processes the request
-  const startDate = new Date(Math.max(soonest, (startAfter?.getTime() ?? 0) + 60 * 1000));
+  const startDate = new Date(Math.max(soonest, (startAfter?.getTime() ?? 0) + AFTER_PREVIOUS_SALE_MS));
   const body = {
     name: `Sale event — ${percentOff}% off`,
     description,
@@ -1704,6 +1712,14 @@ export async function createMarkdownPromotion(
 export async function findMarkdownOnListing(
   listingId: string
 ): Promise<{ promotionId: string; name: string; endDate: Date } | null> {
+  return (await markdownsOnListing(listingId))[0] ?? null;
+}
+
+// Every running or scheduled sale event that includes the listing.
+export async function markdownsOnListing(
+  listingId: string
+): Promise<{ promotionId: string; name: string; endDate: Date }[]> {
+  const found: { promotionId: string; name: string; endDate: Date }[] = [];
   for (const status of ["RUNNING", "SCHEDULED"]) {
     const result = (await ebayFetch(
       `/sell/marketing/v1/promotion?marketplace_id=EBAY_US&promotion_type=MARKDOWN_SALE&promotion_status=${status}&limit=200`
@@ -1713,11 +1729,11 @@ export async function findMarkdownOnListing(
         `/sell/marketing/v1/promotion/${encodeURIComponent(p.promotionId)}/get_listing_set?limit=200`
       )) as { listings?: { listingId: string }[] };
       if (set.listings?.some((l) => l.listingId === listingId)) {
-        return { promotionId: p.promotionId, name: p.name, endDate: new Date(p.endDate) };
+        found.push({ promotionId: p.promotionId, name: p.name, endDate: new Date(p.endDate) });
       }
     }
   }
-  return null;
+  return found;
 }
 
 // What eBay actually did with a listing in a sale, newest first: MARKED_DOWN
@@ -1728,7 +1744,7 @@ export async function findMarkdownOnListing(
 export async function getMarkdownListingStatus(
   promotionId: string,
   listingId: string
-): Promise<{ status: string; message: string | null } | null> {
+): Promise<{ status: string; message: string | null; changedAt: Date } | null> {
   const set = (await ebayFetch(
     `/sell/marketing/v1/promotion/${encodeURIComponent(promotionId)}/get_listing_set?limit=200`
   )) as {
@@ -1739,7 +1755,9 @@ export async function getMarkdownListingStatus(
   };
   const statuses = set.listings?.find((l) => l.listingId === listingId)?.listingPromotionStatuses ?? [];
   const latest = [...statuses].sort((a, b) => b.statusChangedDate.localeCompare(a.statusChangedDate))[0];
-  return latest ? { status: latest.listingMarkdownStatus, message: latest.statusMessage ?? null } : null;
+  return latest
+    ? { status: latest.listingMarkdownStatus, message: latest.statusMessage ?? null, changedAt: new Date(latest.statusChangedDate) }
+    : null;
 }
 
 // Stops a sale event early; the listing itself stays live. eBay refuses to
