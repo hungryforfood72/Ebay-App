@@ -89,6 +89,46 @@ export function ebayProductCode(code: string | null | undefined): { upc: string 
   return null;
 }
 
+// The product barcode inside a scan, for codes that carry one with other
+// stuff around it. Anything else comes back trimmed, unchanged:
+// - a GS1 DataMatrix/QR read: "01" + GTIN-14, then expiry/lot/serial,
+//   letters and all (10/14 Pallet 2: ReNu came in as
+//   "01003101190430351728080110GH25014", UPC 310119043035 inside),
+//   maybe with a "(01)" written form, a "]d2" scanner prefix or FNC1
+//   separators;
+// - a GS1 Digital Link QR: a web address with "/01/" + GTIN-14 in it.
+// The GTIN-14's padding zeros come off, so it reads as the 12-digit UPC
+// (or 13-digit EAN) the manifest carries.
+export function productCodeFromScan(raw: string): string {
+  const code = raw.trim();
+  const link = /^https?:\/\/[^/]+\/(?:.*\/)?01\/(\d{14})(?:[/?#]|$)/i.exec(code);
+  const element = /^01(\d{14})/.exec(code.replace(/^\][A-Za-z]\d/, "").replace(/[()\x1d]/g, ""));
+  const gtin = link?.[1] ?? element?.[1];
+  if (!gtin || !validCheckDigit(gtin)) return code;
+  let d = gtin;
+  if (d.startsWith("0")) d = d.slice(1);
+  if (d.startsWith("0")) d = d.slice(1);
+  return d;
+}
+
+// Why a scan isn't a product barcode, for the sort station to say instead
+// of "not on the manifest" (null = it looks like one). 10/14 Pallet 2 had
+// 13 doorbell cameras boxed as an extra under a box sticker
+// ("J2BEGGWPQ2") and a serum under its brand's QR web link, so they read
+// as missing on the manifest. Run on what productCodeFromScan gave back,
+// and only when nothing on the manifest matched (an Item # typed in can
+// have letters).
+export function notProductBarcodeReason(code: string): string | null {
+  if (code.startsWith(ITEM_KEY_PREFIX) || code.startsWith(LINE_KEY_PREFIX)) return null;
+  if (/^(https?:\/\/|www\.)/i.test(code) || /\.(com|net|org|co|us|io)(\/|$)/i.test(code)) {
+    return "That's a web link from a QR code, not the product barcode.";
+  }
+  const d = code.replace(/[\s-]/g, "");
+  if (!/^\d+$/.test(d)) return "That has letters in it, so it's a box or lot sticker, not the product barcode.";
+  if (d.length < 8 || d.length > 14) return "That's not the right length for a product barcode.";
+  return null;
+}
+
 // GS1 mod-10 check digit (UPC-A, EAN-13, GTIN-14 all use it).
 function validCheckDigit(d: string): boolean {
   if (!/^\d{8,14}$/.test(d)) return false;

@@ -1,7 +1,7 @@
 import { buildConsignmentPickList, DEFAULT_CONSIGNMENT_SUPPLIER_PCT } from "../consignment";
 import { ebayBanReason } from "../ebayBanned";
 import { prisma } from "../prisma";
-import { lineKey, upcMatchKeys } from "../upcMatch";
+import { lineKey, productCodeFromScan, upcMatchKeys } from "../upcMatch";
 import { WarehouseError } from "./bins";
 import { latestCompleteEvaluationId, matchLineCode } from "./sortCheck";
 
@@ -94,7 +94,7 @@ export function returnedUnitsFor(returned: Map<string, number>, upc: string): nu
 
 // "Set aside for the supplier" at the sort station.
 export async function logReturn(args: { manifestId: string; code: string; quantity: number; by: string | null }) {
-  const scanned = args.code.trim();
+  const scanned = productCodeFromScan(args.code);
   if (!scanned) throw new WarehouseError("Scan the item first.");
   if (!Number.isInteger(args.quantity) || args.quantity < 1 || args.quantity > 10_000) {
     throw new WarehouseError("Enter how many, at least 1.");

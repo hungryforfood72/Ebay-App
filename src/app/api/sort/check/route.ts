@@ -12,7 +12,7 @@ import {
   sortedUnitsFor,
 } from "@/lib/warehouse/sortCheck";
 import { sortedByUpc } from "@/lib/warehouse/sortBoxes";
-import { lineKey } from "@/lib/upcMatch";
+import { lineKey, notProductBarcodeReason, productCodeFromScan } from "@/lib/upcMatch";
 import { NextRequest, NextResponse } from "next/server";
 
 // The sort station's scan: GET ?manifestId=&upc= -> what the manifest says
@@ -27,7 +27,9 @@ import { NextRequest, NextResponse } from "next/server";
 //   line: { upc, description, expected, sorted, damaged, dudLogged,
 //           leftToSort, over, received, dud } | null,
 //   extraSorted,   // not on the manifest: units of it already boxed as extra
-//   dud, dudReason, sortWithoutBoxes, itemNumberLines
+//   dud, dudReason, sortWithoutBoxes, itemNumberLines,
+//   code,          // the scan as the product barcode (productCodeFromScan)
+//   badCode        // not on the manifest and not a product barcode: why
 // }
 // line.upc is the line's key: the UPC, or "item:" + Item # for a product
 // with no barcode (upc param can be an Item # typed in).
@@ -47,7 +49,7 @@ export async function GET(request: NextRequest) {
     requireUser(request);
     const params = request.nextUrl.searchParams;
     const manifestId = params.get("manifestId") ?? "";
-    const scanned = (params.get("upc") ?? "").trim();
+    const scanned = productCodeFromScan(params.get("upc") ?? "");
 
     const [manifest, evaluationId] = await Promise.all([
       manifestId
@@ -79,7 +81,7 @@ export async function GET(request: NextRequest) {
       // Products with no UPC but an Item #: the page says to type the Item #.
       itemNumberLines: manifest.lines.filter((l) => !l.upc?.trim() && l.supplierSku?.trim()).length,
     };
-    const none = { line: null, extraSorted: 0, dud: false, dudReason: null, consignmentCall: null };
+    const none = { line: null, extraSorted: 0, dud: false, dudReason: null, consignmentCall: null, code: scanned, badCode: null };
     if (!scanned) {
       // Opening a consignment load builds its take/leave list now, so the
       // first scan doesn't wait on it.
@@ -95,6 +97,7 @@ export async function GET(request: NextRequest) {
         ...base,
         ...none,
         extraSorted: sortedUnitsFor(await sortedByUpc(manifest.id), scanned, true),
+        badCode: notProductBarcodeReason(scanned),
       });
     }
 
@@ -126,6 +129,8 @@ export async function GET(request: NextRequest) {
         over: Math.max(0, counted - expected),
       },
       extraSorted: 0,
+      code: scanned,
+      badCode: null,
       dud: call.dud,
       dudReason: call.reason,
       consignmentCall,

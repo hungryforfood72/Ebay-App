@@ -1,5 +1,6 @@
 import { getRequestUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
+import { productCodeFromScan } from "@/lib/upcMatch";
 import { NextRequest, NextResponse } from "next/server";
 
 // Records a tally of damaged/expired units against a manifest — not an
@@ -12,7 +13,8 @@ export async function POST(
   const { id } = await params;
   const body = await request.json().catch(() => ({}));
 
-  const upc = String(body.upc ?? "").trim();
+  // A GS1 box code or Digital Link scan is stored as the UPC inside it.
+  const upc = productCodeFromScan(String(body.upc ?? ""));
   const quantity = Number(body.quantity);
 
   if (!upc) {

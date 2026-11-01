@@ -1,6 +1,7 @@
 import { prisma } from "../prisma";
 import { lookupUpc } from "../upcLookup";
 import { WarehouseError } from "./bins";
+import { notProductBarcodeReason, productCodeFromScan } from "../upcMatch";
 import { findSortBox, logSorted, undoSorted } from "./sortBoxes";
 import { matchLineCode } from "./sortCheck";
 import type { CodeLabelPayload } from "./types";
@@ -82,7 +83,7 @@ export async function logGood(args: {
   extra: boolean;
   by: string | null;
 }) {
-  const scanned = args.code.trim();
+  const scanned = productCodeFromScan(args.code);
   if (!scanned) throw new WarehouseError("Scan the item first.");
   const lines = await prisma.manifestLine.findMany({
     where: { manifestId: args.manifestId },
@@ -92,6 +93,10 @@ export async function logGood(args: {
   if (!upc && !args.extra) {
     throw new WarehouseError("That isn't on this manifest. Box it as an extra if it's good.");
   }
+  // An extra stored under a sticker or web link never matches its line,
+  // so the product reads as missing (see notProductBarcodeReason).
+  const bad = upc ? null : notProductBarcodeReason(scanned);
+  if (bad) throw new WarehouseError(`${bad} Scan the barcode on the product's own package, or search it by name.`);
   const entry = await logSorted({
     boxCode: args.boxCode,
     manifestId: args.manifestId,

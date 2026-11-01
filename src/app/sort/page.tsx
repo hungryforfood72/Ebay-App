@@ -102,6 +102,11 @@ type CheckResult = {
   extraSorted: number;
   dud: boolean;
   dudReason: string | null;
+  // The scan as the product barcode (a GS1 box code or web link read down
+  // to the UPC inside it), and, when it's not on the manifest and isn't a
+  // product barcode at all (a box sticker, a QR web link), why.
+  code: string;
+  badCode: string | null;
 };
 
 type Scan = { code: string; loading: boolean; result: CheckResult | null; error: string | null };
@@ -479,7 +484,7 @@ export default function SortPage() {
       );
       const result = await readJson<CheckResult>(res, "Couldn't check that one. Scan it again.");
       if (id !== checkId.current) return null;
-      setScan({ code: raw, loading: false, result, error: null });
+      setScan({ code: result.code || raw, loading: false, result, error: null });
       if (!quiet) {
         beep(!result.line ? "missing" : result.dud || result.consignmentCall?.decision === "leave" ? "dud" : "good");
       }
@@ -1333,7 +1338,24 @@ export default function SortPage() {
 
         {scan?.error && <Alert tone="danger">{scan.error}</Alert>}
 
-        {scan && result && !line && (
+        {scan && result && !line && result.badCode && !consignment && (
+          <div role="alert" className="rounded-xl border-2 border-amber-400 bg-amber-50 p-3 text-amber-950">
+            <div className="flex gap-2">
+              <SearchX className="mt-0.5 size-6 shrink-0 text-amber-600" aria-hidden />
+              <div className="min-w-0">
+                <p className="text-lg font-semibold leading-tight">Wrong barcode</p>
+                <p className="mt-0.5 break-all text-xs tabular-nums text-amber-900/80">Scanned: {scan.code}</p>
+                <p className="mt-1 text-sm">{result.badCode}</p>
+                <p className="mt-1 text-sm font-medium">
+                  Scan the barcode on the product&apos;s own package (the one with numbers under it), or tap the search
+                  button to find it by name.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {scan && result && !line && !(result.badCode && !consignment) && (
           <div role="alert" className="rounded-xl border-2 border-red-300 bg-red-50 p-3 text-red-950">
             <div className="flex gap-2">
               <SearchX className="mt-0.5 size-6 shrink-0 text-red-600" aria-hidden />
@@ -1477,7 +1499,7 @@ export default function SortPage() {
                 <ThumbsUp className="size-5" aria-hidden />
                 {noBoxes ? "Good, count it in" : goodBox ? `Good, into ${sortBoxName(goodBox.code)}` : "Good, start a sort box"}
               </Button>
-            ) : (
+            ) : result?.badCode ? null : (
               <Button variant="success" size="xl" block onClick={() => record("extra")} disabled={saving || logged}>
                 <PackageCheck className="size-5" aria-hidden />
                 {noBoxes ? "Count it in as extra" : goodBox ? `Box it as extra, into ${sortBoxName(goodBox.code)}` : "Extra, start a sort box"}
