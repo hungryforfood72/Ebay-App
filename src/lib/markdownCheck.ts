@@ -17,6 +17,11 @@ const RESTART_AFTER_MS = 5 * 60 * 1000;
 // updated or ended the sale by hand.
 const MAX_RESTARTS = 3;
 const AUTO_USER = "Auto";
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+function chicagoTime(d: Date): string {
+  return d.toLocaleString("en-US", { timeZone: "America/Chicago", weekday: "short", hour: "numeric", minute: "2-digit" });
+}
 
 type CheckedItem = {
   id: string;
@@ -26,6 +31,7 @@ type CheckedItem = {
   ebayMarkdownId: string | null;
   ebayMarkdownError: string | null;
   markdownPercentOff: number | null;
+  markdownStartedAt: Date | null;
   markdownEndsAt: Date | null;
   photoUrls: string[];
 };
@@ -59,6 +65,7 @@ export async function checkMarkdowns(): Promise<{ skipped: number; restarted: nu
       ebayMarkdownId: true,
       ebayMarkdownError: true,
       markdownPercentOff: true,
+      markdownStartedAt: true,
       markdownEndsAt: true,
       photoUrls: true,
     },
@@ -74,12 +81,23 @@ export async function checkMarkdowns(): Promise<{ skipped: number; restarted: nu
         const reason = result.message ?? "eBay skipped the listing.";
         const retryable = STILL_MARKED_DOWN.test(reason) && (await restartsSoFar(item.id)) < MAX_RESTARTS;
         if (retryable && Date.now() - result.changedAt.getTime() < RESTART_AFTER_MS) continue;
-        if (retryable && (await restartSale(item))) {
-          restarted++;
-          continue;
+        let restartFailed: string | null = null;
+        if (retryable) {
+          try {
+            if (await restartSale(item, reason)) {
+              restarted++;
+              continue;
+            }
+          } catch (e) {
+            // On the card, not just in the sync's errors: nobody reads those.
+            restartFailed = e instanceof Error ? e.message : String(e);
+            errors.push(`${item.ebayListingId}: restarting the skipped sale failed: ${restartFailed}`);
+          }
         }
         skipped++;
-        const message = `${MARKDOWN_SKIPPED_PREFIX} ${reason} End it and start it again.`;
+        const message = restartFailed
+          ? `${MARKDOWN_SKIPPED_PREFIX} ${reason} Restarting it on its own failed: ${restartFailed}`
+          : `${MARKDOWN_SKIPPED_PREFIX} ${reason} End it and start it again.`;
         if (item.ebayMarkdownError !== message) {
           await prisma.item.update({ where: { id: item.id }, data: { ebayMarkdownError: message } });
         }
@@ -96,7 +114,13 @@ export async function checkMarkdowns(): Promise<{ skipped: number; restarted: nu
 // Ends the skipped sale and starts the same one again after it. false =
 // not restarted (another sale really is on the listing, or the item is
 // missing what a sale needs); the skip message stays for a person.
-async function restartSale(item: CheckedItem): Promise<boolean> {
+//
+// eBay won't end a sale less than 1 day after it started, so a young
+// skipped sale is ended at the earliest moment eBay allows and the new one
+// starts after that (Coloplast pouch, 2026-11-01: skipped 35% sale started
+// at 12:23 PM, so the restart lands the next day around 12:30 PM). The card
+// says when, until eBay reports the new one applied.
+async function restartSale(item: CheckedItem, reason: string): Promise<boolean> {
   const listingId = item.ebayListingId!;
   const percentOff = item.markdownPercentOff;
   const endDate = item.markdownEndsAt;
@@ -105,24 +129,32 @@ async function restartSale(item: CheckedItem): Promise<boolean> {
   const others = (await markdownsOnListing(listingId)).filter((p) => p.promotionId !== item.ebayMarkdownId);
   if (others.length > 0) return false;
 
-  await stopMarkdownPromotion(item.ebayMarkdownId!);
-  // The skipped sale ends 2 minutes from now (stopMarkdownPromotion); the
-  // new one starts after that, never overlapping it.
+  const soonest = Date.now() + 2 * 60 * 1000;
+  const allowed = item.markdownStartedAt ? item.markdownStartedAt.getTime() + ONE_DAY_MS + 60 * 1000 : 0;
+  const skippedEnds = new Date(Math.max(soonest, allowed));
+  if (endDate.getTime() - skippedEnds.getTime() < 60 * 60 * 1000) return false;
+  await stopMarkdownPromotion(item.ebayMarkdownId!, skippedEnds);
+  // The new one starts after the skipped one ends, never overlapping it.
   const promotion = await createMarkdownPromotion(
     listingId,
     percentOff,
     endDate,
     `${percentOff}% off for a limited time!`.slice(0, 50),
     photo,
-    new Date(Date.now() + 2 * 60 * 1000)
+    skippedEnds
   );
+  const startsAt = new Date(promotion.startDate);
+  const later = startsAt.getTime() - Date.now() > 15 * 60 * 1000;
   await prisma.item.update({
     where: { id: item.id },
     data: {
       ebayMarkdownId: promotion.promotionId,
-      markdownStartedAt: new Date(promotion.startDate),
+      markdownStartedAt: startsAt,
       markdownEndsAt: new Date(promotion.endDate),
-      ebayMarkdownError: null,
+      // Cleared by the check once eBay reports it applied (same prefix).
+      ebayMarkdownError: later
+        ? `${MARKDOWN_SKIPPED_PREFIX} ${reason} It restarts on its own ${chicagoTime(startsAt)} (eBay won't end a sale before it's 1 day old).`
+        : null,
     },
   });
   await logActivity(
