@@ -19,7 +19,7 @@ import { ebayBanReason } from "./ebayBanned";
 import { ACCURACY_KNOWLEDGE_SCOPE, getCalibration } from "./predictionTracker";
 import { boxesFor, exactSearchKeywords, isExactTitleMatch, LOT_TITLE, priceFromExactComps } from "./exactComps";
 import type { ManifestSupplier } from "@/generated/prisma/client";
-import { NOT_RETURN_ENTRY } from "./warehouse/returnReconcile";
+import { describeSupplierStats, supplierStats } from "./supplierStats";
 
 // ---------------------------------------------------------------------------
 // Settings (AppSetting key/value store)
@@ -1994,27 +1994,13 @@ async function estimateLine(
 }
 
 // ---------------------------------------------------------------------------
-// Supplier reliability — real historical damage rate for this supplier,
-// clamped so a supplier with little history yet doesn't produce an
-// extreme haircut off one bad manifest.
+// Supplier reliability: share of a load's expected units that really
+// arrive good, after damage/expired on arrival and real shorts from fully
+// sorted loads (see supplierStats.ts), clamped so one bad load can't
+// produce an extreme haircut.
 // ---------------------------------------------------------------------------
 async function getSupplierReceiveRate(supplier: ManifestSupplier): Promise<number> {
-  const [damaged, expected] = await Promise.all([
-    // Arrival damage only: units a customer return wrote off weren't the
-    // supplier's doing.
-    // Beta copies (analyzerBeta) repeat another manifest's lines, so they'd
-    // count its units twice.
-    prisma.manifestDamagedEntry.aggregate({
-      _sum: { quantity: true },
-      where: { manifest: { supplier, analyzerBeta: false }, ...NOT_RETURN_ENTRY },
-    }),
-    prisma.manifestLine.aggregate({ _sum: { expectedQuantity: true }, where: { manifest: { supplier, analyzerBeta: false } } }),
-  ]);
-  const damagedSum = damaged._sum.quantity ?? 0;
-  const expectedSum = expected._sum.expectedQuantity ?? 0;
-  if (expectedSum === 0) return 1; // no history yet — no haircut, matches "lean on market signal early" philosophy
-  const rate = 1 - damagedSum / expectedSum;
-  return Math.max(0.5, Math.min(1, rate));
+  return (await supplierStats(supplier)).receiveRate;
 }
 
 // ---------------------------------------------------------------------------
@@ -2389,6 +2375,7 @@ export async function evaluateManifestChunk(
     consignmentSupplierPct: manifest.consignment ? (manifest.consignmentSupplierPct ?? 50) : null,
     targetMarginPct,
     receiveRate,
+    supplierSummary: describeSupplierStats(manifest.supplier, await supplierStats(manifest.supplier)),
     totalExpectedNetContribution,
     unprovenNetContribution,
     unprovenMarginPct,
@@ -2508,6 +2495,9 @@ async function writeReasoning(input: {
   supplier: string;
   targetMarginPct: number;
   receiveRate: number;
+  // How this supplier's loads really arrive: damage, real shorts, extras
+  // (describeSupplierStats). Extras are context only, not in the bid.
+  supplierSummary: string;
   totalExpectedNetContribution: number;
   unprovenNetContribution: number;
   unprovenMarginPct: number;
@@ -2550,7 +2540,8 @@ Expected net contribution before bid cost: $${input.totalExpectedNetContribution
 Target margin used: ${input.targetMarginPct}%
 Expected net from lines bid cheap: $${input.unprovenNetContribution.toFixed(2)}. Two kinds: lines with NO sell-speed evidence at all (${beta ? "never sold by us, no similar sales of ours" : "never sold by us, too few live listings to measure, no similar sales"}), and non-expiring lines that sell too slowly for full value but within a year. The owner is growing by reinvesting profit into more inventory and is fine holding slow, non-expiring stock, but only when it's cheap, since fast sellers free up cash sooner. These were bid at a ${input.unprovenMarginPct}% margin instead. Describe the slow ones as bonus profit the buy doesn't depend on: the fast sellers are what pay for the load.${input.unprovenLines.length > 0 ? ` Biggest ones:\n${input.unprovenLines.join("\n")}` : ""}
 Learned corrections from past bought loads (actual vs guessed, 1.00 = none yet): price ${input.calibration.price.toFixed(2)}, sell speed ${input.calibration.speed.toFixed(2)}.
-Supplier's real historical receive rate (after damage/expired): ${(input.receiveRate * 100).toFixed(0)}%
+Supplier's real historical receive rate (after damage/expired and real shorts), used for this bid: ${(input.receiveRate * 100).toFixed(0)}%
+${input.supplierSummary}
 Share of lines flagged as likely duds: ${(input.dudShare * 100).toFixed(0)}%
 Concentration risk flagged: ${input.concentrationRisk ? "yes — one item dominates the manifest's value and looks weak" : "no"}
 
@@ -2629,8 +2620,7 @@ export async function updateSourcingKnowledge(): Promise<void> {
         take: 20,
       });
       if (manifests.length === 0) return null;
-      const rate = await getSupplierReceiveRate(supplier);
-      return `Supplier ${supplier}: current real receive rate (after damage/expired) is ${(rate * 100).toFixed(0)}% across all manifests on record. ${manifests.length} manifest(s) had new activity recently.`;
+      return `${describeSupplierStats(supplier, await supplierStats(supplier))} ${manifests.length} manifest(s) had new activity recently.`;
     });
   }
 
