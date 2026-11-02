@@ -12,6 +12,7 @@ import {
 import { stripKnownBlockedWords, tryAutoFix } from "@/lib/publishRemediation";
 import { binGateError } from "@/lib/warehouse/binGate";
 import { prisma } from "@/lib/prisma";
+import { ALREADY_PUBLISHING, claimPublish, releasePublish } from "@/lib/publishLock";
 import { queueShopifyPublish } from "@/lib/shopifySync";
 import { NextRequest, NextResponse } from "next/server";
 import type { Item } from "@/generated/prisma/client";
@@ -104,6 +105,15 @@ export async function POST(
     if (binError) return NextResponse.json({ error: binError }, { status: 400 });
   }
 
+  if (!(await claimPublish(id))) return NextResponse.json({ error: ALREADY_PUBLISHING }, { status: 409 });
+  try {
+    return await publish(id, item);
+  } finally {
+    await releasePublish(id);
+  }
+}
+
+async function publish(id: string, item: Item) {
   const autoFixes: string[] = [];
   try {
     const preCleaned = await stripKnownBlockedWords(item);

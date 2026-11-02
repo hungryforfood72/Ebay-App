@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { ALREADY_PUBLISHING, claimPublish, releasePublish } from "@/lib/publishLock";
 import { getShopifyConfig } from "@/lib/shopify";
 import { publishItemToShopify } from "@/lib/shopifySync";
 import { binGateError } from "@/lib/warehouse/binGate";
@@ -42,6 +43,7 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: `Missing ${missing.join(", ")} before this can be published.` }, { status: 400 });
   }
 
+  if (!(await claimPublish(id))) return NextResponse.json({ error: ALREADY_PUBLISHING }, { status: 409 });
   try {
     const outcome = await publishItemToShopify(id, { fromReview: true });
     if (outcome === "nothing_left") {
@@ -53,5 +55,7 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
     return NextResponse.json(await prisma.item.findUnique({ where: { id } }));
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "Publish failed." }, { status: 502 });
+  } finally {
+    await releasePublish(id);
   }
 }

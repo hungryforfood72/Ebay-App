@@ -86,6 +86,9 @@ type Item = {
   shopifyError: string | null;
   ebayListingId: string | null;
   ebayPublishError: string | null;
+  // A publish running on the server (src/lib/publishLock.ts), even one
+  // started before this page was refreshed.
+  publishStartedAt: string | null;
   ebayEnvironment: string | null;
 };
 
@@ -155,6 +158,16 @@ export default function ReviewPage() {
     const interval = setInterval(load, 10_000);
     return () => clearInterval(interval);
   }, []);
+
+  // A publish that kept running on the server after a refresh: check back
+  // until it's done, so the item moves to Listed (or shows its error) on
+  // its own.
+  const waitingOnServer = items?.some(publishingOnServer) ?? false;
+  useEffect(() => {
+    if (!waitingOnServer) return;
+    const timer = setInterval(() => void load(), 4000);
+    return () => clearInterval(timer);
+  }, [waitingOnServer]);
 
   async function saveRule(keyword: string, categoryId: string, categoryName: string) {
     const res = await fetch("/api/category-rules", {
@@ -285,7 +298,8 @@ export default function ReviewPage() {
       if (autoFixes?.length) {
         setAutoFixNotes((prev) => [...prev, `${updated.finalTitle ?? item.finalTitle}: ${autoFixes.join(" ")}`]);
       }
-      setItems((prev) => prev?.map((i) => (i.id === item.id ? updated : i)) ?? prev);
+      // The lock is cleared right after this response is built.
+      setItems((prev) => prev?.map((i) => (i.id === item.id ? { ...updated, publishStartedAt: null } : i)) ?? prev);
       return true;
     } catch (e) {
       await load();
@@ -373,6 +387,8 @@ export default function ReviewPage() {
 
   const pending = items.filter((i) => i.status === "pending_review");
   const ready = items.filter((i) => i.status === "ready");
+  // Publishing here, or on the server from before a refresh.
+  const isPublishing = (item: Item) => publishingId === item.id || publishingOnServer(item);
   const exported = items.filter((i) => i.status === "exported");
   const listed = items.filter((i) => i.status === "listed");
 
@@ -468,10 +484,10 @@ export default function ReviewPage() {
                     <Button
                       size="sm"
                       onClick={() => publishToEbay(item)}
-                      disabled={bulkPublishing || publishingId === item.id}
+                      disabled={bulkPublishing || isPublishing(item)}
                       className="shrink-0"
                     >
-                      {publishingId === item.id ? "Publishing…" : "Publish"}
+                      {isPublishing(item) ? "Publishing…" : "Publish"}
                     </Button>
                   </div>
                   {(item.shopifyOnly ? item.shopifyError : item.ebayPublishError) && (
@@ -484,7 +500,7 @@ export default function ReviewPage() {
                         size="sm"
                         variant="outline"
                         onClick={() => updateItem(item.id, { status: "pending_review" })}
-                        disabled={bulkPublishing || publishingId === item.id}
+                        disabled={bulkPublishing || isPublishing(item)}
                       >
                         Back to review
                       </Button>
@@ -1640,4 +1656,11 @@ function CopyUpcButton({ upc, className }: { upc: string; className: string }) {
       {copied ? <Check className="size-3.5" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
     </button>
   );
+}
+
+// Mirrors PUBLISH_STALE_MS in src/lib/publishLock.ts: an older start is a
+// publish that died without clearing it.
+const PUBLISH_STALE_MS = 6 * 60 * 1000;
+function publishingOnServer(item: Item): boolean {
+  return item.publishStartedAt != null && Date.now() - Date.parse(item.publishStartedAt) < PUBLISH_STALE_MS;
 }

@@ -224,6 +224,11 @@ model Item {
   ebayListingId    String?
   ebayPublishedAt  DateTime?
   ebayPublishError String?
+  // When a publish (eBay, or Shopify for a Shopify-only item) started and
+  // is still running; null when none is. Lets Review show "Publishing…"
+  // after a refresh and refuses a second click while one runs
+  // (src/lib/publishLock.ts, Cristian 2026-11-02).
+  publishStartedAt DateTime?
   // "sandbox" | "production" this item was actually published to — kept
   // per-item so a listing link still resolves correctly even if EBAY_ENV
   // is later flipped to the other environment.
