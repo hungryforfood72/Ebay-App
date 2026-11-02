@@ -230,6 +230,12 @@ async function fixMissingAspect(item: Item, errorMessage: string): Promise<strin
   // The one eBay actually asked for has to come back, or the next publish
   // fails the same way.
   const asked = names.find((n) => n.toLowerCase() === aspectName.toLowerCase()) ?? aspectName;
+  // Department is a call about who it's for, not a fact a search turns up
+  // (2026-11-02: two shield sunglasses lots failed with nothing found).
+  // The listing's own words decide; nothing gendered = Unisex Adult. A
+  // value eBay doesn't take for the category goes through
+  // fixInvalidAspectValue on the next round.
+  if (!found[asked] && /^department$/i.test(aspectName)) found[asked] = departmentFromText(item);
   if (!found[asked]) {
     console.log(`[publishRemediation] ${item.id}: no confident value found for "${aspectName}"`);
     return null;
@@ -332,4 +338,20 @@ export async function stripKnownBlockedWords(item: Item): Promise<string | null>
     data: { finalTitle: newTitle, finalDescription: newDescription },
   });
   return "Removed words eBay's filter blocks from the title/description.";
+}
+
+// Who the item is for, read off its title and description, in eBay's
+// Department values.
+function departmentFromText(item: Item): string {
+  const text = `${item.finalTitle ?? ""} ${item.finalDescription ?? ""}`.toLowerCase();
+  const has = (re: RegExp) => re.test(text);
+  const kids = has(/\b(kids?|children'?s?|toddlers?|youth|juniors?)\b/);
+  if (has(/\b(boys?)\b/) && !has(/\bgirls?\b/)) return "Boys";
+  if (has(/\b(girls?)\b/) && !has(/\bboys?\b/)) return "Girls";
+  if (kids) return "Unisex Kids";
+  const women = has(/\b(women'?s?|womens|ladies|lady)\b/);
+  const men = has(/\b(men'?s?|mens)\b/);
+  if (women && !men) return "Women";
+  if (men && !women) return "Men";
+  return "Unisex Adult";
 }
