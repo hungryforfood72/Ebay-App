@@ -225,6 +225,8 @@ export async function researchPackSize(input: {
   market: { pricePerUnit: number | null; demand: string | null; note: string | null } | null;
   // The Analyzer's earlier call, made without the count or a search.
   earlierCall: { packSize: number; reason: string | null } | null;
+  // How many pieces the name says one unit holds (a 4-pen card = 4).
+  piecesPerUnit?: number;
 }): Promise<ResearchedPackAdvice | null> {
   const [lessons, feedback, typicalLabel, unitWeightOz, ownHistory] = await Promise.all([
     prisma.sourcingKnowledge.findUnique({ where: { scope: PACK_STRATEGY_SCOPE } }),
@@ -265,7 +267,7 @@ His goal: sell stock through quickly while still making a profit. He'd rather ma
 Think like a buyer: why would someone buy this on eBay instead of at a store? For everyday products anyone can pick up at a store or on Amazon, eBay buyers want a deal, which usually means a lower price per unit than they'd pay elsewhere for the same amount, so a single priced at or above store price sits unsold while a sensible multi-pack sells. Collectibles, hype items, discontinued or hard-to-find things can sell fine as singles.
 
 Product: "${input.description}" (UPC ${input.upc})
-One unit = one retail package as described (a "2 Count" pen card is one unit of 2 pens).
+One unit = one retail package as described (a "2 Count" pen card is one unit of 2 pens).${input.piecesPerUnit != null && input.piecesPerUnit > 1 ? ` The name says each unit is already a store pack of ${input.piecesPerUnit}: that whole sealed pack is ONE unit. Your pack size counts sealed store packs per listing (2 = two packs of ${input.piecesPerUnit}, ${2 * input.piecesPerUnit} pieces), never splits one open. 1 means one store pack per listing.` : ""}
 Store retail per unit (from the liquidation manifest, can be off): ${input.retailPrice != null && input.retailPrice > 0 ? money(input.retailPrice) : "unknown"}
 Category: ${input.category ?? "unknown"}
 What one unit cost Cristian: ${hasCost ? money(input.unitCost!) : "not known (treat it as nearly free)"}
@@ -297,7 +299,7 @@ If what you found contradicts the store-price check above (a different count or 
 
 Before answering, work out the profit of one listing at your size: price, minus eBay fees, minus that size's label from the list above, minus item cost. If no size clears the profit bar (common with one or two cheap units left, since the label alone is several dollars), still pick the best size but say plainly in the reason that it won't make money on eBay with free shipping, so it's better kept for Shopify & Whatnot, where the buyer pays shipping.
 
-Then answer. packPrice = the buy-it-now price (free shipping) you'd put on ONE listing of that pack size so it sells within a few weeks, based on your research, or null if you found no prices. reason = one or two plain sentences the person at the table reads: what drove the call, in everyday words. No dollar amounts or dashes in the reason, don't mention Cristian or his corrections, and don't claim it sells fast unless Cristian's own history shows it.
+Then answer. packPrice = the buy-it-now price (free shipping) you'd put on ONE listing of that pack size so it sells within a few weeks, based on your research, or null if you found no prices. reason = one or two plain sentences the person at the table reads: what drove the call, in everyday words. No prices or dollar amounts in the reason (not even written out in words, like "five dollars"), no dashes, don't mention Cristian or his corrections, and don't claim it sells fast unless Cristian's own history shows it.
 
 Respond with exactly one JSON object as your final line, no other text after it:
 {"packSize": 3, "packPrice": 12.99, "reason": "..."}`;

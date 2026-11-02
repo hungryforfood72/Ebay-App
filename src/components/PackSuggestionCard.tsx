@@ -219,7 +219,9 @@ export function PackSuggestionCard({
           <p className="font-semibold">
             {notForEbay
               ? data.verdict === "dont_list" ? "Set it aside" : "Not worth listing on eBay"
-              : `Suggested: sell as ${rec.packSize > 1 ? `${rec.packSize}-packs` : "singles"}`}
+              : data.manifestPackSize > 1
+                ? `Suggested: ${rec.packSize > 1 ? `${rec.packSize} of these ${data.manifestPackSize}-packs per listing (${rec.packSize * data.manifestPackSize} total)` : `one ${data.manifestPackSize}-pack per listing`}`
+                : `Suggested: sell as ${rec.packSize > 1 ? `${rec.packSize}-packs` : "singles"}`}
           </p>
           <p className="mt-0.5 text-blue-900/80">
             {notForEbay

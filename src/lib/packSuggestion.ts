@@ -126,10 +126,13 @@ export async function packSuggestion({ upc, manifestId, isOwner }: { upc: string
   const searchUpc = noUpc ? null : upc;
   const searchName = noUpc && description ? (itemNumber ? `${description} (Item # ${itemNumber})` : description) : null;
 
-  // A manifest unit that's itself a multi-pack ("... x 2 pack") gets listed
-  // as-is — no suggestion to re-split it.
+  // A unit that's itself a store multi-pack ("... x 2 pack", a 4-pen card).
+  // It used to be "list it as is, one per listing" with no pack call, which
+  // told Cristian to sell 6 Sharpie 4-pen cards one card at a time when 2
+  // cards (8 pens) per listing is the deal (2026-11-02). Now the researched
+  // call decides how many of these packages go in a listing, like any other
+  // unit; "as is" is only the fallback when it fails.
   const manifestPackSize = description != null ? detectPackSize(description) : 1;
-  const alreadyMultipack = manifestPackSize > 1;
 
   let recommendation = null;
   let reason: string | null = null;
@@ -143,7 +146,7 @@ export async function packSuggestion({ upc, manifestId, isOwner }: { upc: string
   // researchPackSize); the same count within a few hours reuses that call.
   // The Analyzer's earlier call is only a hint now: it never knew the count
   // and didn't search.
-  if (!alreadyMultipack) {
+  {
     const reuse = await recentResearchedDecision(upc, available);
     if (reuse) {
       recommendation = reuse;
@@ -170,7 +173,10 @@ export async function packSuggestion({ upc, manifestId, isOwner }: { upc: string
           unitCost,
           targetReturnPct: target,
           market: m,
-          earlierCall,
+          // A saved call for a store multi-pack is from before this, when
+          // nothing decided how many packages go in a listing.
+          earlierCall: manifestPackSize > 1 ? null : earlierCall,
+          piecesPerUnit: manifestPackSize,
         });
       // A store-price check already on file goes to the agent; otherwise
       // both run side by side so the card isn't twice as slow.
@@ -179,7 +185,7 @@ export async function packSuggestion({ upc, manifestId, isOwner }: { upc: string
         : await Promise.all([scanMarketCheck({ upc: searchUpc, description: name }), research(null)]);
       market = check;
       // The researched call failed (timeout): the earlier call, if any.
-      recommendation = advice ?? earlierCall;
+      recommendation = advice ?? (manifestPackSize > 1 ? null : earlierCall);
       packPrice = advice?.packPrice ?? null;
     }
     reason = recommendation?.reason ?? null;
@@ -361,7 +367,8 @@ export async function packSuggestion({ upc, manifestId, isOwner }: { upc: string
   return {
     upc,
     isOwner,
-    alreadyMultipack,
+    // No call came back for a store multi-pack: the card says list it as is.
+    alreadyMultipack: manifestPackSize > 1 && recommendation == null,
     // How many come in each unit the manifest counts (2 for a twin pack).
     manifestPackSize,
     available,

@@ -188,8 +188,10 @@ export async function draftItem(itemId: string) {
     }
   }
 
+  // A unit can itself be a store pack (a 4-pen card): 2 of those is 8 pens,
+  // and "2-Pack" alone would undersell it (Cristian, 2026-11-02).
   const packNote = item.isMultipack
-    ? `This is a multi-pack of ${item.packSize} units — reflect that in the title and description.`
+    ? `This is a multi-pack of ${item.packSize} units — reflect that in the title and description. If each unit is itself a retail pack of several pieces (e.g. a 4-pen card), say both counts, like "2 Packs of 4 (8 Pens)".`
     : "This is a single unit, not a multi-pack.";
 
   // Confirmed live: given the raw stock count, the model wrote a
@@ -343,7 +345,7 @@ export async function retitleItem(item: Item, extraSpecifics: Record<string, str
   const prompt = `Rewrite this eBay listing's title so more of the buyers searching for it find it.
 
 Current title: ${item.finalTitle}
-${item.isMultipack ? `This is a multi-pack of ${item.packSize} units.` : "This is a single unit, not a multi-pack."}
+${item.isMultipack ? `This is a multi-pack of ${item.packSize} units (if each unit is itself a retail pack of several pieces, keep both counts, like "2 Packs of 4 (8 Pens)").` : "This is a single unit, not a multi-pack."}
 ${expiration}
 ${specificsText ? `\nItem specifics:\n${specificsText}\n` : ""}${item.finalDescription ? `\nDescription:\n${item.finalDescription.slice(0, 1500)}\n` : ""}
 Keep every fact the current title gets right (pack count, size, count, model or REF number). Don't add a fact that isn't in the title, the item specifics or the description. If the current title already follows the rules, return it unchanged.
