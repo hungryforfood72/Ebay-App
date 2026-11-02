@@ -299,6 +299,9 @@ function ScanPageInner() {
   // Set from the pack suggestion's "Sell on Shopify & Whatnot instead": this
   // item skips eBay entirely. Cleared for every new item.
   const [shopifyOnly, setShopifyOnly] = useState(false);
+  // What the pack card suggested for the product being listed (sent with
+  // the save, so Cristian listing it differently teaches the pack agent).
+  const [packSuggestion, setPackSuggestion] = useState<{ recommended: number; sizes: number[] } | null>(null);
   const [packSize, setPackSize] = useState("");
   const [expirationDate, setExpirationDate] = useState("");
   // Units that came in with a different date than the first one (a 3-pack
@@ -697,6 +700,7 @@ function ScanPageInner() {
 
   function resetForm() {
     setShopifyOnly(false);
+    setPackSuggestion(null);
     setPhotos([]);
     setUpc("");
     setPickedLine(null);
@@ -1168,6 +1172,7 @@ function ScanPageInner() {
           shopifyOnly: !isBundle && (shopifyOnly || dudBox != null),
           relistOf: relist?.plan.id,
           relistPart: relist?.part,
+          packSuggestion: isBundle ? undefined : (packSuggestion ?? undefined),
           returnOf: returnPlan?.id,
           dudBoxCode: dudBox?.code,
         }),
@@ -1937,6 +1942,7 @@ function ScanPageInner() {
                   if (listings != null) setQuantity(String(listings));
                 }}
                 onSetAside={resetForm}
+                onSuggestion={setPackSuggestion}
                 onShopifyOnly={(size, listings) => {
                   setShopifyOnly(true);
                   setIsMultipack(size > 1);

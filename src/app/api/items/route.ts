@@ -5,6 +5,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { after } from "next/server";
 import { randomUUID } from "node:crypto";
 import { draftItem } from "@/lib/draftItem";
+import { recordPackOverride } from "@/lib/packAdvisor";
 import { lookupCategoryForItem } from "@/lib/categoryLookup";
 import { fillCategorySpecifics } from "@/lib/categorySpecifics";
 import { earliestBundleExpiration } from "@/lib/csv";
@@ -364,6 +365,24 @@ export async function POST(request: NextRequest) {
   // backgrounded network activity — very likely killing those requests
   // mid-flight before the ~45-100s of work finished.) Category lookup runs
   // after drafting so it has a real title to search from, not just the UPC.
+  // Cristian listing it at a different pack size than the card said is a
+  // lesson for the pack agent (his ask, 2026-11-02). Owner only, like
+  // "Disagree? Teach it"; never for bundles, relists, returns or dud boxes.
+  const packSuggestion = body.packSuggestion as { recommended?: unknown; sizes?: unknown } | undefined;
+  if (getRequestUser(request)?.role === "owner" && packSuggestion && !isBundle && !relistOf && !returnRow && !dudBox && item.upc) {
+    after(() =>
+      recordPackOverride({
+        upc: item.upc!,
+        manifestId: item.manifestId,
+        chosenPackSize: item.isMultipack && item.packSize ? item.packSize : 1,
+        recommended: Number(packSuggestion.recommended),
+        planSizes: Array.isArray(packSuggestion.sizes) ? packSuggestion.sizes.map(Number) : [],
+        shopifyOnly: item.shopifyOnly,
+        by: username,
+      }).catch((e) => console.error(`[items after()] ${item.id}: pack override not recorded`, e))
+    );
+  }
+
   after(async () => {
     try {
       await draftItem(item.id);

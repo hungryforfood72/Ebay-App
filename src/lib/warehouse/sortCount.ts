@@ -15,11 +15,12 @@ import { sortedByUpc } from "./sortBoxes";
 // not out of the sort boxes, so they don't count; neither do units listed
 // from a dud box (those were never sorted as good). null = nothing sorted
 // for it (sorting skipped, or not on this load). latestAt = the last sort
-// scan, so a newer typed count can win.
+// scan, so a newer typed count can win. name = what the sorter's lookup
+// called it, for an extra that isn't on the manifest (no description there).
 export async function sortedLeft(
   manifestId: string,
   upc: string
-): Promise<{ sorted: number; left: number; latestAt: Date } | null> {
+): Promise<{ sorted: number; left: number; latestAt: Date; name: string | null } | null> {
   const keys = new Set(upcMatchKeys(upc));
   const stored = [...(await sortedByUpc(manifestId)).entries()].filter(
     ([u]) => u === upc || upcMatchKeys(u).some((k) => keys.has(k))
@@ -27,7 +28,11 @@ export async function sortedLeft(
   const sorted = stored.reduce((sum, [, v]) => sum + v.sorted, 0);
   if (sorted === 0) return null;
   const returnEntry = { startsWith: RETURN_NOTE_PREFIX };
-  const [latest, items, bundles, walkups, duds, returned, returnDamaged, returnDud, rxReturned] = await Promise.all([
+  const [named, latest, items, bundles, walkups, duds, returned, returnDamaged, returnDud, rxReturned] = await Promise.all([
+    prisma.sortBoxEntry.findFirst({
+      where: { manifestId, upc: { in: stored.map(([u]) => u) }, name: { not: null } },
+      select: { name: true },
+    }),
     prisma.sortBoxEntry.findFirst({
       where: { manifestId, upc: { in: stored.map(([u]) => u) } },
       orderBy: { createdAt: "desc" },
@@ -69,5 +74,10 @@ export async function sortedLeft(
     (returnDamaged._sum.quantity ?? 0) +
     (returnDud._sum.quantity ?? 0) +
     (rxReturned._sum.quantity ?? 0);
-  return { sorted, left: Math.max(0, sorted - saved), latestAt: latest?.createdAt ?? new Date(0) };
+  return {
+    sorted,
+    left: Math.max(0, sorted - saved),
+    latestAt: latest?.createdAt ?? new Date(0),
+    name: named?.name?.trim() || null,
+  };
 }

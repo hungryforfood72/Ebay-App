@@ -7,8 +7,10 @@ import {
   FALLBACK_FEE_RATE,
   MAX_RECOMMENDED_PACK,
   PACKAGING_OZ,
+  MIN_PROFIT_PER_SALE,
   SHIPPING_PER_EXTRA_UNIT,
   recommendPackSize,
+  splitIntoPacks,
   type PackStat,
 } from "./packSize";
 import { typicalSingleLabelCost } from "./shippingCost";
@@ -165,6 +167,232 @@ export async function advisePackSize(input: {
     const rec = recommendPackSize(input.packStats, input.retailPrice);
     return rec ? { packSize: rec.packSize, reason: null, basis: rec.basis } : null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Scan-page pack call, researched (Cristian, 2026-11-02). The plain call
+// above decides from the product name and retail price alone, never knew
+// how many were on hand, and was reused for 30 days. It told Josi to sell
+// 6 Sharpie S-Gel 2-count cards as 4-packs ("fewer than 4, set them
+// aside") when 3-packs use up all 6. He asked for it to be much better,
+// even if that means searching online every time. So on the scan page:
+// - it's told how many units are on hand and how each pack size would
+//   split them, so it doesn't leave orphans that get set aside;
+// - it searches the web (never eBay, API License) for the store price per
+//   unit and the multi-pack counts the product really comes in;
+// - it gives the price a pack should sell for, which the card's profit
+//   check uses instead of scaling the single price;
+// - the call is made fresh for each new count; the same count reuses it
+//   while units get listed off it (a call for 6 still holds for the 3 left
+//   after the first 3-pack); a bigger count than it was made for, a
+//   correction on the product, or 12 hours, and it's researched again.
+// The Analyzer keeps advisePackSize (no count yet, hundreds of lines).
+// ---------------------------------------------------------------------------
+const RESEARCHED_REUSE_HOURS = 12;
+
+export type ResearchedPackAdvice = PackAdvice & { packPrice: number | null };
+
+export async function recentResearchedDecision(upc: string, unitsOnHand: number | null): Promise<ResearchedPackAdvice | null> {
+  const cached = await prisma.packDecision.findFirst({
+    where: {
+      upc,
+      researched: true,
+      // Made for at least this many (null: only an equally unknown count).
+      unitsOnHand: unitsOnHand == null ? null : { gte: unitsOnHand },
+      createdAt: { gte: new Date(Date.now() - RESEARCHED_REUSE_HOURS * 60 * 60 * 1000) },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  if (!cached) return null;
+  // Only a correction on this product retires it: the reuse window is short,
+  // and Cristian's overrides elsewhere (recordPackOverride) come often.
+  const newerCorrection = await prisma.packFeedback.findFirst({ where: { upc, createdAt: { gt: cached.createdAt } }, select: { id: true } });
+  if (newerCorrection) return null;
+  return { packSize: cached.packSize, reason: cached.reason, basis: "agent", packPrice: cached.packPrice };
+}
+
+export async function researchPackSize(input: {
+  upc: string;
+  description: string;
+  retailPrice: number | null;
+  category: string | null;
+  // null = no count (scanned with no manifest and nothing sorted).
+  unitsOnHand: number | null;
+  // What one unit cost Cristian (null = no landed cost on the load).
+  unitCost: number | null;
+  targetReturnPct: number;
+  // The store-price check, when it's already on file.
+  market: { pricePerUnit: number | null; demand: string | null; note: string | null } | null;
+  // The Analyzer's earlier call, made without the count or a search.
+  earlierCall: { packSize: number; reason: string | null } | null;
+}): Promise<ResearchedPackAdvice | null> {
+  const [lessons, feedback, typicalLabel, unitWeightOz, ownHistory] = await Promise.all([
+    prisma.sourcingKnowledge.findUnique({ where: { scope: PACK_STRATEGY_SCOPE } }),
+    prisma.packFeedback.findMany({ orderBy: { createdAt: "desc" }, take: 40 }),
+    typicalSingleLabelCost(),
+    unitShippingWeightOz(input.upc, input.description),
+    ownSellSpeedForUpc(input.upc),
+  ]);
+  const examples = feedback
+    .map((f) => ({ f, rank: f.upc === input.upc ? 0 : input.category && f.category === input.category ? 1 : 2 }))
+    .sort((a, b) => a.rank - b.rank || b.f.createdAt.getTime() - a.f.createdAt.getTime())
+    .slice(0, FEEDBACK_EXAMPLES)
+    .map(({ f }) => f);
+
+  const labelFor = (units: number) =>
+    unitWeightOz != null
+      ? labelForWeight(typicalLabel, (unitWeightOz * units + PACKAGING_OZ) / 16)
+      : typicalLabel + SHIPPING_PER_EXTRA_UNIT * (units - 1);
+  const n = input.unitsOnHand;
+  const sizeTable = Array.from({ length: MAX_RECOMMENDED_PACK }, (_, i) => i + 1)
+    .map((size) => {
+      const split =
+        n != null
+          ? `; all ${n} on hand would go out as ${splitIntoPacks(n, size)
+              .map((g) => `${g.listings} x ${g.packSize === 1 ? "single" : `${g.packSize}-pack`}`)
+              .join(" + ")}`
+          : "";
+      return `- ${size === 1 ? "single" : `${size}-pack`}: label ~${money(labelFor(size))}${split}`;
+    })
+    .join("\n");
+  const hasCost = input.unitCost != null && input.unitCost > 0;
+  const required3 = Math.max(MIN_PROFIT_PER_SALE, hasCost ? (input.unitCost! * 3 * input.targetReturnPct) / 100 : 0);
+
+  const prompt = `You decide how Cristian should list a product on eBay: as singles, or as multi-packs of 2 to ${MAX_RECOMMENDED_PACK} units per listing. He resells liquidation stock. Someone is holding the product at the listing table right now and will do what you say.
+
+His goal: sell stock through quickly while still making a profit. He'd rather make a bit less per unit and sell out in a few weeks than hold out for the most money per unit. Profit still matters: don't pick a pack that loses money when a profitable option exists.
+
+Think like a buyer: why would someone buy this on eBay instead of at a store? For everyday products anyone can pick up at a store or on Amazon, eBay buyers want a deal, which usually means a lower price per unit than they'd pay elsewhere for the same amount, so a single priced at or above store price sits unsold while a sensible multi-pack sells. Collectibles, hype items, discontinued or hard-to-find things can sell fine as singles.
+
+Product: "${input.description}" (UPC ${input.upc})
+One unit = one retail package as described (a "2 Count" pen card is one unit of 2 pens).
+Store retail per unit (from the liquidation manifest, can be off): ${input.retailPrice != null && input.retailPrice > 0 ? money(input.retailPrice) : "unknown"}
+Category: ${input.category ?? "unknown"}
+What one unit cost Cristian: ${hasCost ? money(input.unitCost!) : "not known (treat it as nearly free)"}
+
+UNITS ON HAND: ${n != null ? `${n}. Plan for all ${n}. A unit that can't fill a listing gets set aside unsold, so prefer a pack size that uses all of them cleanly (with 6 on hand: 2-packs or 3-packs, not 4-packs).` : "unknown. Pick the best pack size for this product in general."}
+
+Each listing size and its shipping label (free shipping, Cristian pays the label)${n != null ? ", and how the units on hand would split" : ""}:
+${sizeTable}
+eBay fees ~${(FALLBACK_FEE_RATE * 100).toFixed(2)}% + ${money(FALLBACK_FEE_FIXED)} per sale. Each listing has to clear at least ${money(MIN_PROFIT_PER_SALE)} profit after fees, the label and item cost${hasCost ? `, and ${input.targetReturnPct}% on item cost (a 3-pack needs ${money(required3)})` : ""}.
+
+${
+  input.market
+    ? `Store-price check already on file: realistic resale ~${input.market.pricePerUnit != null ? `${money(input.market.pricePerUnit)} per unit` : "unknown"}, demand ${input.market.demand ?? "unknown"}. Notes: ${input.market.note ?? "none"}`
+    : "No store-price check on file yet."
+}
+${input.earlierCall ? `\nAn earlier call (made before the load arrived, without knowing the count or searching): ${packWord(input.earlierCall.packSize)}${input.earlierCall.reason ? `. Its reason: "${input.earlierCall.reason}"` : ""}. Disagree if your research says so.\n` : ""}
+RESEARCH FIRST. The product name above can be wrong: it may come from a free UPC database or store-register shorthand (seen: a 4-pen Sharpie card named "2 Count"). Start by searching the UPC to confirm exactly what one unit is, especially how many pieces are in the package, and go by that. Then search the web (never eBay) for this exact product: what it costs per unit at stores (Walmart, Target, Amazon, Staples, CVS and so on), and which multi-pack or value-pack counts it comes in and at what price per unit. A buyer compares your pack against the cheapest way to get that many units elsewhere, value packs included, so your price per unit has to beat that and still clear the profit bar after the label. Use 1 or 2 searches.
+
+Cristian's own past listings of this exact product:
+${ownHistory.length > 0 ? ownHistory.join("\n") : "none yet"}
+
+Lessons learned so far about pack sizes:
+${lessons?.notes ?? "none yet"}
+
+Recent times Cristian corrected a pack-size call (learn from his reasoning, not just the item):
+${examples.map((f) => `- "${f.description}": ${f.suggestedPackSize != null ? `the suggestion was ${packWord(f.suggestedPackSize)}, ` : ""}Cristian chose ${packWord(f.chosenPackSize)}. His reason: "${f.reason}"`).join("\n") || "none yet"}
+
+If what you found contradicts the store-price check above (a different count or a far different price), trust your own research.
+
+Before answering, work out the profit of one listing at your size: price, minus eBay fees, minus that size's label from the list above, minus item cost. If no size clears the profit bar (common with one or two cheap units left, since the label alone is several dollars), still pick the best size but say plainly in the reason that it won't make money on eBay with free shipping, so it's better kept for Shopify & Whatnot, where the buyer pays shipping.
+
+Then answer. packPrice = the buy-it-now price (free shipping) you'd put on ONE listing of that pack size so it sells within a few weeks, based on your research, or null if you found no prices. reason = one or two plain sentences the person at the table reads: what drove the call, in everyday words. No dollar amounts or dashes in the reason, don't mention Cristian or his corrections, and don't claim it sells fast unless Cristian's own history shows it.
+
+Respond with exactly one JSON object as your final line, no other text after it:
+{"packSize": 3, "packPrice": 12.99, "reason": "..."}`;
+
+  try {
+    const response = await anthropic.messages.create(
+      {
+        model: "claude-sonnet-5",
+        max_tokens: 4000,
+        // Low effort, 2 searches, and searches called directly (not through
+        // the code sandbox, the default): it took 50-80s otherwise, too slow
+        // for someone standing at the table.
+        output_config: { effort: "low" },
+        tools: [
+          {
+            type: "web_search_20260209",
+            name: "web_search",
+            max_uses: 2,
+            allowed_callers: ["direct"],
+            blocked_domains: EBAY_DATA_DOMAINS,
+          },
+        ],
+        messages: [{ role: "user", content: prompt }],
+      },
+      { timeout: 80_000, maxRetries: 0 }
+    );
+    await logAiUsage("pack.researched", response);
+    // A web-search answer is split across several text blocks.
+    const text = response.content
+      .filter((b) => b.type === "text")
+      .map((b) => ("text" in b ? b.text : ""))
+      .join("");
+    const json = text.match(/\{[^{}]*\}\s*$/)?.[0];
+    const parsed = (json ? JSON.parse(json) : {}) as { packSize?: number; packPrice?: number | null; reason?: string };
+    const packSize = Number(parsed.packSize);
+    const reason = parsed.reason?.trim();
+    if (!Number.isInteger(packSize) || packSize < 1 || packSize > MAX_RECOMMENDED_PACK || !reason) {
+      throw new Error(`unusable answer: ${text.slice(-400)}`);
+    }
+    const price = Number(parsed.packPrice);
+    const packPrice = parsed.packPrice != null && Number.isFinite(price) && price > 0 ? Math.round(price * 100) / 100 : null;
+    await prisma.packDecision
+      .create({ data: { upc: input.upc, packSize, reason, unitWeightOz, unitsOnHand: n, researched: true, packPrice } })
+      .catch((e) => console.error(`[packAdvisor] failed to save researched decision for ${input.upc}`, e));
+    return { packSize, reason, basis: "agent", packPrice };
+  } catch (e) {
+    console.error(`[packAdvisor] researched call failed for "${input.description}"`, e);
+    return null;
+  }
+}
+
+// Cristian listed it at a pack size the card didn't plan (2026-11-02: "I
+// will list it how it tells me but sometimes I will go against it ... I
+// think it will start to learn as we go"). Saved as a correction, like
+// "Disagree? Teach it" but with no reason typed, so the next call on this
+// product sees it and the lessons pass can look for a pattern. Following
+// the plan (4-packs with 6 on hand going out as one 6-pack) isn't one, and
+// neither is Shopify & Whatnot only (a different lane, not a pack call).
+export const OVERRIDE_NO_REASON = "(listed differently at the table, no reason typed)";
+
+export async function recordPackOverride(input: {
+  upc: string;
+  manifestId: string | null;
+  chosenPackSize: number;
+  recommended: number;
+  planSizes: number[];
+  shopifyOnly: boolean;
+  by: string | null;
+}): Promise<void> {
+  if (!Number.isInteger(input.recommended) || input.recommended < 1 || input.shopifyOnly) return;
+  if (input.planSizes.includes(input.chosenPackSize) || input.chosenPackSize === input.recommended) return;
+  // Already taught by hand for this product in the last couple of hours.
+  const taught = await prisma.packFeedback.findFirst({
+    where: { upc: input.upc, chosenPackSize: input.chosenPackSize, createdAt: { gte: new Date(Date.now() - 2 * 60 * 60 * 1000) } },
+    select: { id: true },
+  });
+  if (taught) return;
+  const line =
+    (input.manifestId
+      ? await prisma.manifestLine.findFirst({ where: { manifestId: input.manifestId, upc: input.upc }, select: { description: true, category: true } })
+      : null) ?? (await prisma.manifestLine.findFirst({ where: { upc: input.upc }, select: { description: true, category: true } }));
+  const sorted = line
+    ? null
+    : await prisma.sortBoxEntry.findFirst({ where: { upc: input.upc, name: { not: null } }, select: { name: true } });
+  await prisma.packFeedback.create({
+    data: {
+      upc: input.upc,
+      description: line?.description ?? sorted?.name ?? `UPC ${input.upc}`,
+      category: line?.category ?? null,
+      suggestedPackSize: input.recommended,
+      chosenPackSize: input.chosenPackSize,
+      reason: OVERRIDE_NO_REASON,
+      createdBy: input.by,
+    },
+  });
 }
 
 // Liquidation.com manifests describe products in register shorthand
@@ -442,7 +670,7 @@ ${newFeedback.map((f) => `- "${f.description}"${f.category ? ` (${f.category})` 
 How fast his own eBay listings have actually sold, by category and pack size (all time):
 ${speedByCategory.join("\n") || "not enough data yet"}
 
-Rewrite the lessons. Keep Cristian's own stated reasoning, including any explanation he's given for his own data. Turn each correction into a general lesson about why, one that would apply to other products, not a note about that one item. Use the sell-speed data only where there are enough listings to mean something, and say so when it backs up or contradicts a lesson. A category that sells slowly at every pack size says the products are slow sellers, not which pack size is better: only compare pack sizes against each other. Short plain sentences, at most 10. Output only the lessons.`;
+Rewrite the lessons. Keep Cristian's own stated reasoning, including any explanation he's given for his own data. Turn each correction into a general lesson about why, one that would apply to other products, not a note about that one item. A correction whose reason is "${OVERRIDE_NO_REASON}" shows what he did, not why: don't invent a reason for it, and only make it a lesson once the same kind of override repeats across products or his sales data backs it up. Use the sell-speed data only where there are enough listings to mean something, and say so when it backs up or contradicts a lesson. A category that sells slowly at every pack size says the products are slow sellers, not which pack size is better: only compare pack sizes against each other. Short plain sentences, at most 10. Output only the lessons.`;
 
   try {
     const response = await anthropic.messages.create(

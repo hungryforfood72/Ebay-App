@@ -1315,6 +1315,13 @@ model PackDecision {
   // UPC (see unitShippingWeightOz) so the scan card can price a label by
   // weight instead of a flat amount per extra unit.
   unitWeightOz Float?
+  // Scan-page calls (Cristian, 2026-11-02): made for this many units on
+  // hand, after searching online, with the price a pack of packSize should
+  // sell for. Reused only for the same count, for a few hours. Analyzer
+  // calls leave these empty.
+  unitsOnHand Int?
+  researched  Boolean @default(false)
+  packPrice   Float?
   createdAt DateTime @default(now())
 
   @@index([upc, createdAt])

@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/Button";
 import { Field, Select, Textarea } from "@/components/ui/Input";
 import { MAX_RECOMMENDED_PACK, splitIntoPacks } from "@/lib/packSize";
 import { Boxes, CircleCheck, CircleX, Hourglass, LoaderCircle, PackageMinus } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type PackPlanGroup = { packSize: number; listings: number };
 
@@ -117,6 +117,7 @@ export function PackSuggestionCard({
   onApply,
   onSetAside,
   onShopifyOnly,
+  onSuggestion,
 }: {
   upc: string;
   manifestId: string | null;
@@ -125,7 +126,16 @@ export function PackSuggestionCard({
   onSetAside: () => void;
   // Keep scanning it in, but for Shopify & Whatnot only (no eBay listing).
   onShopifyOnly: (packSize: number, listings: number | null) => void;
+  // What the card told them to do, sent with the save so a different
+  // choice by Cristian is learned from (see packOverride in the items
+  // route). sizes = every pack size in the plan (4-packs with 6 on hand go
+  // out as one 6-pack, which is following it). null = no call.
+  onSuggestion?: (s: { recommended: number; sizes: number[] } | null) => void;
 }) {
+  const onSuggestionRef = useRef(onSuggestion);
+  useEffect(() => {
+    onSuggestionRef.current = onSuggestion;
+  });
   // Bumped after a typed count is saved, to fetch the plan again. The count
   // itself lives on the server, so the next scan of this UPC (the 2-pack
   // after the 3-pack) already plans for what's left of it.
@@ -149,7 +159,16 @@ export function PackSuggestionCard({
     fetch(`/api/pack-suggestion?${params}`)
       .then((r) => (r.ok ? r.json() : null))
       .catch(() => null)
-      .then((data: PackSuggestion | null) => !cancelled && setResult({ key, data }));
+      .then((data: PackSuggestion | null) => {
+        if (cancelled) return;
+        setResult({ key, data });
+        const rec = data?.recommendation;
+        onSuggestionRef.current?.(
+          rec && !data.alreadyMultipack && !data.setAside?.everything
+            ? { recommended: rec.packSize, sizes: [...new Set([rec.packSize, ...(data.plan ?? []).map((g) => g.packSize)])] }
+            : null
+        );
+      });
     return () => {
       cancelled = true;
     };
@@ -159,7 +178,7 @@ export function PackSuggestionCard({
     return (
       <div className="flex items-center gap-2 rounded-xl border border-border bg-background p-3 text-sm text-muted-foreground">
         <LoaderCircle className="size-4 animate-spin" aria-hidden />
-        Checking if it&apos;s worth listing and the best pack size…
+        Looking it up online for the best pack size, about 30 seconds…
       </div>
     );
   }

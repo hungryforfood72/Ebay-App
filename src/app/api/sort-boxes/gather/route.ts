@@ -1,11 +1,15 @@
 import { getRequestUser, requireUser } from "@/lib/auth";
+import { packSuggestion } from "@/lib/packSuggestion";
 import { prisma } from "@/lib/prisma";
 import { lineKey } from "@/lib/upcMatch";
 import { WarehouseError } from "@/lib/warehouse/bins";
 import { boxesLeft, loadsToGather, pullForListing } from "@/lib/warehouse/sortBoxes";
 import { matchLineCode } from "@/lib/warehouse/sortCheck";
 import { errorResponse } from "@/lib/warehouse/stations";
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
+
+// Room for the pack card's research, started after responding (see POST).
+export const maxDuration = 120;
 
 // The lister's helper (/gather, Cristian 2026-11-01): pulls every unit of
 // a product out of the sort boxes ahead of the lister, so the lister finds
@@ -49,6 +53,14 @@ export async function POST(request: NextRequest) {
     const line = lines.find((l) => lineKey(l) === key);
 
     const result = await pullForListing({ manifestId, upc: key, by: getRequestUser(request)?.username ?? null });
+    // Start the pack card's online research now (most of a minute), so it's
+    // saved and shows right away when the lister scans this product
+    // (Cristian, 2026-11-02). Same count the lister will see.
+    after(() =>
+      packSuggestion({ upc: key, manifestId, isOwner: false }).catch((e) =>
+        console.error(`[gather] pack research for ${key} failed`, e)
+      )
+    );
     return NextResponse.json({
       product: { key, description: line?.description ?? null },
       ...result,
