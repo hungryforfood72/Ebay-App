@@ -38,6 +38,10 @@ function SettingsPageInner() {
           <DealAlertsCard />
         </SettingsGroup>
 
+        <SettingsGroup title="AI spending" id="ai-spending">
+          <AiSpendGuardCard />
+        </SettingsGroup>
+
         <SettingsGroup title="Scanning">
           <ShelfLocationsEditor />
         </SettingsGroup>
@@ -1517,6 +1521,144 @@ function ExpirationBufferSetting() {
         />
         <SaveButton onClick={save} disabled={saving || !value} saving={saving} saved={saved} />
       </div>
+    </Card>
+  );
+}
+
+type GuardWindow = "hour" | "day" | "month";
+type AiGuardState = {
+  spent: Record<GuardWindow, number>;
+  limits: Record<GuardWindow, number>;
+  caps: Record<GuardWindow, number>;
+  pause: {
+    window: GuardWindow;
+    limitUsd: number;
+    spentUsd: number;
+    at: string;
+    lastHour: { feature: string; calls: number; costUsd: number; items: number; maxCallsOneItem: number }[];
+  } | null;
+};
+
+const GUARD_WINDOWS: { key: GuardWindow; label: string }[] = [
+  { key: "hour", label: "This hour" },
+  { key: "day", label: "Today" },
+  { key: "month", label: "This month" },
+];
+
+// Spend limits on Claude calls (src/lib/aiSpendGuard.ts). Crossing one
+// pauses all AI until Resume here.
+function AiSpendGuardCard() {
+  const [state, setState] = useState<AiGuardState | null>(null);
+  const [form, setForm] = useState<Record<GuardWindow, string>>({ hour: "", day: "", month: "" });
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  function apply(d: AiGuardState) {
+    setState(d);
+    setForm({ hour: String(d.limits.hour), day: String(d.limits.day), month: String(d.limits.month) });
+  }
+
+  useEffect(() => {
+    fetch("/api/settings/ai-guard")
+      .then((r) => r.json())
+      .then(apply);
+  }, []);
+
+  async function post(body: object) {
+    setBusy(true);
+    setMessage(null);
+    setSaved(false);
+    try {
+      const res = await fetch("/api/settings/ai-guard", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error ?? "Couldn't save.");
+      apply(d);
+      return true;
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : "Something went wrong.");
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const money = (n: number) => `$${n.toFixed(2)}`;
+  const pause = state?.pause;
+
+  return (
+    <Card>
+      <SectionHeader
+        title="AI spending limits"
+        description="If AI spending crosses any of these, all AI in the tool stops until you resume it here, and you get an email showing what made the calls. Stops a bug from running up the bill. The same request repeated 9 times in 10 minutes is also refused as a loop."
+      />
+      {!state ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : (
+        <div className="flex flex-col gap-4">
+          {pause && (
+            <Alert tone="danger">
+              <p className="font-medium">
+                AI is paused: {money(pause.spentUsd)} this {pause.window}, over the {money(pause.limitUsd)} limit (
+                {new Date(pause.at).toLocaleString()}).
+              </p>
+              {pause.lastHour.length > 0 && (
+                <ul className="mt-2 list-disc pl-5 text-sm">
+                  {pause.lastHour.map((f) => (
+                    <li key={f.feature}>
+                      {f.feature}: {f.calls} calls, {money(f.costUsd)}
+                      {f.items > 0 && `, ${f.items} items`}
+                      {f.maxCallsOneItem > 3 && ` (one item called ${f.maxCallsOneItem} times: looks like a loop)`}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <p className="mt-2 text-sm">
+                Matches what you were doing (a big scan or listing session)? Resume. Calls while nobody was working, or one
+                item over and over? Leave it paused and get it looked at.
+              </p>
+              <div className="mt-3">
+                <Button size="sm" onClick={() => post({ resume: true })} disabled={busy}>
+                  {busy ? "Resuming…" : "Resume AI"}
+                </Button>
+              </div>
+            </Alert>
+          )}
+          <div className="grid gap-3 sm:grid-cols-3">
+            {GUARD_WINDOWS.map(({ key, label }) => (
+              <Field key={key} label={`${label}: ${money(state.spent[key])} spent`}>
+                <SuffixInput
+                  suffix="dollars"
+                  step="1"
+                  min={1}
+                  value={form[key]}
+                  aria-label={`${label} limit in dollars`}
+                  onChange={(e) => {
+                    setForm({ ...form, [key]: e.target.value });
+                    setSaved(false);
+                  }}
+                />
+                {state.caps[key] > state.limits[key] && (
+                  <p className="mt-1 text-xs text-muted-foreground">Resumed: allowed up to {money(state.caps[key])} for now.</p>
+                )}
+              </Field>
+            ))}
+          </div>
+          <div>
+            <SaveButton
+              onClick={async () => setSaved(await post({ limits: { hour: Number(form.hour), day: Number(form.day), month: Number(form.month) } }))}
+              disabled={busy || !form.hour || !form.day || !form.month}
+              saving={busy}
+              saved={saved}
+            />
+          </div>
+        </div>
+      )}
+      {message && <p className="mt-2 text-sm text-red-600">{message}</p>}
     </Card>
   );
 }

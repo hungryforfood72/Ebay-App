@@ -1,8 +1,10 @@
 import Anthropic from "@anthropic-ai/sdk";
 import sharp from "sharp";
+import { guardedFetch } from "@/lib/aiSpendGuard";
 import { isOurPhotoUrl } from "@/lib/photoUrl";
 
-export const anthropic = new Anthropic();
+// Every Claude call goes through the spend guard (limits + loop catcher).
+export const anthropic = new Anthropic({ fetch: guardedFetch });
 
 export type SupportedImageType = "image/jpeg";
 
