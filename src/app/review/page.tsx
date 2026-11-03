@@ -1241,6 +1241,23 @@ function ItemCard({
                       if (!query) return null;
                       return (
                         <>
+                          {item.upc && (
+                            // One click for both (Cristian, 2026-11-03):
+                            // Terapeak, then eBay sold by UPC, each in its own
+                            // tab. Chrome may block the second tab the first
+                            // time; "Always allow pop-ups" for this site fixes it.
+                            <button
+                              type="button"
+                              className={link}
+                              onClick={() => {
+                                const upc = item.upc!;
+                                window.open(terapeakUrl(upc), "_blank", "noopener,noreferrer");
+                                window.open(search(upc, true), "_blank", "noopener,noreferrer");
+                              }}
+                            >
+                              Terapeak + UPC <ExternalLink className="size-3.5" aria-hidden />
+                            </button>
+                          )}
                           <a href={search(query, true)} target="_blank" rel="noopener noreferrer" className={link}>
                             Sold <ExternalLink className="size-3.5" aria-hidden />
                           </a>
