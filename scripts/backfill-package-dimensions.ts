@@ -3,7 +3,7 @@
 // live listing its box's dimensions and changes nothing else on it.
 //
 //   npx tsx scripts/backfill-package-dimensions.ts            (dry run)
-//   npx tsx scripts/backfill-package-dimensions.ts --apply [--limit 5]
+//   npx tsx scripts/backfill-package-dimensions.ts --apply [--limit 5] [--skus A,B]
 import { config as loadEnv } from "dotenv";
 loadEnv({ path: ".env.local" });
 
@@ -19,9 +19,12 @@ async function main() {
   const { prisma } = await import("../src/lib/prisma");
   const { toEbaySku, updateLivePackageDimensions } = await import("../src/lib/ebay");
 
+  const skusAt = process.argv.indexOf("--skus");
+  const skus = skusAt >= 0 ? process.argv[skusAt + 1].split(",") : null;
   const items = (
     await prisma.item.findMany({
       where: {
+        ...(skus ? { sku: { in: skus } } : {}),
         status: "listed",
         ebayEnvironment: "production",
         ebayListingId: { not: null },
