@@ -10,6 +10,8 @@ import {
   toItemForEbayPublish,
 } from "@/lib/ebay";
 import { stripKnownBlockedWords, tryAutoFix } from "@/lib/publishRemediation";
+import { runFixAgent } from "@/lib/publishFixAgent";
+import { NEEDS_YOU_PREFIX } from "@/lib/needsYou";
 import { binGateError } from "@/lib/warehouse/binGate";
 import { prisma } from "@/lib/prisma";
 import { ALREADY_PUBLISHING, claimPublish, releasePublish } from "@/lib/publishLock";
@@ -25,6 +27,15 @@ export const maxDuration = 300;
 // One error at a time is all eBay reports, so an item missing a specific
 // AND carrying a blocked word takes two rounds.
 const MAX_AUTO_FIXES = 3;
+
+// The fix agent only starts with at least this long left of maxDuration,
+// and stops itself this far short of it, so the publish after it and the
+// error save still fit.
+const FIX_AGENT_MIN_MS = 90_000;
+const FIX_AGENT_RESERVE_MS = 40_000;
+
+// The fix agent gave up: the reason is what the person has to do.
+class NeedsYouError extends Error {}
 
 async function attemptPublish(id: string, item: Item): Promise<{ listingId: string }> {
   const publishData = toItemForEbayPublish(item);
@@ -114,7 +125,9 @@ export async function POST(
 }
 
 async function publish(id: string, item: Item) {
+  const startedAt = Date.now();
   const autoFixes: string[] = [];
+  let agentRan = false;
   try {
     const preCleaned = await stripKnownBlockedWords(item);
     if (preCleaned) autoFixes.push(preCleaned);
@@ -129,9 +142,20 @@ async function publish(id: string, item: Item) {
         // item specific, a blocked word) and publish again. Anything else,
         // or a fix that can't find a confident answer, falls through to the
         // outer catch unchanged.
-        if (round >= MAX_AUTO_FIXES) throw e;
+        if (round >= MAX_AUTO_FIXES + 1) throw e;
         const message = e instanceof EbayApiError || e instanceof Error ? e.message : "Publish failed.";
-        const note = await tryAutoFix(id, message);
+        let note = round < MAX_AUTO_FIXES ? await tryAutoFix(id, message) : null;
+        // Nothing quick worked: the fix agent gets one go (publishFixAgent.ts).
+        const endsAt = startedAt + maxDuration * 1000;
+        if (!note && !agentRan && endsAt - Date.now() >= FIX_AGENT_MIN_MS) {
+          agentRan = true;
+          const agent = await runFixAgent(id, message, { alreadyTried: autoFixes, deadline: endsAt - FIX_AGENT_RESERVE_MS });
+          if (agent && !agent.fixed) {
+            autoFixes.push(...agent.notes);
+            throw new NeedsYouError(agent.needsYou);
+          }
+          if (agent) note = `Fix agent: ${agent.notes.join(" ")}`;
+        }
         if (!note) throw e;
         autoFixes.push(note);
         current = await prisma.item.findUniqueOrThrow({ where: { id } });
@@ -157,7 +181,9 @@ async function publish(id: string, item: Item) {
     // Errors only a person can fix: say how, in plain words.
     let message = raw;
     let missingAspect: RegExpMatchArray | null;
-    if (/item\s+specific\s+Expiration\s+Date\s+is\s+missing/i.test(raw)) {
+    if (e instanceof NeedsYouError) {
+      message = `${NEEDS_YOU_PREFIX}${e.message}`;
+    } else if (/item\s+specific\s+Expiration\s+Date\s+is\s+missing/i.test(raw)) {
       message = "eBay needs the expiration date for this category. Send it back to review, add the date printed on the package, and publish again.";
     } else if ((missingAspect = raw.match(/item\s+specific\s+([A-Za-z0-9\s/&'-]+?)\s+is\s+missing/i))) {
       const name = missingAspect[1].replace(/\s+/g, " ").trim();
@@ -168,7 +194,7 @@ async function publish(id: string, item: Item) {
         ? `eBay needs "${name}" for this category, and it isn't listed anywhere online. Measure the box, add a "${name}" item specific in review (exact name, like "5.5 in"), and publish again.`
         : `eBay needs "${name}" for this category, and the app couldn't find it automatically. Send it back to review, add a "${name}" item specific (exact name) with the real value, and publish again.`;
     } else if (BLOCKED_WORDS_ERROR.test(raw)) {
-      message = "eBay's word filter blocked this, and the app couldn't find the word in the title, so it's probably in the description. Send it back to review, look for brand claims, recalled product names or medical claims in the description, and publish again.";
+      message = "eBay's word filter blocked this, and the app couldn't find the words. Look for brand claims, recalled product names or medical claims in the title and description, and publish again.";
     }
     if (autoFixes.length > 0) message += ` (Already auto-fixed: ${autoFixes.join(" ")})`;
     await prisma.item.update({ where: { id }, data: { ebayPublishError: message } });

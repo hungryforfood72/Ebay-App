@@ -27,6 +27,7 @@ import { ebayDescriptionHtml } from "@/lib/listingDescription";
 import { priceOutcome } from "@/lib/offerMath";
 import type { RetailCheckLine, RetailCheckRow } from "@/lib/retailCheck";
 import { labelForWeight } from "@/lib/shippingZone";
+import { NEEDS_YOU_PREFIX } from "@/lib/needsYou";
 import Link from "next/link";
 import { useEffect, useRef, useState, type ComponentProps } from "react";
 
@@ -538,11 +539,23 @@ export default function ReviewPage() {
                     </Button>
                   </div>
                   {(item.shopifyOnly ? item.shopifyError : item.ebayPublishError) && (
-                    <div className="flex flex-wrap items-center gap-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-800">
-                      <p className="min-w-0 flex-1">
-                        {item.shopifyOnly ? "Shopify" : "eBay"} rejected this:{" "}
-                        {item.shopifyOnly ? item.shopifyError : item.ebayPublishError}
-                      </p>
+                    <div
+                      className={cn(
+                        "flex flex-wrap items-center gap-2 rounded-lg px-3 py-2 text-xs",
+                        needsYou(item) ? "bg-amber-50 text-amber-900" : "bg-red-50 text-red-800"
+                      )}
+                    >
+                      {needsYou(item) ? (
+                        <p className="min-w-0 flex-1">
+                          <Badge tone="warning">Needs you</Badge>{" "}
+                          {item.ebayPublishError!.slice(NEEDS_YOU_PREFIX.length)}
+                        </p>
+                      ) : (
+                        <p className="min-w-0 flex-1">
+                          {item.shopifyOnly ? "Shopify" : "eBay"} rejected this:{" "}
+                          {item.shopifyOnly ? item.shopifyError : item.ebayPublishError}
+                        </p>
+                      )}
                       <Button
                         size="sm"
                         variant="outline"
@@ -691,6 +704,11 @@ function binHoldBadge(item: Item): string {
 // database pooler's 200 connections and took the whole app down, so at
 // most 3 run at a time, a failure is tried once more after a pause, and
 // what's shown is a plain message (a crashed request has no JSON body).
+// The fix agent tried and handed it back (publishFixAgent.ts).
+function needsYou(item: { shopifyOnly: boolean; ebayPublishError: string | null }): boolean {
+  return !item.shopifyOnly && !!item.ebayPublishError?.startsWith(NEEDS_YOU_PREFIX);
+}
+
 const PRICE_CHECKS_AT_ONCE = 3;
 let priceChecksRunning = 0;
 const priceCheckQueue: (() => void)[] = [];

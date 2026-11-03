@@ -1878,15 +1878,35 @@ function cdata(value: string): string {
 }
 
 // Asks eBay whether this listing, with the given title and description,
-// trips the improper-words filter: VerifyAddFixedPriceItem runs every
-// listing check without creating anything or charging fees. Any OTHER
-// error in the response (condition, shipping, a missing specific) is
-// ignored here, since only the words filter matters to the caller.
+// trips the improper-words filter. Any OTHER error in the response
+// (condition, shipping, a missing specific) is ignored here, since only
+// the words filter matters to the caller.
 export async function isBlockedByWordFilter(
   item: ItemForEbayPublish,
   title: string,
   description: string
 ): Promise<boolean> {
+  return (await verifyListing(item, title, description)).errors.some((e) => BLOCKED_WORDS_ERROR.test(e));
+}
+
+function xmlUnescape(value: string): string {
+  return value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+// Every error eBay would stop this listing over, in eBay's own words
+// (warnings left out): VerifyAddFixedPriceItem runs every listing check
+// without creating anything or charging fees. Unlike a real publish, which
+// reports one error at a time, this gives all of them at once.
+export async function verifyListing(
+  item: ItemForEbayPublish,
+  title: string = item.finalTitle,
+  description: string = item.finalDescription
+): Promise<{ errors: string[] }> {
   const config = getEbayConfig();
   const [token, policies] = await Promise.all([getValidAccessToken(), policiesFor(item, config)]);
   const totalOz = Math.max(1, Math.round((item.weightLbs ?? 0) * 16 + (item.weightOz ?? 0)));
@@ -1925,7 +1945,11 @@ ${specifics ? `<ItemSpecifics>${specifics}</ItemSpecifics>` : ""}
   });
   const text = await res.text();
   if (!res.ok) throw new EbayApiError(`Trading API VerifyAddFixedPriceItem failed (${res.status})`, res.status, text);
-  return BLOCKED_WORDS_ERROR.test(text);
+  const errors = [...text.matchAll(/<Errors>([\s\S]*?)<\/Errors>/g)]
+    .filter((m) => /<SeverityCode>Error<\/SeverityCode>/.test(m[1]))
+    .map((m) => xmlUnescape(m[1].match(/<LongMessage>([\s\S]*?)<\/LongMessage>/)?.[1] ?? m[1].match(/<ShortMessage>([\s\S]*?)<\/ShortMessage>/)?.[1] ?? "Unknown eBay error."))
+    .map((e) => e.replace(/\s+/g, " ").trim());
+  return { errors };
 }
 
 function xmlEscape(value: string): string {

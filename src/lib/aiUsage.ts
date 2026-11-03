@@ -30,7 +30,7 @@ function priceFor(model: string) {
 // must not fail the feature that made the call.
 export async function logAiUsage(
   feature: string,
-  response: Anthropic.Message,
+  response: Pick<Anthropic.Message, "model" | "usage"> | Pick<Anthropic.Beta.BetaMessage, "model" | "usage">,
   ref: { evaluationId?: string; itemId?: string } = {}
 ): Promise<void> {
   try {
