@@ -12,7 +12,16 @@ export type BlockedPhrase = { phrase: string; when?: string };
 // recalled (confirmed 2026-10-08 with VerifyAddFixedPriceItem: the same
 // listing goes through without those two words). Cristian's call: list the
 // non-recalled ones without the words.
-const BUILT_IN: BlockedPhrase[] = [{ phrase: "Ultra Sheer", when: "Neutrogena" }];
+// "FDA registered" and "FDA approved" in a description block any listing
+// (confirmed 2026-11-02 on Flex period cups: those were the only lines in
+// the way; "FDA cleared", "FDA registered facility" and plain "FDA" pass).
+// The title-only search below can't find these, since drafts put them in
+// the description.
+const BUILT_IN: BlockedPhrase[] = [
+  { phrase: "Ultra Sheer", when: "Neutrogena" },
+  { phrase: "FDA registered" },
+  { phrase: "FDA approved" },
+];
 
 // Phrases found automatically by findBlockedPhrases, so the next draft or
 // publish strips them before eBay ever sees them.
@@ -57,7 +66,17 @@ export function removeBlockedPhrases(text: string, phrases: BlockedPhrase[]): st
     if (when && !phrasePattern(when).test(result)) continue;
     result = result.replace(phrasePattern(phrase), "");
   }
-  return result === text ? text : result.replace(/ {2,}/g, " ").replace(/ +([,.;:!?])/g, "$1").trim();
+  if (result === text) return text;
+  // A bullet that was only the phrase ("- FDA registered") goes; one that
+  // started with it ("- FDA registered, reusable") keeps the rest.
+  return result
+    .split("\n")
+    .map((line) => line.replace(/^(\s*[-•*]\s*)[,;]\s*/, "$1"))
+    .filter((line) => !/^\s*[-•*]\s*$/.test(line))
+    .join("\n")
+    .replace(/ {2,}/g, " ")
+    .replace(/ +([,.;:!?])/g, "$1")
+    .trim();
 }
 
 // Runs `checks` a few at a time: each one is a real eBay call, and a long
