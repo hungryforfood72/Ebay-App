@@ -1827,34 +1827,16 @@ function terapeakUrl(upc: string): string {
   return `https://www.ebay.com/sh/research?${params}`;
 }
 
-// The tabs "Terapeak + UPC" opened last. Clicking it on the next item
-// closes those first, so research tabs don't pile up (Cristian,
-// 2026-11-03). Kept here, not in state: a refresh of the list mustn't lose
-// them. A full page reload does, and those tabs then stay open.
-let compTabs: Window[] = [];
+// "Terapeak + UPC" on the next item reuses the same two tabs instead of
+// opening two more, so research tabs don't pile up (Cristian, 2026-11-03:
+// he wanted the last item's tabs closed). Closing them from here didn't
+// work in his Chrome; a named tab is loaded again by the next open with
+// that name, even after a reload of this page. Not "noopener": a tab
+// opened that way can't be found by its name again.
+const COMP_TAB_NAMES = ["sp-comps-terapeak", "sp-comps-sold-upc"];
 
 function openCompTabs(urls: string[]) {
-  for (const w of compTabs) {
-    try {
-      w.close();
-    } catch {
-      // Already closed, or the site cut the link: nothing to do.
-    }
-  }
-  compTabs = [];
-  for (const url of urls) {
-    // Not "noopener": that returns no handle to close it with later.
-    // Clearing opener right away (the tab is still blank and ours) keeps
-    // the eBay page from reaching back into this one.
-    const w = window.open(url, "_blank");
-    if (!w) continue;
-    try {
-      w.opener = null;
-    } catch {
-      // Can't clear it: still close-able.
-    }
-    compTabs.push(w);
-  }
+  urls.forEach((url, i) => window.open(url, COMP_TAB_NAMES[i] ?? "_blank"));
 }
 
 // Copies the UPC for pasting into Terapeak or a search (Cristian,
