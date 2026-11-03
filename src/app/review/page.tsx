@@ -1249,11 +1249,7 @@ function ItemCard({
                             <button
                               type="button"
                               className={link}
-                              onClick={() => {
-                                const upc = item.upc!;
-                                window.open(terapeakUrl(upc), "_blank", "noopener,noreferrer");
-                                window.open(search(upc, true), "_blank", "noopener,noreferrer");
-                              }}
+                              onClick={() => openCompTabs([terapeakUrl(item.upc!), search(item.upc!, true)])}
                             >
                               Terapeak + UPC <ExternalLink className="size-3.5" aria-hidden />
                             </button>
@@ -1829,6 +1825,36 @@ function terapeakUrl(upc: string): string {
     tz: "America/Chicago",
   });
   return `https://www.ebay.com/sh/research?${params}`;
+}
+
+// The tabs "Terapeak + UPC" opened last. Clicking it on the next item
+// closes those first, so research tabs don't pile up (Cristian,
+// 2026-11-03). Kept here, not in state: a refresh of the list mustn't lose
+// them. A full page reload does, and those tabs then stay open.
+let compTabs: Window[] = [];
+
+function openCompTabs(urls: string[]) {
+  for (const w of compTabs) {
+    try {
+      w.close();
+    } catch {
+      // Already closed, or the site cut the link: nothing to do.
+    }
+  }
+  compTabs = [];
+  for (const url of urls) {
+    // Not "noopener": that returns no handle to close it with later.
+    // Clearing opener right away (the tab is still blank and ours) keeps
+    // the eBay page from reaching back into this one.
+    const w = window.open(url, "_blank");
+    if (!w) continue;
+    try {
+      w.opener = null;
+    } catch {
+      // Can't clear it: still close-able.
+    }
+    compTabs.push(w);
+  }
 }
 
 // Copies the UPC for pasting into Terapeak or a search (Cristian,
