@@ -90,7 +90,53 @@ type Item = {
   // started before this page was refreshed.
   publishStartedAt: string | null;
   ebayEnvironment: string | null;
+  soldQuantity: number;
+  listingEndedAt: string | null;
+  createdAt: string;
 };
+
+// Other listings of the same product (same UPC) still in play: in review,
+// ready, or live with stock left. Cristian (2026-11-02): one product often
+// becomes several listings because the dates differ, and he prices the
+// closer dates lower and the longer ones higher, so each card shows the
+// rest side by side. Oldest date first; no date sorts last.
+function sameProductListings(item: Item, all: Item[]): Item[] {
+  if (item.isBundle || !item.upc) return [];
+  const group = all.filter(
+    (i) =>
+      i.upc === item.upc &&
+      !i.isBundle &&
+      (i.status === "pending_review" ||
+        i.status === "ready" ||
+        (i.status === "listed" && !i.listingEndedAt && i.quantity > i.soldQuantity))
+  );
+  if (group.length < 2) return [];
+  const time = (i: Item) => (i.expirationDate ? new Date(i.expirationDate).getTime() : Number.POSITIVE_INFINITY);
+  return group.sort((a, b) => time(a) - time(b) || a.createdAt.localeCompare(b.createdAt));
+}
+
+// Pending items with the same UPC next to each other, oldest date first,
+// so they're priced side by side. Groups keep the queue's order (where the
+// group's first item was).
+function groupSameProduct(pending: Item[]): Item[] {
+  const byUpc = new Map<string, Item[]>();
+  for (const i of pending) {
+    if (i.isBundle || !i.upc) continue;
+    byUpc.set(i.upc, [...(byUpc.get(i.upc) ?? []), i]);
+  }
+  const time = (i: Item) => (i.expirationDate ? new Date(i.expirationDate).getTime() : Number.POSITIVE_INFINITY);
+  const out: Item[] = [];
+  const placed = new Set<string>();
+  for (const i of pending) {
+    if (placed.has(i.id)) continue;
+    const group = !i.isBundle && i.upc ? byUpc.get(i.upc)! : [i];
+    for (const g of [...group].sort((a, b) => time(a) - time(b))) {
+      out.push(g);
+      placed.add(g.id);
+    }
+  }
+  return out;
+}
 
 type BoxSize = { id: string; label: string };
 
@@ -385,7 +431,7 @@ export default function ReviewPage() {
     );
   }
 
-  const pending = items.filter((i) => i.status === "pending_review");
+  const pending = groupSameProduct(items.filter((i) => i.status === "pending_review"));
   const ready = items.filter((i) => i.status === "ready");
   // Publishing here, or on the server from before a refresh.
   const isPublishing = (item: Item) => publishingId === item.id || publishingOnServer(item);
@@ -430,6 +476,7 @@ export default function ReviewPage() {
               <ItemCard
                 key={item.id}
                 item={item}
+                sameProduct={sameProductListings(item, items)}
                 rules={rules}
                 boxSizes={boxSizes}
                 onChange={(data) => updateItem(item.id, data)}
@@ -639,8 +686,83 @@ function binHoldBadge(item: Item): string {
   return p.inBins === 0 ? "In review · no bin assigned yet" : `In review · ${p.inBins} of ${p.needed} in bins`;
 }
 
+const LISTING_STATUS: Record<Item["status"], string> = {
+  pending_review: "In review",
+  ready: "Ready",
+  listed: "Live",
+  exported: "Exported",
+};
+
+// Under the price box when the product has more than one listing (see
+// sameProductListings): each one's date, how long it has left, pack, units
+// and price, oldest date first, so closer dates can be priced lower. Per
+// unit prices when the packs differ, and a note when a closer date is
+// priced above a later one.
+function SameProductPrices({ item, listings, typedPrice }: { item: Item; listings: Item[]; typedPrice: string | null }) {
+  const priceOf = (l: Item) => {
+    const raw = l.id === item.id && typedPrice != null ? typedPrice : l.price;
+    const n = raw == null || raw === "" ? NaN : Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+  const pack = (l: Item) => (l.isMultipack && l.packSize ? l.packSize : 1);
+  const perUnit = (l: Item) => {
+    const p = priceOf(l);
+    return p == null ? null : p / pack(l);
+  };
+  const mixedPacks = new Set(listings.map(pack)).size > 1;
+  const [now] = useState(() => Date.now());
+  const timeLeft = (date: string) => {
+    const months = (new Date(date).getTime() - now) / (30.44 * 24 * 60 * 60 * 1000);
+    if (months < 0) return "past date";
+    return months < 1 ? `${Math.max(0, Math.round(months * 30.44))} days left` : `${Math.round(months)} mo left`;
+  };
+  // A closer date priced above a later one (per unit), dated listings only.
+  const dated = listings.filter((l) => l.expirationDate && perUnit(l) != null);
+  const backwards = dated.some((a, i) => dated.slice(i + 1).some((b) => b.expirationDate !== a.expirationDate && perUnit(a)! > perUnit(b)! + 0.005));
+
+  return (
+    <div className="mt-2 rounded-lg border border-purple-200 bg-purple-50 p-2.5 text-xs text-purple-950">
+      <p className="mb-1.5 font-semibold">Same product, {listings.length} listings (closest date first)</p>
+      <ul className="flex flex-col gap-1">
+        {listings.map((l) => {
+          const price = priceOf(l);
+          const unit = perUnit(l);
+          const units = l.status === "listed" ? l.quantity - l.soldQuantity : l.quantity;
+          const self = l.id === item.id;
+          return (
+            <li
+              key={l.id}
+              className={cn("flex flex-wrap items-baseline justify-between gap-x-3 rounded-md px-1.5 py-1", self && "bg-white font-semibold ring-1 ring-purple-300")}
+            >
+              <span className="min-w-0">
+                {l.expirationBreakdown
+                  ? `Exp ${describeBreakdown(l.expirationBreakdown)}`
+                  : l.expirationDate
+                    ? `Exp ${new Date(l.expirationDate).toLocaleDateString(undefined, { timeZone: "UTC", month: "short", year: "numeric" })}`
+                    : "No date"}
+                {l.expirationDate && <span className="font-normal text-purple-800"> · {timeLeft(l.expirationDate)}</span>}
+                <span className="font-normal text-purple-800">
+                  {" "}
+                  · {units} x {pack(l) > 1 ? `${pack(l)}-pack` : "single"} · {LISTING_STATUS[l.status]}
+                  {self ? " · this one" : ` · ${l.sku}`}
+                </span>
+              </span>
+              <span className="shrink-0 tabular-nums">
+                {price != null ? `$${price.toFixed(2)}` : "no price yet"}
+                {mixedPacks && unit != null && <span className="font-normal text-purple-800"> (${unit.toFixed(2)}/unit)</span>}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+      {backwards && <p className="mt-1.5 font-medium text-warning">A closer date is priced higher than a later one.</p>}
+    </div>
+  );
+}
+
 function ItemCard({
   item,
+  sameProduct,
   rules,
   boxSizes,
   onChange,
@@ -651,6 +773,8 @@ function ItemCard({
   drafting,
 }: {
   item: Item;
+  // Every listing of this product, this one included (empty = only one).
+  sameProduct: Item[];
   rules: CategoryRule[];
   boxSizes: BoxSize[];
   onChange: (data: Partial<Item>) => void;
@@ -892,6 +1016,11 @@ function ItemCard({
             {item.isBundle ? "Bundles available" : "Qty"} {item.quantity}
           </Badge>
           {item.isMultipack && <Badge tone="primary">Pack of {item.packSize}</Badge>}
+          {sameProduct.length > 1 && (
+            <Badge tone="purple">
+              {sameProduct.findIndex((s) => s.id === item.id) + 1} of {sameProduct.length} listings of this product
+            </Badge>
+          )}
           <FetchedLocationBadge itemId={item.id} shelfLocation={item.shelfLocation} />
           {binHold(item) && <Badge tone="warning">{binHoldBadge(item)}</Badge>}
           {item.expirationBreakdown ? (
@@ -1052,6 +1181,9 @@ function ItemCard({
                   />
                 </div>
               </Field>
+              {sameProduct.length > 1 && (
+                <SameProductPrices item={item} listings={sameProduct} typedPrice={typedPrice} />
+              )}
               <div className="mt-2 flex flex-col gap-1 rounded-lg bg-background p-2.5 text-xs">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="font-medium text-muted-foreground">Check comps on eBay</span>
