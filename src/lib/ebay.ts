@@ -615,6 +615,9 @@ export type ItemForEbayPublish = {
   soldQuantity: number;
   weightLbs: number | null;
   weightOz: number | null;
+  // The BoxSize label picked at the station ("10x8x8"). Its dimensions go
+  // to eBay with the weight, so the label page isn't left at 1x1x1.
+  boxSize: string | null;
   upc: string | null;
 };
 
@@ -648,6 +651,7 @@ export function toItemForEbayPublish(
     soldQuantity: number;
     weightLbs: number | null;
     weightOz: number | null;
+    boxSize?: string | null;
     upc: string | null;
   },
   priceOverride?: number
@@ -667,6 +671,7 @@ export function toItemForEbayPublish(
     soldQuantity: item.soldQuantity,
     weightLbs: item.weightLbs,
     weightOz: item.weightOz,
+    boxSize: item.boxSize ?? null,
     upc: item.upc,
   };
 }
@@ -865,8 +870,25 @@ function productCodeField(code: string | null): { upc: string[] } | { ean: strin
   return "upc" in c ? { upc: [c.upc] } : { ean: [c.ean] };
 }
 
+// The picked box's dimensions, or nothing when there's no box or it's
+// missing a side. Without these eBay's label page defaults to 1x1x1.
+async function packageDimensions(boxLabel: string | null) {
+  if (!boxLabel) return null;
+  const box = await prisma.boxSize.findUnique({ where: { label: boxLabel } });
+  const length = box?.lengthIn?.toNumber();
+  const width = box?.widthIn?.toNumber();
+  const height = box?.heightIn?.toNumber();
+  if (!length || !width || !height) return null;
+  return { length, width, height, unit: "INCH" };
+}
+
 async function putInventoryItem(item: ItemForEbayPublish): Promise<void> {
   const totalWeightLbs = (item.weightLbs ?? 0) + (item.weightOz ?? 0) / 16;
+  const dimensions = await packageDimensions(item.boxSize);
+  const packageWeightAndSize = {
+    ...(totalWeightLbs > 0 ? { weight: { value: totalWeightLbs, unit: "POUND" } } : {}),
+    ...(dimensions ? { dimensions } : {}),
+  };
   await ebayFetch(`/sell/inventory/v1/inventory_item/${encodeURIComponent(toEbaySku(item.sku))}`, {
     method: "PUT",
     body: JSON.stringify({
@@ -878,9 +900,7 @@ async function putInventoryItem(item: ItemForEbayPublish): Promise<void> {
         aspects: buildAspects(item.itemSpecifics, item.expirationDate),
         ...productCodeField(item.upc),
       },
-      ...(totalWeightLbs > 0
-        ? { packageWeightAndSize: { weight: { value: totalWeightLbs, unit: "POUND" } } }
-        : {}),
+      ...(Object.keys(packageWeightAndSize).length > 0 ? { packageWeightAndSize } : {}),
       availability: { shipToLocationAvailability: { quantity: availableQuantity(item) } },
     }),
   });
@@ -981,6 +1001,24 @@ export async function updateLiveTitleAndAspects(
   const liveAspects = (body.product?.aspects as Record<string, string[]> | undefined) ?? {};
   const product = { ...body.product, title: truncateTitle(title), aspects: { ...liveAspects, ...aspects } };
   await withEbayRetry(() => ebayFetch(path, { method: "PUT", body: JSON.stringify({ ...body, product }) }));
+}
+
+// Sets a live listing's package dimensions from its box (the 1x1x1 backfill,
+// scripts/backfill-package-dimensions.ts). Same read-and-send-back as
+// updateLiveTitleAndAspects, so nothing else on the listing changes; the
+// weight eBay has stays. Returns false when the box has no usable size.
+export async function updateLivePackageDimensions(ebaySku: string, boxLabel: string | null): Promise<boolean> {
+  const dimensions = await packageDimensions(boxLabel);
+  if (!dimensions) return false;
+  const path = `/sell/inventory/v1/inventory_item/${encodeURIComponent(ebaySku)}`;
+  const current = (await ebayFetch(path)) as { packageWeightAndSize?: Record<string, unknown> } & Record<string, unknown>;
+  const { sku: _sku, groupIds: _groups, inventoryItemGroupKeys: _keys, ...body } = current;
+  void _sku;
+  void _groups;
+  void _keys;
+  const packageWeightAndSize = { ...body.packageWeightAndSize, dimensions };
+  await withEbayRetry(() => ebayFetch(path, { method: "PUT", body: JSON.stringify({ ...body, packageWeightAndSize }) }));
+  return true;
 }
 
 async function existingOfferId(ebaySku: string): Promise<string | null> {
