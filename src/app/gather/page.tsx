@@ -301,6 +301,27 @@ export default function GatherPage() {
     }
   }
 
+  // "Count was off": the box really held `found`, not what the sort said.
+  async function fixCount(boxCode: string, found: number): Promise<string | null> {
+    if (!pull || !manifestId) return "Scan the product again.";
+    try {
+      const d = await readJson<{ locations: SortLocation[]; delta: number }>(
+        await fetch("/api/sort-boxes/fix-count", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ manifestId, upc: pull.upc, boxCode, found, page: "gather" }),
+        }),
+        "Couldn't fix the count."
+      );
+      setPull((prev) => (prev ? { ...prev, locations: d.locations } : prev));
+      setTally((t) => ({ ...t, units: Math.max(0, t.units + d.delta) }));
+      void loadBoxes();
+      return null;
+    } catch (e) {
+      return errorText(e, "Couldn't fix the count.");
+    }
+  }
+
   if (!manifestId) {
     return (
       <AppShell width="narrow" title="Gather for listing" subtitle="Pull everything out of the sort boxes for the lister. Pick the load.">
@@ -375,7 +396,7 @@ export default function GatherPage() {
 
         {result && <ResultPanel result={result} onClose={() => setResult(null)} />}
 
-        {pull && <SortBoxesCard pull={pull} onPutBack={putBack} headline={false} />}
+        {pull && <SortBoxesCard pull={pull} onPutBack={putBack} onFixCount={fixCount} headline={false} />}
 
         <ScanField
           id={SCAN_ID}

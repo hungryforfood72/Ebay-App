@@ -8,18 +8,23 @@ import { Input } from "./ui/Input";
 
 // Where this product's units were in the sort boxes, so the lister (or
 // the lister's helper on /gather) can grab them all at once. "Left some
-// here" fixes a box's count when not every unit got taken out. Used by the
-// List page and /gather; headline={false} when the page shows its own.
+// here" fixes a box's count when not every unit got taken out. "Count was
+// off" is for a box that really held more or fewer than the sort said
+// (recorded against the sorter, src/lib/warehouse/sortBoxes.ts fixBoxCount).
+// Used by the List page and /gather; headline={false} when the page shows
+// its own.
 export function SortBoxesCard({
   pull,
   onPutBack,
+  onFixCount,
   headline = true,
 }: {
   pull: { pulled: { boxCode: string; units: number }[]; locations: SortLocation[] };
   onPutBack: (boxCode: string, units: number) => Promise<string | null>;
+  onFixCount: (boxCode: string, found: number) => Promise<string | null>;
   headline?: boolean;
 }) {
-  const [openBox, setOpenBox] = useState<string | null>(null);
+  const [openBox, setOpenBox] = useState<{ code: string; mode: "back" | "count" } | null>(null);
   const [units, setUnits] = useState("1");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -32,13 +37,26 @@ export function SortBoxesCard({
   const pulledBoxes = pull.locations.filter((l) => l.pulled > 0);
   const gatheredBy = pull.locations.find((l) => l.pulled > 0 && l.gatheredBy)?.gatheredBy ?? null;
 
-  async function save(boxCode: string) {
+  function open(code: string, mode: "back" | "count", start: number) {
+    const same = openBox?.code === code && openBox.mode === mode;
+    setOpenBox(same ? null : { code, mode });
+    setUnits(String(start));
+    setNote(null);
+  }
+
+  async function save(loc: SortLocation, mode: "back" | "count") {
     const n = Number(units);
-    if (!Number.isInteger(n) || n < 1) return setNote("Enter how many are still in the box.");
+    const name = boxShortName(loc.boxCode);
+    if (mode === "back") {
+      if (!Number.isInteger(n) || n < 1) return setNote("Enter how many are still in the box.");
+    } else {
+      if (!Number.isInteger(n) || n < 0) return setNote(`Enter how many were really in ${name}.`);
+      if (n === loc.sorted) return setNote(`${name} already says ${n}.`);
+    }
     setBusy(true);
-    const error = await onPutBack(boxCode, n);
+    const error = mode === "back" ? await onPutBack(loc.boxCode, n) : await onFixCount(loc.boxCode, n);
     setBusy(false);
-    setNote(error ?? `Put ${n} back in ${boxShortName(boxCode)}.`);
+    setNote(error ?? (mode === "back" ? `Put ${n} back in ${name}.` : `${name} fixed: ${loc.sorted} sorted, really ${n}.`));
     if (!error) setOpenBox(null);
   }
 
@@ -60,34 +78,42 @@ export function SortBoxesCard({
                   {boxShortName(l.boxCode)}: {l.pulled} pulled
                   {l.inBox > 0 ? `, ${l.inBox} left in the box` : ""}
                 </span>
-                <button
-                  type="button"
-                  className="shrink-0 text-xs font-medium underline"
-                  onClick={() => {
-                    setOpenBox(openBox === l.boxCode ? null : l.boxCode);
-                    setUnits("1");
-                    setNote(null);
-                  }}
-                >
-                  Left some here
-                </button>
+                <span className="flex shrink-0 gap-3">
+                  <button type="button" className="text-xs font-medium underline" onClick={() => open(l.boxCode, "back", 1)}>
+                    Left some here
+                  </button>
+                  <button type="button" className="text-xs font-medium underline" onClick={() => open(l.boxCode, "count", l.sorted)}>
+                    Count was off
+                  </button>
+                </span>
               </div>
-              {openBox === l.boxCode && (
-                <div className="mt-1.5 flex items-center gap-2">
-                  <Input
-                    type="number"
-                    min={1}
-                    max={l.pulled}
-                    inputMode="numeric"
-                    aria-label={`How many are still in ${boxShortName(l.boxCode)}`}
-                    className="w-24"
-                    value={units}
-                    onChange={(e) => setUnits(e.target.value)}
-                    onWheel={(e) => e.currentTarget.blur()}
-                  />
-                  <Button size="sm" variant="outline" onClick={() => save(l.boxCode)} disabled={busy}>
-                    {busy ? "Saving…" : "Put back"}
-                  </Button>
+              {openBox?.code === l.boxCode && (
+                <div className="mt-1.5">
+                  {openBox.mode === "count" && (
+                    <p className="mb-1 text-xs">
+                      The sort said {l.sorted}. How many were really in {boxShortName(l.boxCode)}?
+                    </p>
+                  )}
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="number"
+                      min={openBox.mode === "back" ? 1 : 0}
+                      max={openBox.mode === "back" ? l.pulled : undefined}
+                      inputMode="numeric"
+                      aria-label={
+                        openBox.mode === "back"
+                          ? `How many are still in ${boxShortName(l.boxCode)}`
+                          : `How many were really in ${boxShortName(l.boxCode)}`
+                      }
+                      className="w-24"
+                      value={units}
+                      onChange={(e) => setUnits(e.target.value)}
+                      onWheel={(e) => e.currentTarget.blur()}
+                    />
+                    <Button size="sm" variant="outline" onClick={() => save(l, openBox.mode)} disabled={busy}>
+                      {busy ? "Saving…" : openBox.mode === "back" ? "Put back" : "Save count"}
+                    </Button>
+                  </div>
                 </div>
               )}
             </li>

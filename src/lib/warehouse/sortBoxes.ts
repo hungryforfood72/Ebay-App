@@ -216,6 +216,72 @@ export async function putBack(args: { manifestId: string; upc: string; boxCode: 
   });
 }
 
+// "Count was off" (Cristian, 2026-11-02): the person pulling a product out
+// of a box found a different number than the sort said. The box's entries
+// for it become `found` (extra units go on the newest entry as pulled,
+// since they're in hand; missing ones come off the newest entries first),
+// and a SortCountFix keeps the before, the sorter and the fixer.
+export async function fixBoxCount(args: {
+  manifestId: string;
+  upc: string;
+  boxCode: string;
+  found: number;
+  by: string | null;
+  page: "gather" | "list";
+}) {
+  if (!Number.isInteger(args.found) || args.found < 0 || args.found > 10_000) {
+    throw new WarehouseError("Enter how many were really in the box (0 or more).");
+  }
+  return prisma.$transaction(async (tx) => {
+    const code = args.boxCode.trim() === NO_BOX ? NO_BOX : normalizeCode(args.boxCode);
+    const entries = (await productEntries(tx, args.manifestId, args.upc, true)).filter((e) => (e.box?.code ?? NO_BOX) === code);
+    if (entries.length === 0) throw new WarehouseError("Nothing of this was sorted into that box.", 404);
+    const sorted = entries.reduce((sum, e) => sum + e.quantity, 0);
+    const delta = args.found - sorted;
+    if (delta === 0) {
+      const after = await productEntries(tx, args.manifestId, args.upc, false);
+      return { locations: summarize(after), delta: 0 };
+    }
+
+    const newest = [...entries].reverse();
+    if (delta > 0) {
+      await tx.sortBoxEntry.update({
+        where: { id: newest[0].id },
+        data: { quantity: { increment: delta }, pulledUnits: { increment: delta } },
+      });
+    } else {
+      let left = -delta;
+      for (const e of newest) {
+        if (left === 0) break;
+        const n = Math.min(left, e.quantity);
+        if (n === 0) continue;
+        const quantity = e.quantity - n;
+        await tx.sortBoxEntry.update({
+          where: { id: e.id },
+          data: { quantity, pulledUnits: Math.min(e.pulledUnits, quantity) },
+        });
+        left -= n;
+      }
+    }
+
+    const sorters = [...new Set(entries.map((e) => e.recordedBy).filter((n): n is string => Boolean(n)))];
+    await tx.sortCountFix.create({
+      data: {
+        manifestId: args.manifestId,
+        upc: entries[0].upc,
+        boxCode: code,
+        sortedCount: sorted,
+        foundCount: args.found,
+        sortedBy: sorters.length > 0 ? sorters.join(", ") : null,
+        fixedBy: args.by,
+        page: args.page,
+      },
+    });
+    const after = await productEntries(tx, args.manifestId, args.upc, false);
+    return { locations: summarize(after), delta };
+  });
+}
+
 // Lister's helper (/gather, Cristian 2026-11-01): loads that still have
 // units sitting in sort boxes, so the helper's page can pick the load on
 // its own when there's only one. Not-boxed loads count too (same as the

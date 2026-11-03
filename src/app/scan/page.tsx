@@ -334,6 +334,8 @@ function ScanPageInner() {
     pulled: { boxCode: string; units: number }[];
     locations: SortLocation[];
   } | null>(null);
+  // Bumped by "Count was off" so the pack card plans for the real count.
+  const [boxCountFixes, setBoxCountFixes] = useState(0);
   const [dudBoxScan, setDudBoxScan] = useState("");
   const preDudManifest = useRef<string | null | undefined>(undefined);
 
@@ -1087,6 +1089,22 @@ function ScanPageInner() {
     return null;
   }
 
+  // "Count was off": the box really held `found`, not what the sort said.
+  // The pack card's count comes from the sorted total, so it's re-checked.
+  async function fixBoxCount(boxCode: string, found: number): Promise<string | null> {
+    if (!sortPull || !activeManifestId) return "Scan the product again.";
+    const r = await fetch("/api/sort-boxes/fix-count", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ manifestId: activeManifestId, upc: sortPull.upc, boxCode, found, page: "list" }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) return data.error ?? "Couldn't fix the count.";
+    setSortPull((prev) => (prev ? { ...prev, locations: data.locations ?? prev.locations } : prev));
+    if (data.delta) setBoxCountFixes((n) => n + 1);
+    return null;
+  }
+
   // overrides: warehouse mode's box scan saving in the same moment it
   // picks the box, before that state has rendered.
   async function saveItem(overrides?: { boxSize: string; weightLbs: string; weightOz: string }) {
@@ -1731,7 +1749,7 @@ function ScanPageInner() {
         )}
 
         {warehouseMode && sortPull && sortPull.upc === upc.trim() && step !== "mode" && step !== "upc" && (
-          <SortBoxesCard pull={sortPull} onPutBack={putBackInBox} />
+          <SortBoxesCard pull={sortPull} onPutBack={putBackInBox} onFixCount={fixBoxCount} />
         )}
 
         <StepProgress current={stepIndex} total={steps.length} />
@@ -1936,6 +1954,7 @@ function ScanPageInner() {
               <PackSuggestionCard
                 upc={upc.trim() || pickedLine!.key}
                 manifestId={activeManifestId}
+                refreshKey={boxCountFixes}
                 onApply={(size, listings) => {
                   setIsMultipack(size > 1);
                   setPackSize(size > 1 ? String(size) : "");

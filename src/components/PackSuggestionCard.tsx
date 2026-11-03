@@ -118,9 +118,12 @@ export function PackSuggestionCard({
   onSetAside,
   onShopifyOnly,
   onSuggestion,
+  refreshKey = 0,
 }: {
   upc: string;
   manifestId: string | null;
+  // Changing it fetches the plan again (a sort box's count was fixed).
+  refreshKey?: number;
   onApply: (packSize: number, listings: number | null) => void;
   // Skip this item without saving it, straight to the next scan.
   onSetAside: () => void;
@@ -140,7 +143,7 @@ export function PackSuggestionCard({
   // itself lives on the server, so the next scan of this UPC (the 2-pack
   // after the 3-pack) already plans for what's left of it.
   const [refresh, setRefresh] = useState(0);
-  const key = `${upc}|${manifestId ?? ""}|${refresh}`;
+  const key = `${upc}|${manifestId ?? ""}|${refresh}|${refreshKey}`;
   const [result, setResult] = useState<{ key: string; data: PackSuggestion | null } | null>(null);
   const loading = result?.key !== key;
   const changeCount = async (count: number | null) => {

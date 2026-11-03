@@ -1913,6 +1913,33 @@ model SortBoxEntry {
   @@index([boxId])
 }
 
+// "Count was off" on one sort box, from the lister's helper (/gather) or
+// the List page (Cristian, 2026-11-02): the sort said N of a product were
+// in the box, the person pulling them really found M. The box's entries
+// are changed to M right away (so the lister's pack card and the load's
+// sorted/missing counts are real), and this row keeps what the sort said,
+// who sorted it and who found the difference, so shorts can be traced to a
+// sorter and a pattern spotted (/reports/sort-counts).
+model SortCountFix {
+  id          String   @id @default(uuid())
+  manifestId  String
+  upc         String
+  // The box's code, or "Not boxed" for a load sorted without boxes.
+  boxCode     String
+  sortedCount Int
+  foundCount  Int
+  // Who sorted this product into that box (recordedBy on its entries;
+  // several names joined with ", " when more than one person did).
+  sortedBy    String?
+  fixedBy     String?
+  // "gather" or "list"
+  page        String
+  createdAt   DateTime @default(now())
+
+  @@index([manifestId])
+  @@index([createdAt])
+}
+
 // One page of a bulk shipping-label PDF bought on eBay (Cristian,
 // 2026-10-19). Flow: pick (packing slip prints), pack and enter weights in
 // eBay, buy every label at once (one scan form), download the PDF, upload
