@@ -27,7 +27,8 @@ export async function readLabelPdf(file: File, onPage?: (done: number, total: nu
   const pdfjs = await import("pdfjs-dist");
   // Copied into public/ on install (scripts/copy-pdf-worker.mjs).
   pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
-  const doc = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+  const loadingTask = pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) });
+  const doc = await loadingTask.promise;
   const pages: LabelPdfPage[] = [];
   try {
     for (let n = 1; n <= doc.numPages; n++) {
@@ -60,7 +61,7 @@ export async function readLabelPdf(file: File, onPage?: (done: number, total: nu
       onPage?.(n, doc.numPages);
     }
   } finally {
-    await doc.destroy();
+    await loadingTask.destroy();
   }
   return pages;
 }

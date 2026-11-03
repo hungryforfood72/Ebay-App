@@ -1,4 +1,4 @@
-import nodemailer from "nodemailer";
+import nodemailer, { type Transporter } from "nodemailer";
 
 // Customer email from the Epic Steals Gmail (first use: the delivered-with-
 // photo email). Gmail SMTP with an app password, both Vercel env vars that
@@ -11,7 +11,7 @@ export function mailerConfigured(): boolean {
   return Boolean(process.env.EPIC_STEALS_GMAIL_USER && process.env.EPIC_STEALS_GMAIL_APP_PASSWORD);
 }
 
-let transport: nodemailer.Transporter | null = null;
+let transport: Transporter | null = null;
 
 export async function sendEmail(message: { to: string; subject: string; html: string; text: string }): Promise<void> {
   const user = process.env.EPIC_STEALS_GMAIL_USER;
