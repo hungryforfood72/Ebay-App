@@ -1,3 +1,4 @@
+import { isCronRequest } from "@/lib/cronAuth";
 import { syncEbaySales } from "@/lib/channelSync";
 import { updatePackStrategyKnowledge } from "@/lib/packAdvisor";
 import { runPredictionTracker } from "@/lib/predictionTracker";
@@ -12,7 +13,7 @@ export const maxDuration = 300;
 // then the knowledge updates, then another try at any item that failed to
 // go up on Shopify. Same CRON_SECRET check as sync-ebay-orders.
 export async function GET(request: NextRequest) {
-  if (request.headers.get("authorization") !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!isCronRequest(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const sales = await syncEbaySales("full");

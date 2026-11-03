@@ -1,3 +1,4 @@
+import { isCronRequest } from "@/lib/cronAuth";
 import { expireDueListings } from "@/lib/expireListings";
 import { sendNewDealsAlert, sendPastDateAlert } from "@/lib/dealAlerts";
 import { runShopifySync } from "@/lib/shopifySync";
@@ -18,7 +19,7 @@ function chicagoHour(now: Date): number {
 // `Authorization: Bearer $CRON_SECRET` check as
 // src/app/api/cron/sync-ebay-orders/route.ts.
 export async function GET(request: NextRequest) {
-  if (request.headers.get("authorization") !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!isCronRequest(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

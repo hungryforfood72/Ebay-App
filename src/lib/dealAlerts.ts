@@ -36,11 +36,31 @@ export async function vapidPublicKey(): Promise<string> {
 
 export type BrowserSubscription = { endpoint: string; keys: { p256dh: string; auth: string } };
 
+// The browsers' own push services. The server POSTs to every saved
+// endpoint when alerts go out, so it must never be a host someone picked.
+function isPushServiceEndpoint(endpoint: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    return false;
+  }
+  const host = url.hostname;
+  return (
+    url.protocol === "https:" &&
+    (host === "fcm.googleapis.com" ||
+      host === "updates.push.services.mozilla.com" ||
+      host === "web.push.apple.com" ||
+      host.endsWith(".notify.windows.com"))
+  );
+}
+
 export function isBrowserSubscription(value: unknown): value is BrowserSubscription {
   const v = value as BrowserSubscription | null;
   return (
     typeof v?.endpoint === "string" &&
-    v.endpoint.startsWith("https://") &&
+    v.endpoint.length < 1000 &&
+    isPushServiceEndpoint(v.endpoint) &&
     typeof v.keys?.p256dh === "string" &&
     typeof v.keys?.auth === "string"
   );

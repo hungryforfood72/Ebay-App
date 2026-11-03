@@ -7,6 +7,10 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
+// Photo formats a signed upload may be. Signed, so the browser can't
+// widen it: no SVG, PDF or other files land on the account through this.
+const ALLOWED_FORMATS = "jpg,jpeg,png,webp,heic,heif";
+
 // Signs an upload request so the phone can upload photos directly to
 // Cloudinary without the API secret ever reaching the client.
 export async function POST() {
@@ -14,13 +18,14 @@ export async function POST() {
   const folder = "ebay-listing-tool";
 
   const signature = cloudinary.utils.api_sign_request(
-    { timestamp, folder },
+    { timestamp, folder, allowed_formats: ALLOWED_FORMATS },
     process.env.CLOUDINARY_API_SECRET as string
   );
 
   return NextResponse.json({
     timestamp,
     folder,
+    allowedFormats: ALLOWED_FORMATS,
     signature,
     apiKey: process.env.CLOUDINARY_API_KEY,
     cloudName: process.env.CLOUDINARY_CLOUD_NAME,

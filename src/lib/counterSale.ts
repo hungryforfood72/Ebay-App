@@ -1,3 +1,4 @@
+import { isOurPhotoUrl } from "@/lib/photoUrl";
 import type { CounterSale, Item } from "@/generated/prisma/client";
 import { NextResponse } from "next/server";
 import { AuthError } from "./auth";
@@ -139,7 +140,7 @@ export async function quoteSale(target: SaleTarget): Promise<SaleQuote & { item:
 }
 
 function isPhotoUrl(u: unknown): u is string {
-  return typeof u === "string" && u.length < 500 && u.startsWith("https://res.cloudinary.com/");
+  return isOurPhotoUrl(u) && u.length < 500;
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;

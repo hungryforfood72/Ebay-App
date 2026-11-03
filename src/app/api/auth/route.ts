@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { AUTH_COOKIE_NAME, STATION_SESSION_MS, createSession, deleteSession, getRequestUser, getUserForSessionToken, verifyPassword } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { logActivity } from "@/lib/activityLog";
+import { clientIp, logActivity } from "@/lib/activityLog";
+import { LOCKED_MESSAGE, loginLocked } from "@/lib/loginThrottle";
 import { STATION_DEVICE_COOKIE, stationForDevice } from "@/lib/stationSignIn";
 
 const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60; // 30 days — matches createSession's own expiry
@@ -24,6 +25,12 @@ export async function POST(request: Request) {
 
   if (!username || !password) {
     return NextResponse.json({ error: "Username and password are required." }, { status: 400 });
+  }
+
+  // Checked before the password, and the same answer whether or not the
+  // username exists.
+  if (await loginLocked(username, clientIp(request))) {
+    return NextResponse.json({ error: LOCKED_MESSAGE }, { status: 429 });
   }
 
   const user = await prisma.user.findUnique({ where: { username } });

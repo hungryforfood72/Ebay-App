@@ -6,7 +6,7 @@
 // onPrepared gets the exact image going up, so a preview can show it turned
 // upright instead of the camera's original.
 export async function uploadPhoto(file: File, onPrepared?: (image: Blob) => void): Promise<string> {
-  const [upload, { timestamp, folder, signature, apiKey, cloudName }] =
+  const [upload, { timestamp, folder, allowedFormats, signature, apiKey, cloudName }] =
     await Promise.all([shrinkPhoto(file), getSignature()]);
   if (upload !== file) onPrepared?.(upload);
 
@@ -16,6 +16,7 @@ export async function uploadPhoto(file: File, onPrepared?: (image: Blob) => void
   formData.append("timestamp", String(timestamp));
   formData.append("signature", signature);
   formData.append("folder", folder);
+  formData.append("allowed_formats", allowedFormats);
 
   const uploadRes = await fetch(
     `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
@@ -30,6 +31,7 @@ export async function uploadPhoto(file: File, onPrepared?: (image: Blob) => void
 type Signature = {
   timestamp: number;
   folder: string;
+  allowedFormats: string;
   signature: string;
   apiKey: string;
   cloudName: string;

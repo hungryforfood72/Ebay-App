@@ -1,5 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import sharp from "sharp";
+import { isOurPhotoUrl } from "@/lib/photoUrl";
 
 export const anthropic = new Anthropic();
 
@@ -18,7 +19,9 @@ const JPEG_QUALITY = 82;
 export async function fetchImageAsBase64(
   url: string
 ): Promise<{ data: string; mediaType: SupportedImageType }> {
-  const res = await fetch(url);
+  // Only ever our own Cloudinary photos, and no redirects off it.
+  if (!isOurPhotoUrl(url)) throw new Error("Refused to fetch an image that isn't one of this app's photos.");
+  const res = await fetch(url, { redirect: "error" });
   if (!res.ok) throw new Error(`Failed to fetch image: ${res.status}`);
   const original = Buffer.from(await res.arrayBuffer());
   const resized = await sharp(original)

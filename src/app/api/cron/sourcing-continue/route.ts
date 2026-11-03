@@ -1,3 +1,4 @@
+import { isCronRequest } from "@/lib/cronAuth";
 import { prisma } from "@/lib/prisma";
 import { runSourcingChunk } from "@/lib/sourcingRun";
 import { after, NextRequest, NextResponse } from "next/server";
@@ -9,7 +10,7 @@ export const maxDuration = 180;
 // under /api/cron/ so proxy.ts lets it through without a session. Same
 // shared-secret check as the real cron routes.
 export async function POST(request: NextRequest) {
-  if (request.headers.get("authorization") !== `Bearer ${process.env.CRON_SECRET}`) {
+  if (!isCronRequest(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const evaluationId = request.nextUrl.searchParams.get("evaluation");

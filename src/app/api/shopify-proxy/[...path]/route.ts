@@ -13,6 +13,8 @@ import { NextRequest, NextResponse } from "next/server";
 //   POST /apps/deals/subscribe    { subscription }
 //   POST /apps/deals/unsubscribe  { endpoint }
 
+const MAX_SIGNATURE_AGE_SECONDS = 5 * 60;
+
 // Shopify signs proxied requests: every query param except `signature`,
 // as "key=value" (repeated keys joined with ","), sorted, concatenated with
 // nothing between, HMAC-SHA256 with the app's client secret, hex.
@@ -31,7 +33,10 @@ function signedByShopify(request: NextRequest): boolean {
     .join("");
   const expected = createHmac("sha256", secret).update(message).digest();
   const given = Buffer.from(signature, "hex");
-  return given.length === expected.length && timingSafeEqual(given, expected);
+  if (given.length !== expected.length || !timingSafeEqual(given, expected)) return false;
+  // Shopify stamps every proxied request; an old signed URL can't be replayed.
+  const timestamp = Number(request.nextUrl.searchParams.get("timestamp"));
+  return Number.isFinite(timestamp) && Math.abs(Date.now() / 1000 - timestamp) <= MAX_SIGNATURE_AGE_SECONDS;
 }
 
 // Shows each alert and opens the store page it points at when tapped. Its

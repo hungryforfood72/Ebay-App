@@ -1,3 +1,4 @@
+import { ourPhotoUrls } from "@/lib/photoUrl";
 import { getRequestUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { ItemStatus, type Item, type Prisma } from "@/generated/prisma/client";
@@ -253,7 +254,7 @@ export async function POST(request: NextRequest) {
     boxSize: body.boxSize ?? null,
     weightLbs: body.weightLbs != null ? Number(body.weightLbs) : null,
     weightOz: body.weightOz != null ? Number(body.weightOz) : null,
-    photoUrls: Array.isArray(body.photoUrls) ? body.photoUrls : [],
+    photoUrls: ourPhotoUrls(body.photoUrls),
     // Who's signed in, not anything the client sends — this is what the
     // scan-speed report (/reports/scan-speed) attributes the scan to.
     scannedBy: username,
@@ -266,7 +267,9 @@ export async function POST(request: NextRequest) {
           : body.manifestId ?? null,
     manifestLineId: manifestLine?.id ?? null,
     isBundle,
-    bundleComponents: isBundle ? body.bundleComponents : undefined,
+    bundleComponents: isBundle
+      ? (body.bundleComponents as BundleComponentInput[]).map((c) => ({ ...c, photoUrls: ourPhotoUrls(c.photoUrls) }))
+      : undefined,
     shopifyOnly:
       !isBundle &&
       (body.shopifyOnly === true ||
