@@ -686,6 +686,33 @@ function binHoldBadge(item: Item): string {
   return p.inBins === 0 ? "In review · no bin assigned yet" : `In review · ${p.inBins} of ${p.needed} in bins`;
 }
 
+// Every card loads its retail + profit line on its own when the page opens.
+// All at once (38 cards on 2026-11-02, more on every refresh) filled the
+// database pooler's 200 connections and took the whole app down, so at
+// most 3 run at a time, a failure is tried once more after a pause, and
+// what's shown is a plain message (a crashed request has no JSON body).
+const PRICE_CHECKS_AT_ONCE = 3;
+let priceChecksRunning = 0;
+const priceCheckQueue: (() => void)[] = [];
+
+async function loadPriceResearch(itemId: string) {
+  if (priceChecksRunning >= PRICE_CHECKS_AT_ONCE) await new Promise<void>((go) => priceCheckQueue.push(go));
+  priceChecksRunning++;
+  try {
+    for (let attempt = 1; ; attempt++) {
+      const res = await fetch(`/api/items/${itemId}/price-research`).catch(() => null);
+      const data = res ? await res.json().catch(() => null) : null;
+      if (res?.ok && data) return data;
+      if (res && res.status < 500 && data?.error) throw new Error(data.error);
+      if (attempt === 2) throw new Error("Couldn't load the retail price and profit line. The server was busy.");
+      await new Promise((r) => setTimeout(r, 3000));
+    }
+  } finally {
+    priceChecksRunning--;
+    priceCheckQueue.shift()?.();
+  }
+}
+
 const LISTING_STATUS: Record<Item["status"], string> = {
   pending_review: "In review",
   ready: "Ready",
@@ -891,10 +918,7 @@ function ItemCard({
     setPriceResearchError(null);
     setPriceResearchResult(null);
     try {
-      const res = await fetch(`/api/items/${item.id}/price-research`);
-      const result = await res.json();
-      if (!res.ok) throw new Error(result.error ?? "Couldn't load the retail price.");
-      setPriceResearchResult(result);
+      setPriceResearchResult(await loadPriceResearch(item.id));
     } catch (e) {
       setPriceResearchError(e instanceof Error ? e.message : "Something went wrong.");
     } finally {
@@ -1222,7 +1246,14 @@ function ItemCard({
                   </span>
                 </div>
                 {priceResearching && <span className="text-muted-foreground">Loading retail…</span>}
-                {priceResearchError && <span className="text-danger">{priceResearchError}</span>}
+                {priceResearchError && (
+                  <span className="text-danger">
+                    {priceResearchError}{" "}
+                    <button type="button" className="font-medium underline" onClick={() => void researchPrice()}>
+                      Try again
+                    </button>
+                  </span>
+                )}
                 {priceResearchResult?.retailPrice != null && (
                   <span className="text-foreground">
                     Manifest retail ${priceResearchResult.retailPrice.toFixed(2)}
