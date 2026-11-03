@@ -58,6 +58,30 @@ export async function manifestDescriptionFor(
   return lines.find((l) => upcMatchKeys(l.upc).some((k) => keys.has(k)))?.description ?? null;
 }
 
+// An extra (sorted, but not on the manifest) has no manifest description:
+// the name the sorter's lookup, or the gather helper, saved on it (Cristian,
+// 2026-11-03: Misc items printed "UPC 717226291371"). Same exact-then-loose
+// match as above.
+export async function sortedExtraName(
+  tx: Tx,
+  manifestId: string | null | undefined,
+  upc: string | null | undefined
+): Promise<string | null> {
+  if (!manifestId || !upc) return null;
+  const exact = await tx.sortBoxEntry.findFirst({
+    where: { manifestId, upc, extra: true, name: { not: null } },
+    select: { name: true },
+  });
+  if (exact?.name?.trim()) return exact.name.trim();
+  const keys = new Set(upcMatchKeys(upc));
+  if (keys.size === 0) return null;
+  const named = await tx.sortBoxEntry.findMany({
+    where: { manifestId, extra: true, name: { not: null } },
+    select: { upc: true, name: true },
+  });
+  return named.find((e) => upcMatchKeys(e.upc).some((k) => keys.has(k)))?.name?.trim() || null;
+}
+
 // Off a manifest, the last listing of the same UPC usually has a real
 // title by now (the AI draft runs after save, so this item's own doesn't
 // exist yet).
@@ -101,6 +125,7 @@ export async function buildItemLabel(
       ? ((await tx.manifestLine.findUnique({ where: { id: item.manifestLineId }, select: { description: true } }))?.description ?? null)
       : null) ??
     (clientName?.trim() || null) ??
+    (item.isBundle ? null : await sortedExtraName(tx, item.manifestId, item.upc)) ??
     item.finalTitle ??
     item.aiTitle ??
     (item.isBundle ? null : await earlierTitleFor(tx, item.upc, item.id)) ??

@@ -1,7 +1,8 @@
+import { readableProductName } from "../packAdvisor";
 import { prisma } from "../prisma";
 import { lookupUpc } from "../upcLookup";
 import { WarehouseError } from "./bins";
-import { notProductBarcodeReason, productCodeFromScan } from "../upcMatch";
+import { notProductBarcodeReason, productCodeFromScan, upcMatchKeys } from "../upcMatch";
 import { findSortBox, logSorted, undoSorted } from "./sortBoxes";
 import { matchLineCode } from "./sortCheck";
 import type { CodeLabelPayload } from "./types";
@@ -120,19 +121,7 @@ export async function nameExtra(entryId: string) {
       select: { manifestId: true, upc: true, extra: true, name: true },
     });
     if (!entry?.extra || entry.name) return;
-    const d = entry.upc.replace(/\D/g, "");
-    if (d.length < 6) return;
-    const variants = [...new Set([d, d.replace(/^0+/, ""), d.padStart(12, "0"), d.padStart(13, "0")])];
-    const listed = await prisma.item.findFirst({
-      where: { upc: { in: variants }, OR: [{ finalTitle: { not: null } }, { aiTitle: { not: null } }] },
-      orderBy: { createdAt: "desc" },
-      select: { finalTitle: true, aiTitle: true },
-    });
-    let name = listed?.finalTitle?.trim() || listed?.aiTitle?.trim() || null;
-    if (!name) {
-      const found = (await lookupUpc(d)) as { items?: { title?: string }[] };
-      name = found.items?.[0]?.title?.trim() || null;
-    }
+    const name = await lookupExtraName(entry.upc, false);
     if (!name) return;
     await prisma.sortBoxEntry.updateMany({
       where: { manifestId: entry.manifestId, upc: entry.upc, extra: true, name: null },
@@ -140,6 +129,63 @@ export async function nameExtra(entryId: string) {
     });
   } catch (e) {
     console.error(`[sortStation] naming extra ${entryId} failed`, e);
+  }
+}
+
+// A looked-up name as it gets saved: outside text (UPC database, web
+// search), so control characters out, one line, a sane length.
+function cleanName(s: string | null | undefined): string | null {
+  const t = s?.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 150);
+  return t && t.length >= 3 ? t : null;
+}
+
+// What an extra is: the newest listing of that UPC's title, else the UPC
+// database's. research = also a web search as the last resort (the free
+// database misses plenty, and its 100-a-day cap runs out on a big load),
+// only once someone's about to list it, not for every extra sorted.
+async function lookupExtraName(upc: string, research: boolean): Promise<string | null> {
+  const d = upc.replace(/\D/g, "");
+  if (d.length < 6) return null;
+  const variants = [...new Set([d, d.replace(/^0+/, ""), d.padStart(12, "0"), d.padStart(13, "0")])];
+  const listed = await prisma.item.findFirst({
+    where: { upc: { in: variants }, OR: [{ finalTitle: { not: null } }, { aiTitle: { not: null } }] },
+    orderBy: { createdAt: "desc" },
+    select: { finalTitle: true, aiTitle: true },
+  });
+  const own = cleanName(listed?.finalTitle) ?? cleanName(listed?.aiTitle);
+  if (own) return own;
+  try {
+    const found = (await lookupUpc(d)) as { items?: { title?: string }[] };
+    const title = cleanName(found.items?.find((i) => i.title?.trim())?.title);
+    if (title) return title;
+  } catch (e) {
+    console.error(`[sortStation] UPC database lookup for ${d} failed`, e);
+  }
+  return research ? cleanName(await readableProductName(d, null)) : null;
+}
+
+// The gather helper pulled this product (Cristian, 2026-11-03): an extra
+// the sorter's lookup couldn't name gets named now, with the web search
+// too, so the lister's label and pack card say what it is instead of
+// "UPC 717226291371". Saved on every extra of it on the load. Returns the
+// name (already there or just found); null = still unknown or not an extra.
+export async function nameExtraForListing(manifestId: string, upc: string): Promise<string | null> {
+  try {
+    const keys = new Set(upcMatchKeys(upc));
+    if (keys.size === 0) return null;
+    const extras = (
+      await prisma.sortBoxEntry.findMany({ where: { manifestId, extra: true }, select: { id: true, upc: true, name: true } })
+    ).filter((e) => upcMatchKeys(e.upc).some((k) => keys.has(k)));
+    if (extras.length === 0) return null;
+    const named = extras.find((e) => e.name?.trim())?.name?.trim();
+    if (named) return named;
+    const name = await lookupExtraName(extras[0].upc, true);
+    if (!name) return null;
+    await prisma.sortBoxEntry.updateMany({ where: { id: { in: extras.map((e) => e.id) }, name: null }, data: { name } });
+    return name;
+  } catch (e) {
+    console.error(`[sortStation] naming extra ${upc} for listing failed`, e);
+    return null;
   }
 }
 

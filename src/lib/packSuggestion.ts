@@ -48,7 +48,19 @@ import type { Prisma } from "../generated/prisma/client";
 // API License). The price and demand come from the same eBay-free web
 // check the live Analyzer uses (scanMarketCheck): store prices plus signs
 // it's selling outside eBay (Amazon's bought-past-month, rank, reviews).
-export async function packSuggestion({ upc, manifestId, isOwner }: { upc: string; manifestId: string | null; isOwner: boolean }) {
+// skipNameLookup: the caller's own name search for this UPC just came up
+// empty (the gather helper), so don't run the same paid search again.
+export async function packSuggestion({
+  upc,
+  manifestId,
+  isOwner,
+  skipNameLookup = false,
+}: {
+  upc: string;
+  manifestId: string | null;
+  isOwner: boolean;
+  skipNameLookup?: boolean;
+}) {
   const noUpc = isExactKey(upc);
   let itemNumber: string | null = null;
 
@@ -155,7 +167,7 @@ export async function packSuggestion({ upc, manifestId, isOwner }: { upc: string
     } else {
       // Scanned with no manifest there's no description: find out what the
       // product is first, so the checks know what they're looking at.
-      if (!description && !noUpc) productName = await productNameForUpc(upc);
+      if (!description && !noUpc && !skipNameLookup) productName = await productNameForUpc(upc);
       const name = searchName ?? productName ?? description ?? `UPC ${upc}`;
       const [onFile, earlierCall, unitCost, target] = await Promise.all([
         scanMarketCheck({ upc: searchUpc, description: name }, { cachedOnly: true }),
