@@ -1,10 +1,13 @@
+import { ownerOnly } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 // ONE-TIME TOOL: recent manifests the counting tool can open (the
 // combined Costco file is uploaded in the Analyzer first, not run yet).
 // Removal: see src/app/api/one-time/item-lookup.
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const denied = ownerOnly(request);
+  if (denied) return denied;
   const manifests = await prisma.manifest.findMany({
     orderBy: { createdAt: "desc" },
     take: 15,

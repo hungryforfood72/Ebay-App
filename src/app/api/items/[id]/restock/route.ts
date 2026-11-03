@@ -5,6 +5,7 @@ import { adjustItemStock } from "@/lib/stockAdjust";
 import { WarehouseError } from "@/lib/warehouse/bins";
 import { classifyScan } from "@/lib/warehouse/codes";
 import { buildItemLabel, queueItemLabels } from "@/lib/warehouse/itemLabel";
+import { forViewer } from "@/lib/itemView";
 import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 30;
@@ -80,9 +81,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   try {
     const payload = await buildItemLabel(prisma, item);
     const labelsQueued = await queueItemLabels(prisma, { stationId: station.id, payload, copies: amount, by: user.username });
-    return NextResponse.json({ ...result.body, labelsQueued, stationId: station.id, stationName: station.name });
+    return NextResponse.json(forViewer(request, { ...result.body, labelsQueued, stationId: station.id, stationName: station.name }));
   } catch (e) {
     const labelError = e instanceof WarehouseError || e instanceof Error ? e.message : "Couldn't print the labels.";
-    return NextResponse.json({ ...result.body, labelsQueued: 0, labelError, stationId: station.id, stationName: station.name });
+    return NextResponse.json(forViewer(request, { ...result.body, labelsQueued: 0, labelError, stationId: station.id, stationName: station.name }));
   }
 }

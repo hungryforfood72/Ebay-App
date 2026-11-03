@@ -1,3 +1,4 @@
+import { ownerOnly } from "@/lib/auth";
 import { exchangeCodeForToken, getEbayEnvironment } from "@/lib/ebay";
 import { prisma } from "@/lib/prisma";
 import { NextRequest, NextResponse } from "next/server";
@@ -6,6 +7,8 @@ import { NextRequest, NextResponse } from "next/server";
 // tokens and upserts them keyed by environment, so reconnecting the same
 // environment just refreshes the row rather than creating a duplicate.
 export async function GET(request: NextRequest) {
+  const denied = ownerOnly(request);
+  if (denied) return denied;
   const { searchParams } = request.nextUrl;
   const settingsUrl = new URL("/settings", request.url);
 

@@ -1,8 +1,11 @@
+import { ownerOnly } from "@/lib/auth";
 import { getEbayEnvironment, getMissingScopes } from "@/lib/ebay";
 import { prisma } from "@/lib/prisma";
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const denied = ownerOnly(request);
+  if (denied) return denied;
   const environment = getEbayEnvironment();
   const token = await prisma.ebayAuthToken.findUnique({ where: { environment } });
   const missingScopes = token ? await getMissingScopes() : [];
@@ -14,7 +17,9 @@ export async function GET() {
   });
 }
 
-export async function DELETE() {
+export async function DELETE(request: NextRequest) {
+  const denied = ownerOnly(request);
+  if (denied) return denied;
   const environment = getEbayEnvironment();
   await prisma.ebayAuthToken.deleteMany({ where: { environment } });
   return NextResponse.json({ ok: true });

@@ -1,13 +1,18 @@
+import { ownerOnly } from "@/lib/auth";
 import { logActivity } from "@/lib/activityLog";
 import { getExpirationBufferDays, setExpirationBufferDays } from "@/lib/expireListings";
 import { NextRequest, NextResponse } from "next/server";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const denied = ownerOnly(request);
+  if (denied) return denied;
   const bufferDays = await getExpirationBufferDays();
   return NextResponse.json({ bufferDays });
 }
 
 export async function PUT(request: NextRequest) {
+  const denied = ownerOnly(request);
+  if (denied) return denied;
   const body = await request.json().catch(() => ({}));
   const bufferDays = Number(body.bufferDays);
   if (!Number.isFinite(bufferDays) || bufferDays < 0 || bufferDays > 90) {

@@ -16,6 +16,7 @@ import { binGateError } from "@/lib/warehouse/binGate";
 import { prisma } from "@/lib/prisma";
 import { ALREADY_PUBLISHING, claimPublish, releasePublish } from "@/lib/publishLock";
 import { queueShopifyPublish } from "@/lib/shopifySync";
+import { forViewer } from "@/lib/itemView";
 import { NextRequest, NextResponse } from "next/server";
 import type { Item } from "@/generated/prisma/client";
 
@@ -118,13 +119,13 @@ export async function POST(
 
   if (!(await claimPublish(id))) return NextResponse.json({ error: ALREADY_PUBLISHING }, { status: 409 });
   try {
-    return await publish(id, item);
+    return await publish(request, id, item);
   } finally {
     await releasePublish(id);
   }
 }
 
-async function publish(id: string, item: Item) {
+async function publish(request: Request, id: string, item: Item) {
   const startedAt = Date.now();
   const autoFixes: string[] = [];
   let agentRan = false;
@@ -175,7 +176,7 @@ async function publish(id: string, item: Item) {
     // response is out. A failure there is saved on the item and retried by
     // the cron; it never undoes the eBay listing.
     queueShopifyPublish(id);
-    return NextResponse.json({ ...updated, autoFixes });
+    return NextResponse.json(forViewer(request, { ...updated, autoFixes }));
   } catch (e) {
     const raw = e instanceof EbayApiError || e instanceof Error ? e.message : "Publish failed.";
     // Errors only a person can fix: say how, in plain words.

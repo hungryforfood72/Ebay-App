@@ -43,6 +43,15 @@ export async function proxy(request: NextRequest, event: NextFetchEvent) {
   const token = request.cookies.get(AUTH_COOKIE_NAME)?.value;
   const user = await getUserForSessionToken(token);
 
+  // Identity headers are only ever set by this file. Strip whatever the
+  // visitor sent up front, so no signed-out pass-through below can carry a
+  // spoofed role into a route.
+  const cleanHeaders = new Headers(request.headers);
+  cleanHeaders.delete(USER_ID_HEADER);
+  cleanHeaders.delete(USER_ROLE_HEADER);
+  cleanHeaders.delete(USERNAME_HEADER);
+  const passThrough = () => NextResponse.next({ request: { headers: cleanHeaders } });
+
   if (!user) {
     // /login itself, /api/auth (login/logout — by definition called with no
     // session yet), and /api/cron/* (carries Vercel's own Authorization:
@@ -53,55 +62,41 @@ export async function proxy(request: NextRequest, event: NextFetchEvent) {
     // its headers attached, or getRequestUser() would never see who's
     // signed in.
     if (pathname.startsWith("/login") || pathname.startsWith("/api/auth") || pathname.startsWith("/api/cron")) {
-      return NextResponse.next();
+      return passThrough();
     }
     // Shopify's order webhooks and eBay's sale alerts: each route checks
     // the sender's own signature instead. Exact paths only, so nothing
     // under them (like the alert setup route) slips through signed-out.
     if (PUBLIC_WEBHOOK_PATHS.includes(pathname)) {
-      return NextResponse.next();
+      return passThrough();
     }
     if (PUBLIC_PAGES.includes(pathname)) {
-      return NextResponse.next();
+      return passThrough();
     }
     // The site's front door: signed-out visitors get the landing page at
     // the bare address (staff are sent to the dashboard as before).
     if (pathname === "/") {
-      return NextResponse.rewrite(new URL("/about", request.url));
+      return NextResponse.rewrite(new URL("/about", request.url), { request: { headers: cleanHeaders } });
     }
     // The Shopify app proxy (the store's /apps/deals/*, deal alerts): the
     // route checks Shopify's signature on every request.
     if (pathname.startsWith("/api/shopify-proxy/")) {
-      return NextResponse.next();
+      return passThrough();
     }
     // The print helper on a station PC (src/lib/warehouse/printHelper.ts):
     // its station key, checked by every route under here, is the only way
     // in. Plus the helper's own script, which it downloads to install and
     // update itself (no secrets in it).
     if (pathname.startsWith("/api/print-helper/") || pathname === "/print-helper/print_helper.py") {
-      const headers = new Headers(request.headers);
-      headers.delete(USER_ID_HEADER);
-      headers.delete(USER_ROLE_HEADER);
-      headers.delete(USERNAME_HEADER);
-      return NextResponse.next({ request: { headers } });
+      return passThrough();
     }
     // The supplier's report: the random token in the URL is the only key,
     // checked against the database by the route.
     if (SHARE_PATHS.some((p) => p.test(pathname))) {
-      // Same rule as everywhere: identity headers are only ever set by
-      // this file, never passed through from the visitor.
-      const headers = new Headers(request.headers);
-      headers.delete(USER_ID_HEADER);
-      headers.delete(USER_ROLE_HEADER);
-      headers.delete(USERNAME_HEADER);
-      return NextResponse.next({ request: { headers } });
+      return passThrough();
     }
     if (STATION_PC_PATHS.includes(pathname)) {
-      const headers = new Headers(request.headers);
-      headers.delete(USER_ID_HEADER);
-      headers.delete(USER_ROLE_HEADER);
-      headers.delete(USERNAME_HEADER);
-      return NextResponse.next({ request: { headers } });
+      return passThrough();
     }
     if (pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "Not signed in." }, { status: 401 });
@@ -131,8 +126,22 @@ export async function proxy(request: NextRequest, event: NextFetchEvent) {
   // page component assumes those numbers are always present, so a
   // stripped response there would crash the page rather than just show
   // fewer numbers.
-  const ownerOnlyPrefixes = ["/settings", "/api/users", "/analyzer", "/reports", "/api/reports", "/activity", "/api/activity"];
-  if (user.role !== "owner" && ownerOnlyPrefixes.some((p) => pathname.startsWith(p))) {
+  // /api/settings and /api/ebay (connect, disconnect, OAuth callback, sync)
+  // are owner-only too: the /settings page prefix doesn't cover them.
+  const ownerOnlyPrefixes = [
+    "/settings",
+    "/api/settings",
+    "/api/ebay/",
+    "/api/users",
+    "/analyzer",
+    "/reports",
+    "/api/reports",
+    "/activity",
+    "/api/activity",
+    "/one-time",
+    "/api/one-time",
+  ];
+  if (user.role !== "owner" && ownerOnlyPrefixes.some((p) => pathname.startsWith(p)) && !PUBLIC_WEBHOOK_PATHS.includes(pathname)) {
     if (pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "Owner access required." }, { status: 403 });
     }
@@ -146,11 +155,10 @@ export async function proxy(request: NextRequest, event: NextFetchEvent) {
     event.waitUntil(logRequest(request.clone(), user));
   }
 
-  const requestHeaders = new Headers(request.headers);
-  requestHeaders.set(USER_ID_HEADER, user.id);
-  requestHeaders.set(USER_ROLE_HEADER, user.role);
-  requestHeaders.set(USERNAME_HEADER, user.username);
-  return NextResponse.next({ request: { headers: requestHeaders } });
+  cleanHeaders.set(USER_ID_HEADER, user.id);
+  cleanHeaders.set(USER_ROLE_HEADER, user.role);
+  cleanHeaders.set(USERNAME_HEADER, user.username);
+  return NextResponse.next({ request: { headers: cleanHeaders } });
 }
 
 // manifest.webmanifest and public/icons/ are excluded so the app is

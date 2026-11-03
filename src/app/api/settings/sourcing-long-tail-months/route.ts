@@ -1,13 +1,18 @@
+import { ownerOnly } from "@/lib/auth";
 import { logActivity } from "@/lib/activityLog";
 import { getLongTailMonths, setLongTailMonths } from "@/lib/sourcingAgent";
 import { NextRequest, NextResponse } from "next/server";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const denied = ownerOnly(request);
+  if (denied) return denied;
   const longTailMonths = await getLongTailMonths();
   return NextResponse.json({ longTailMonths });
 }
 
 export async function PUT(request: NextRequest) {
+  const denied = ownerOnly(request);
+  if (denied) return denied;
   const body = await request.json().catch(() => ({}));
   const value = Number(body.longTailMonths);
   if (!Number.isFinite(value) || value <= 0 || value > 120) {

@@ -3,6 +3,7 @@ import { ALREADY_PUBLISHING, claimPublish, releasePublish } from "@/lib/publishL
 import { getShopifyConfig } from "@/lib/shopify";
 import { publishItemToShopify } from "@/lib/shopifySync";
 import { binGateError } from "@/lib/warehouse/binGate";
+import { forViewer } from "@/lib/itemView";
 import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 60;
@@ -11,7 +12,7 @@ export const maxDuration = 60;
 // Item.shopifyOnly): the same explicit "make it live" step as
 // publish-to-eBay, just to the Shopify store, which feeds Whatnot. Flips
 // the item to "listed" once it's on the store's channels.
-export async function POST(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   if (!getShopifyConfig()) {
     return NextResponse.json({ error: "The Shopify store isn't connected yet (Settings)." }, { status: 400 });
@@ -52,7 +53,7 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
     if (outcome === "not_eligible") {
       return NextResponse.json({ error: "This item can't go to Shopify right now." }, { status: 400 });
     }
-    return NextResponse.json(await prisma.item.findUnique({ where: { id } }));
+    return NextResponse.json(forViewer(request, await prisma.item.findUnique({ where: { id } })));
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "Publish failed." }, { status: 502 });
   } finally {

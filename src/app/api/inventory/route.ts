@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { getItemLocations } from "@/lib/warehouse/bins";
+import { forViewer } from "@/lib/itemView";
 import { NextRequest, NextResponse } from "next/server";
 
 // Active listings this app has actually published (or linked up) to eBay —
@@ -55,7 +56,7 @@ export async function GET(request: NextRequest) {
   const locations = await getItemLocations(items);
 
   return NextResponse.json({
-    items: items.map((i) => ({
+    items: forViewer(request, items.map((i) => ({
       id: i.id,
       title: i.finalTitle,
       sku: i.sku,
@@ -77,6 +78,6 @@ export async function GET(request: NextRequest) {
       ebayOfferId: i.ebayOfferId,
       ebayEnvironment: i.ebayEnvironment,
       photoUrl: i.photoUrls[0] ?? null,
-    })),
+    }))),
   });
 }

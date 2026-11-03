@@ -2,6 +2,7 @@ import { getLiveAvailableQuantity, getOfferDetails } from "@/lib/ebay";
 import { getRequestUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { adjustItemStock } from "@/lib/stockAdjust";
+import { forViewer } from "@/lib/itemView";
 import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 30;
@@ -72,5 +73,5 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     recordedBy: getRequestUser(request)?.username ?? null,
   });
   if (!result.ok) return NextResponse.json({ error: result.error }, { status: result.status });
-  return NextResponse.json(result.body);
+  return NextResponse.json(forViewer(request, result.body));
 }

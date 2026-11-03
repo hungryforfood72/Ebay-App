@@ -49,7 +49,9 @@ export async function logActivity(
   entry: Entry & { method?: string | null; path?: string | null }
 ): Promise<void> {
   try {
-    const user = who.user ?? (who.request ? getRequestUser(who.request) : null);
+    // An explicit username (e.g. a failed login) wins over request headers,
+    // so a signed-out caller can never put someone else's name on a row.
+    const user = who.user ?? (who.request && !who.username ? getRequestUser(who.request) : null);
     await prisma.activityLog.create({
       data: {
         username: user?.username ?? who.username ?? null,

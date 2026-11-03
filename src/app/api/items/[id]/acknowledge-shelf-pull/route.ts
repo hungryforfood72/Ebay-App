@@ -1,6 +1,7 @@
 import { AuthError, getRequestUser, requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { finishPull } from "@/lib/warehouse/pulls";
+import { forViewer } from "@/lib/itemView";
 import { NextRequest, NextResponse } from "next/server";
 
 // Finishes a shelf pull without scanning what's left. Since 2026-10-26
@@ -21,5 +22,5 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const username = getRequestUser(request)?.username ?? null;
   const result = await finishPull(id, username, body?.notFound === true);
   if ("error" in result) return NextResponse.json({ error: result.error }, { status: result.status });
-  return NextResponse.json(await prisma.item.findUnique({ where: { id } }));
+  return NextResponse.json(forViewer(request, await prisma.item.findUnique({ where: { id } })));
 }

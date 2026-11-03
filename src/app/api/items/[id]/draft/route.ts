@@ -1,3 +1,4 @@
+import { forViewer } from "@/lib/itemView";
 import { draftItem } from "@/lib/draftItem";
 import { NextResponse } from "next/server";
 
@@ -7,13 +8,13 @@ import { NextResponse } from "next/server";
 export const maxDuration = 90;
 
 export async function POST(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
   try {
     const updated = await draftItem(id);
-    return NextResponse.json(updated);
+    return NextResponse.json(forViewer(request, updated));
   } catch (e) {
     console.error(`[draft route] ${id}: unhandled error`, e);
     return NextResponse.json(

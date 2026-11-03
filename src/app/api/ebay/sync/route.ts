@@ -1,3 +1,4 @@
+import { ownerOnly } from "@/lib/auth";
 import { syncEbayOrders, type EbayOrderSyncResult } from "@/lib/ebayOrderSync";
 import { runShopifySync } from "@/lib/shopifySync";
 import { withSyncLock } from "@/lib/syncLock";
@@ -21,6 +22,8 @@ export const maxDuration = 90;
 // linked up after the fact via /api/items/link-legacy). Optional
 // { orderIds: [...] } re-checks specific orders the same way.
 export async function POST(request: NextRequest) {
+  const denied = ownerOnly(request);
+  if (denied) return denied;
   const body = await request.json().catch(() => ({}));
   const since = body?.since ? new Date(body.since) : undefined;
   const orderIds = Array.isArray(body?.orderIds) ? body.orderIds.filter((id: unknown) => typeof id === "string") : [];

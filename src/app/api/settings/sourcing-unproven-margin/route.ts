@@ -1,13 +1,18 @@
+import { ownerOnly } from "@/lib/auth";
 import { logActivity } from "@/lib/activityLog";
 import { getUnprovenMarginPct, setUnprovenMarginPct } from "@/lib/sourcingAgent";
 import { NextRequest, NextResponse } from "next/server";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const denied = ownerOnly(request);
+  if (denied) return denied;
   const unprovenMarginPct = await getUnprovenMarginPct();
   return NextResponse.json({ unprovenMarginPct });
 }
 
 export async function PUT(request: NextRequest) {
+  const denied = ownerOnly(request);
+  if (denied) return denied;
   const body = await request.json().catch(() => ({}));
   const value = Number(body.unprovenMarginPct);
   if (!Number.isFinite(value) || value < 0 || value > 1000) {

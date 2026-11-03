@@ -1,6 +1,7 @@
 import { getRequestUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { ItemStatus, type Item, type Prisma } from "@/generated/prisma/client";
+import { forViewer } from "@/lib/itemView";
 import { NextRequest, NextResponse } from "next/server";
 import { after } from "next/server";
 import { randomUUID } from "node:crypto";
@@ -42,7 +43,10 @@ export async function GET(request: NextRequest) {
   // Other items get no field, same response as before.
   const progress = await binProgress(items);
   return NextResponse.json(
-    progress.size === 0 ? items : items.map((i) => (progress.has(i.id) ? { ...i, binProgress: progress.get(i.id) } : i))
+    forViewer(
+      request,
+      progress.size === 0 ? items : items.map((i) => (progress.has(i.id) ? { ...i, binProgress: progress.get(i.id) } : i))
+    )
   );
 }
 

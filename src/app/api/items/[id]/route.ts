@@ -1,3 +1,4 @@
+import { forViewer } from "@/lib/itemView";
 import { changedFields, logActivity } from "@/lib/activityLog";
 import { Prisma } from "@/generated/prisma/client";
 import { normalizeBreakdown } from "@/lib/expirationBreakdown";
@@ -110,7 +111,7 @@ export async function PATCH(
     });
   }
 
-  return NextResponse.json(item);
+  return NextResponse.json(forViewer(request, item));
 }
 
 // Delete an item (e.g. a scan mistake or duplicate). Only removes the

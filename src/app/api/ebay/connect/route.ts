@@ -1,3 +1,4 @@
+import { ownerOnly } from "@/lib/auth";
 import { randomUUID } from "crypto";
 import { buildAuthorizeUrl } from "@/lib/ebay";
 import { NextRequest, NextResponse } from "next/server";
@@ -6,6 +7,8 @@ import { NextRequest, NextResponse } from "next/server";
 // screen. A random state value goes in a short-lived cookie so the callback
 // can confirm the response actually came from a flow we started (CSRF).
 export async function GET(request: NextRequest) {
+  const denied = ownerOnly(request);
+  if (denied) return denied;
   let authorizeUrl: string;
   try {
     authorizeUrl = buildAuthorizeUrl(randomUUID());
