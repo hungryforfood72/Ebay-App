@@ -47,6 +47,9 @@ type PackSuggestion = {
     // whole lot is set aside, and shopPlan is how it'd split for
     // Shopify & Whatnot instead (null off a manifest).
     everything?: boolean;
+    // everything because what's on hand is too few to bundle and fails as
+    // is (1 bottle, a loss as a single), not because no bundle size works.
+    allLeftover?: boolean;
     shopPlan?: PackPlanGroup[] | null;
     price?: number;
     label?: number;
@@ -230,7 +233,9 @@ export function PackSuggestionCard({
             {notForEbay
               ? data.setAside?.why === "no_demand"
                 ? "There's no sign anyone is buying this right now, so it would just sit on eBay."
-                : `Shipping eats the whole sale: even bundled up to ${MAX_RECOMMENDED_PACK}-packs, or as one lot, it wouldn't make enough profit on eBay after fees and a label.`
+                : data.setAside?.allLeftover
+                  ? `Shipping eats the whole sale: with ${data.setAside.units === 1 ? "just 1" : `only ${data.setAside.units}`} on hand, it wouldn't make enough profit on eBay after fees and a label.`
+                  : `Shipping eats the whole sale: even bundled up to ${MAX_RECOMMENDED_PACK}-packs, or as one lot, it wouldn't make enough profit on eBay after fees and a label.`
               : rec.reason
               ? rec.reason
               : rec.basis === "estimate"

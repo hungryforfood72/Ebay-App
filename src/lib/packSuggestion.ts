@@ -244,6 +244,9 @@ export async function packSuggestion({
     why: SetAsideWhy;
     worth: ListingWorth | null;
     everything: boolean;
+    // everything because each unit on hand failed as a leftover (too few to
+    // bundle), not because no bundle size works.
+    allLeftover?: boolean;
     shopPlan: { packSize: number; listings: number }[] | null;
   } | null = null;
   let targetReturnPct: number | null = null;
@@ -333,7 +336,22 @@ export async function packSuggestion({
           }
         }
         plan = kept;
-        if (aside) setAside = { units: asideUnits, ...aside, everything: false, shopPlan: null };
+        // Every unit on hand failed the check (Cristian, 2026-11-03: 1 bottle
+        // of ReNu, a $1.28 loss as a single, and the card still said "OK to
+        // sell", "sell as singles" and pre-filled a single, with "1 to set
+        // aside" further down). Then it's not for eBay at all: same answer
+        // as the bundle check above, Shopify & Whatnot offered instead.
+        if (aside && kept.length === 0) {
+          setAside = {
+            units: asideUnits,
+            ...aside,
+            everything: true,
+            allLeftover: true,
+            shopPlan: splitIntoPacks(asideUnits, aside.packSize),
+          };
+        } else if (aside) {
+          setAside = { units: asideUnits, ...aside, everything: false, shopPlan: null };
+        }
       } else if (available == null) {
         const v = verdict(1);
         if (v) setAside = { units: null, packSize: 1, ...v, everything: false, shopPlan: null };
@@ -405,6 +423,7 @@ export async function packSuggestion({
       packSize: setAside.packSize,
       why: setAside.why,
       everything: setAside.everything,
+      allLeftover: setAside.allLeftover ?? false,
       shopPlan: setAside.shopPlan,
       ...(isOwner && setAside.worth
         ? {
