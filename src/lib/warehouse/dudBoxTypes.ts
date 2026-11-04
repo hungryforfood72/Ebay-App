@@ -4,11 +4,19 @@
 
 // What happens to a dud product once someone processes the box:
 //   shopify    list it, Shopify & Whatnot only (from the box, at the listing station)
+//   ebay       worth a try on eBay after all (listed from the box like any
+//              eBay item; if it sells, the Analyzer learns from it)
 //   not_worth  not even worth Shopify
 //   toss       a real dud, throw it out
 //   donate     a real dud, give it away
-export const DUD_DECISIONS = ["shopify", "not_worth", "toss", "donate"] as const;
+export const DUD_DECISIONS = ["shopify", "ebay", "not_worth", "toss", "donate"] as const;
 export type DudDecision = (typeof DUD_DECISIONS)[number];
+
+// The decisions that get listed from the box.
+export type DudListDecision = "shopify" | "ebay";
+export function isListDecision(d: string | null | undefined): d is DudListDecision {
+  return d === "shopify" || d === "ebay";
+}
 
 export function isDudDecision(v: unknown): v is DudDecision {
   return typeof v === "string" && (DUD_DECISIONS as readonly string[]).includes(v);
@@ -44,6 +52,8 @@ export type DudBoxEntry = {
   // Why it's a dud, in plain words (the Analyzer's call, eBay's banned
   // list, or the sorter's own call).
   dudReason: string;
+  // Set aside at the listing station instead of at sorting (ebaySkips.ts).
+  setAside: boolean;
   note: string | null;
   recordedBy: string | null;
   createdAt: string;
@@ -75,8 +85,10 @@ export type DudBoxSummary = {
   // Entries nobody has decided yet.
   undecided: number;
   units: number;
-  // Shopify-decided units, and how many of those are listed so far.
+  // Shopify-decided and eBay-decided units, and how many of those are
+  // listed so far (both kinds).
   shopifyUnits: number;
+  ebayUnits: number;
   listedUnits: number;
   createdBy: string | null;
   createdAt: string;

@@ -16,6 +16,7 @@ import { Pencil, ScanBarcode } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState, use as usePromise } from "react";
 import { SortingSection, type SortingSummary, type SortStatus } from "./SortingSection";
+import type { DudExtra } from "@/lib/ebaySkips";
 
 // retailPrice/extendedRetail/weightedCogsPerUnit/soldRevenue/soldFees/profit
 // are all financial fields the API omits for an employee (see
@@ -82,6 +83,8 @@ type ManifestDetail = {
   title: string;
   supplier: string;
   totalLandedCost?: number | null;
+  // Owner only: what duds and set-asides brought in (src/lib/ebaySkips.ts).
+  dudExtra?: DudExtra;
   // Owner only. A consignment load shows what's owed to the supplier.
   consignment?: boolean;
   shareToken?: string | null;
@@ -370,6 +373,33 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
                   highlight={s.totalSoldUnits > 0 && s.totalProfit < 0}
                 />
               )}
+            </div>
+          </section>
+        )}
+
+        {isOwner && manifest.dudExtra && manifest.dudExtra.listings > 0 && (
+          <section>
+            <SectionHeader
+              title="Extra from duds and set-asides"
+              description="Listed from dud boxes, or sent to Shopify & Whatnot because eBay wasn't worth it. No item cost: the load's cost is on the good stock, so this is all extra. Before refunds."
+            />
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <Stat label="Listings" value={manifest.dudExtra.listings} />
+              <Stat
+                label={`eBay (${manifest.dudExtra.ebay.units} sold)`}
+                value={manifest.dudExtra.ebay.net}
+                format="currency"
+              />
+              <Stat
+                label={`Shopify (${manifest.dudExtra.shopify.units} sold)`}
+                value={manifest.dudExtra.shopify.net}
+                format="currency"
+              />
+              <Stat
+                label={`Whatnot (${manifest.dudExtra.whatnot.units} sold)`}
+                value={manifest.dudExtra.whatnot.net}
+                format="currency"
+              />
             </div>
           </section>
         )}

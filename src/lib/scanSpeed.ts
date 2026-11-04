@@ -195,8 +195,9 @@ export async function loadSortEvents(filter: {
       },
       select: { createdAt: true, recordedBy: true, upc: true, quantity: true },
     }),
+    // Sort station duds only: a listing-station set-aside isn't a sort scan.
     prisma.manifestDudEntry.findMany({
-      where: { ...where, ...NOT_RETURN_ENTRY },
+      where: { ...where, ...NOT_RETURN_ENTRY, setAsideReason: null },
       select: { createdAt: true, recordedBy: true, upc: true, quantity: true },
     }),
     prisma.consignmentReturnEntry.findMany({

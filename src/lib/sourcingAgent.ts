@@ -20,6 +20,7 @@ import { ACCURACY_KNOWLEDGE_SCOPE, getCalibration } from "./predictionTracker";
 import { boxesFor, exactSearchKeywords, isExactTitleMatch, LOT_TITLE, priceFromExactComps } from "./exactComps";
 import type { ManifestSupplier } from "@/generated/prisma/client";
 import { describeSupplierStats, supplierStats } from "./supplierStats";
+import { passedOnEbayBefore } from "./ebaySkips";
 
 // ---------------------------------------------------------------------------
 // Settings (AppSetting key/value store)
@@ -1137,6 +1138,9 @@ type LineEstimateResult = {
     | "retail_estimate"
     | "unpriced";
   flaggedDud: boolean;
+  // Set aside or sent to Shopify & Whatnot at listing before, never sold on
+  // eBay by us: a dud for that reason (ebaySkips.ts).
+  skippedOnEbayBefore?: boolean;
   marketCheckFailed: boolean;
   marketTrend: string | null;
   eventEnded: boolean;
@@ -1752,6 +1756,12 @@ async function estimateLine(
   // flag it a dud on an API outage (see marketCheckFailed above for the
   // real case this caught live). The beta never checks the market, so its
   // version is always an unknown ("unpriced").
+  // Our listing station passed on eBay for this product before (set aside,
+  // or sent to Shopify & Whatnot because eBay wasn't worth it) and it has
+  // never sold on eBay for us: a dud for bidding, whatever the research
+  // says. Selling it on eBay later puts it in ownSalesCount, which wins.
+  // Shopify and Whatnot sales never count here (ebaySkips.ts).
+  const skippedOnEbayBefore = ownSalesCount === 0 && (await passedOnEbayBefore(group.upc));
   const nothingToGoOn = async (): Promise<LineEstimateResult> => ({
     upc: group.upc,
     description: group.description,
@@ -1767,7 +1777,8 @@ async function estimateLine(
     dataConfidence: compliant ? "unpriced" : "market_only",
     // The beta can't price it, but a quick read that says nobody buys it
     // is still a dud call.
-    flaggedDud: compliant ? beta?.quickDemand === "DEAD" : !marketCheckFailed,
+    flaggedDud: skippedOnEbayBefore || (compliant ? beta?.quickDemand === "DEAD" : !marketCheckFailed),
+    skippedOnEbayBefore,
     marketCheckFailed: compliant || marketCheckFailed,
     marketTrend,
     eventEnded: false,
@@ -1931,6 +1942,7 @@ async function estimateLine(
   // never spends budget re-confirming something already resolved for free.
   const postHolidayFiller = isPostHolidayFiller(group.description);
   if (postHolidayFiller) flaggedDud = true;
+  if (skippedOnEbayBefore) flaggedDud = true;
 
   // Anything occasion-tied that isn't one of the hardcoded holidays above
   // (a one-time event, or a holiday we didn't think to hardcode) — active
@@ -1979,6 +1991,7 @@ async function estimateLine(
     recommendedPackBasis: packAdvice?.basis ?? null,
     dataConfidence,
     flaggedDud,
+    skippedOnEbayBefore,
     slowMover,
     longTail,
     monthsToSellThrough: monthsToSellThroughEstimate,
@@ -2229,6 +2242,7 @@ export async function evaluateManifestChunk(
         recommendedPackBasis: result.recommendedPackBasis,
         dataConfidence: result.dataConfidence,
         flaggedDud: result.flaggedDud,
+        skippedOnEbayBefore: result.skippedOnEbayBefore ?? false,
         slowMover: result.slowMover,
         longTail: result.longTail ?? false,
         monthsToSellThrough: result.monthsToSellThrough,
@@ -2309,6 +2323,7 @@ export async function evaluateManifestChunk(
       recommendedPackBasis: row.recommendedPackBasis as LineEstimateResult["recommendedPackBasis"],
       dataConfidence: row.dataConfidence as LineEstimateResult["dataConfidence"],
       flaggedDud: row.flaggedDud,
+      skippedOnEbayBefore: row.skippedOnEbayBefore,
       slowMover: row.slowMover,
       longTail: row.longTail,
       monthsToSellThrough: row.monthsToSellThrough,
@@ -2549,7 +2564,7 @@ Top contributing lines:
 ${input.topLines.map((l) => `- ${l.description} (UPC ${l.upc ?? "n/a"}): est. $${l.estimatedNetPerUnit?.toFixed(2) ?? "?"} net/unit × ${l.effectiveUnits} units, confidence: ${l.dataConfidence}`).join("\n") || "none"}
 
 Lines flagged as likely duds:
-${input.dudLines.map((l) => `- ${l.description} (UPC ${l.upc ?? "n/a"})`).join("\n") || "none"}
+${input.dudLines.map((l) => `- ${l.description} (UPC ${l.upc ?? "n/a"})${l.skippedOnEbayBefore ? " (we passed on it for eBay at listing before, and it has never sold on eBay for us)" : ""}`).join("\n") || "none"}
 
 Lines eBay doesn't allow listing at all (needles, prescription devices, COVID tests), valued at $0 and counted as duds (${input.bannedLineCount} total${input.bannedLineCount > 10 ? ", first 10 shown" : ""}):
 ${input.bannedLines.join("\n") || "none"}

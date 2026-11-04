@@ -1,4 +1,5 @@
 import type { Prisma } from "@/generated/prisma/client";
+import { EBAY_SKIP_TEXT, isEbaySkipReason, type EbaySkipReason } from "../ebaySkips";
 import { shopChannelWorth, type ListingWorth } from "../packSize";
 import { prisma } from "../prisma";
 import { getShopifyPricing, shopifyPriceFor, type ShopifyPricing } from "../shopifySync";
@@ -6,7 +7,16 @@ import { upcMatchKeys } from "../upcMatch";
 import { WarehouseError } from "./bins";
 import { dudBoxName } from "./codes";
 import { findDudBox } from "./dudBoxes";
-import type { DudBoxDetail, DudBoxEntry, DudBoxStatus, DudBoxSummary, DudDecision, DudMoneyHint } from "./dudBoxTypes";
+import {
+  isListDecision,
+  type DudBoxDetail,
+  type DudBoxEntry,
+  type DudBoxStatus,
+  type DudBoxSummary,
+  type DudDecision,
+  type DudMoneyHint,
+} from "./dudBoxTypes";
+import { sortedLeft } from "./sortCount";
 import { DUD_ESTIMATE_SELECT, dudCall, latestCompleteEvaluationId, type DudEstimate } from "./sortCheck";
 import type { CodeLabelPayload } from "./types";
 
@@ -32,13 +42,13 @@ export function dudBoxLabelPayload(code: string, manifestTitle: string): CodeLab
 
 type EntryState = { quantity: number; listedUnits: number; decision: string | null };
 
-// Done = something in it, every product decided, and every Shopify unit
-// listed. An empty box stays where it is (nothing to process, and it was
-// probably closed by mistake).
+// Done = something in it, every product decided, and every Shopify or eBay
+// unit listed. An empty box stays where it is (nothing to process, and it
+// was probably closed by mistake).
 export function dudBoxFinished(entries: EntryState[]): boolean {
   return (
     entries.length > 0 &&
-    entries.every((e) => e.decision != null && (e.decision !== "shopify" || e.listedUnits >= e.quantity))
+    entries.every((e) => e.decision != null && (!isListDecision(e.decision) || e.listedUnits >= e.quantity))
   );
 }
 
@@ -82,9 +92,10 @@ async function lockBox(tx: Tx, rawCode: string) {
   return tx.dudBox.findUniqueOrThrow({ where: { id: found.id } });
 }
 
-// The sort station putting units into a box. Only an open box of the same
-// load takes them, so a box never mixes loads or gets added to after it's
-// been processed.
+// The sort station putting units into a box, or the listing station
+// setting units aside (setAsideReason, see ebaySkips.ts). Only an open box
+// of the same load takes them, so a box never mixes loads or gets added to
+// after it's been processed.
 export async function addDudEntry(args: {
   code: string;
   manifestId: string;
@@ -92,6 +103,7 @@ export async function addDudEntry(args: {
   quantity: number;
   note: string | null;
   by: string | null;
+  setAsideReason?: EbaySkipReason | null;
 }) {
   if (!args.upc) throw new WarehouseError("UPC is required.");
   if (!Number.isInteger(args.quantity) || args.quantity < 1 || args.quantity > 10000) {
@@ -108,6 +120,27 @@ export async function addDudEntry(args: {
         409
       );
     }
+    // A set-aside comes out of what's left from the sort boxes: no more
+    // than that, or the load's counts would show units that were never
+    // there. Nothing sorted = nothing to set aside. One set-aside of a
+    // product at a time per load (two stations at once can't both take the
+    // last units): held until this transaction ends, and sortedLeft reads
+    // committed rows, so the second one sees the first.
+    if (args.setAsideReason) {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`set_aside|${args.manifestId}`}))`;
+      const left = await sortedLeft(args.manifestId, args.upc);
+      if (!left) {
+        throw new WarehouseError("Nothing of this product was sorted on this load, so there's nothing to set aside.", 409);
+      }
+      if (args.quantity > left.left) {
+        throw new WarehouseError(
+          left.left === 0
+            ? "Every unit of this product is already listed or set aside."
+            : `Only ${left.left} of this product ${left.left === 1 ? "is" : "are"} left to set aside, not ${args.quantity}.`,
+          409
+        );
+      }
+    }
     const entry = await tx.manifestDudEntry.create({
       data: {
         manifestId: box.manifestId,
@@ -116,6 +149,7 @@ export async function addDudEntry(args: {
         quantity: args.quantity,
         note: args.note,
         recordedBy: args.by,
+        setAsideReason: args.setAsideReason ?? null,
       },
     });
     const units = await tx.manifestDudEntry.aggregate({ where: { dudBoxId: box.id }, _sum: { quantity: true } });
@@ -144,8 +178,9 @@ export async function setDudBoxStatus(code: string, status: "open" | "closed") {
 
 // Decide one or more entries (the box page groups a product's entries and
 // decides them together). Changing a decision is fine until units have
-// been listed from it: those are real Items now, so it has to stay Shopify.
-// decision null = back to undecided, same rule.
+// been listed from it: those are real Items now, so it has to stay what it
+// was listed as (Shopify or eBay). decision null = back to undecided, same
+// rule.
 export async function decideDudEntries(args: {
   code: string;
   entryIds: string[];
@@ -161,10 +196,11 @@ export async function decideDudEntries(args: {
     if (entries.length !== ids.length) {
       throw new WarehouseError(`That product isn't in ${dudBoxName(box.code)} anymore. Reload the box.`, 404);
     }
-    const listed = entries.reduce((sum, e) => sum + e.listedUnits, 0);
-    if (args.decision !== "shopify" && listed > 0) {
+    const listedAs = entries.find((e) => e.listedUnits > 0 && e.decision !== args.decision);
+    if (listedAs) {
+      const listed = entries.reduce((sum, e) => sum + e.listedUnits, 0);
       throw new WarehouseError(
-        `${listed} of these ${listed === 1 ? "is" : "are"} already listed from this box, so it has to stay Shopify.`,
+        `${listed} of these ${listed === 1 ? "is" : "are"} already listed from this box, so it has to stay ${listedAs.decision === "ebay" ? "eBay" : "Shopify"}.`,
         409
       );
     }
@@ -256,10 +292,16 @@ export async function getDudBoxDetail(rawCode: string, isOwner: boolean): Promis
     const line = lineFor(e.upc);
     const description = line?.description ?? estimate?.description ?? `UPC ${e.upc}`;
     const call = dudCall({ description, evaluated: evaluationId != null, estimate });
-    // Not flagged by anything: the sorter put it in the box on their own.
-    const dudReason = call.dud
-      ? call.reason!
-      : `The sorter's call${call.reason ? ` (${call.reason.charAt(0).toLowerCase()}${call.reason.slice(1)})` : ""}`;
+    // A set-aside from listing says why itself (the why for the owner only:
+    // employees get the action, not the reasoning). Otherwise, not flagged
+    // by anything = the sorter put it in the box on their own.
+    const dudReason = isEbaySkipReason(e.setAsideReason)
+      ? isOwner
+        ? EBAY_SKIP_TEXT[e.setAsideReason]
+        : "Set aside at listing"
+      : call.dud
+        ? call.reason!
+        : `The sorter's call${call.reason ? ` (${call.reason.charAt(0).toLowerCase()}${call.reason.slice(1)})` : ""}`;
     return {
       id: e.id,
       upc: e.upc,
@@ -270,6 +312,7 @@ export async function getDudBoxDetail(rawCode: string, isOwner: boolean): Promis
       decidedBy: e.decidedBy,
       decidedAt: e.decidedAt?.toISOString() ?? null,
       dudReason,
+      setAside: e.setAsideReason != null,
       note: e.note,
       recordedBy: e.recordedBy,
       createdAt: e.createdAt.toISOString(),
@@ -317,6 +360,7 @@ export async function listDudBoxes(filter: {
     .filter((b) => !filter.statuses || filter.statuses.includes(b.status as DudBoxStatus))
     .map((b) => {
       const shopify = b.entries.filter((e) => e.decision === "shopify");
+      const ebay = b.entries.filter((e) => e.decision === "ebay");
       return {
         code: b.code,
         status: b.status as DudBoxStatus,
@@ -326,7 +370,8 @@ export async function listDudBoxes(filter: {
         undecided: b.entries.filter((e) => e.decision == null).length,
         units: b.entries.reduce((sum, e) => sum + e.quantity, 0),
         shopifyUnits: shopify.reduce((sum, e) => sum + e.quantity, 0),
-        listedUnits: shopify.reduce((sum, e) => sum + Math.min(e.listedUnits, e.quantity), 0),
+        ebayUnits: ebay.reduce((sum, e) => sum + e.quantity, 0),
+        listedUnits: [...shopify, ...ebay].reduce((sum, e) => sum + Math.min(e.listedUnits, e.quantity), 0),
         createdBy: b.createdBy,
         createdAt: b.createdAt.toISOString(),
         closedAt: b.closedAt?.toISOString() ?? null,

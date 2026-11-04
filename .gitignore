@@ -51,3 +51,4 @@ next-env.d.ts
 /public/print-helper/__pycache__/
 /scratch-tmp/
 /zero-stock.json
+/va-listings.json

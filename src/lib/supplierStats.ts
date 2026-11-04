@@ -46,7 +46,9 @@ const LOAD_SELECT = {
   id: true,
   lines: { select: { id: true, upc: true, supplierSku: true, expectedQuantity: true } },
   damaged: { select: { upc: true, quantity: true, note: true } },
-  duds: { select: { upc: true, quantity: true } },
+  // Sort station duds only: listing-station set-asides were sorted as good
+  // first (ebaySkips.ts), so they're in the sort box counts already.
+  duds: { where: { setAsideReason: null }, select: { upc: true, quantity: true } },
 } as const;
 
 // The line key a stored code belongs to: exact first (the sort station

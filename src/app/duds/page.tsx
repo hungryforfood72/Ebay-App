@@ -155,11 +155,15 @@ export default function DudBoxesPage() {
   );
 }
 
-// "12 units · 3 to decide · listed 2 of 4 for Shopify"
+// "12 units · 3 to decide · listed 2 of 4 (eBay + Shopify)"
 function summaryLine(b: DudBoxSummary): string {
   if (b.entryCount === 0) return "Empty";
   const parts = [`${b.units} ${b.units === 1 ? "unit" : "units"}`];
   if (b.undecided > 0) parts.push(`${b.undecided} to decide`);
-  if (b.shopifyUnits > 0) parts.push(`listed ${b.listedUnits} of ${b.shopifyUnits} for Shopify`);
+  const toList = b.shopifyUnits + (b.ebayUnits ?? 0);
+  if (toList > 0) {
+    const where = b.ebayUnits && b.shopifyUnits ? "eBay + Shopify" : b.ebayUnits ? "eBay" : "Shopify";
+    parts.push(`listed ${b.listedUnits} of ${toList} for ${where}`);
+  }
   return parts.join(" · ");
 }

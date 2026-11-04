@@ -2,6 +2,7 @@ import { anthropic } from "./anthropic";
 import { logAiUsage } from "./aiUsage";
 import { prisma } from "./prisma";
 import { NOT_RETURN_ENTRY } from "./warehouse/returnReconcile";
+import { ebaySkippedUnits } from "./ebaySkips";
 
 // ---------------------------------------------------------------------------
 // Prediction tracker: the Analyzer's report card. Cristian's ask 2026-10-17:
@@ -109,9 +110,16 @@ export async function refreshPredictionOutcomes(): Promise<{ manifests: number; 
     if (estimates.length === 0) continue;
     const upcs = estimates.map((e) => e.upc!);
 
-    const [items, duds, walkups] = await Promise.all([
+    const [items, duds, walkups, skipped] = await Promise.all([
       prisma.item.findMany({
-        where: { manifestId: manifest.id, upc: { in: upcs }, isBundle: false },
+        // eBay is what the Analyzer guesses for: listings that never went
+        // on eBay (Shopify & Whatnot only) are extra money, not its results.
+        where: {
+          manifestId: manifest.id,
+          upc: { in: upcs },
+          isBundle: false,
+          NOT: { shopifyOnly: true, ebayPublishedAt: null },
+        },
         select: {
           id: true,
           upc: true,
@@ -134,6 +142,9 @@ export async function refreshPredictionOutcomes(): Promise<{ manifests: number; 
         where: { manifestId: manifest.id, upc: { in: upcs } },
         _sum: { quantity: true },
       }),
+      // Kept off eBay at listing because eBay wasn't worth it (set aside,
+      // or Shopify & Whatnot only): a miss when it was called sellable.
+      ebaySkippedUnits({ manifestId: manifest.id, upcs, notWorthOnly: true }),
     ]);
     const itemIds = items.map((i) => i.id);
     const [shopifySales, inPersonSales] = await Promise.all([
@@ -218,6 +229,7 @@ export async function refreshPredictionOutcomes(): Promise<{ manifests: number; 
         listedUnits,
         soldUnits: soldUnits + (walkupByUpc.get(upc) ?? 0),
         dudUnits: dudByUpc.get(upc) ?? 0,
+        skippedUnits: skipped.get(upc) ?? 0,
         ebayUnitsSold: ebayUnits,
         actualUnitPrice,
         actualNetPerUnit: ebayUnits > 0 ? ebayNet / ebayUnits : null,
@@ -390,12 +402,15 @@ export async function updateAccuracyLessons(): Promise<void> {
   // accuracy report instead). Until its loads sell, the note written from
   // legacy results stays as it is.
   const changed = await prisma.predictionOutcome.count({
-    where: { variant: "compliant", updatedAt: { gt: since }, soldUnits: { gt: 0 } },
+    where: { variant: "compliant", updatedAt: { gt: since }, OR: [{ soldUnits: { gt: 0 } }, { skippedUnits: { gt: 0 } }] },
   });
   if (changed === 0) return;
 
   const outcomes = await prisma.predictionOutcome.findMany({
-    where: { variant: "compliant", OR: [{ soldUnits: { gt: 0 } }, { listedUnits: { gt: 0 } }] },
+    where: {
+      variant: "compliant",
+      OR: [{ soldUnits: { gt: 0 } }, { listedUnits: { gt: 0 } }, { skippedUnits: { gt: 0 } }],
+    },
   });
   const logMiss = (r: number | null) => (r != null && r > 0 ? Math.abs(Math.log(r)) : 0);
   const biggestPriceMisses = outcomes
@@ -406,7 +421,14 @@ export async function updateAccuracyLessons(): Promise<void> {
     .filter((o) => o.speedRatio != null)
     .sort((a, b) => logMiss(b.speedRatio) - logMiss(a.speedRatio))
     .slice(0, 8);
-  const dudsThatSold = outcomes.filter((o) => o.predictedDud && o.soldUnits > 0).slice(0, 8);
+  // eBay is the focus: a dud that only sold on Shopify or Whatnot is extra
+  // money, not a miss. One that sold on eBay is.
+  const dudsThatSold = outcomes.filter((o) => o.predictedDud && o.ebayUnitsSold > 0).slice(0, 8);
+  // Called sellable, but the listing station kept it off eBay because the
+  // numbers didn't work there (shipping eats a single, too slow, no demand).
+  const skippedAtListing = outcomes
+    .filter((o) => !o.predictedDud && o.skippedUnits > 0 && o.ebayUnitsSold === 0)
+    .slice(0, 8);
   const stuck = outcomes
     .filter((o) => !o.predictedDud && o.listedUnits > 0 && o.soldUnits === 0 && (o.monthsActive ?? 0) >= 1)
     .slice(0, 8);
@@ -428,13 +450,18 @@ ${biggestPriceMisses.map(describeOutcome).join("\n") || "none"}
 Biggest speed misses:
 ${biggestSpeedMisses.map(describeOutcome).join("\n") || "none"}
 
-Called a dud but sold anyway:
+Called a dud but sold on eBay anyway:
 ${dudsThatSold.map(describeOutcome).join("\n") || "none"}
+
+Called sellable, but kept off eBay at listing because eBay wasn't worth it (shipping and fees eat a single, too slow, or no demand):
+${skippedAtListing.map((o) => `${describeOutcome(o)} ${o.skippedUnits} kept off eBay.`).join("\n") || "none"}
 
 Expected to sell but nothing sold after a month or more:
 ${stuck.map(describeOutcome).join("\n") || "none"}
 
 Context on older guesses: ones made before late September 2026 used older, known-inflated pricing, so don't over-weight their price misses. Until 2026-10-16 the Analyzer also called popular items duds just for having lots of competing listings, a rule that has since been removed, so dud calls from before then are partly explained by it.
+
+Bids are for eBay only. Sales on Shopify or Whatnot (where duds and set-aside items go) are extra money and must never be a reason to bid more. Products kept off eBay at listing are misses: say what kinds of products those are (cheap singles where shipping eats the sale, for example) so future bids value them as duds.
 
 Rewrite the note in 3-6 plain sentences, under 130 words: where the Analyzer runs high or low, for which kinds of products or data sources, and what that means for future bids. Patterns only, not a list of products. If there's too little data to say much, say that plainly. No headings, no em dashes.`;
 

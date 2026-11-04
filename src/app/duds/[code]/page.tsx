@@ -16,6 +16,7 @@ import {
   LoaderCircle,
   Printer,
   ShoppingBag,
+  Tag,
   ThumbsDown,
   Trash2,
   type LucideIcon,
@@ -24,13 +25,16 @@ import Link from "next/link";
 import { useCallback, useEffect, useState, use as usePromise } from "react";
 import { STATUS_TEXT, STATUS_TONE } from "../shared";
 
-// One dud box: what's in it and why each product was called a dud, and a
-// decision per product. Shopify ones then get listed from the box at the
-// listing station (scan the box's label on the scan page). Anyone signed in
-// can decide; the owner also sees the Analyzer's money guess so "not worth
-// Shopify" is an informed call. Employees never see money.
+// One dud box: what's in it and why each product was called a dud (or set
+// aside at listing), and a decision per product. eBay and Shopify ones then
+// get listed from the box at the listing station (scan the box's label on
+// the scan page). The item costs nothing there, so anything it sells for is
+// extra. Anyone signed in can decide; the owner also sees the Analyzer's
+// money guess so "not worth Shopify" is an informed call. Employees never
+// see money.
 
 const DECISIONS: { key: DudDecision; label: string; icon: LucideIcon; on: string }[] = [
+  { key: "ebay", label: "Try on eBay", icon: Tag, on: "border-blue-600 bg-blue-600 text-white" },
   { key: "shopify", label: "Shopify", icon: ShoppingBag, on: "border-primary bg-primary text-primary-foreground" },
   { key: "not_worth", label: "Not worth Shopify", icon: ThumbsDown, on: "border-zinc-700 bg-zinc-700 text-white" },
   { key: "toss", label: "Toss", icon: Trash2, on: "border-red-600 bg-red-600 text-white" },
@@ -38,6 +42,7 @@ const DECISIONS: { key: DudDecision; label: string; icon: LucideIcon; on: string
 ];
 
 const DECISION_TEXT: Record<DudDecision, string> = {
+  ebay: "Try on eBay",
   shopify: "Shopify",
   not_worth: "Not worth Shopify",
   toss: "Toss",
@@ -155,8 +160,10 @@ export default function DudBoxPage({ params }: { params: Promise<{ code: string 
   const products = data ? groupProducts(data.entries) : [];
   const decided = products.filter((p) => p.decision).length;
   const shopify = products.filter((p) => p.decision === "shopify");
-  const shopifyUnits = shopify.reduce((sum, p) => sum + p.units, 0);
-  const listedUnits = shopify.reduce((sum, p) => sum + Math.min(p.listed, p.units), 0);
+  const ebay = products.filter((p) => p.decision === "ebay");
+  const toList = [...ebay, ...shopify];
+  const toListUnits = toList.reduce((sum, p) => sum + p.units, 0);
+  const listedUnits = toList.reduce((sum, p) => sum + Math.min(p.listed, p.units), 0);
   const status = data?.box.status;
 
   return (
@@ -194,6 +201,7 @@ export default function DudBoxPage({ params }: { params: Promise<{ code: string 
               <>
                 <p className="mt-3 text-lg font-semibold text-foreground">
                   {decided} of {products.length} decided
+                  {ebay.length > 0 && `, ${ebay.length} going on eBay`}
                   {shopify.length > 0 && `, ${shopify.length} going to Shopify`}
                 </p>
                 <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
@@ -202,13 +210,13 @@ export default function DudBoxPage({ params }: { params: Promise<{ code: string 
                     style={{ width: `${Math.round((decided / products.length) * 100)}%` }}
                   />
                 </div>
-                {shopifyUnits > 0 && (
+                {toListUnits > 0 && (
                   <p className="mt-3 text-sm text-foreground">
-                    Shopify: listed <span className="font-semibold tabular-nums">{listedUnits}</span> of{" "}
-                    <span className="font-semibold tabular-nums">{shopifyUnits}</span>
-                    {listedUnits < shopifyUnits && (
+                    To list: <span className="font-semibold tabular-nums">{listedUnits}</span> of{" "}
+                    <span className="font-semibold tabular-nums">{toListUnits}</span> listed
+                    {listedUnits < toListUnits && (
                       <span className="mt-1 block text-muted-foreground">
-                        Take this box to the listing station and scan its label to list the Shopify ones.
+                        Take this box to the listing station and scan its label to list the eBay and Shopify ones.
                       </span>
                     )}
                   </p>
@@ -264,7 +272,7 @@ export default function DudBoxPage({ params }: { params: Promise<{ code: string 
 
         {status === "done" && (
           <Alert tone="success" title="All handled">
-            Every product is decided and the Shopify ones are listed. Toss or donate what&apos;s left, as decided.
+            Every product is decided and the eBay and Shopify ones are listed. Toss or donate what&apos;s left, as decided.
           </Alert>
         )}
         {actionError && <Alert tone="danger">{actionError}</Alert>}
@@ -305,8 +313,9 @@ function ProductCard({
   onDecide: (d: DudDecision) => void;
 }) {
   // Units already listed from the box are real listings now; they can't be
-  // tossed, so only Shopify stays available.
+  // tossed, so only what they were listed as stays available.
   const locked = p.listed > 0;
+  const lockedTo: DudDecision = p.decision ?? "shopify";
   return (
     <Card className={cn(p.decision && "border-green-200")}>
       <div className="flex items-start gap-2">
@@ -334,7 +343,7 @@ function ProductCard({
               key={d.key}
               type="button"
               aria-pressed={on}
-              disabled={disabled || (locked && d.key !== "shopify")}
+              disabled={disabled || (locked && d.key !== lockedTo)}
               onClick={() => onDecide(d.key)}
               className={cn(
                 "flex h-14 items-center justify-center gap-2 rounded-lg border px-2 text-sm font-semibold transition-colors",
@@ -353,12 +362,12 @@ function ProductCard({
         {p.mixed && (
           <p className="text-warning">Logged more than once with different decisions. Pick one for all of it.</p>
         )}
-        {p.decision === "shopify" && (
+        {(p.decision === "shopify" || p.decision === "ebay") && (
           <p className="text-sm font-medium text-foreground">
             Listed {Math.min(p.listed, p.units)} of {p.units}
           </p>
         )}
-        {locked && <p>Some are already listed from this box, so it stays Shopify.</p>}
+        {locked && <p>Some are already listed from this box, so it stays {DECISION_TEXT[lockedTo]}.</p>}
         {p.decision && p.decidedBy && (
           <p>
             {DECISION_TEXT[p.decision]}, decided by {p.decidedBy}

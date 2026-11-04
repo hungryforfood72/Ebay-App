@@ -29,6 +29,7 @@ import { getShopifyPricing, shopifyPriceFor } from "./shopifySync";
 import { NOT_RETURN_ENTRY, returnedUnitsByUpc } from "./warehouse/returnReconcile";
 import { isWarehouseMode } from "./warehouse/settings";
 import { sortedLeft } from "./warehouse/sortCount";
+import { dudBoxUnitsLeft } from "./warehouse/dudBoxes";
 import type { Prisma } from "../generated/prisma/client";
 
 
@@ -50,17 +51,26 @@ import type { Prisma } from "../generated/prisma/client";
 // it's selling outside eBay (Amazon's bought-past-month, rank, reviews).
 // skipNameLookup: the caller's own name search for this UPC just came up
 // empty (the gather helper), so don't run the same paid search again.
+// dudBoxCode: listing from a dud box. The count is what's decided for
+// listing in that box, and the item costs nothing (Cristian, 2026-11-03:
+// the load's cost is already on the good stock, so anything a dud brings
+// in is extra), so the "worth it" check is price minus fees and shipping.
 export async function packSuggestion({
   upc,
-  manifestId,
+  manifestId: requestedManifestId,
   isOwner,
   skipNameLookup = false,
+  dudBoxCode = null,
 }: {
   upc: string;
   manifestId: string | null;
   isOwner: boolean;
   skipNameLookup?: boolean;
+  dudBoxCode?: string | null;
 }) {
+  const dudBox = dudBoxCode ? await dudBoxUnitsLeft(dudBoxCode, upc) : null;
+  const manifestId = dudBox?.manifestId ?? requestedManifestId;
+  const costless = dudBox != null;
   const noUpc = isExactKey(upc);
   let itemNumber: string | null = null;
 
@@ -104,7 +114,7 @@ export async function packSuggestion({
   // How many Lizvet says she actually has, typed on the card when it doesn't
   // match the manifest (Cristian, 2026-10-15: 5 Hawaiian Tropic in hand,
   // manifest said 3 left), less what she's saved of it since.
-  const hand = await handCountLeft(upc, manifestId);
+  const hand = dudBox ? null : await handCountLeft(upc, manifestId);
   // Warehouse mode: the load was sorted into sort boxes first, so the real
   // count is what the sorter put in boxes (good units), less what's been
   // listed of it since. Beats the manifest's expected count, which is
@@ -114,7 +124,7 @@ export async function packSuggestion({
   // Sharpie S-Gel cards sorted as extras, and the card said "if you have
   // fewer than 4" since it found no manifest line to count from).
   const sort =
-    manifestId && (countManifestId === manifestId || lines.length === 0) && (await isWarehouseMode())
+    !dudBox && manifestId && (countManifestId === manifestId || lines.length === 0) && (await isWarehouseMode())
       ? await sortedLeft(manifestId, upc)
       : null;
   if (sort && countManifestId !== manifestId) {
@@ -126,7 +136,7 @@ export async function packSuggestion({
   // A count typed on the card still wins when it's newer than the sorting.
   const handWins = hand != null && (sort == null || hand.createdAt >= sort.latestAt);
   const countedBySort = !handWins && sort != null;
-  const left = countedBySort ? sort.left : unitsLeft;
+  const left = dudBox ? dudBox.left : countedBySort ? sort.left : unitsLeft;
   const alreadyScannedIn = !handWins && left === 0;
   const available = handWins ? hand.left : left == null ? null : Math.max(left, 1);
 
@@ -172,7 +182,7 @@ export async function packSuggestion({
       const [onFile, earlierCall, unitCost, target] = await Promise.all([
         scanMarketCheck({ upc: searchUpc, description: name }, { cachedOnly: true }),
         savedPackDecision(upc),
-        countManifestId ? unitCostForScan(countManifestId, upc) : Promise.resolve(null),
+        countManifestId && !costless ? unitCostForScan(countManifestId, upc) : Promise.resolve(null),
         getTargetMarginPct(),
       ]);
       const research = (m: ScanMarketCheck | null) =>
@@ -269,7 +279,7 @@ export async function packSuggestion({
   if (recommendation) {
     const [labelCost, unitCost, target, unitWeightOz] = await Promise.all([
       typicalSingleLabelCost(),
-      countManifestId ? unitCostForScan(countManifestId, upc) : Promise.resolve(null),
+      countManifestId && !costless ? unitCostForScan(countManifestId, upc) : Promise.resolve(null),
       getTargetMarginPct(),
       unitShippingWeightOz(upc, productName ?? description ?? `UPC ${upc}`),
     ]);

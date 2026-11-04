@@ -22,6 +22,7 @@ export const DUD_ESTIMATE_SELECT = {
   monthsToSellThrough: true,
   postHolidayFiller: true,
   eventEnded: true,
+  skippedOnEbayBefore: true,
   estimatedUnitSalePrice: true,
   estimatedUnitFees: true,
   estimatedUnitShipping: true,
@@ -79,6 +80,7 @@ export function dudCall(args: { description: string; evaluated: boolean; estimat
   if (!e.flaggedDud) return { dud: false, reason: null };
   if (e.postHolidayFiller) return { dud: true, reason: "Holiday item, season's over" };
   if (e.eventEnded) return { dud: true, reason: "The event it's for is over" };
+  if (e.skippedOnEbayBefore) return { dud: true, reason: "Set aside for eBay last time, never sold on eBay" };
   if (e.slowMover) return { dud: true, reason: `${ANALYZER}: sells too slowly` };
   const price = e.estimatedUnitSalePrice != null ? Number(e.estimatedUnitSalePrice) : 0;
   if (price <= 0) return { dud: true, reason: `${ANALYZER}: no sales found for it` };
@@ -165,7 +167,7 @@ export function sortedUnitsFor(
 // the units since listed from a dud box (those are Items now, already in
 // received). Exact UPC, like the manifest page.
 export async function productCounts(manifestId: string, upc: string): Promise<ProductCounts> {
-  const [items, bundles, walkups, damaged, duds, returned, sorted] = await Promise.all([
+  const [items, bundles, walkups, damaged, duds, returned, sorted, setAside] = await Promise.all([
     prisma.item.findMany({
       where: { manifestId, upc, isBundle: false },
       select: { quantity: true, isMultipack: true, packSize: true },
@@ -176,6 +178,12 @@ export async function productCounts(manifestId: string, upc: string): Promise<Pr
     prisma.manifestDudEntry.aggregate({ where: { manifestId, upc }, _sum: { quantity: true, listedUnits: true } }),
     returnedUnitsByUpc(manifestId),
     sortedByUpc(manifestId),
+    // Set aside at listing: sorted as good first, so not part of the sort
+    // station's own dud count (ebaySkips.ts).
+    prisma.manifestDudEntry.aggregate({
+      where: { manifestId, upc, setAsideReason: { not: null } },
+      _sum: { quantity: true },
+    }),
   ]);
   const inBundles = bundles.reduce(
     (sum, b) =>
@@ -198,6 +206,6 @@ export async function productCounts(manifestId: string, upc: string): Promise<Pr
     damaged: damaged._sum.quantity ?? 0,
     dud: (duds._sum.quantity ?? 0) - (duds._sum.listedUnits ?? 0),
     sorted: sortedUnitsFor(sorted, upc),
-    dudLogged: duds._sum.quantity ?? 0,
+    dudLogged: (duds._sum.quantity ?? 0) - (setAside._sum.quantity ?? 0),
   };
 }

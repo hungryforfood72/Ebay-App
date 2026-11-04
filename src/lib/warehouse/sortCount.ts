@@ -13,7 +13,8 @@ import { sortedByUpc } from "./sortBoxes";
 // listed (on its own or in a bundle) or sold at a walk-up. Units a customer
 // return put back as Items, or wrote off, came out of an earlier listing,
 // not out of the sort boxes, so they don't count; neither do units listed
-// from a dud box (those were never sorted as good). null = nothing sorted
+// from a dud box (those were never sorted as good), except set-asides
+// (sorted as good, then set aside at listing: used up). null = nothing sorted
 // for it (sorting skipped, or not on this load). latestAt = the last sort
 // scan, so a newer typed count can win. name = what the sorter's lookup
 // called it, for an extra that isn't on the manifest (no description there).
@@ -28,7 +29,7 @@ export async function sortedLeft(
   const sorted = stored.reduce((sum, [, v]) => sum + v.sorted, 0);
   if (sorted === 0) return null;
   const returnEntry = { startsWith: RETURN_NOTE_PREFIX };
-  const [named, latest, items, bundles, walkups, duds, returned, returnDamaged, returnDud, rxReturned] = await Promise.all([
+  const [named, latest, items, bundles, walkups, duds, returned, returnDamaged, returnDud, rxReturned, setAside] = await Promise.all([
     prisma.sortBoxEntry.findFirst({
       where: { manifestId, upc: { in: stored.map(([u]) => u) }, name: { not: null } },
       select: { name: true },
@@ -53,6 +54,16 @@ export async function sortedLeft(
       where: { manifestId, upc: { in: [...new Set([upc, ...stored.map(([u]) => u)])] }, reason: "rx_only" },
       _sum: { quantity: true },
     }),
+    // Set aside at the listing station (ebaySkips.ts): these came out of
+    // the sort boxes into a dud box, so they're used up here. The ones
+    // since listed from that box are Items, taken back off just above with
+    // the rest of the dud box listings, so the whole set-aside counts once.
+    // Matched like the sorted units (any stored form of this barcode), so a
+    // set-aside can't dodge the cap by scanning another form of it.
+    prisma.manifestDudEntry.aggregate({
+      where: { manifestId, upc: { in: [...new Set([upc, ...stored.map(([u]) => u)])] }, setAsideReason: { not: null } },
+      _sum: { quantity: true },
+    }),
   ]);
   const inBundles = bundles.reduce(
     (sum, b) =>
@@ -73,7 +84,8 @@ export async function sortedLeft(
     (returned.get(upc) ?? 0) +
     (returnDamaged._sum.quantity ?? 0) +
     (returnDud._sum.quantity ?? 0) +
-    (rxReturned._sum.quantity ?? 0);
+    (rxReturned._sum.quantity ?? 0) +
+    (setAside._sum.quantity ?? 0);
   return {
     sorted,
     left: Math.max(0, sorted - saved),

@@ -4,7 +4,8 @@ import BarcodeScanner from "@/components/BarcodeScanner";
 import { formatLbOz, formatOz, LiveWeightReadout, packageWeight, useStationWeight } from "@/components/LiveWeight";
 import { ExpirationPicker } from "@/components/ExpirationPicker";
 import { ManifestSearch, type ManifestSearchResult } from "@/components/ManifestSearch";
-import { PackSuggestionCard } from "@/components/PackSuggestionCard";
+import { PackSuggestionCard, type SetAsideWhy } from "@/components/PackSuggestionCard";
+import { SetAsideCard } from "@/components/SetAsideCard";
 import { PullBanner } from "@/components/PullBanner";
 import { ScanField } from "@/components/ScanField";
 import { SortBoxesCard } from "@/components/SortBoxesCard";
@@ -75,7 +76,7 @@ type BoxSizeEntry = LabeledEntry & {
 };
 
 // GET /api/dud-boxes/{code}: a dud box and what's in it. decision
-// "shopify" entries are the ones listed from here.
+// "shopify" and "ebay" entries are the ones listed from here.
 type DudBoxInfo = {
   code: string;
   manifestId: string;
@@ -86,9 +87,22 @@ type DudBoxInfo = {
 // Why a UPC can't be listed from this dud box, or null when it can.
 function dudBoxRefusal(box: DudBoxInfo, upc: string): string | null {
   const keys = new Set(upcMatchKeys(upc));
-  const shopify = box.entries.filter((e) => e.decision === "shopify" && upcMatchKeys(e.upc).some((k) => keys.has(k)));
-  if (shopify.length === 0) return `Not marked for Shopify in ${dudBoxName(box.code)} yet.`;
-  if (shopify.every((e) => e.quantity - e.listedUnits <= 0)) return `All of this product in ${dudBoxName(box.code)} is already listed.`;
+  const toList = box.entries.filter(
+    (e) => (e.decision === "shopify" || e.decision === "ebay") && upcMatchKeys(e.upc).some((k) => keys.has(k))
+  );
+  if (toList.length === 0) return `Not marked for Shopify or eBay in ${dudBoxName(box.code)} yet.`;
+  if (toList.every((e) => e.quantity - e.listedUnits <= 0)) return `All of this product in ${dudBoxName(box.code)} is already listed.`;
+  return null;
+}
+
+// Where a product from this dud box goes: Shopify & Whatnot only, or eBay.
+// Logged twice and decided both ways: Shopify first (the server does the
+// same for a Shopify-only save).
+function dudBoxDecision(box: DudBoxInfo, upc: string): "shopify" | "ebay" | null {
+  const keys = new Set(upcMatchKeys(upc));
+  const open = box.entries.filter((e) => e.quantity > e.listedUnits && upcMatchKeys(e.upc).some((k) => keys.has(k)));
+  if (open.some((e) => e.decision === "shopify")) return "shopify";
+  if (open.some((e) => e.decision === "ebay")) return "ebay";
   return null;
 }
 
@@ -299,6 +313,12 @@ function ScanPageInner() {
   // Set from the pack suggestion's "Sell on Shopify & Whatnot instead": this
   // item skips eBay entirely. Cleared for every new item.
   const [shopifyOnly, setShopifyOnly] = useState(false);
+  // The pack card's reason eBay isn't worth it, when "Sell on Shopify &
+  // Whatnot instead" set shopifyOnly (saved with the item so the Analyzer
+  // learns, see ebaySkips.ts). Cleared with shopifyOnly.
+  const [ebaySkipReason, setEbaySkipReason] = useState<SetAsideWhy | null>(null);
+  // The pack card's "Set aside" in warehouse mode: the dud box step.
+  const [settingAside, setSettingAside] = useState<{ units: number | null; why: SetAsideWhy } | null>(null);
   // What the pack card suggested for the product being listed (sent with
   // the save, so Cristian listing it differently teaches the pack agent).
   const [packSuggestion, setPackSuggestion] = useState<{ recommended: number; sizes: number[] } | null>(null);
@@ -702,6 +722,8 @@ function ScanPageInner() {
 
   function resetForm() {
     setShopifyOnly(false);
+    setEbaySkipReason(null);
+    setSettingAside(null);
     setPackSuggestion(null);
     setPhotos([]);
     setUpc("");
@@ -1185,9 +1207,10 @@ function ScanPageInner() {
               }))
             : undefined,
           manifestId: activeManifestId,
-          // Dud box items are always Shopify & Whatnot only (the server
-          // forces it too).
-          shopifyOnly: !isBundle && (shopifyOnly || dudBox != null),
+          // Dud box items go where the box decided: Shopify & Whatnot only
+          // or eBay (the server decides it the same way).
+          shopifyOnly: !isBundle && (dudBox ? dudBoxDecision(dudBox, upc.trim()) === "shopify" : shopifyOnly),
+          ebaySkipReason: !isBundle && !dudBox && shopifyOnly ? (ebaySkipReason ?? undefined) : undefined,
           relistOf: relist?.plan.id,
           relistPart: relist?.part,
           packSuggestion: isBundle ? undefined : (packSuggestion ?? undefined),
@@ -1809,6 +1832,14 @@ function ScanPageInner() {
             <span className="min-w-0">
               Listing from <span className="font-semibold">{dudBoxName(dudBox.code)}</span>
               {dudBox.manifestTitle ? ` (${dudBox.manifestTitle})` : ""}
+              {upc.trim() && step !== "upc" && dudBoxDecision(dudBox, upc.trim()) && (
+                <>
+                  {". "}
+                  <span className="font-semibold">
+                    {dudBoxDecision(dudBox, upc.trim()) === "ebay" ? "This one goes on eBay." : "Shopify & Whatnot only."}
+                  </span>
+                </>
+              )}
             </span>
             <button type="button" className="text-xs font-medium underline" onClick={leaveDudBox}>
               Leave dud box
@@ -1821,7 +1852,14 @@ function ScanPageInner() {
             <span>
               <span className="font-semibold">Shopify &amp; Whatnot only.</span> This one won&apos;t be listed on eBay.
             </span>
-            <button type="button" className="text-xs font-medium underline" onClick={() => setShopifyOnly(false)}>
+            <button
+              type="button"
+              className="text-xs font-medium underline"
+              onClick={() => {
+                setShopifyOnly(false);
+                setEbaySkipReason(null);
+              }}
+            >
               List on eBay instead
             </button>
           </div>
@@ -1950,20 +1988,44 @@ function ScanPageInner() {
         {step === "quantity" && (
           <Card className="flex flex-col gap-4">
             {/* A product picked by name or Item # has no UPC: the card goes by its manifest line key. */}
-            {(upc.trim() || pickedLine) && (
+            {(upc.trim() || pickedLine) && settingAside && activeManifestId ? (
+              <SetAsideCard
+                manifestId={activeManifestId}
+                upc={upc.trim() || pickedLine!.key}
+                units={settingAside.units}
+                why={settingAside.why}
+                stationId={station?.id ?? null}
+                onCancel={() => setSettingAside(null)}
+                onDone={(msg) => {
+                  resetForm();
+                  setMessage(msg);
+                }}
+              />
+            ) : (upc.trim() || pickedLine) && (
               <PackSuggestionCard
                 upc={upc.trim() || pickedLine!.key}
                 manifestId={activeManifestId}
+                dudBoxCode={dudBox?.code ?? null}
                 refreshKey={boxCountFixes}
                 onApply={(size, listings) => {
                   setIsMultipack(size > 1);
                   setPackSize(size > 1 ? String(size) : "");
                   if (listings != null) setQuantity(String(listings));
                 }}
-                onSetAside={resetForm}
+                onSetAside={(units, why) => {
+                  // Warehouse mode on a load: into a dud box, with the why.
+                  // From a dud box it's already in one; elsewhere there's
+                  // no load to put it against, so it's just skipped.
+                  if (warehouseMode && activeManifestId && !dudBox && !relist && !returnPlan) {
+                    setSettingAside({ units, why });
+                  } else {
+                    resetForm();
+                  }
+                }}
                 onSuggestion={setPackSuggestion}
-                onShopifyOnly={(size, listings) => {
+                onShopifyOnly={(size, listings, why) => {
                   setShopifyOnly(true);
+                  setEbaySkipReason(why);
                   setIsMultipack(size > 1);
                   setPackSize(size > 1 ? String(size) : "");
                   if (listings != null) setQuantity(String(listings));

@@ -22,7 +22,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         ? [body.entryId]
         : [];
     if (body.decision !== null && !isDudDecision(body.decision)) {
-      throw new WarehouseError('decision must be "shopify", "not_worth", "toss", "donate" or null.');
+      throw new WarehouseError('decision must be "ebay", "shopify", "not_worth", "toss", "donate" or null.');
     }
     return NextResponse.json(await decideDudEntries({ code, entryIds, decision: body.decision, by: user.username }));
   } catch (e) {

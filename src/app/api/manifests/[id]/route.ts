@@ -11,6 +11,7 @@ import { sortedByUpc } from "@/lib/warehouse/sortBoxes";
 import { callFor, consignmentCalls, returnedByUpc, returnList } from "@/lib/warehouse/consignmentSort";
 import { matchLineUpc } from "@/lib/warehouse/sortCheck";
 import { lineKey } from "@/lib/upcMatch";
+import { dudExtraForManifest } from "@/lib/ebaySkips";
 
 // Fills each line's expected quantity in order before spilling into the
 // next — a UPC can legitimately appear on more than one manifest line (e.g.
@@ -327,8 +328,13 @@ export async function GET(
       e.name = named.find((n) => n.upc === e.upc)?.name ?? item?.finalTitle ?? item?.aiTitle ?? null;
     }
   }
+  // Set aside at the listing station (setAsideReason) were sorted as good
+  // first, so they're already in the sort box counts.
   const dudLoggedByUpc = new Map<string, number>();
-  for (const d of manifest.duds) dudLoggedByUpc.set(d.upc, (dudLoggedByUpc.get(d.upc) ?? 0) + d.quantity);
+  for (const d of manifest.duds) {
+    if (d.setAsideReason != null) continue;
+    dudLoggedByUpc.set(d.upc, (dudLoggedByUpc.get(d.upc) ?? 0) + d.quantity);
+  }
   const sortGoodAllocation = new Array(manifest.lines.length).fill(0);
   const sortCountedAllocation = new Array(manifest.lines.length).fill(0);
   const sortReturnedAllocation = new Array(manifest.lines.length).fill(0);
@@ -644,7 +650,7 @@ export async function GET(
           bidClosedAt: manifest.bidClosedAt,
         }
       : {}),
-    ...(isOwner ? { totalLandedCost } : {}),
+    ...(isOwner ? { totalLandedCost, dudExtra: await dudExtraForManifest(manifest.id) } : {}),
     ...(isOwner
       ? {
           consignment: manifest.consignment,

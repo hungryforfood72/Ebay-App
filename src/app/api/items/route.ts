@@ -14,8 +14,10 @@ import { earliestBundleExpiration } from "@/lib/csv";
 import { normalizeBreakdown } from "@/lib/expirationBreakdown";
 import { inheritedFields, recordRelistPart, relistPlan, type RelistPart } from "@/lib/relist";
 import { findBin, nextItemCode, placeInBin, WarehouseError } from "@/lib/warehouse/bins";
-import { claimDudUnits, findDudBox, physicalUnits } from "@/lib/warehouse/dudBoxes";
+import { claimDudUnits, dudListDecision, findDudBox, physicalUnits } from "@/lib/warehouse/dudBoxes";
 import { settleDudBox } from "@/lib/warehouse/dudBoxReview";
+import type { DudListDecision } from "@/lib/warehouse/dudBoxTypes";
+import { isEbaySkipReason } from "@/lib/ebaySkips";
 import type { StoredReturnReport } from "@/lib/warehouse/returns";
 import { classifyScan, normalizeCode } from "@/lib/warehouse/codes";
 import { buildItemLabel, queueItemLabels } from "@/lib/warehouse/itemLabel";
@@ -61,8 +63,19 @@ type BundleComponentInput = {
 };
 
 export async function POST(request: NextRequest) {
+  // The proxy already checks the session; this keeps the route safe on its
+  // own (see auth.ts).
+  if (!getRequestUser(request)) return NextResponse.json({ error: "Not signed in." }, { status: 401 });
   const body = await request.json();
   const isBundle = Boolean(body.isBundle);
+  // A multi-pack's units are packs of packSize: it has to be a real size,
+  // or the dud box and sort counts would come out wrong.
+  if (body.isMultipack && !isBundle) {
+    const ps = Number(body.packSize);
+    if (!Number.isInteger(ps) || ps < 2 || ps > 1000) {
+      return NextResponse.json({ error: "Pack size has to be a whole number, 2 or more." }, { status: 400 });
+    }
+  }
   // Warehouse mode (src/lib/warehouse): no typed shelf location, the sku is
   // a printed item code (ES000123), and the station PC prints a label per
   // sellable unit. The lister bags each unit with its label; the bags go
@@ -147,11 +160,14 @@ export async function POST(request: NextRequest) {
   const returnReport = (returnRow?.report ?? null) as StoredReturnReport | null;
 
   // Listing from a dud box (src/lib/warehouse/dudBoxes.ts): units the dud
-  // processor marked "shopify". The manifest is the box's and the item is
-  // Shopify & Whatnot only whatever the page sent; the units come off the
-  // box's entries in the same transaction as the item.
+  // processor marked "shopify" or "ebay". The manifest is the box's; a
+  // Shopify one is Shopify & Whatnot only and an eBay one isn't, whatever
+  // the page sent. The units come off the box's entries in the same
+  // transaction as the item, which remembers the box (fromDudBoxId) so its
+  // sales count as the extra money duds bring in.
   const dudBoxCode = has(body.dudBoxCode) ? normalizeCode(String(body.dudBoxCode)) : "";
   let dudBox: Awaited<ReturnType<typeof findDudBox>> | null = null;
+  let dudDecision: DudListDecision | null = null;
   if (dudBoxCode) {
     if (isBundle || relistOf || returnOf) {
       return NextResponse.json({ error: "Bundles, relists and returns can't be listed from a dud box." }, { status: 400 });
@@ -169,7 +185,23 @@ export async function POST(request: NextRequest) {
       if (e instanceof WarehouseError) return NextResponse.json({ error: e.message }, { status: e.status });
       throw e;
     }
+    dudDecision = await dudListDecision(prisma, {
+      boxId: dudBox.id,
+      upc: String(body.upc),
+      wantShopify: body.shopifyOnly === true,
+    });
+    if (!dudDecision) {
+      return NextResponse.json(
+        { error: "This product isn't marked for Shopify or eBay in that dud box, or it's all listed. Decide it on the Duds page first." },
+        { status: 400 }
+      );
+    }
   }
+  // The pack card said eBay isn't worth it and the lister sent it to
+  // Shopify & Whatnot instead: kept so the Analyzer learns (ebaySkips.ts).
+  // Dud box listings already have theirs on the box entry.
+  const ebaySkipReason =
+    !dudBox && !isBundle && body.shopifyOnly === true && isEbaySkipReason(body.ebaySkipReason) ? body.ebaySkipReason : null;
 
   // Warehouse mode checks, all before anything is written: a wrong bin or a
   // deleted station should leave nothing behind (not even a used-up item
@@ -272,10 +304,13 @@ export async function POST(request: NextRequest) {
       : undefined,
     shopifyOnly:
       !isBundle &&
-      (body.shopifyOnly === true ||
-        (original != null && relistPart === "past") ||
-        returnRow?.decision === "shopify_only" ||
-        dudBox != null),
+      (dudBox
+        ? dudDecision === "shopify"
+        : body.shopifyOnly === true ||
+          (original != null && relistPart === "past") ||
+          returnRow?.decision === "shopify_only"),
+    ebaySkipReason,
+    fromDudBoxId: dudBox?.id ?? null,
     ...(original ? inheritedFields(original) : {}),
     ...(returnOriginal
       ? {
@@ -321,6 +356,7 @@ export async function POST(request: NextRequest) {
           if (dudBox) {
             await claimDudUnits(tx, {
               dudBoxCode: dudBox.code,
+              decision: dudDecision!,
               upc: String(data.upc),
               units: physicalUnits({
                 quantity: units,
@@ -328,7 +364,7 @@ export async function POST(request: NextRequest) {
                 packSize: (data.packSize as number | null) ?? null,
               }),
             });
-            // The last Shopify unit listed out of a fully decided box
+            // The last Shopify or eBay unit listed out of a fully decided box
             // finishes it right away, instead of on the next box view.
             await settleDudBox(tx, dudBox.id);
           }

@@ -8,6 +8,9 @@ import { useEffect, useRef, useState } from "react";
 
 type PackPlanGroup = { packSize: number; listings: number };
 
+// Same values as EbaySkipReason (src/lib/ebaySkips.ts).
+export type SetAsideWhy = "slow_single" | "low_return" | "no_demand" | "price_unclear";
+
 type PackSuggestion = {
   isOwner: boolean;
   // The package says Rx Only (taken down before): eBay won't allow it, and
@@ -44,7 +47,7 @@ type PackSuggestion = {
     // "no_demand": no sign anyone buys it now, judged from outside eBay.
     // "price_unclear": the research and the store-price check are more
     // than 2x apart, so it starts on Shopify & Whatnot (see priceGap).
-    why: "slow_single" | "low_return" | "no_demand" | "price_unclear";
+    why: SetAsideWhy;
     // No pack size up to the max makes Cristian's target on eBay, so the
     // whole lot is set aside, and shopPlan is how it'd split for
     // Shopify & Whatnot instead (null off a manifest).
@@ -126,16 +129,22 @@ export function PackSuggestionCard({
   onShopifyOnly,
   onSuggestion,
   refreshKey = 0,
+  dudBoxCode = null,
 }: {
   upc: string;
   manifestId: string | null;
   // Changing it fetches the plan again (a sort box's count was fixed).
   refreshKey?: number;
+  // Listing from this dud box: counts what's decided there, item cost $0.
+  dudBoxCode?: string | null;
   onApply: (packSize: number, listings: number | null) => void;
-  // Skip this item without saving it, straight to the next scan.
-  onSetAside: () => void;
+  // Skip this item, straight to the next scan. units/why: how many the
+  // card says to set aside and why (the page records them in a dud box,
+  // see ebaySkips.ts).
+  onSetAside: (units: number | null, why: SetAsideWhy) => void;
   // Keep scanning it in, but for Shopify & Whatnot only (no eBay listing).
-  onShopifyOnly: (packSize: number, listings: number | null) => void;
+  // why: the card's reason eBay isn't worth it, saved with the item.
+  onShopifyOnly: (packSize: number, listings: number | null, why: SetAsideWhy) => void;
   // What the card told them to do, sent with the save so a different
   // choice by Cristian is learned from (see packOverride in the items
   // route). sizes = every pack size in the plan (4-packs with 6 on hand go
@@ -150,7 +159,7 @@ export function PackSuggestionCard({
   // itself lives on the server, so the next scan of this UPC (the 2-pack
   // after the 3-pack) already plans for what's left of it.
   const [refresh, setRefresh] = useState(0);
-  const key = `${upc}|${manifestId ?? ""}|${refresh}|${refreshKey}`;
+  const key = `${upc}|${manifestId ?? ""}|${dudBoxCode ?? ""}|${refresh}|${refreshKey}`;
   const [result, setResult] = useState<{ key: string; data: PackSuggestion | null } | null>(null);
   const loading = result?.key !== key;
   const changeCount = async (count: number | null) => {
@@ -165,6 +174,7 @@ export function PackSuggestionCard({
   useEffect(() => {
     const params = new URLSearchParams({ upc });
     if (manifestId) params.set("manifestId", manifestId);
+    if (dudBoxCode) params.set("dudBoxCode", dudBoxCode);
     let cancelled = false;
     fetch(`/api/pack-suggestion?${params}`)
       .then((r) => (r.ok ? r.json() : null))
@@ -182,7 +192,7 @@ export function PackSuggestionCard({
     return () => {
       cancelled = true;
     };
-  }, [upc, manifestId, key]);
+  }, [upc, manifestId, dudBoxCode, key]);
 
   if (loading) {
     return (
@@ -300,18 +310,23 @@ export function PackSuggestionCard({
                   size="sm"
                   onClick={() => {
                     const aside = data.setAside!;
-                    if (shopFirst) onShopifyOnly(shopFirst.packSize, shopFirst.listings);
-                    else onShopifyOnly(aside.packSize, aside.units != null ? Math.max(1, Math.round(aside.units / aside.packSize)) : null);
+                    if (shopFirst) onShopifyOnly(shopFirst.packSize, shopFirst.listings, aside.why);
+                    else
+                      onShopifyOnly(
+                        aside.packSize,
+                        aside.units != null ? Math.max(1, Math.round(aside.units / aside.packSize)) : null,
+                        aside.why
+                      );
                   }}
                 >
                   Sell on Shopify &amp; Whatnot instead
                 </Button>
-                <Button size="sm" variant="outline" onClick={onSetAside}>
+                <Button size="sm" variant="outline" onClick={() => onSetAside(data.setAside!.units, data.setAside!.why)}>
                   Set aside anyway
                 </Button>
               </>
             ) : data.plan && data.plan.length === 0 && data.setAside ? (
-              <Button size="sm" variant="outline" onClick={onSetAside}>
+              <Button size="sm" variant="outline" onClick={() => onSetAside(data.setAside!.units, data.setAside!.why)}>
                 Set aside, scan the next item
               </Button>
             ) : first ? (

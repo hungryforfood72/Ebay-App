@@ -181,6 +181,16 @@ model Item {
   // price is still the eBay-equivalent price (from the same price
   // research); Shopify takes its usual discount off it.
   shopifyOnly      Boolean        @default(false)
+  // Why it's off eBay, when the pack card said eBay isn't worth it and the
+  // lister sent it to Shopify & Whatnot instead (packSuggestion.ts setAside
+  // why: slow_single, low_return, no_demand, price_unclear). Ignored once
+  // it isn't Shopify & Whatnot only anymore (unticked at review, so it went
+  // on eBay after all). The Analyzer learns from it (ebaySkips.ts).
+  ebaySkipReason   String?
+  // Listed out of a dud box (dud or set aside at listing), so its sales are
+  // the extra money duds bring in, kept apart from the eBay-first numbers.
+  fromDudBox       DudBox?        @relation(fields: [fromDudBoxId], references: [id], onDelete: SetNull)
+  fromDudBoxId     String?
   // The price before any discount from the dashboard or a manifest, so a
   // new discount replaces the old one instead of stacking on it (15% then
   // 40% was coming out 49% off). Set by the first discount; see discount.ts.
@@ -367,6 +377,7 @@ model Item {
   @@index([status])
   @@index([scanSessionId])
   @@index([manifestId])
+  @@index([fromDudBoxId])
 }
 
 // One row per Shopify order line item matched to an Item, including
@@ -897,6 +908,10 @@ model SourcingLineEstimate {
   ebayCategoryId         String?
   categoryWeeksOnHand    Float?
   crowdedMarket          Boolean            @default(false)
+  // We passed on eBay for this product before (set aside or sent to
+  // Shopify & Whatnot at listing) and it has never sold on eBay for us, so
+  // it's a dud for bidding (ebaySkips.ts).
+  skippedOnEbayBefore    Boolean            @default(false)
 
   @@unique([evaluationId, groupKey])
 }
@@ -1144,6 +1159,12 @@ model ManifestDudEntry {
   decidedBy  String?
   decidedAt  DateTime?
   listedUnits Int      @default(0)
+  // Set aside at the listing station (the pack card said eBay isn't worth
+  // it: slow_single, low_return, no_demand, price_unclear) instead of
+  // called a dud at the sort station. These units were already counted as
+  // good in a sort box, so the sort counts leave them out of the dud tally
+  // (SET_ASIDE_ENTRY / SORT_DUD_ENTRY in ebaySkips.ts).
+  setAsideReason String?
 
   @@index([manifestId, upc])
   @@index([dudBoxId])
@@ -1167,6 +1188,7 @@ model DudBox {
   doneAt      DateTime?
 
   entries ManifestDudEntry[]
+  items   Item[]
 
   @@index([manifestId])
 }
@@ -1420,6 +1442,9 @@ model PredictionOutcome {
   // actual / predicted; null until there's enough to compare
   priceRatio             Float?
   speedRatio             Float?
+  // Units the listing station kept off eBay (set aside, or Shopify &
+  // Whatnot only because eBay wasn't worth it). Not in listedUnits.
+  skippedUnits           Int      @default(0)
   // Which Analyzer made the guess (SourcingEvaluation.engine): "legacy" or
   // "compliant". A bought manifest's own latest evaluation is scored under
   // its id; a compliant run on an Analyzer Beta copy of it sits under the

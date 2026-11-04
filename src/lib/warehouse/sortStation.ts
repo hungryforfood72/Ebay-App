@@ -253,7 +253,8 @@ export async function recentSorters(args: { manifestId: string; exclude: string;
   const rows = (
     await Promise.all([
       prisma.sortBoxEntry.findMany({ where, select }),
-      prisma.manifestDudEntry.findMany({ where, select }),
+      // Not the listing station's set-asides: those aren't sorting.
+      prisma.manifestDudEntry.findMany({ where: { ...where, setAsideReason: null }, select }),
       prisma.manifestDamagedEntry.findMany({ where, select }),
       prisma.consignmentReturnEntry.findMany({ where, select }),
     ])
