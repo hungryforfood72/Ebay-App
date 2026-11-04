@@ -448,7 +448,8 @@ export async function packSuggestion({
     recommendation: recommendation && {
       packSize: recommendation.packSize,
       basis: recommendation.basis,
-      reason,
+      // The agent's why: owner only, like the dollar figures (2026-11-03).
+      reason: isOwner ? reason : null,
       compCount: 0,
       ...(isOwner
         ? {

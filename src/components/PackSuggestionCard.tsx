@@ -229,6 +229,9 @@ export function PackSuggestionCard({
                 ? `Suggested: ${rec.packSize > 1 ? `${rec.packSize} of these ${data.manifestPackSize}-packs per listing (${rec.packSize * data.manifestPackSize} total)` : `one ${data.manifestPackSize}-pack per listing`}`
                 : `Suggested: sell as ${rec.packSize > 1 ? `${rec.packSize}-packs` : "singles"}`}
           </p>
+          {/* The why is for Cristian only; employees just get what to do
+              (Cristian, 2026-11-03: "they don't care"). */}
+          {data.isOwner && (
           <p className="mt-0.5 text-blue-900/80">
             {notForEbay
               ? data.setAside?.why === "no_demand"
@@ -250,6 +253,7 @@ export function PackSuggestionCard({
               </>
             )}
           </p>
+          )}
 
           {data.plan && data.available != null && (data.plan.length > 0 || data.setAside) && (
             <p className="mt-2">
@@ -266,7 +270,14 @@ export function PackSuggestionCard({
             </p>
           )}
 
-          {data.setAside && <SetAsideNote setAside={data.setAside} recommendedPackSize={rec.packSize} />}
+          {data.setAside && (
+            <SetAsideNote
+              setAside={data.setAside}
+              recommendedPackSize={rec.packSize}
+              explain={data.isOwner}
+              shopOffered={offerShop}
+            />
+          )}
           {notForEbay && offerShop && shopRest.length > 0 && (
             <p className="mt-2 text-xs text-blue-900/80">
               For Shopify &amp; Whatnot: {[shopFirst, ...shopRest].filter(Boolean).map((g) => listingsOf(g!)).join(" + ")}.
@@ -459,12 +470,20 @@ function CountOverride({ data, onChange }: { data: PackSuggestion; onChange: (co
 // Units not worth listing at the only size they can go in (see
 // /api/pack-suggestion) — Lizvet sets them aside and moves on; Cristian
 // decides what happens to them later.
+// explain: the why, the money and the Shopify & Whatnot line, owner only
+// (Cristian, 2026-11-03). shopOffered: the card's "Sell on Shopify &
+// Whatnot instead" button is showing, so the note doesn't just say to set
+// it aside.
 function SetAsideNote({
   setAside,
   recommendedPackSize,
+  explain,
+  shopOffered,
 }: {
   setAside: NonNullable<PackSuggestion["setAside"]>;
   recommendedPackSize: number;
+  explain: boolean;
+  shopOffered: boolean;
 }) {
   const n = setAside.units;
   const title =
@@ -492,8 +511,10 @@ function SetAsideNote({
       <div className="min-w-0">
         <p className="font-semibold">{title}</p>
         <p className="mt-0.5 text-amber-900/80">
-          {why} Don&apos;t list {n === 1 || n == null ? "it" : "them"}, just set {n === 1 || n == null ? "it" : "them"}{" "}
-          aside and move on to the next item.
+          {explain && <>{why} </>}
+          {shopOffered
+            ? `Don't list ${n === 1 || n == null ? "it" : "them"} on eBay. Send ${n === 1 || n == null ? "it" : "them"} to Shopify & Whatnot below, or set ${n === 1 || n == null ? "it" : "them"} aside.`
+            : `Don't list ${n === 1 || n == null ? "it" : "them"}, just set ${n === 1 || n == null ? "it" : "them"} aside and move on to the next item.`}
         </p>
         {setAside.price != null && setAside.label != null && setAside.profit != null && (
           <p className="mt-1.5 text-xs text-amber-900/70">
@@ -513,7 +534,7 @@ function SetAsideNote({
             .
           </p>
         )}
-        {setAside.shopChannel && <ShopChannelLine shop={setAside.shopChannel} what={what} />}
+        {explain && setAside.shopChannel && <ShopChannelLine shop={setAside.shopChannel} what={what} />}
       </div>
     </div>
   );
