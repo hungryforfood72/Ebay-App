@@ -43,7 +43,9 @@ What you can use:
 
 Rules:
 - Never invent or estimate a value. A wrong brand, size or dosage is worse than a listing that waits for a person.
-- Health values (dosage, strength, active ingredient): only from the label in the photos, the same product's other listing, or the maker's own page.
+- Strength and active ingredient: only from the label in the photos, the same product's other listing, or the maker's own page.
+- Medicines (anything with a Drug Facts or Supplement Facts panel: medicated eye drops, pain relievers, allergy medicine, vitamins): Dosage also only from those three sources, or call needs_a_person.
+- Dosage on something that isn't a medicine (wipes, cleansers, contact lens solution, a device): it's how the directions say to use it, like "1 Wipe per Eyelid". The box directions can come from a big retailer's page (Walgreens, CVS, Target, Walmart, Ulta) when it's the exact same product and size, since they reprint the box. If no directions turn up anywhere, "Use as Directed" is true and fine. Don't hand that to a person.
 - If no brand appears anywhere (photos, text, the same load), "Unbranded" is eBay's own value for that.
 - Department and similar who-is-it-for specifics are a judgment call from the product and the listing's words. If nothing says men or women, use "Unisex Adult".
 - Never touch the expiration date, price, quantity, condition, category or photos. If eBay's complaint is about one of those, hand it to the owner.
