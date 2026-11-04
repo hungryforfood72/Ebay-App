@@ -13,6 +13,8 @@ import { stripKnownBlockedWords, tryAutoFix } from "@/lib/publishRemediation";
 import { runFixAgent } from "@/lib/publishFixAgent";
 import { NEEDS_YOU_PREFIX } from "@/lib/needsYou";
 import { binGateError } from "@/lib/warehouse/binGate";
+import { expirationCutoff } from "@/lib/expireListings";
+import { formatExpiration } from "@/lib/formatExpiration";
 import { prisma } from "@/lib/prisma";
 import { ALREADY_PUBLISHING, claimPublish, releasePublish } from "@/lib/publishLock";
 import { queueShopifyPublish } from "@/lib/shopifySync";
@@ -90,6 +92,24 @@ export async function POST(
       { error: `The package says Rx Only${item.rxOnlyNote ? ` (${item.rxOnlyNote})` : ""}, and eBay doesn't allow prescription devices. Set it aside instead.` },
       { status: 400 }
     );
+  }
+
+  // Past its date, or due to come down within the expiry buffer: the
+  // nightly sweep would only take it down again (Cristian, 2026-11-03: a
+  // foundation dated 9/30/2026 went live on 11/3). Skipped only for a
+  // listing that's live right now (a re-publish after an edit), not one
+  // that ended or expired before.
+  const liveNow = Boolean(item.ebayListingId) && item.status === "listed" && !item.listingEndedAt && !item.expiredAt;
+  if (item.expirationDate && !liveNow) {
+    const { cutoff, bufferDays } = await expirationCutoff();
+    if (item.expirationDate <= cutoff) {
+      return NextResponse.json(
+        {
+          error: `Its date (${formatExpiration(item.expirationDate)}) is ${bufferDays > 0 ? `past, or within ${bufferDays} days` : "past"}, so it can't go on eBay. Tick Shopify & Whatnot only, or set it aside to be pulled.`,
+        },
+        { status: 400 }
+      );
+    }
   }
 
   // Server-side belt-and-suspenders, same reasoning as the CSV export

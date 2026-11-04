@@ -59,6 +59,15 @@ function chicagoTodayDateString(now: Date): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago" }).format(now);
 }
 
+// The last day a listing's date can fall on and still come down tonight:
+// today in Chicago plus the buffer. Shared with Publish and backup
+// restore, so nothing goes live that the next sweep would take down again.
+export async function expirationCutoff(now: Date = new Date()): Promise<{ cutoff: Date; bufferDays: number }> {
+  const bufferDays = await getExpirationBufferDays();
+  const cutoff = new Date(new Date(`${chicagoTodayDateString(now)}T23:59:59.999Z`).getTime() + bufferDays * 24 * 60 * 60 * 1000);
+  return { cutoff, bufferDays };
+}
+
 // Ends every live eBay listing whose expirationDate is within the
 // configured buffer window (today + bufferDays, in Chicago) — not just
 // ones that have already reached their date, per the compliance reasoning
@@ -78,9 +87,8 @@ export async function expireDueListings(now: Date = new Date()): Promise<ExpireL
     errors: [],
   };
 
-  const bufferDays = await getExpirationBufferDays();
   const chicagoToday = chicagoTodayDateString(now);
-  const cutoff = new Date(new Date(`${chicagoToday}T23:59:59.999Z`).getTime() + bufferDays * 24 * 60 * 60 * 1000);
+  const { cutoff } = await expirationCutoff(now);
 
   const items = await prisma.item.findMany({
     where: {

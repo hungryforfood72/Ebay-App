@@ -13,6 +13,7 @@ import {
   toItemForEbayPublish,
   type ActiveListing,
 } from "./ebay";
+import { expirationCutoff } from "./expireListings";
 import { prisma } from "./prisma";
 import { queueShopifyPublish } from "./shopifySync";
 
@@ -650,6 +651,9 @@ async function restoreOne(row: EbayListingBackup): Promise<string> {
   if (item && item.quantity - item.soldQuantity <= 0) throw new Error("Sold out in the app; nothing to list.");
   if (item && (item.expiredAt || item.pastDateAt || item.listingEndedAt || item.shopifyOnly)) {
     throw new Error("Not for sale on eBay in the app anymore (ended, expired, past-date or Shopify only).");
+  }
+  if (item?.expirationDate && item.expirationDate <= (await expirationCutoff()).cutoff) {
+    throw new Error("Its date is past or within the expiry buffer; tonight's sweep would take it down.");
   }
   if (!item) {
     item = await itemFromBackup(row);
