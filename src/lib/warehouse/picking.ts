@@ -1051,7 +1051,7 @@ export async function unpickUnit(
           // So put its shelf back the way it was.
           const bin = await tx.bin.findUnique({ where: { code: pick.binCode } });
           const wasEmpty = bin ? (await tx.binContent.count({ where: { binId: bin.id } })) === 0 : false;
-          await placeInBin(tx, { itemId: pick.itemId, binCode: pick.binCode, units: 1, by: user.username, note: "Pick undone" });
+          await placeInBin(tx, { itemId: pick.itemId, binCode: pick.binCode, units: 1, by: user.username, note: "Pick undone", anyArea: true });
           if (bin?.shelfLabel && wasEmpty) {
             await tx.bin.update({
               where: { id: bin.id },

@@ -11,8 +11,8 @@ export function formatLocation(loc: ItemLocation | null | undefined): string {
       b.oversized
         ? `Oversized shelf ${b.shelfLabel}`
         : b.shelfLabel
-          ? `Shelf ${b.shelfLabel} · ${b.binCode}`
-          : `${b.binCode} (not shelved)`
+          ? `Shelf ${b.shelfLabel} · ${b.binCode}${b.whatnot ? " (Whatnot)" : ""}`
+          : `${b.binCode}${b.whatnot ? " (Whatnot, not shelved)" : " (not shelved)"}`
     )
     .join(", ");
 }

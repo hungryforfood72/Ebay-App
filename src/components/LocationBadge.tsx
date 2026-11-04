@@ -9,12 +9,19 @@ import { useEffect, useState } from "react";
 // items (one per bin), "Shelf A3" for items listed before warehouse mode,
 // exactly as these badges always read. `fallbackShelf` covers a response
 // that came back without a location (Item.shelfLocation).
+// shopifyOnly, when given: a bin of the wrong kind for it (a Shopify &
+// Whatnot only item in a regular bin, or an eBay item in a Whatnot bin)
+// shows red with what to do, once the Whatnot area exists (Cristian,
+// 2026-11-03: he ticks or unticks Shopify & Whatnot only at review, after
+// it was binned).
 export function LocationBadge({
   location,
   fallbackShelf,
+  shopifyOnly,
 }: {
   location: ItemLocation | null | undefined;
   fallbackShelf?: string | null;
+  shopifyOnly?: boolean;
 }) {
   if (!location) return <Badge>{fallbackShelf ? `Shelf ${fallbackShelf}` : "No location"}</Badge>;
   if (location.bins.length === 0) {
@@ -22,11 +29,16 @@ export function LocationBadge({
   }
   return (
     <>
-      {location.bins.map((b) => (
-        <Badge key={b.binCode} tone={b.shelfLabel ? "neutral" : "warning"}>
-          {formatLocation({ bins: [b], legacyShelf: null })}
-        </Badge>
-      ))}
+      {location.bins.map((b) => {
+        const wrongArea =
+          shopifyOnly !== undefined && location.whatnotArea && !b.oversized && Boolean(b.whatnot) !== shopifyOnly;
+        return (
+          <Badge key={b.binCode} tone={wrongArea ? "danger" : b.shelfLabel ? "neutral" : "warning"}>
+            {formatLocation({ bins: [b], legacyShelf: null })}
+            {wrongArea && ` · move it to ${shopifyOnly ? "a Whatnot bin" : "a regular bin"} and reprint its label`}
+          </Badge>
+        );
+      })}
     </>
   );
 }
@@ -61,7 +73,15 @@ function requestLocation(itemId: string): Promise<ItemLocation | null> {
   });
 }
 
-export function FetchedLocationBadge({ itemId, shelfLocation }: { itemId: string; shelfLocation: string }) {
+export function FetchedLocationBadge({
+  itemId,
+  shelfLocation,
+  shopifyOnly,
+}: {
+  itemId: string;
+  shelfLocation: string;
+  shopifyOnly?: boolean;
+}) {
   const [location, setLocation] = useState<ItemLocation | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -76,5 +96,5 @@ export function FetchedLocationBadge({ itemId, shelfLocation }: { itemId: string
   // Warehouse-mode items have no shelf of their own (""), so nothing
   // shows for them until their bins come back.
   if (!location && !shelfLocation) return null;
-  return <LocationBadge location={location} fallbackShelf={shelfLocation} />;
+  return <LocationBadge location={location} fallbackShelf={shelfLocation} shopifyOnly={shopifyOnly} />;
 }

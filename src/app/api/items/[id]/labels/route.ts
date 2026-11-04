@@ -32,6 +32,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       manifestLineId: true,
       finalTitle: true,
       aiTitle: true,
+      shopifyOnly: true,
       quantity: true,
       soldQuantity: true,
     },

@@ -1,5 +1,7 @@
 import { requireUser } from "@/lib/auth";
 import { cleanLabelPayload, isLabelKind } from "@/components/labels/labelMarkup";
+import { prisma } from "@/lib/prisma";
+import { normalizeCode } from "@/lib/warehouse/codes";
 import { queuePrintJob } from "@/lib/warehouse/printJobs";
 import { errorResponse, toPrintJobRow } from "@/lib/warehouse/stations";
 import { NextRequest, NextResponse } from "next/server";
@@ -23,11 +25,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     const cleaned = cleanLabelPayload(body.kind, body.payload);
     if ("error" in cleaned) return NextResponse.json({ error: cleaned.error }, { status: 400 });
     const copies = body.copies == null ? 1 : Number(body.copies);
+    // A bin label's caption comes from the bin itself, never the request:
+    // "WHATNOT" only on a real Whatnot bin, so a regular bin can't be
+    // labeled as one and end up on the Whatnot shelves.
+    let payload = cleaned.payload;
+    if (body.kind === "bin") {
+      const bin = await prisma.bin.findUnique({ where: { code: normalizeCode(payload.code) }, select: { whatnot: true } });
+      payload = bin?.whatnot ? { code: payload.code, caption: "WHATNOT" } : { code: payload.code };
+    }
 
     const job = await queuePrintJob({
       stationId: id,
       kind: body.kind,
-      payload: cleaned.payload,
+      payload,
       copies,
       by: user.username,
     });

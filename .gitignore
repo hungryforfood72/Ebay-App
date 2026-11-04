@@ -45,3 +45,9 @@ next-env.d.ts
 
 # pdf.js worker, copied from node_modules on install
 /public/pdf.worker.min.mjs
+
+# Local-only: the print helper's browser profile and cache, scratch data
+/public/print-helper/.browser-profile/
+/public/print-helper/__pycache__/
+/scratch-tmp/
+/zero-stock.json

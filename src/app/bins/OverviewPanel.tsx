@@ -317,7 +317,8 @@ function ShelvesCard({
 function BinLink({ bin, onOpen }: { bin: BinSummary; onOpen: (code: string) => void }) {
   return (
     <button type="button" onClick={() => onOpen(bin.code)} className="font-mono text-primary hover:underline">
-      {bin.code} ({plural(bin.units, "unit")})
+      {bin.code}
+      {bin.whatnot ? " · Whatnot" : ""} ({plural(bin.units, "unit")})
     </button>
   );
 }
@@ -325,6 +326,8 @@ function BinLink({ bin, onOpen }: { bin: BinSummary; onOpen: (code: string) => v
 // Owner only: making new bin numbers and printing bin or shelf labels.
 function OwnerTools({ bins, shelves, onChanged }: { bins: BinSummary[]; shelves: string[]; onChanged: () => void }) {
   const [count, setCount] = useState("20");
+  // Whatnot bins (Cristian, 2026-11-03): only Shopify & Whatnot only items.
+  const [whatnot, setWhatnot] = useState(false);
   const [making, setMaking] = useState(false);
   const [made, setMade] = useState<string | null>(null);
   const [makeError, setMakeError] = useState<string | null>(null);
@@ -341,8 +344,9 @@ function OwnerTools({ bins, shelves, onChanged }: { bins: BinSummary[]; shelves:
     setMakeError(null);
     setMade(null);
     try {
-      const { codes } = await api<{ codes: string[] }>("/api/bins", { count: Number(count) });
-      setMade(codes.length === 1 ? `Made ${codes[0]}.` : `Made ${codes.length} bins: ${codes[0]} to ${codes[codes.length - 1]}.`);
+      const { codes } = await api<{ codes: string[] }>("/api/bins", { count: Number(count), whatnot });
+      const what = whatnot ? "Whatnot bin" : "bin";
+      setMade(codes.length === 1 ? `Made ${what} ${codes[0]}.` : `Made ${codes.length} ${what}s: ${codes[0]} to ${codes[codes.length - 1]}.`);
       // Ready to print the new ones.
       setKind("bin");
       setFromCode(codes[0]);
@@ -373,9 +377,19 @@ function OwnerTools({ bins, shelves, onChanged }: { bins: BinSummary[]; shelves:
             <Input type="number" min={1} max={500} value={count} onChange={(e) => setCount(e.target.value)} />
           </Field>
           <Button onClick={makeBins} disabled={making}>
-            {making ? "Making…" : "Make bins"}
+            {making ? "Making…" : whatnot ? "Make Whatnot bins" : "Make bins"}
           </Button>
         </div>
+        <label className="mt-3 flex items-start gap-2 text-sm">
+          <input type="checkbox" className="mt-0.5 size-4" checked={whatnot} onChange={(e) => setWhatnot(e.target.checked)} />
+          <span>
+            <span className="font-medium">Whatnot bins</span>
+            <span className="block text-muted-foreground">
+              For the Whatnot area: they only take Shopify &amp; Whatnot only items, and those items can&apos;t go in any
+              other bin once the first Whatnot bin exists. Their labels say WHATNOT.
+            </span>
+          </span>
+        </label>
         {made && <p className="mt-2 text-sm text-success">{made}</p>}
         {makeError && <p className="mt-2 text-sm text-danger">{makeError}</p>}
       </Card>

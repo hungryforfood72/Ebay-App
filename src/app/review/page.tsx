@@ -1063,7 +1063,7 @@ function ItemCard({
               {sameProduct.findIndex((s) => s.id === item.id) + 1} of {sameProduct.length} listings of this product
             </Badge>
           )}
-          <FetchedLocationBadge itemId={item.id} shelfLocation={item.shelfLocation} />
+          <FetchedLocationBadge itemId={item.id} shelfLocation={item.shelfLocation} shopifyOnly={item.shopifyOnly} />
           {binHold(item) && <Badge tone="warning">{binHoldBadge(item)}</Badge>}
           {item.expirationBreakdown ? (
             <Badge tone="warning">Exp {describeBreakdown(item.expirationBreakdown)}</Badge>

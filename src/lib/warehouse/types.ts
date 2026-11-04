@@ -14,6 +14,9 @@ export type ItemLabelPayload = {
   // "MM/YYYY", the listing's earliest date, or null.
   expiration: string | null;
   condition: string | null;
+  // Shopify & Whatnot only: printed on the label so it goes to the
+  // Whatnot area (Cristian, 2026-11-03).
+  shopOnly?: boolean;
 };
 
 // Bin, shelf, box and dud box labels: just the barcode and a big readable
@@ -138,10 +141,14 @@ export type BinLocation = {
   units: number;
   // Straight on an oversized shelf (its hidden shelf bin), not in a bin.
   oversized?: boolean;
+  // A Whatnot bin (Bin.whatnot).
+  whatnot?: boolean;
 };
 
 export type ItemLocation = {
   bins: BinLocation[];
   // Item.shelfLocation for items listed before warehouse mode (no bins).
   legacyShelf: string | null;
+  // At least one Whatnot bin exists, so the Whatnot area rule is on.
+  whatnotArea?: boolean;
 };

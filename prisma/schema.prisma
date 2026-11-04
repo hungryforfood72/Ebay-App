@@ -1529,6 +1529,10 @@ model Bin {
   // The hidden bin of an oversized shelf (ShelfLocation.oversized): always
   // on that shelf, never moved, combined or listed with real bins.
   shelfBin   Boolean   @default(false)
+  // A Whatnot bin (Cristian, 2026-11-03): holds only Shopify & Whatnot
+  // only items, in the Whatnot area, and they can't go in any other bin.
+  // Enforced only once at least one Whatnot bin exists (bins.ts).
+  whatnot    Boolean   @default(false)
   createdAt  DateTime  @default(now())
 
   contents BinContent[]

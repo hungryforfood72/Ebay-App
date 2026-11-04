@@ -37,7 +37,8 @@ export async function nextItemCode(tx: Tx | typeof prisma = prisma): Promise<str
 }
 
 // Makes `count` new bins numbered after the highest existing one.
-export async function createBins(count: number): Promise<string[]> {
+// whatnot = Whatnot bins (see assertBinArea).
+export async function createBins(count: number, whatnot = false): Promise<string[]> {
   if (!Number.isInteger(count) || count < 1 || count > 500) {
     throw new WarehouseError("Make between 1 and 500 bins at a time.");
   }
@@ -48,7 +49,7 @@ export async function createBins(count: number): Promise<string[]> {
     const existing = await tx.bin.findMany({ select: { code: true } });
     const start = Math.max(0, ...existing.map((b) => codeNumber(b.code, BIN_CODE_PREFIX) ?? 0)) + 1;
     const codes = Array.from({ length: count }, (_, i) => formatBinCode(start + i));
-    await tx.bin.createMany({ data: codes.map((code) => ({ code })) });
+    await tx.bin.createMany({ data: codes.map((code) => ({ code, whatnot })) });
     return codes;
   });
 }
@@ -70,16 +71,43 @@ export async function findBin(tx: Tx | typeof prisma, rawCode: string) {
   return bin;
 }
 
+// The Whatnot area (Cristian, 2026-11-03): Shopify & Whatnot only items
+// live in Whatnot bins on the Whatnot shelves, so a show or a Shopify order
+// picks from there, and eBay items never go in those bins. Off until the
+// first Whatnot bin is made, so nothing changes before the area exists. An
+// oversized shelf's own bin takes anything (big items go where they fit).
+export async function assertBinArea(
+  tx: Tx | typeof prisma,
+  bin: { code: string; whatnot: boolean; shelfBin: boolean },
+  itemIds: string[]
+): Promise<void> {
+  if (bin.shelfBin || itemIds.length === 0) return;
+  if (!bin.whatnot && !(await tx.bin.findFirst({ where: { whatnot: true }, select: { id: true } }))) return;
+  const wrong = await tx.item.findFirst({
+    where: { id: { in: itemIds }, shopifyOnly: !bin.whatnot },
+    select: { sku: true },
+  });
+  if (!wrong) return;
+  throw new WarehouseError(
+    bin.whatnot
+      ? `${wrong.sku} is for eBay, and ${bin.code} is a Whatnot bin. Put it in a regular bin.`
+      : `${wrong.sku} is Shopify & Whatnot only. Put it in a Whatnot bin, not ${bin.code}.`,
+    409
+  );
+}
+
 // Puts `units` of an item into a bin (adds to what's already there). If the
 // bin was empty and still marked as on a shelf, it has physically come back
-// to a station, so it's unshelved.
+// to a station, so it's unshelved. anyArea = skip the Whatnot area rule
+// (undoing a pick puts it back where it came from).
 export async function placeInBin(
   tx: Tx,
-  args: { itemId: string; binCode: string; units: number; by: string | null; note?: string }
+  args: { itemId: string; binCode: string; units: number; by: string | null; note?: string; anyArea?: boolean }
 ): Promise<void> {
   if (!Number.isInteger(args.units) || args.units < 1) throw new WarehouseError("Units must be at least 1.");
   await lockBins(tx, [args.binCode]);
   const bin = await findBin(tx, args.binCode);
+  if (!args.anyArea) await assertBinArea(tx, bin, [args.itemId]);
   const existingCount = await tx.binContent.count({ where: { binId: bin.id } });
   // An oversized shelf's own bin never leaves its shelf.
   if (existingCount === 0 && bin.shelfLabel && !bin.shelfBin) {
@@ -301,6 +329,7 @@ export async function moveBinContents(args: {
       },
     });
     if (rows.length === 0) throw new WarehouseError(`Nothing to move in ${from.code}.`);
+    await assertBinArea(tx, toNow, rows.map((r) => r.itemId));
     const kind = args.itemIds ? "transfer" : "merge";
     // A handful of statements however many items move (a full bin is
     // dozens): one row at a time took ~8s for 40 items over the network
@@ -374,6 +403,7 @@ export async function moveUnits(
   const from = await findBin(tx, args.fromBinCode);
   const to = await findBin(tx, args.toBinCode);
   if (from.id === to.id) throw new WarehouseError("That's the same bin twice.");
+  await assertBinArea(tx, to, [args.itemId]);
   const [row] = await tx.$queryRaw<{ id: string; units: number }[]>`
     SELECT id, units FROM "BinContent" WHERE "binId" = ${from.id} AND "itemId" = ${args.itemId} FOR UPDATE`;
   if (!row || row.units < args.units) throw new WarehouseError(`That item isn't in ${from.code} anymore.`, 409);
@@ -484,19 +514,25 @@ async function markEmptyIfEmpty(tx: Tx, binId: string): Promise<boolean> {
 export async function getItemLocations(
   items: { id: string; shelfLocation: string | null }[]
 ): Promise<Map<string, ItemLocation>> {
-  const contents = await prisma.binContent.findMany({
-    where: { itemId: { in: items.map((i) => i.id) } },
-    include: { bin: { select: { code: true, shelfLabel: true, shelfBin: true } } },
-    orderBy: { placedAt: "asc" },
-  });
+  const [contents, whatnotBins] = await Promise.all([
+    prisma.binContent.findMany({
+      where: { itemId: { in: items.map((i) => i.id) } },
+      include: { bin: { select: { code: true, shelfLabel: true, shelfBin: true, whatnot: true } } },
+      orderBy: { placedAt: "asc" },
+    }),
+    prisma.bin.count({ where: { whatnot: true } }),
+  ]);
   const map = new Map<string, ItemLocation>();
-  for (const item of items) map.set(item.id, { bins: [], legacyShelf: item.shelfLocation || null });
+  for (const item of items) {
+    map.set(item.id, { bins: [], legacyShelf: item.shelfLocation || null, ...(whatnotBins > 0 ? { whatnotArea: true } : {}) });
+  }
   for (const c of contents) {
     map.get(c.itemId)?.bins.push({
       binCode: c.bin.code,
       shelfLabel: c.bin.shelfLabel,
       units: c.units,
       ...(c.bin.shelfBin ? { oversized: true } : {}),
+      ...(c.bin.whatnot ? { whatnot: true } : {}),
     });
   }
   for (const loc of map.values()) if (loc.bins.length > 0) loc.legacyShelf = null;

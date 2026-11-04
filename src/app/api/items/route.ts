@@ -306,6 +306,7 @@ export async function POST(request: NextRequest) {
         packSize: (data.packSize as number | null) ?? null,
         expirationDate: data.expirationDate instanceof Date ? data.expirationDate : null,
         condition: (data.condition as string | null | undefined) ?? null,
+        shopifyOnly: Boolean(data.shopifyOnly),
       },
       typeof body.productName === "string" ? body.productName : (manifestLine?.description ?? null)
     );

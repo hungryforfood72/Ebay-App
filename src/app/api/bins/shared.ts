@@ -138,6 +138,8 @@ export type BinSummary = {
   // An oversized shelf's hidden bin: the shelf's label (show "Shelf A5",
   // not the code). null for a real bin.
   oversizedShelf: string | null;
+  // A Whatnot bin (Bin.whatnot).
+  whatnot: boolean;
 };
 
 // Bins (all, or the ones matching `where`) with their item and unit
@@ -167,6 +169,7 @@ export async function summarizeBins(where?: Prisma.BinWhereInput): Promise<BinSu
         items: c.items,
         units: c.units,
         oversizedShelf: b.shelfBin ? b.shelfLabel : null,
+        whatnot: b.whatnot,
       };
     })
     .sort((a, b) => (codeNumber(a.code, BIN_CODE_PREFIX) ?? 0) - (codeNumber(b.code, BIN_CODE_PREFIX) ?? 0));
