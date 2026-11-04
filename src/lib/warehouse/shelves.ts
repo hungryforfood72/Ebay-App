@@ -39,6 +39,8 @@ export type ShelfState = {
   // Oversized shelf: no bins, items straight on it (units = on it now).
   oversized: boolean;
   oversizedUnits: number;
+  // A Whatnot shelf (ShelfLocation.whatnot).
+  whatnot: boolean;
 };
 
 type Db = Prisma.TransactionClient | typeof prisma;
@@ -84,7 +86,7 @@ export async function oldItemIdsOnShelf(db: Db, label: string, limit = 100): Pro
 }
 
 function toState(
-  shelf: { label: string; binsAllowedAt: Date | null; binsAllowedBy: string | null; oversized: boolean },
+  shelf: { label: string; binsAllowedAt: Date | null; binsAllowedBy: string | null; oversized: boolean; whatnot: boolean },
   counts: Counts | undefined,
   bins: number,
   oversizedUnits: number
@@ -107,6 +109,7 @@ function toState(
     bins,
     oversized: shelf.oversized,
     oversizedUnits,
+    whatnot: shelf.whatnot,
   };
 }
 
@@ -244,8 +247,10 @@ export async function setShelfOversized(label: string, on: boolean, by: string |
       const now = new Date();
       await tx.bin.upsert({
         where: { code },
-        create: { code, shelfBin: true, shelfLabel: state.label, shelvedAt: now, shelvedBy: by },
-        update: { shelfLabel: state.label, shelvedAt: now, shelvedBy: by },
+        // A Whatnot shelf's own bin is a Whatnot bin: only Shopify &
+        // Whatnot only items go straight on it.
+        create: { code, shelfBin: true, shelfLabel: state.label, shelvedAt: now, shelvedBy: by, whatnot: state.whatnot },
+        update: { shelfLabel: state.label, shelvedAt: now, shelvedBy: by, whatnot: state.whatnot },
       });
       await tx.shelfLocation.update({ where: { label: state.label }, data: { oversized: true, oversizedAt: now, oversizedBy: by } });
     } else {
@@ -258,6 +263,29 @@ export async function setShelfOversized(label: string, on: boolean, by: string |
       await tx.bin.deleteMany({ where: { code, shelfBin: true } });
       await tx.shelfLocation.update({ where: { label: state.label }, data: { oversized: false, oversizedAt: null, oversizedBy: null } });
     }
+    return (await getShelfState(tx, state.label))!;
+  });
+}
+
+// Owner: makes a shelf a Whatnot shelf or a regular one again (Cristian,
+// 2026-11-03). Only while nothing is on it (no bins, nothing on an
+// oversized shelf), so nothing ends up in the wrong area. An oversized
+// shelf's own bin follows it. Serialized per shelf like setShelfOversized.
+export async function setShelfWhatnot(label: string, on: boolean): Promise<ShelfState> {
+  return prisma.$transaction(async (tx) => {
+    const before = await getShelfState(tx, label);
+    if (!before) throw new WarehouseError(`No shelf called "${label.trim()}".`, 404);
+    const code = shelfBinCode(before.label);
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`warehouse_bin:${code}`}))`;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`warehouse_shelf:${before.label}`}))`;
+    const state = (await getShelfState(tx, before.label))!;
+    if (state.whatnot === on) return state;
+    if (state.bins > 0 || state.oversizedUnits > 0) {
+      const what = state.bins > 0 ? `${state.bins} ${state.bins === 1 ? "bin" : "bins"}` : `${state.oversizedUnits} ${state.oversizedUnits === 1 ? "unit" : "units"}`;
+      throw new WarehouseError(`Shelf ${state.label} has ${what} on it. Move ${state.bins + state.oversizedUnits === 1 ? "it" : "them"} off first.`, 409);
+    }
+    await tx.shelfLocation.update({ where: { label: state.label }, data: { whatnot: on } });
+    await tx.bin.updateMany({ where: { code, shelfBin: true }, data: { whatnot: on } });
     return (await getShelfState(tx, state.label))!;
   });
 }

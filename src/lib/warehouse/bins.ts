@@ -81,7 +81,9 @@ export async function assertBinArea(
   bin: { code: string; whatnot: boolean; shelfBin: boolean },
   itemIds: string[]
 ): Promise<void> {
-  if (bin.shelfBin || itemIds.length === 0) return;
+  // A regular oversized shelf takes anything; a Whatnot one only Shopify &
+  // Whatnot only items (its shelf bin is a Whatnot bin).
+  if ((bin.shelfBin && !bin.whatnot) || itemIds.length === 0) return;
   if (!bin.whatnot && !(await tx.bin.findFirst({ where: { whatnot: true }, select: { id: true } }))) return;
   const wrong = await tx.item.findFirst({
     where: { id: { in: itemIds }, shopifyOnly: !bin.whatnot },
@@ -99,7 +101,8 @@ export async function assertBinArea(
 // Puts `units` of an item into a bin (adds to what's already there). If the
 // bin was empty and still marked as on a shelf, it has physically come back
 // to a station, so it's unshelved. anyArea = skip the Whatnot area rule
-// (undoing a pick puts it back where it came from).
+// (undoing a pick puts it back where it came from). Also see shelveBin:
+// Whatnot bins only on Whatnot shelves, regular bins never on them.
 export async function placeInBin(
   tx: Tx,
   args: { itemId: string; binCode: string; units: number; by: string | null; note?: string; anyArea?: boolean }
@@ -454,7 +457,17 @@ export async function shelveBin(args: { binCode: string; shelfLabel: string | nu
       if (!shelf) throw new WarehouseError(`No shelf called "${args.shelfLabel.trim()}". Add it in Settings first.`, 404);
       // Same lock as confirm/undo, so an undo can't slip in mid-shelve.
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`warehouse_shelf:${shelf.label}`}))`;
-      await assertShelfTakesBins(tx, shelf.label);
+      // Read again now that the shelf is locked (a Whatnot switch may have
+      // just landed).
+      const state = await assertShelfTakesBins(tx, shelf.label);
+      // Whatnot shelves hold only Whatnot bins. A Whatnot bin goes only on
+      // a Whatnot shelf, once one exists (Cristian, 2026-11-03).
+      if (state.whatnot && !bin.whatnot) {
+        throw new WarehouseError(`Shelf ${shelf.label} is a Whatnot shelf, and ${bin.code} is a regular bin. Put it on a regular shelf.`, 409);
+      }
+      if (!state.whatnot && bin.whatnot && (await tx.shelfLocation.findFirst({ where: { whatnot: true }, select: { id: true } }))) {
+        throw new WarehouseError(`${bin.code} is a Whatnot bin. Put it on a Whatnot shelf, not ${shelf.label}.`, 409);
+      }
       shelfLabel = shelf.label;
     }
     const autoClose = shelfLabel != null && !bin.closedAt && (await tx.binContent.count({ where: { binId: bin.id } })) > 0;

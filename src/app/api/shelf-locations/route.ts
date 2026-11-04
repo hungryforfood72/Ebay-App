@@ -1,3 +1,4 @@
+import { ownerOnly } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { naturalSort } from "@/lib/naturalSort";
 import { NextRequest, NextResponse } from "next/server";
@@ -10,7 +11,10 @@ export async function GET() {
   return NextResponse.json(naturalSort(locations, (l) => l.label));
 }
 
+// Owner only (Settings).
 export async function POST(request: NextRequest) {
+  const denied = ownerOnly(request);
+  if (denied) return denied;
   const body = await request.json().catch(() => ({}));
   const label = String(body.label ?? "").trim();
   if (!label) {

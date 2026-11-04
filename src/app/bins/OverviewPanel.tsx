@@ -251,6 +251,19 @@ function ShelvesCard({
   const toConfirm = shelfStates.filter((s) => !s.oversized && s.state === "looks_empty");
   const oldSystem = shelfStates.length - onBins - oversized;
 
+  async function setWhatnot(s: ShelfState, on: boolean) {
+    setBusyShelf(s.label);
+    setShelfError(null);
+    try {
+      await api("/api/bins/shelves/whatnot", { shelfLabel: s.label, on });
+      onChanged();
+    } catch (e) {
+      setShelfError({ shelf: s.label, text: errorText(e) });
+    } finally {
+      setBusyShelf(null);
+    }
+  }
+
   async function setOversized(s: ShelfState, on: boolean) {
     setBusyShelf(s.label);
     setShelfError(null);
@@ -297,6 +310,12 @@ function ShelvesCard({
                     disabled={busyShelf != null}
                   >
                     {busyShelf === s.label ? "Saving…" : s.oversized ? "Make it a bin shelf" : "Make oversized"}
+                  </Button>
+                )}
+                {/* Whatnot shelves (Cristian, 2026-11-03): only while empty. */}
+                {isOwner && s.bins === 0 && s.oversizedUnits === 0 && (
+                  <Button variant="ghost" size="sm" onClick={() => setWhatnot(s, !s.whatnot)} disabled={busyShelf != null}>
+                    {s.whatnot ? "Make it a regular shelf" : "Make Whatnot shelf"}
                   </Button>
                 )}
               </span>

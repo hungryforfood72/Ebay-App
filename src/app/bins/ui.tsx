@@ -323,6 +323,11 @@ export function PrintToStation({
 
 // A shelf's cutover state in a few words (see src/lib/warehouse/shelves.ts).
 export function describeShelf(s: ShelfState): string {
+  const text = describeShelfState(s);
+  return s.whatnot ? `Whatnot · ${text}` : text;
+}
+
+function describeShelfState(s: ShelfState): string {
   if (s.oversized) return `Oversized, no bins (${plural(s.oversizedUnits, "unit")})`;
   switch (s.state) {
     case "free":

@@ -622,6 +622,11 @@ model ShelfLocation {
   oversized     Boolean   @default(false)
   oversizedAt   DateTime?
   oversizedBy   String?
+  // A Whatnot shelf (Cristian, 2026-11-03): in the Whatnot area, holds only
+  // Whatnot bins (and, if oversized, only Shopify & Whatnot only items).
+  // Regular bins never go on it; Whatnot bins go only on these once one
+  // exists (bins.ts shelveBin).
+  whatnot       Boolean   @default(false)
   createdAt DateTime @default(now())
 }
 

@@ -1,10 +1,13 @@
+import { ownerOnly } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { parseLocationRange } from "@/lib/locationRange";
 import { NextRequest, NextResponse } from "next/server";
 
 // Expands a range like "A1-A50" and creates every location in one request,
-// instead of adding 50 one at a time through the regular POST.
+// instead of adding 50 one at a time through the regular POST. Owner only.
 export async function POST(request: NextRequest) {
+  const denied = ownerOnly(request);
+  if (denied) return denied;
   const body = await request.json().catch(() => ({}));
   const range = String(body.range ?? "").trim();
   if (!range) {

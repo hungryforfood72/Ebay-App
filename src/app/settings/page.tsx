@@ -1377,8 +1377,15 @@ function ShelfLocationsEditor() {
   }
 
   async function removeEntry(id: string) {
+    setError(null);
+    const res = await fetch(`/api/shelf-locations/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      // Refused (bins on it, oversized or Whatnot): it stays, with why.
+      const data = await res.json().catch(() => ({}));
+      setError((data as { error?: string }).error ?? "Couldn't remove that shelf.");
+      return;
+    }
     setEntries((prev) => prev?.filter((b) => b.id !== id) ?? prev);
-    await fetch(`/api/shelf-locations/${id}`, { method: "DELETE" });
   }
 
   return (
