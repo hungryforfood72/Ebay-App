@@ -42,7 +42,9 @@ type PackSuggestion = {
     // "slow_single": a lone single of something meant for multi-packs.
     // "low_return": wouldn't make Cristian's target profit on its cost.
     // "no_demand": no sign anyone buys it now, judged from outside eBay.
-    why: "slow_single" | "low_return" | "no_demand";
+    // "price_unclear": the research and the store-price check are more
+    // than 2x apart, so it starts on Shopify & Whatnot (see priceGap).
+    why: "slow_single" | "low_return" | "no_demand" | "price_unclear";
     // No pack size up to the max makes Cristian's target on eBay, so the
     // whole lot is set aside, and shopPlan is how it'd split for
     // Shopify & Whatnot instead (null off a manifest).
@@ -66,6 +68,8 @@ type PackSuggestion = {
   // Worth listing? From the eBay-free web check (store prices, Amazon
   // demand). null = nothing to judge from yet.
   verdict?: "sell" | "slow" | "dont_list" | null;
+  // Owner only: the researched and store-check prices per unit that disagreed.
+  priceGap?: { research: number; check: number } | null;
   market?: { demand: "FAST" | "NORMAL" | "SLOW" | "DEAD" | null; note?: string | null; pricePerUnit?: number | null } | null;
   recommendation: {
     packSize: number;
@@ -224,7 +228,9 @@ export function PackSuggestionCard({
         <div className="min-w-0">
           <p className="font-semibold">
             {notForEbay
-              ? data.verdict === "dont_list" ? "Set it aside" : "Not worth listing on eBay"
+              ? data.setAside?.why === "price_unclear"
+                ? "Shopify & Whatnot only for now"
+                : data.verdict === "dont_list" ? "Set it aside" : "Not worth listing on eBay"
               : data.manifestPackSize > 1
                 ? `Suggested: ${rec.packSize > 1 ? `${rec.packSize} of these ${data.manifestPackSize}-packs per listing (${rec.packSize * data.manifestPackSize} total)` : `one ${data.manifestPackSize}-pack per listing`}`
                 : `Suggested: sell as ${rec.packSize > 1 ? `${rec.packSize}-packs` : "singles"}`}
@@ -236,6 +242,8 @@ export function PackSuggestionCard({
             {notForEbay
               ? data.setAside?.why === "no_demand"
                 ? "There's no sign anyone is buying this right now, so it would just sit on eBay."
+                : data.setAside?.why === "price_unclear"
+                ? `The price is unclear: the research said ${data.priceGap ? money(data.priceGap.research) : "one price"} each, the store-price check ${data.priceGap ? money(data.priceGap.check) : "less than half that"}. It starts on Shopify & Whatnot; check comps in review and untick Shopify & Whatnot only if it's right for eBay.`
                 : data.setAside?.allLeftover
                   ? `Shipping eats the whole sale: with ${data.setAside.units === 1 ? "just 1" : `only ${data.setAside.units}`} on hand, it wouldn't make enough profit on eBay after fees and a label.`
                   : `Shipping eats the whole sale: even bundled up to ${MAX_RECOMMENDED_PACK}-packs, or as one lot, it wouldn't make enough profit on eBay after fees and a label.`
@@ -500,6 +508,8 @@ function SetAsideNote({
   const why =
     setAside.why === "no_demand"
       ? "Nobody seems to be buying this right now."
+      : setAside.why === "price_unclear"
+      ? "The price is unclear, so it starts on Shopify & Whatnot."
       : setAside.why === "slow_single"
       ? `Singles of this don't sell well on their own, it's meant to go out as ${recommendedPackSize}-packs.`
       : setAside.everything

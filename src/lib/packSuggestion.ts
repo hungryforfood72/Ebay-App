@@ -215,6 +215,20 @@ export async function packSuggestion({
     stats = [{ packSize: recommendation.packSize, count: 1, medianTotal: packPrice }];
   }
   const demand: DemandTier | null = market?.demand ?? null;
+  // The researched price more than double the store-price check's
+  // (Cristian, 2026-11-03: a Sally Hansen hand mask researched at $12.99
+  // off one outlier store, most stores $5.99-$6.99, the check $2.85).
+  // Neither can be trusted then, so it starts as Shopify & Whatnot only and
+  // Cristian decides at review: he unticks it there if it's right for eBay.
+  const priceGap =
+    recommendation &&
+    packPrice != null &&
+    packPrice > 0 &&
+    market?.pricePerUnit != null &&
+    market.pricePerUnit > 0 &&
+    packPrice / recommendation.packSize > 2 * market.pricePerUnit
+      ? { research: packPrice / recommendation.packSize, check: market.pricePerUnit }
+      : null;
 
   // Units that shouldn't be listed at the size they'd have to go in. They
   // come out of the plan and Lizvet sets them aside for Cristian to decide
@@ -237,7 +251,8 @@ export async function packSuggestion({
   // card points to Shopify & Whatnot, where the buyer pays the label.
   // "no_demand" (2026-10-19): the web check found no sign anyone buys it
   // now (DEMAND: DEAD), so none of it goes on eBay, whatever the math says.
-  type SetAsideWhy = "slow_single" | "low_return" | "no_demand";
+  // "price_unclear" (2026-11-03): see priceGap above.
+  type SetAsideWhy = "slow_single" | "low_return" | "no_demand" | "price_unclear";
   let setAside: {
     units: number | null;
     packSize: number;
@@ -343,14 +358,15 @@ export async function packSuggestion({
     }
 
     const recommended = recommendation.packSize;
-    if (notWorthOnEbay || demand === "DEAD") {
+    if (notWorthOnEbay || demand === "DEAD" || priceGap) {
       const shopPlan = available != null ? splitIntoPacks(available, recommended) : null;
       plan = available != null ? [] : null;
       setAside = {
         units: available,
         packSize: recommended,
-        why: demand === "DEAD" ? "no_demand" : "low_return",
-        worth: worthAt(recommended),
+        why: demand === "DEAD" ? "no_demand" : priceGap ? "price_unclear" : "low_return",
+        // No eBay money math on a price nobody can vouch for.
+        worth: priceGap && demand !== "DEAD" ? null : worthAt(recommended),
         everything: true,
         shopPlan,
       };
@@ -485,6 +501,8 @@ export async function packSuggestion({
     // FAST / NORMAL / SLOW / DEAD, judged from outside eBay. note = what it's
     // based on (owner only, it has store prices in it).
     market: market && { demand: market.demand, ...(isOwner ? { note: market.note, pricePerUnit: market.pricePerUnit } : {}) },
+    // The two prices that disagreed (owner only), for "price_unclear".
+    priceGap: isOwner ? priceGap : null,
     recommendation: recommendation && {
       packSize: recommendation.packSize,
       basis: recommendation.basis,
