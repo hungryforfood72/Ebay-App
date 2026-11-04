@@ -1821,6 +1821,8 @@ function terapeakUrl(upc: string): string {
     startDate: String(end - 180 * 24 * 60 * 60 * 1000),
     offset: "0",
     limit: "50",
+    // Most recently sold first (Cristian, 2026-11-03).
+    sorting: "-datelastsold",
     tabName: "SOLD",
     tz: "America/Chicago",
   });
