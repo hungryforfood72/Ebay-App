@@ -274,6 +274,46 @@ export async function packSuggestion({
         const w = worthAt(g.packSize);
         return sum + (w?.worthIt ? w.profit * g.listings : 0);
       }, 0);
+    // A singles call with more than one on hand (Cristian, 2026-11-03: 3
+    // bags of U by Kotex pads, $7.29 retail, were called singles at $10.99
+    // each, 1.5x what a store charges, with ~$7 of each going to the
+    // label). Singles vs one size of bundle for everything on hand, nothing
+    // priced above store retail: a bundle that clearly makes more wins.
+    // Only with a store retail price to hold it to.
+    const retail = retailPrice;
+    if (called === 1 && available != null && available > 1 && retail != null && retail > 0) {
+      const atRetail = (n: number): PackStat[] => {
+        const model = worthAt(n)?.price;
+        return model != null ? [{ packSize: n, count: 1, medianTotal: Math.min(model, retail * n) }] : [];
+      };
+      const totalAtRetail = (n: number) =>
+        splitIntoPacks(available, n).reduce((sum, g) => {
+          const w = listingWorth({
+            packSize: g.packSize,
+            stats: atRetail(g.packSize),
+            retailPrice: retail,
+            unitCost,
+            labelCost,
+            targetReturnPct: target,
+            unitWeightOz,
+          });
+          return sum + (w?.worthIt ? w.profit * g.listings : 0);
+        }, 0);
+      const singles = totalAtRetail(1);
+      // Biggest first, so a tie goes to the bigger pack: 3 on hand in
+      // 2-packs splits as one 3-pack anyway, same total.
+      let best: { n: number; total: number } | null = null;
+      for (let n = Math.min(available, MAX_RECOMMENDED_PACK); n >= 2; n--) {
+        const total = totalAtRetail(n);
+        if (!best || total > best.total) best = { n, total };
+      }
+      if (best && best.total >= singles + 2 && best.total >= singles * 1.25) {
+        stats = atRetail(best.n);
+        recommendation = { ...recommendation, packSize: best.n };
+        reason = `${reason ? `${reason} ` : ""}Switched to ${best.n}-packs: at store retail ($${retail.toFixed(2)} each), singles ${singles > 0 ? `make about $${singles.toFixed(2)} for all ${available}` : "lose money after the label"}, ${best.n}-packs about $${best.total.toFixed(2)}.`;
+      }
+    }
+
     // Only for a multi-pack call. A "singles" call means it sells alone
     // (collectibles, hype items), and a single that can't make the bar was
     // already set aside by the leftover rule below, never bundled.
