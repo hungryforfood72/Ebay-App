@@ -747,7 +747,10 @@ export function buildAspects(specifics: Record<string, string> | null, expiratio
   // "09/2026" specific next to a full date in the description (commit
   // 462d20d fixed that for the CSV; this was still sending MM/YYYY until
   // 2026-10-26).
-  if (expirationDate && !aspects["Expiration Date"]) {
+  // A real date always wins over a typed-in specific: "Does Not Apply" is
+  // for packages with no date printed (Cristian, 2026-11-04), and must
+  // never hide a date found later behind it.
+  if (expirationDate) {
     aspects["Expiration Date"] = [formatExpiration(expirationDate)];
   }
   // Liquids keep their amount under "size", but some categories require it
