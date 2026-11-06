@@ -30,7 +30,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     take: 10,
   });
 
-  // Off eBay (Shopify & Whatnot only, or moved to the past-date page): the
+  // Off eBay (Shopify-only or Whatnot-only, or moved to the past-date page): the
   // app's own count is the only one.
   if (item.shopifyOnly || item.pastDateAt) {
     return NextResponse.json({

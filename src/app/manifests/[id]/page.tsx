@@ -381,7 +381,7 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
           <section>
             <SectionHeader
               title="Extra from duds and set-asides"
-              description="Listed from dud boxes, or sent to Shopify & Whatnot because eBay wasn't worth it. No item cost: the load's cost is on the good stock, so this is all extra. Before refunds."
+              description="Listed from dud boxes, or sent to Shopify because eBay wasn't worth it. No item cost: the load's cost is on the good stock, so this is all extra. Before refunds."
             />
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <Stat label="Listings" value={manifest.dudExtra.listings} />

@@ -378,7 +378,7 @@ function ProductCard({
   );
 }
 
-// Owner only: the Analyzer's guess per unit, eBay vs Shopify/Whatnot.
+// Owner only: the Analyzer's guess per unit, eBay vs Shopify.
 function MoneyHint({ money: m }: { money: DudMoneyHint | null | undefined }) {
   if (m === undefined) return null;
   if (m === null) return <p className="mt-1 text-xs text-muted-foreground">No Analyzer numbers for this product.</p>;
@@ -393,7 +393,7 @@ function MoneyHint({ money: m }: { money: DudMoneyHint | null | undefined }) {
         </p>
       </div>
       <div>
-        <p className="text-muted-foreground">Shopify / Whatnot</p>
+        <p className="text-muted-foreground">Shopify</p>
         <p className="font-semibold tabular-nums text-foreground">
           {m.shopNet != null ? money(m.shopNet) : "?"} each after fees
         </p>

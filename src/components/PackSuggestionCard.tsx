@@ -46,11 +46,11 @@ type PackSuggestion = {
     // "low_return": wouldn't make Cristian's target profit on its cost.
     // "no_demand": no sign anyone buys it now, judged from outside eBay.
     // "price_unclear": the research and the store-price check are more
-    // than 2x apart, so it starts on Shopify & Whatnot (see priceGap).
+    // than 2x apart, so it starts on Shopify (see priceGap).
     why: SetAsideWhy;
     // No pack size up to the max makes Cristian's target on eBay, so the
     // whole lot is set aside, and shopPlan is how it'd split for
-    // Shopify & Whatnot instead (null off a manifest).
+    // Shopify instead (null off a manifest).
     everything?: boolean;
     // everything because what's on hand is too few to bundle and fails as
     // is (1 bottle, a loss as a single), not because no bundle size works.
@@ -130,6 +130,7 @@ export function PackSuggestionCard({
   onSuggestion,
   refreshKey = 0,
   dudBoxCode = null,
+  whatnotAside = false,
 }: {
   upc: string;
   manifestId: string | null;
@@ -138,11 +139,13 @@ export function PackSuggestionCard({
   // Listing from this dud box: counts what's decided there, item cost $0.
   dudBoxCode?: string | null;
   onApply: (packSize: number, listings: number | null) => void;
-  // Skip this item, straight to the next scan. units/why: how many the
-  // card says to set aside and why (the page records them in a dud box,
-  // see ebaySkips.ts).
+  // Not worth eBay. units/why: how many the card says to set aside and
+  // why. whatnotAside: the page lists them for Whatnot instead (Cristian,
+  // 2026-11-06; the why is saved with the item, see ebaySkips.ts);
+  // otherwise it just skips to the next scan.
   onSetAside: (units: number | null, why: SetAsideWhy) => void;
-  // Keep scanning it in, but for Shopify & Whatnot only (no eBay listing).
+  whatnotAside?: boolean;
+  // Keep scanning it in, but for Shopify only (no eBay listing).
   // why: the card's reason eBay isn't worth it, saved with the item.
   onShopifyOnly: (packSize: number, listings: number | null, why: SetAsideWhy) => void;
   // What the card told them to do, sent with the save so a different
@@ -239,8 +242,8 @@ export function PackSuggestionCard({
           <p className="font-semibold">
             {notForEbay
               ? data.setAside?.why === "price_unclear"
-                ? "Shopify & Whatnot only for now"
-                : data.verdict === "dont_list" ? "Set it aside" : "Not worth listing on eBay"
+                ? "Shopify only for now"
+                : data.verdict === "dont_list" ? (whatnotAside ? "List it for Whatnot" : "Set it aside") : "Not worth listing on eBay"
               : data.manifestPackSize > 1
                 ? `Suggested: ${rec.packSize > 1 ? `${rec.packSize} of these ${data.manifestPackSize}-packs per listing (${rec.packSize * data.manifestPackSize} total)` : `one ${data.manifestPackSize}-pack per listing`}`
                 : `Suggested: sell as ${rec.packSize > 1 ? `${rec.packSize}-packs` : "singles"}`}
@@ -253,7 +256,7 @@ export function PackSuggestionCard({
               ? data.setAside?.why === "no_demand"
                 ? "There's no sign anyone is buying this right now, so it would just sit on eBay."
                 : data.setAside?.why === "price_unclear"
-                ? `The price is unclear: the research said ${data.priceGap ? money(data.priceGap.research) : "one price"} each, the store-price check ${data.priceGap ? money(data.priceGap.check) : "less than half that"}. It starts on Shopify & Whatnot; check comps in review and untick Shopify & Whatnot only if it's right for eBay.`
+                ? `The price is unclear: the research said ${data.priceGap ? money(data.priceGap.research) : "one price"} each, the store-price check ${data.priceGap ? money(data.priceGap.check) : "less than half that"}. It starts on Shopify only; check comps in review and switch it to eBay + Shopify if it's right for eBay.`
                 : data.setAside?.allLeftover
                   ? `Shipping eats the whole sale: with ${data.setAside.units === 1 ? "just 1" : `only ${data.setAside.units}`} on hand, it wouldn't make enough profit on eBay after fees and a label.`
                   : `Shipping eats the whole sale: even bundled up to ${MAX_RECOMMENDED_PACK}-packs, or as one lot, it wouldn't make enough profit on eBay after fees and a label.`
@@ -294,11 +297,12 @@ export function PackSuggestionCard({
               recommendedPackSize={rec.packSize}
               explain={data.isOwner}
               shopOffered={offerShop}
+              whatnot={whatnotAside}
             />
           )}
           {notForEbay && offerShop && shopRest.length > 0 && (
             <p className="mt-2 text-xs text-blue-900/80">
-              For Shopify &amp; Whatnot: {[shopFirst, ...shopRest].filter(Boolean).map((g) => listingsOf(g!)).join(" + ")}.
+              For Shopify: {[shopFirst, ...shopRest].filter(Boolean).map((g) => listingsOf(g!)).join(" + ")}.
               Fill in the first, then save and scan it again for the rest.
             </p>
           )}
@@ -319,15 +323,19 @@ export function PackSuggestionCard({
                       );
                   }}
                 >
-                  Sell on Shopify &amp; Whatnot instead
+                  Sell on Shopify instead
                 </Button>
                 <Button size="sm" variant="outline" onClick={() => onSetAside(data.setAside!.units, data.setAside!.why)}>
-                  Set aside anyway
+                  {whatnotAside ? "List it for Whatnot instead" : "Set aside anyway"}
                 </Button>
               </>
             ) : data.plan && data.plan.length === 0 && data.setAside ? (
-              <Button size="sm" variant="outline" onClick={() => onSetAside(data.setAside!.units, data.setAside!.why)}>
-                Set aside, scan the next item
+              <Button
+                size="sm"
+                variant={whatnotAside ? "primary" : "outline"}
+                onClick={() => onSetAside(data.setAside!.units, data.setAside!.why)}
+              >
+                {whatnotAside ? "List it for Whatnot" : "Set aside, scan the next item"}
               </Button>
             ) : first ? (
               <Button size="sm" onClick={() => onApply(first.packSize, first.listings)}>
@@ -493,7 +501,7 @@ function CountOverride({ data, onChange }: { data: PackSuggestion; onChange: (co
 // Units not worth listing at the only size they can go in (see
 // /api/pack-suggestion) — Lizvet sets them aside and moves on; Cristian
 // decides what happens to them later.
-// explain: the why, the money and the Shopify & Whatnot line, owner only
+// explain: the why, the money and the Shopify line, owner only
 // (Cristian, 2026-11-03). shopOffered: the card's "Sell on Shopify &
 // Whatnot instead" button is showing, so the note doesn't just say to set
 // it aside.
@@ -502,15 +510,21 @@ function SetAsideNote({
   recommendedPackSize,
   explain,
   shopOffered,
+  whatnot,
 }: {
   setAside: NonNullable<PackSuggestion["setAside"]>;
   recommendedPackSize: number;
   explain: boolean;
   shopOffered: boolean;
+  // Not-worth-eBay units get listed for Whatnot (the page's whatnotAside).
+  whatnot: boolean;
 }) {
   const n = setAside.units;
-  const title =
-    n == null
+  const title = whatnot
+    ? n == null || n === 1
+      ? "Not for eBay, this one goes on Whatnot."
+      : `Not for eBay, these ${n} go on Whatnot.`
+    : n == null
       ? setAside.everything
         ? "Set these aside."
         : recommendedPackSize > 1
@@ -524,7 +538,7 @@ function SetAsideNote({
     setAside.why === "no_demand"
       ? "Nobody seems to be buying this right now."
       : setAside.why === "price_unclear"
-      ? "The price is unclear, so it starts on Shopify & Whatnot."
+      ? "The price is unclear, so it starts on Shopify only."
       : setAside.why === "slow_single"
       ? `Singles of this don't sell well on their own, it's meant to go out as ${recommendedPackSize}-packs.`
       : setAside.everything
@@ -537,9 +551,13 @@ function SetAsideNote({
         <p className="font-semibold">{title}</p>
         <p className="mt-0.5 text-amber-900/80">
           {explain && <>{why} </>}
-          {shopOffered
-            ? `Don't list ${n === 1 || n == null ? "it" : "them"} on eBay. Send ${n === 1 || n == null ? "it" : "them"} to Shopify & Whatnot below, or set ${n === 1 || n == null ? "it" : "them"} aside.`
-            : `Don't list ${n === 1 || n == null ? "it" : "them"}, just set ${n === 1 || n == null ? "it" : "them"} aside and move on to the next item.`}
+          {whatnot
+            ? shopOffered
+              ? `Don't list ${n === 1 || n == null ? "it" : "them"} on eBay. Send ${n === 1 || n == null ? "it" : "them"} to Shopify below, or list ${n === 1 || n == null ? "it" : "them"} for Whatnot.`
+              : `Don't list ${n === 1 || n == null ? "it" : "them"} on eBay. List ${n === 1 || n == null ? "it" : "them"} for Whatnot below: same steps, a Whatnot label prints, then into a Whatnot bin.`
+            : shopOffered
+              ? `Don't list ${n === 1 || n == null ? "it" : "them"} on eBay. Send ${n === 1 || n == null ? "it" : "them"} to Shopify below, or set ${n === 1 || n == null ? "it" : "them"} aside.`
+              : `Don't list ${n === 1 || n == null ? "it" : "them"}, just set ${n === 1 || n == null ? "it" : "them"} aside and move on to the next item.`}
         </p>
         {setAside.price != null && setAside.label != null && setAside.profit != null && (
           <p className="mt-1.5 text-xs text-amber-900/70">
@@ -565,7 +583,7 @@ function SetAsideNote({
   );
 }
 
-// What happens if it goes to Shopify & Whatnot instead of the shelf.
+// What happens if it goes to Shopify instead of the shelf.
 function ShopChannelLine({
   shop,
   what,
@@ -576,7 +594,7 @@ function ShopChannelLine({
   if (shop.worthIt === null) {
     return (
       <p className="mt-1.5 text-xs text-amber-900/80">
-        Couldn&apos;t find a price for it. It can still go to Shopify &amp; Whatnot, priced by hand in review.
+        Couldn&apos;t find a price for it. It can still go to Shopify, priced by hand in review.
       </p>
     );
   }
@@ -586,11 +604,11 @@ function ShopChannelLine({
       : "";
   return shop.worthIt ? (
     <p className="mt-1.5 font-medium text-amber-950">
-      On Shopify &amp; Whatnot the buyer pays shipping, so it&apos;s worth selling there.{numbers}
+      On Shopify the buyer pays shipping, so it&apos;s worth selling there.{numbers}
     </p>
   ) : (
     <p className="mt-1.5 text-xs text-amber-900/80">
-      Too thin even on Shopify &amp; Whatnot.{numbers} Set it aside for a Whatnot live bundle.
+      Too thin even on Shopify.{numbers} Set it aside, or list it for Whatnot.
     </p>
   );
 }

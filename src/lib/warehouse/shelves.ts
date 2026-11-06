@@ -247,8 +247,8 @@ export async function setShelfOversized(label: string, on: boolean, by: string |
       const now = new Date();
       await tx.bin.upsert({
         where: { code },
-        // A Whatnot shelf's own bin is a Whatnot bin: only Shopify &
-        // Whatnot only items go straight on it.
+        // A Whatnot shelf's own bin is a Whatnot bin: only Whatnot-only
+        // items go straight on it.
         create: { code, shelfBin: true, shelfLabel: state.label, shelvedAt: now, shelvedBy: by, whatnot: state.whatnot },
         update: { shelfLabel: state.label, shelvedAt: now, shelvedBy: by, whatnot: state.whatnot },
       });

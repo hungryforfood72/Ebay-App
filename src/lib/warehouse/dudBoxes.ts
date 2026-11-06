@@ -9,7 +9,7 @@ import type { DudListDecision } from "./dudBoxTypes";
 // box tied to the manifest (the listing station's set-asides go in one
 // too); later someone decides each entry, and the Shopify and eBay ones get
 // listed from the box at the listing station. A Shopify one is set to
-// Shopify & Whatnot only without the lister having to know.
+// Shopify only without the lister having to know.
 
 type Tx = Prisma.TransactionClient;
 

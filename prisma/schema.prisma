@@ -175,12 +175,20 @@ model Item {
   // ebay.localPickupPolicyId) instead of the usual one: no label, so no
   // weight needed and $0 shipping in profit math.
   localPickupOnly  Boolean        @default(false)
-  // Sold only on the Shopify store (and Whatnot through it), never listed on
-  // eBay: things the scan page would set aside because an eBay sale can't
-  // pay for the label, which Shopify and Whatnot buyers pay themselves.
+  // Never listed on eBay. On its own (whatnotOnly false): sold only on the
+  // Shopify store, things the scan page would set aside because an eBay
+  // sale can't pay for the label, which Shopify buyers pay themselves.
   // price is still the eBay-equivalent price (from the same price
-  // research); Shopify takes its usual discount off it.
+  // research); Shopify takes its usual discount off it. Every place that
+  // asks "is it off eBay?" reads this flag, Whatnot-only items included.
   shopifyOnly      Boolean        @default(false)
+  // A Whatnot-only listing (Cristian, 2026-11-04): its own Shopify product,
+  // published to the Whatnot channel and nothing else, priced at the
+  // auction start (price IS the Whatnot price, no store discount). Always
+  // shopifyOnly too. eBay listings go on Shopify but never on Whatnot, so
+  // the $1-2 auction starts never show on the store. Listed from the List
+  // page in Whatnot mode, with or without a manifest; kept in Whatnot bins.
+  whatnotOnly      Boolean        @default(false)
   // Why it's off eBay, when the pack card said eBay isn't worth it and the
   // lister sent it to Shopify & Whatnot instead (packSuggestion.ts setAside
   // why: slow_single, low_return, no_demand, price_unclear). Ignored once
@@ -331,8 +339,9 @@ model Item {
   // Offers and auto-renewing every 30 days.
   listingEndedAt DateTime?
 
-  // The same listing on the Shopify store (which also feeds Whatnot through
-  // Whatnot's Shopify app). Set by src/lib/shopifySync.ts, never by the
+  // The same listing on the Shopify store (Online Store and every channel
+  // but Whatnot; a whatnotOnly item's product is on the Whatnot channel
+  // only, which Whatnot's Shopify app reads). Set by src/lib/shopifySync.ts, never by the
   // client. One stock count for every channel: quantity/soldQuantity above
   // stay the truth, and each store is pushed what's left. Shopify sales
   // live in ShopifySale. shopifyPublishedAt is only set once the product is
@@ -634,7 +643,8 @@ model ShelfLocation {
   oversizedAt   DateTime?
   oversizedBy   String?
   // A Whatnot shelf (Cristian, 2026-11-03): in the Whatnot area, holds only
-  // Whatnot bins (and, if oversized, only Shopify & Whatnot only items).
+  // Whatnot bins (and, if oversized, only Whatnot-only items; since
+  // 2026-11-04 the Whatnot area is for Item.whatnotOnly, not Shopify-only).
   // Regular bins never go on it; Whatnot bins go only on these once one
   // exists (bins.ts shelveBin).
   whatnot       Boolean   @default(false)
@@ -1559,8 +1569,9 @@ model Bin {
   // The hidden bin of an oversized shelf (ShelfLocation.oversized): always
   // on that shelf, never moved, combined or listed with real bins.
   shelfBin   Boolean   @default(false)
-  // A Whatnot bin (Cristian, 2026-11-03): holds only Shopify & Whatnot
-  // only items, in the Whatnot area, and they can't go in any other bin.
+  // A Whatnot bin (Cristian, 2026-11-03): holds only Whatnot-only items
+  // (Item.whatnotOnly, since 2026-11-04), in the Whatnot area, and they
+  // can't go in any other bin.
   // Enforced only once at least one Whatnot bin exists (bins.ts).
   whatnot    Boolean   @default(false)
   createdAt  DateTime  @default(now())

@@ -96,6 +96,68 @@ function SuffixInput({
   );
 }
 
+// What a new Whatnot-only listing starts at (Cristian, 2026-11-04).
+function WhatnotStartPrice() {
+  const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/settings/whatnot-start")
+      .then((r) => r.json())
+      .then((d: { price?: number }) => {
+        if (d.price != null) setValue(String(d.price));
+      })
+      .catch(() => setError("Couldn't load the Whatnot starting price."));
+  }, []);
+
+  async function save() {
+    setSaving(true);
+    setSaved(false);
+    setError(null);
+    try {
+      const res = await fetch("/api/settings/whatnot-start", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ price: Number(value) }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? "Couldn't save.");
+      setValue(String(data.price));
+      setSaved(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't save.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div>
+      <p className="mb-1 text-sm font-medium text-foreground">Whatnot starting price</p>
+      <p className="mb-2 text-xs text-muted-foreground">
+        Every new Whatnot-only listing starts here. Change any one in Review. Only shows on Whatnot, never on eBay or
+        the store.
+      </p>
+      <div className="flex flex-wrap items-end gap-3">
+        <SuffixInput
+          suffix="$"
+          step="0.01"
+          min={0.01}
+          value={value}
+          onChange={(e) => {
+            setValue(e.target.value);
+            setSaved(false);
+          }}
+        />
+        <SaveButton onClick={save} disabled={saving || !(Number(value) > 0)} saving={saving} saved={saved} />
+      </div>
+      {error && <p className="mt-1 text-xs font-medium text-danger">{error}</p>}
+    </div>
+  );
+}
+
 function SaveButton({ onClick, disabled, saving, saved }: { onClick: () => void; disabled: boolean; saving: boolean; saved: boolean }) {
   return (
     <div className="flex items-center gap-3">
@@ -880,8 +942,9 @@ type ShopifyStatus = {
   errors?: string[];
 };
 
-// The Shopify store every eBay listing also goes on (and Whatnot sells
-// from). The connection itself is three Vercel env vars, which Cristian
+// The Shopify store every eBay listing also goes on (never on Whatnot;
+// Whatnot-only listings go on its channel alone). The connection itself is
+// three Vercel env vars, which Cristian
 // sets in the dashboard; this shows whether they work and what's missing.
 function ShopifyConnection() {
   const [status, setStatus] = useState<ShopifyStatus | null>(null);
@@ -976,7 +1039,7 @@ function ShopifyConnection() {
     <Card>
       <SectionHeader
         title="Shopify store"
-        description="Every item that goes live on eBay also goes on Shopify (and Whatnot, through its Shopify app), all selling from one stock count."
+        description="Every item that goes live on eBay also goes on Shopify (every channel but Whatnot), all selling from one stock count. Whatnot gets its own Whatnot-only listings, on the Whatnot channel alone."
       />
       {loadError && <p className="mb-3 text-sm font-medium text-danger">{loadError}</p>}
       {!status ? (
@@ -1044,7 +1107,7 @@ function ShopifyConnection() {
           )}
           {connected && missingWebhooks && (
             <p className="text-xs text-muted-foreground">
-              Order webhooks let a Shopify or Whatnot sale come off eBay within seconds. They&apos;ll point at{" "}
+              Order webhooks let a Shopify sale come off eBay within seconds, and record Whatnot sales right away. They&apos;ll point at{" "}
               {status.webhookUrl}, so press this from the app&apos;s real domain. Without them, sales still sync every
               10 minutes.
             </p>
@@ -1083,6 +1146,8 @@ function ShopifyConnection() {
               />
             </div>
           </div>
+
+          <WhatnotStartPrice />
 
           {(status.recentErrors?.length ?? 0) > 0 && (
             <div>
@@ -1234,7 +1299,7 @@ function EbaySaleAlerts() {
     <Card>
       <SectionHeader
         title="eBay instant sale alerts"
-        description="eBay tells the app the moment something sells, so Shopify and Whatnot drop that unit within seconds. The 10-minute sync stays on as a backup."
+        description="eBay tells the app the moment something sells, so Shopify drops that unit within seconds. The 10-minute sync stays on as a backup."
       />
       {!status ? (
         <p className="text-sm text-muted-foreground">Loading…</p>

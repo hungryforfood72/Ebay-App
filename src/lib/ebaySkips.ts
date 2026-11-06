@@ -42,7 +42,7 @@ export const SET_ASIDE_ENTRY = { setAsideReason: { not: null } } satisfies Prism
 
 // Physical units kept off eBay per stored UPC, across every load: set-aside
 // units still in a dud box or since listed from one on Shopify, plus
-// Shopify & Whatnot only listings the pack card sent there. notWorthOnly:
+// Shopify only listings the pack card sent there. notWorthOnly:
 // just the reasons that teach the Analyzer (NOT_WORTH_ON_EBAY).
 export async function ebaySkippedUnits(args: {
   manifestId?: string;
@@ -78,7 +78,7 @@ export async function ebaySkippedUnits(args: {
 
 // The extra money a load's duds and set-asides brought in (owner only, on
 // the load's page): everything listed from its dud boxes, plus listings the
-// pack card sent to Shopify & Whatnot. No item cost: the load's cost is
+// pack card sent to Shopify. No item cost: the load's cost is
 // already carried by the good stock, so what these net is all extra.
 // Before refunds. Whatnot sales show up once Whatnot's orders reach
 // Shopify (ShopifySale.channel "whatnot").

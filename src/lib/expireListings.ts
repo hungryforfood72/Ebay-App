@@ -113,7 +113,7 @@ export async function expireDueListings(now: Date = new Date()): Promise<ExpireL
       // Units with different dates, only some of them due: the whole
       // listing comes down (its photos show every unit, Cristian
       // 2026-10-15) and staff split it by re-scanning, the good units as a
-      // new listing and the rest as Shopify & Whatnot only. Its remaining
+      // new listing and the rest as Shopify only. Its remaining
       // units stop counting as received (quantity drops to what sold), so
       // those re-scans count them again instead of twice, and none are
       // written off as expired on the manifest.
@@ -139,7 +139,7 @@ export async function expireDueListings(now: Date = new Date()): Promise<ExpireL
       }
 
       if (canGoPastDate(item, paths.get(item.categoryId ?? "") ?? "")) {
-        // Off eBay (just now) and Whatnot (the Shopify sync), still for
+        // Off eBay (just now), still for
         // sale on the Shopify store at 65% off with the date disclosed. Not
         // pulled: nothing for staff to do yet.
         await prisma.item.update({
@@ -248,6 +248,9 @@ function canGoPastDate(item: Item, categoryPath: string): boolean {
     Boolean(getShopifyConfig()) &&
     item.shopifyPublishedAt != null &&
     item.shopifyArchivedAt == null &&
+    // A Whatnot auction listing just gets pulled at its date: Whatnot bars
+    // expired items, and its $1 start isn't a store price to mark down.
+    !item.whatnotOnly &&
     !item.localPickupOnly &&
     item.quantity - item.soldQuantity > 0 &&
     !PAST_DATE_EXCLUDED.test(categoryPath)

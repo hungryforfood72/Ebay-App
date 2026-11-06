@@ -113,7 +113,7 @@ export async function refreshPredictionOutcomes(): Promise<{ manifests: number; 
     const [items, duds, walkups, skipped] = await Promise.all([
       prisma.item.findMany({
         // eBay is what the Analyzer guesses for: listings that never went
-        // on eBay (Shopify & Whatnot only) are extra money, not its results.
+        // on eBay (Shopify only) are extra money, not its results.
         where: {
           manifestId: manifest.id,
           upc: { in: upcs },
@@ -143,7 +143,7 @@ export async function refreshPredictionOutcomes(): Promise<{ manifests: number; 
         _sum: { quantity: true },
       }),
       // Kept off eBay at listing because eBay wasn't worth it (set aside,
-      // or Shopify & Whatnot only): a miss when it was called sellable.
+      // or Shopify only): a miss when it was called sellable.
       ebaySkippedUnits({ manifestId: manifest.id, upcs, notWorthOnly: true }),
     ]);
     const itemIds = items.map((i) => i.id);

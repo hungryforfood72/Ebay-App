@@ -36,9 +36,13 @@ import {
 import { withSyncLock } from "./syncLock";
 import type { Item, Prisma } from "@/generated/prisma/client";
 
-// Keeps the Shopify store (and Whatnot, which sells from it) in step with
-// eBay. The app's own Item.quantity/soldQuantity is the one stock count
-// for every channel:
+// Keeps the Shopify store in step with eBay. The app's own
+// Item.quantity/soldQuantity is the one stock count for every channel.
+// Channels (Cristian, 2026-11-04): an eBay listing goes on the store and
+// every Shopify sales channel EXCEPT Whatnot. Whatnot gets its own
+// listings (Item.whatnotOnly): a separate Shopify product on the Whatnot
+// channel only, at the auction start price, so the $1-2 starts never show
+// on the store. Every run takes any eBay/store product off Whatnot.
 // - A Shopify or Whatnot sale is recorded as a ShopifySale and comes off
 //   the eBay listing right away (from eBay's live count, the same way a
 //   walk-up sale does, so an eBay sale the app hasn't synced yet is never
@@ -88,6 +92,27 @@ export async function setShopifyPricing(pricing: ShopifyPricing): Promise<void> 
       })
     )
   );
+}
+
+// What a Whatnot-only listing starts at (Cristian, 2026-11-04: shows start
+// everything at $1-2). Filled in as the item's price when it's saved; Review
+// can change it per item.
+const WHATNOT_START_KEY = "whatnot_start_price";
+const WHATNOT_START_DEFAULT = 1;
+
+export async function getWhatnotStartPrice(): Promise<number> {
+  const row = await prisma.appSetting.findUnique({ where: { key: WHATNOT_START_KEY } });
+  const value = Number(row?.value);
+  return Number.isFinite(value) && value > 0 && value < 10000 ? value : WHATNOT_START_DEFAULT;
+}
+
+export async function setWhatnotStartPrice(value: number): Promise<void> {
+  const rounded = Math.round(value * 100) / 100;
+  await prisma.appSetting.upsert({
+    where: { key: WHATNOT_START_KEY },
+    create: { key: WHATNOT_START_KEY, value: String(rounded) },
+    update: { value: String(rounded) },
+  });
 }
 
 function pctOff(amount: number, pct: number): number {
@@ -140,10 +165,13 @@ export const RETAIL_TAG = "retail-compare";
 type ExpectedPrices = { price: number; compareAt: number | null; retailCompare: boolean };
 
 function expectedPrices(
-  item: Pick<Item, "price" | "originalPrice" | "pastDateAt">,
+  item: Pick<Item, "price" | "originalPrice" | "pastDateAt" | "whatnotOnly">,
   pricing: ShopifyPricing,
   retail: number | null
 ): ExpectedPrices {
+  // Whatnot only: the price is the auction start as set, no store discount
+  // and nothing crossed out.
+  if (item.whatnotOnly) return { price: Number(item.price ?? 0), compareAt: null, retailCompare: false };
   const original = Number(item.originalPrice ?? item.price ?? 0);
   const regular = pctOff(original, pricing.ebayPct);
   const price = item.pastDateAt
@@ -201,7 +229,7 @@ type LiveFields = Pick<
   "status" | "listingEndedAt" | "expiredAt" | "ebayOfferId" | "ebayListingId" | "shopifyOnly" | "pastDateAt"
 >;
 
-// Still for sale: live on eBay, or a Shopify & Whatnot only item that's
+// Still for sale: live on eBay, or a Shopify-only or Whatnot-only item that's
 // been published (or is mid-publish from review, "ready"). Once that's
 // over (sold out, expired, ended), the Shopify product is archived too:
 // Cristian never restocks a listing.
@@ -268,21 +296,30 @@ export async function shopifyCounts(): Promise<{ onShopify: number; waiting: num
 // ---------------------------------------------------------------------------
 
 // eBay categories Whatnot doesn't allow: its supplements policy bars
-// over-the-counter medications (Tylenol, NyQuil, Mucinex...). Those stay
-// on the Shopify store and every other channel, just never on Whatnot.
-// Matched against the item's eBay category path. Vitamins and dietary
-// supplements are allowed there and aren't matched.
-const WHATNOT_BLOCKED_CATEGORY = /Over-the-Counter Medications/i;
+// over-the-counter medications (Tylenol, NyQuil, Mucinex...). A
+// Whatnot-only listing in one is refused at publish. Matched against the
+// item's eBay category path. Vitamins and dietary supplements are allowed
+// there and aren't matched.
+export const WHATNOT_BLOCKED_CATEGORY = /Over-the-Counter Medications/i;
 
 function isWhatnotChannel(name: string): boolean {
   return /whatnot/i.test(name);
 }
 
-async function categoryPaths(categoryIds: (string | null)[]): Promise<Map<string, string>> {
-  const ids = [...new Set(categoryIds.filter((id): id is string => Boolean(id)))];
-  if (ids.length === 0) return new Map();
-  const rows = await prisma.ebayCategory.findMany({ where: { id: { in: ids } }, select: { id: true, path: true } });
-  return new Map(rows.map((r) => [r.id, r.path]));
+// Where a product goes. Whatnot only: the Whatnot channel and nothing else.
+// Everything else: every channel but Whatnot (Cristian, 2026-11-04).
+function channelsFor(
+  item: Pick<Item, "whatnotOnly">,
+  publications: { id: string; name: string }[]
+): { id: string; name: string }[] {
+  if (item.whatnotOnly) {
+    const whatnot = publications.filter((p) => isWhatnotChannel(p.name));
+    if (whatnot.length === 0) {
+      throw new Error("The Whatnot sales channel isn't on the Shopify store, so a Whatnot listing has nowhere to go. Add Whatnot's Shopify app first.");
+    }
+    return whatnot;
+  }
+  return publications.filter((p) => !isWhatnotChannel(p.name));
 }
 
 // ---------------------------------------------------------------------------
@@ -370,10 +407,10 @@ function shopifyHandle(item: Item): string {
 export type PublishOutcome = "published" | "nothing_left" | "not_eligible";
 
 // Puts one item on Shopify: finds or creates the product, then publishes
-// it to every sales channel the store has. Saves the error on the item and
+// it to its channels (channelsFor). Saves the error on the item and
 // rethrows when it fails, so Settings can show it and a retry can pick it
 // up.
-// fromReview: the Publish button on a Shopify & Whatnot only item, which
+// fromReview: the Publish button on a Shopify-only or Whatnot-only item, which
 // is still "ready" until this succeeds and flips it to "listed".
 // Re-sends just the description to the item's Shopify product (2026-10-25:
 // live listings moved to the sectioned layout). Same text the publish
@@ -433,8 +470,11 @@ export async function publishItemToShopify(itemId: string, options?: { fromRevie
     const weightLbs = (item.weightLbs ?? 0) + (item.weightOz ?? 0) / 16;
     // A past-date item goes up already in its past-date state: price,
     // disclosure, tags and Online Store only, never a moment at full price
-    // or on Whatnot.
-    const pastDate = Boolean(item.pastDateAt);
+    // or on Whatnot. (A Whatnot-only item never enters that lane.)
+    const pastDate = Boolean(item.pastDateAt) && !item.whatnotOnly;
+    if (item.whatnotOnly && WHATNOT_BLOCKED_CATEGORY.test(category?.path ?? "")) {
+      throw new Error("Whatnot doesn't allow over-the-counter medications. List it for eBay instead.");
+    }
     const prices = expectedPrices(item, pricing, (await retailPrices([item])).get(item.id) ?? null);
     const tags = item.condition ? [`Condition: ${CONDITION_LABEL[item.condition] ?? item.condition}`] : [];
     if (prices.retailCompare) tags.push(RETAIL_TAG);
@@ -443,15 +483,28 @@ export async function publishItemToShopify(itemId: string, options?: { fromRevie
       if (item.expirationDate) tags.push(`Best by: ${formatExpiration(item.expirationDate)}`);
     }
 
+    // Channels first, so a missing Whatnot channel fails before any
+    // product exists (a $1 Whatnot product left behind could otherwise be
+    // reused for the store after a lane switch).
+    const publications = await getPublications();
+    let channels: { id: string; name: string }[];
+    if (pastDate) {
+      const onlineStore = publications.find((p) => /^online store$/i.test(p.name));
+      if (!onlineStore) throw new Error("No Online Store channel found to put the past-date item on.");
+      channels = [onlineStore];
+    } else {
+      channels = channelsFor(item, publications);
+    }
+
     // Already made on an earlier try that failed before publishing: reuse
     // it, even if the title (and so the handle) changed since.
     const saved =
       item.shopifyProductId && item.shopifyVariantId && item.shopifyInventoryItemId
         ? { productId: item.shopifyProductId, variantId: item.shopifyVariantId, inventoryItemId: item.shopifyInventoryItemId }
         : null;
+    const existing = saved ?? (await findProductByHandle(handle));
     const refs =
-      saved ??
-      (await findProductByHandle(handle)) ??
+      existing ??
       (await createProduct({
         handle,
         title: item.finalTitle!,
@@ -477,16 +530,11 @@ export async function publishItemToShopify(itemId: string, options?: { fromRevie
       },
     });
 
-    const publications = await getPublications();
-    let channels: { id: string; name: string }[];
+    // A reused product may carry an older price (another lane's, even):
+    // set this lane's before it goes on any channel.
+    if (existing) await updateVariantPrice(refs.productId, refs.variantId, prices.price, prices.compareAt);
     if (pastDate) {
-      const onlineStore = publications.find((p) => /^online store$/i.test(p.name));
-      if (!onlineStore) throw new Error("No Online Store channel found to put the past-date item on.");
-      await ensureTagCollection({ ...PAST_DATE_COLLECTION, tag: PAST_DATE_TAG, publicationIds: [onlineStore.id] });
-      channels = [onlineStore];
-    } else {
-      const blockedOnWhatnot = WHATNOT_BLOCKED_CATEGORY.test(category?.path ?? "");
-      channels = publications.filter((p) => !(blockedOnWhatnot && isWhatnotChannel(p.name)));
+      await ensureTagCollection({ ...PAST_DATE_COLLECTION, tag: PAST_DATE_TAG, publicationIds: [channels[0].id] });
     }
     await publishToChannels(refs.productId, channels.map((p) => p.id));
     await prisma.item.update({
@@ -533,8 +581,11 @@ export type ShopifySyncResult = {
   stockSet: number;
   stockSkipped: number;
   pricesFixed: number;
-  // Taken off Whatnot because Whatnot doesn't allow the category.
+  // eBay / store products taken off the Whatnot channel (only Whatnot-only
+  // listings belong there, since 2026-11-04).
   offWhatnot: number;
+  // Whatnot-only products taken off the store / other channels.
+  whatnotOffStore: number;
   // Switched over to the past-date page (off every channel but the store).
   pastDateApplied: number;
   // Not reached before the time budget ran out; the next run does them.
@@ -558,6 +609,7 @@ function emptyResult(): ShopifySyncResult {
     stockSkipped: 0,
     pricesFixed: 0,
     offWhatnot: 0,
+    whatnotOffStore: 0,
     pastDateApplied: 0,
     leftForNextRun: 0,
     duplicatesArchived: 0,
@@ -927,7 +979,6 @@ export async function runShopifySync(scope: ShopifySyncScope): Promise<ShopifySy
       ? await readStock(notReadYet.map((i) => i.shopifyInventoryItemId!), location.id, whatnot?.id)
       : new Map<string, ShopifyStockState>();
     const pricing = await getShopifyPricing();
-    const paths = await categoryPaths(items.map((i) => i.categoryId));
     const retail = await retailPrices(items);
 
     const fixItem = async (item: (typeof items)[number]) => {
@@ -959,18 +1010,28 @@ export async function runShopifySync(scope: ShopifySyncScope): Promise<ShopifySy
           result.archived++;
           return;
         }
-        if (item.pastDateAt && !item.shopifyPastDateAppliedAt) {
+        if (item.pastDateAt && !item.whatnotOnly && !item.shopifyPastDateAppliedAt) {
           await applyPastDate(item, publications);
           result.pastDateApplied++;
-        } else if (
-          // Also catches products that went up before the rule existed.
-          !item.pastDateAt &&
-          whatnot &&
-          stock.onCheckedChannel &&
-          WHATNOT_BLOCKED_CATEGORY.test(paths.get(item.categoryId ?? "") ?? "")
-        ) {
+        } else if (!item.whatnotOnly && whatnot && stock.onCheckedChannel) {
+          // Only Whatnot-only listings belong on Whatnot (Cristian,
+          // 2026-11-04). Takes every eBay / store product that went up
+          // before the change off the channel, and any that drift back.
           await unpublishFromChannels(item.shopifyProductId!, [whatnot.id]);
           result.offWhatnot++;
+        } else if (
+          item.whatnotOnly &&
+          stock.channelCount != null &&
+          stock.channelCount > (stock.onCheckedChannel ? 1 : 0)
+        ) {
+          // The other direction: a Whatnot-only product found on any other
+          // channel (published by hand in Shopify admin, say) comes off it,
+          // so its $1 start never sits on the store.
+          await unpublishFromChannels(
+            item.shopifyProductId!,
+            publications.filter((p) => p.id !== whatnot?.id).map((p) => p.id)
+          );
+          result.whatnotOffStore++;
         }
         const want = expectedPrices(item, pricing, retail.get(item.id) ?? null);
         const hasRetailTag = stock.tags.includes(RETAIL_TAG);

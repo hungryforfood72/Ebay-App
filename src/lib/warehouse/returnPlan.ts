@@ -64,7 +64,7 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 export function describePlan(plan: ReturnPlan, decision?: ReturnDecisionNotSame): string[] {
   const parts: string[] = [];
   if (plan.listUnits > 0) {
-    const where = decision === "shopify_only" ? " on Shopify & Whatnot" : "";
+    const where = decision === "shopify_only" ? " on Shopify only" : "";
     const listings = plan.listUnits / plan.listPackSize;
     parts.push(
       plan.listPackSize === 1

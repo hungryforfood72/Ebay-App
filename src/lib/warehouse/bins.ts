@@ -71,29 +71,36 @@ export async function findBin(tx: Tx | typeof prisma, rawCode: string) {
   return bin;
 }
 
-// The Whatnot area (Cristian, 2026-11-03): Shopify & Whatnot only items
-// live in Whatnot bins on the Whatnot shelves, so a show or a Shopify order
-// picks from there, and eBay items never go in those bins. Off until the
-// first Whatnot bin is made, so nothing changes before the area exists. An
-// oversized shelf's own bin takes anything (big items go where they fit).
+// The Whatnot area (Cristian, 2026-11-03): Whatnot-only items (since
+// 2026-11-04; Shopify-only items go in regular bins now) live in Whatnot
+// bins on the Whatnot shelves, so a show picks from there. Both ways, no
+// exceptions (Cristian, 2026-11-06): a Whatnot-only item goes ONLY in a
+// Whatnot bin (not a regular oversized shelf, and not a regular bin before
+// any Whatnot bin exists), and nothing else ever goes in a Whatnot bin. A
+// regular oversized shelf's own bin takes any eBay/Shopify item (big items
+// go where they fit); a Whatnot oversized shelf's bin is a Whatnot bin.
 export async function assertBinArea(
   tx: Tx | typeof prisma,
   bin: { code: string; whatnot: boolean; shelfBin: boolean },
   itemIds: string[]
 ): Promise<void> {
-  // A regular oversized shelf takes anything; a Whatnot one only Shopify &
-  // Whatnot only items (its shelf bin is a Whatnot bin).
-  if ((bin.shelfBin && !bin.whatnot) || itemIds.length === 0) return;
-  if (!bin.whatnot && !(await tx.bin.findFirst({ where: { whatnot: true }, select: { id: true } }))) return;
+  if (itemIds.length === 0) return;
   const wrong = await tx.item.findFirst({
-    where: { id: { in: itemIds }, shopifyOnly: !bin.whatnot },
+    where: { id: { in: itemIds }, whatnotOnly: !bin.whatnot },
     select: { sku: true },
   });
   if (!wrong) return;
+  if (bin.whatnot) {
+    throw new WarehouseError(
+      `${wrong.sku} isn't a Whatnot listing, and ${bin.code} is a Whatnot bin. Put it in a regular bin.`,
+      409
+    );
+  }
+  const anyWhatnotBin = await tx.bin.findFirst({ where: { whatnot: true }, select: { id: true } });
   throw new WarehouseError(
-    bin.whatnot
-      ? `${wrong.sku} is for eBay, and ${bin.code} is a Whatnot bin. Put it in a regular bin.`
-      : `${wrong.sku} is Shopify & Whatnot only. Put it in a Whatnot bin, not ${bin.code}.`,
+    anyWhatnotBin
+      ? `${wrong.sku} is a Whatnot listing. Put it in a Whatnot bin, not ${bin.code}.`
+      : `${wrong.sku} is a Whatnot listing and can only go in a Whatnot bin, and there aren't any yet. Make Whatnot bins on the Bins page first.`,
     409
   );
 }

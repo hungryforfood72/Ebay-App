@@ -148,7 +148,8 @@ export async function sendNewDealsAlert(now: Date = new Date()): Promise<{ count
   const row = await prisma.appSetting.findUnique({ where: { key: NEW_DEALS_SINCE_KEY } });
   const since = row ? new Date(row.value) : new Date(now.getTime() - 24 * 60 * 60 * 1000);
   const count = await prisma.item.count({
-    where: { shopifyPublishedAt: { gt: since, lte: now }, pastDateAt: null, shopifyArchivedAt: null },
+    // Whatnot-only listings aren't on the store.
+    where: { shopifyPublishedAt: { gt: since, lte: now }, pastDateAt: null, shopifyArchivedAt: null, whatnotOnly: false },
   });
   if (count < MIN_NEW_DEALS) return { count, result: null };
   const result = await sendToAll({

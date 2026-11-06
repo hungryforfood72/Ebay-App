@@ -28,7 +28,7 @@ import { RETURN_NOTE_DONATED, RETURN_NOTE_MISSING, RETURN_NOTE_THROWN } from "./
 // ("relist_same"; a listing is never revived, Cristian's never-restock rule
 // and eBay's). Not the same = the return agent's call (returnAdvisor.ts):
 // a new listing in its real condition (relist_new, finished on the scan
-// page at /scan?return={id}), Shopify & Whatnot only, dispose or donate.
+// page at /scan?return={id}), Shopify only, dispose or donate.
 // Every return is an ItemReturn row with the decision and the reason.
 
 export type ReturnDecision = "add_back" | "relist_same" | ReturnDecisionNotSame;
@@ -197,7 +197,14 @@ export async function adviceInputFor(item: Item, unitsBack: number, report: Cond
     condition: item.condition,
     perUnit: perUnitOf(item),
     expirationDate: item.expirationDate,
-    price: item.originalPrice != null ? Number(item.originalPrice) : item.price != null ? Number(item.price) : null,
+    // A Whatnot-only item's price is the auction start ($1), not its value.
+    price: item.whatnotOnly
+      ? null
+      : item.originalPrice != null
+        ? Number(item.originalPrice)
+        : item.price != null
+          ? Number(item.price)
+          : null,
     unitCost,
     weightLbs,
     returnedUnits: unitsBack * perUnitOf(item),
@@ -475,7 +482,7 @@ export async function recordReturn(input: RecordReturnInput): Promise<RecordRetu
   if (!decisionFits(decision, plan)) {
     throw new WarehouseError(
       plan.listUnits > 0
-        ? "Some units are being listed, so pick eBay or Shopify & Whatnot for them."
+        ? "Some units are being listed, so pick eBay or Shopify only for them."
         : decision === "donate"
           ? "Nothing is marked to donate. Throw it out instead, or change the counts."
           : "Nothing is being listed, so pick throw out or donate."
@@ -546,6 +553,7 @@ export async function sameConditionCopy(
     price: original.originalPrice ?? original.price,
     localPickupOnly: original.localPickupOnly,
     shopifyOnly: original.shopifyOnly,
+    whatnotOnly: original.whatnotOnly,
     chargeForShipping: original.chargeForShipping,
     boxSize: original.boxSize,
     weightLbs: original.weightLbs,

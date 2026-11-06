@@ -115,7 +115,7 @@ export async function buildItemLabel(
     condition: string | null;
     finalTitle?: string | null;
     aiTitle?: string | null;
-    shopifyOnly?: boolean | null;
+    whatnotOnly?: boolean | null;
   },
   // A name the scan page already had on screen, if any.
   clientName?: string | null
@@ -137,7 +137,7 @@ export async function buildItemLabel(
     packSize: item.isMultipack && item.packSize ? item.packSize : null,
     expiration: labelExpiration(item.expirationDate),
     condition: item.condition ? (CONDITION_TEXT[item.condition] ?? item.condition) : null,
-    ...(item.shopifyOnly ? { shopOnly: true } : {}),
+    ...(item.whatnotOnly ? { whatnot: true } : {}),
   };
 }
 

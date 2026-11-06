@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
     where: {
       status: "listed",
       AND: [
-        // Live somewhere: on eBay, or Shopify & Whatnot only.
+        // Live somewhere: on eBay, or Shopify-only or Whatnot-only.
         { OR: [{ ebayOfferId: { not: null } }, { ebayListingId: { not: null } }, { shopifyOnly: true }] },
         ...(q
           ? [

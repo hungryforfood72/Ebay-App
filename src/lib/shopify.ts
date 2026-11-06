@@ -2,8 +2,9 @@ import { createHmac, randomUUID, timingSafeEqual } from "crypto";
 import { prisma } from "./prisma";
 
 // Shopify Admin GraphQL API for the store that sells this inventory
-// alongside eBay (Whatnot reads from it too, through Whatnot's own Shopify
-// app). Talks to a Dev Dashboard app installed on that store, using the
+// alongside eBay. Whatnot reads it too, through Whatnot's own Shopify app,
+// but only the Whatnot-only listings are on that channel (shopifySync.ts).
+// Talks to a Dev Dashboard app installed on that store, using the
 // client credentials grant: no static token exists for these apps any more.
 // Every call in this app goes through shopifyGraphql below.
 export const SHOPIFY_API_VERSION = "2026-10";
@@ -484,6 +485,8 @@ export type ShopifyStockState = {
   // Whether it's on the channel passed as checkPublicationId (null when
   // none was passed).
   onCheckedChannel: boolean | null;
+  // How many sales channels the product is published on (null if unknown).
+  channelCount: number | null;
 };
 
 // Current available count and price for many inventory items at once,
@@ -506,7 +509,12 @@ export async function readStock(
         variant: {
           price: string;
           compareAtPrice: string | null;
-          product: { status: string; tags: string[]; publishedOnPublication?: boolean };
+          product: {
+            status: string;
+            tags: string[];
+            publishedOnPublication?: boolean;
+            resourcePublicationsCount: { count: number } | null;
+          };
         } | null;
       } | null)[];
     }>(
@@ -515,7 +523,7 @@ export async function readStock(
           ... on InventoryItem {
             id
             inventoryLevel(locationId: $locationId) { quantities(names: ["available"]) { name quantity } }
-            variant { price compareAtPrice product { status tags ${channelField} } }
+            variant { price compareAtPrice product { status tags resourcePublicationsCount(onlyPublished: true) { count } ${channelField} } }
           }
         }
       }`,
@@ -530,6 +538,7 @@ export async function readStock(
         productStatus: node.variant?.product.status ?? null,
         tags: node.variant?.product.tags ?? [],
         onCheckedChannel: node.variant?.product.publishedOnPublication ?? null,
+        channelCount: node.variant?.product.resourcePublicationsCount?.count ?? null,
       });
     }
   }

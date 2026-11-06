@@ -7,7 +7,7 @@ import { removeUnitsBestEffort } from "./warehouse/bins";
 // Guided relist of a multi-date listing the expiration sweep pulled
 // (Item.expirySplit). The dashboard sends staff to /scan?relist={id}, which
 // walks them through new photos of the still-good units (a new eBay
-// listing), then the past-date ones (Shopify & Whatnot only), on the
+// listing), then the past-date ones (Shopify only), on the
 // original's manifest, so nobody has to work out which load it came from.
 // Cristian, 2026-10-15.
 export type RelistPart = "good" | "past";

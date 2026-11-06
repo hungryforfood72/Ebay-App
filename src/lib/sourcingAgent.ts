@@ -1138,7 +1138,7 @@ type LineEstimateResult = {
     | "retail_estimate"
     | "unpriced";
   flaggedDud: boolean;
-  // Set aside or sent to Shopify & Whatnot at listing before, never sold on
+  // Set aside or sent to Shopify at listing before, never sold on
   // eBay by us: a dud for that reason (ebaySkips.ts).
   skippedOnEbayBefore?: boolean;
   marketCheckFailed: boolean;
@@ -1757,7 +1757,7 @@ async function estimateLine(
   // real case this caught live). The beta never checks the market, so its
   // version is always an unknown ("unpriced").
   // Our listing station passed on eBay for this product before (set aside,
-  // or sent to Shopify & Whatnot because eBay wasn't worth it) and it has
+  // or sent to Shopify because eBay wasn't worth it) and it has
   // never sold on eBay for us: a dud for bidding, whatever the research
   // says. Selling it on eBay later puts it in ownSalesCount, which wins.
   // Shopify and Whatnot sales never count here (ebaySkips.ts).

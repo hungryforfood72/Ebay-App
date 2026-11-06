@@ -5,7 +5,6 @@ import { formatLbOz, formatOz, LiveWeightReadout, packageWeight, useStationWeigh
 import { ExpirationPicker } from "@/components/ExpirationPicker";
 import { ManifestSearch, type ManifestSearchResult } from "@/components/ManifestSearch";
 import { PackSuggestionCard, type SetAsideWhy } from "@/components/PackSuggestionCard";
-import { SetAsideCard } from "@/components/SetAsideCard";
 import { PullBanner } from "@/components/PullBanner";
 import { ScanField } from "@/components/ScanField";
 import { SortBoxesCard } from "@/components/SortBoxesCard";
@@ -31,6 +30,7 @@ import {
   ChevronRight,
   CircleCheck,
   FileSpreadsheet,
+  Gavel,
   LoaderCircle,
   Package,
   PackageX,
@@ -95,7 +95,7 @@ function dudBoxRefusal(box: DudBoxInfo, upc: string): string | null {
   return null;
 }
 
-// Where a product from this dud box goes: Shopify & Whatnot only, or eBay.
+// Where a product from this dud box goes: Shopify only, or eBay.
 // Logged twice and decided both ways: Shopify first (the server does the
 // same for a Shopify-only save).
 function dudBoxDecision(box: DudBoxInfo, upc: string): "shopify" | "ebay" | null {
@@ -159,6 +159,10 @@ const WAREHOUSE_BUNDLE_STEPS: Step[] = ["mode", "bundleHeroPhoto", "bundleCompon
 const SCANNING_KEY = "ebay-tool.scanning";
 const OLD_SESSION_KEY = "ebay-tool.activeScanSessionId";
 const ACTIVE_MANIFEST_KEY = "ebay-tool.activeManifestId";
+// Whatnot mode (Cristian, 2026-11-04): every item saved goes on Whatnot
+// only, as its own listing at the auction start price. Kept across reloads
+// like the active manifest, and works with or without one.
+const WHATNOT_MODE_KEY = "ebay-tool.whatnotMode";
 
 function startSinglePhotoUpload(file: File, setPhoto: (p: Photo | null) => void) {
   const id = `${Date.now()}-${Math.random()}`;
@@ -216,6 +220,15 @@ function ScanPageInner() {
     return searchParams.get("manifestId") ?? localStorage.getItem(ACTIVE_MANIFEST_KEY);
   });
   const [manifestTitle, setManifestTitle] = useState<string | null>(null);
+  const [whatnotMode, setWhatnotModeState] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem(WHATNOT_MODE_KEY) === "1";
+  });
+  function setWhatnotMode(on: boolean) {
+    setWhatnotModeState(on);
+    if (on) localStorage.setItem(WHATNOT_MODE_KEY, "1");
+    else localStorage.removeItem(WHATNOT_MODE_KEY);
+  }
   const [damagedMode, setDamagedMode] = useState(false);
   const [damagedUpc, setDamagedUpc] = useState("");
   const [damagedQuantity, setDamagedQuantity] = useState("1");
@@ -310,15 +323,19 @@ function ScanPageInner() {
   const [pickedLine, setPickedLine] = useState<ManifestSearchResult | null>(null);
   const [lineSearchOpen, setLineSearchOpen] = useState(false);
   const [isMultipack, setIsMultipack] = useState(false);
-  // Set from the pack suggestion's "Sell on Shopify & Whatnot instead": this
+  // Set from the pack suggestion's "Sell on Shopify instead": this
   // item skips eBay entirely. Cleared for every new item.
   const [shopifyOnly, setShopifyOnly] = useState(false);
   // The pack card's reason eBay isn't worth it, when "Sell on Shopify &
   // Whatnot instead" set shopifyOnly (saved with the item so the Analyzer
   // learns, see ebaySkips.ts). Cleared with shopifyOnly.
   const [ebaySkipReason, setEbaySkipReason] = useState<SetAsideWhy | null>(null);
-  // The pack card's "Set aside" in warehouse mode: the dud box step.
-  const [settingAside, setSettingAside] = useState<{ units: number | null; why: SetAsideWhy } | null>(null);
+  // The pack card said it isn't worth listing on eBay (Cristian,
+  // 2026-11-06): instead of a dud box, this one item goes on as a
+  // Whatnot-only listing, same steps (photos, weight, date), a Whatnot label,
+  // into a Whatnot bin. Holds the card's why, saved with the item so the
+  // Analyzer learns (ebaySkips.ts). Cleared for every new item.
+  const [whatnotItem, setWhatnotItem] = useState<SetAsideWhy | null>(null);
   // What the pack card suggested for the product being listed (sent with
   // the save, so Cristian listing it differently teaches the pack agent).
   const [packSuggestion, setPackSuggestion] = useState<{ recommended: number; sizes: number[] } | null>(null);
@@ -332,7 +349,7 @@ function ScanPageInner() {
   const [firstDateUnits, setFirstDateUnits] = useState("");
   // Guided relist from the dashboard (/scan?relist={id}): a multi-date
   // listing the sweep pulled, redone as the still-good units (eBay) and
-  // then the past-date ones (Shopify & Whatnot only), on its own manifest.
+  // then the past-date ones (Shopify only), on its own manifest.
   const [relist, setRelist] = useState<{ plan: RelistPlan; part: RelistPart } | null>(null);
   // The manifest being scanned before the relist switched to the
   // original's, put back when it's over so the next scans land right.
@@ -342,9 +359,12 @@ function ScanPageInner() {
   // photos. Uses the same manifest put-back as the relist when it's over.
   const [returnPlan, setReturnPlan] = useState<ReturnListingPlan | null>(null);
   // Warehouse mode: listing the Shopify-marked units of a dud box (scan its
-  // DB label). Every item saved this way is Shopify & Whatnot only and on
+  // DB label). Every item saved this way is Shopify only and on
   // the box's manifest; the lister isn't asked about channels.
   const [dudBox, setDudBox] = useState<DudBoxInfo | null>(null);
+  // Whatnot mode applies to plain listings only: relists, returns and dud
+  // boxes keep their own lanes.
+  const whatnotLane = (whatnotMode || whatnotItem != null) && !relist && !returnPlan && !dudBox;
   // Warehouse mode, listing into a manifest: the load was sorted into sort
   // boxes first. Scanning a product pulls every unit of it out of its boxes
   // to the table (POST /api/sort-boxes/pull); this is what to go grab, for
@@ -502,6 +522,7 @@ function ScanPageInner() {
   function finishScanning() {
     localStorage.removeItem(SCANNING_KEY);
     localStorage.removeItem(ACTIVE_MANIFEST_KEY);
+    setWhatnotMode(false);
     setScanning(false);
     setActiveManifestId(null);
     setManifestTitle(null);
@@ -723,7 +744,7 @@ function ScanPageInner() {
   function resetForm() {
     setShopifyOnly(false);
     setEbaySkipReason(null);
-    setSettingAside(null);
+    setWhatnotItem(null);
     setPackSuggestion(null);
     setPhotos([]);
     setUpc("");
@@ -789,7 +810,7 @@ function ScanPageInner() {
 
   // A return listed again in its real condition: the original's UPC,
   // manifest, pack shape and date, the units the return report says to
-  // list, Shopify & Whatnot only when that was the call. The condition is
+  // list, Shopify only when that was the call. The condition is
   // set server-side from the return. Straight to new photos.
   function applyReturnPlan(plan: ReturnListingPlan) {
     setIsBundle(false);
@@ -1207,10 +1228,19 @@ function ScanPageInner() {
               }))
             : undefined,
           manifestId: activeManifestId,
-          // Dud box items go where the box decided: Shopify & Whatnot only
-          // or eBay (the server decides it the same way).
+          // Dud box items go where the box decided: Shopify only or eBay
+          // (the server decides it the same way).
           shopifyOnly: !isBundle && (dudBox ? dudBoxDecision(dudBox, upc.trim()) === "shopify" : shopifyOnly),
-          ebaySkipReason: !isBundle && !dudBox && shopifyOnly ? (ebaySkipReason ?? undefined) : undefined,
+          ebaySkipReason: isBundle || dudBox
+            ? undefined
+            : whatnotLane
+              ? (whatnotItem ?? undefined)
+              : shopifyOnly
+                ? (ebaySkipReason ?? undefined)
+                : undefined,
+          // Whatnot mode: its own Whatnot-only listing (the server ignores
+          // it for relists, returns and dud boxes too).
+          whatnotOnly: whatnotLane || undefined,
           relistOf: relist?.plan.id,
           relistPart: relist?.part,
           packSuggestion: isBundle ? undefined : (packSuggestion ?? undefined),
@@ -1427,8 +1457,20 @@ function ScanPageInner() {
             primary
             icon={ScanBarcode}
             title="Start scanning"
-            description="Photograph, scan, and shelve items for listing."
-            onClick={startScanning}
+            description="Photograph, scan, and shelve items for listing on eBay and Shopify."
+            onClick={() => {
+              setWhatnotMode(false);
+              startScanning();
+            }}
+          />
+          <OptionCard
+            icon={Gavel}
+            title="List for Whatnot"
+            description="Its own Whatnot-only listing at the auction start price. Pick a manifest after, or skip it."
+            onClick={() => {
+              setWhatnotMode(true);
+              startScanning();
+            }}
           />
           <OptionCard
             href="/manifests"
@@ -1800,7 +1842,7 @@ function ScanPageInner() {
               ) : (
                 <>
                   <strong>Past-date units</strong> ({describeBreakdown(relist.plan.past.batches)}). Take new photos of
-                  just these. They go on Shopify &amp; Whatnot only, on the past-date deals page.
+                  just these. They go on Shopify only, on the past-date deals page.
                 </>
               )}
             </p>
@@ -1812,7 +1854,7 @@ function ScanPageInner() {
             <div className="flex items-start justify-between gap-2">
               <p className="font-semibold">
                 Listing a return
-                {returnPlan.decision === "shopify_only" ? " · Shopify & Whatnot only" : ""}
+                {returnPlan.decision === "shopify_only" ? " · Shopify only" : ""}
               </p>
               <button type="button" className="shrink-0 text-xs font-medium underline" onClick={cancelRelist}>
                 Cancel
@@ -1836,7 +1878,7 @@ function ScanPageInner() {
                 <>
                   {". "}
                   <span className="font-semibold">
-                    {dudBoxDecision(dudBox, upc.trim()) === "ebay" ? "This one goes on eBay." : "Shopify & Whatnot only."}
+                    {dudBoxDecision(dudBox, upc.trim()) === "ebay" ? "This one goes on eBay." : "Shopify only."}
                   </span>
                 </>
               )}
@@ -1847,10 +1889,50 @@ function ScanPageInner() {
           </div>
         )}
 
-        {shopifyOnly && !relist && !returnPlan && !dudBox && !isBundle && step !== "mode" && step !== "upc" && (
+        {/* Whatnot mode switch. Relists, returns and dud boxes have their own lanes. */}
+        {!relist && !returnPlan && !dudBox && (whatnotMode || step === "mode") && (
+          <div
+            className={cn(
+              "flex flex-wrap items-center justify-between gap-2 rounded-xl border px-3 py-2 text-sm",
+              whatnotMode ? "border-purple-300 bg-purple-50 text-purple-950" : "border-border bg-surface text-foreground"
+            )}
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              {whatnotMode && <Gavel className="size-4 shrink-0" aria-hidden />}
+              {whatnotMode ? (
+                <span>
+                  <span className="font-semibold">Whatnot only.</span> Each item gets its own Whatnot listing at the
+                  starting price. Not on eBay or the store.
+                </span>
+              ) : (
+                <span className="text-muted-foreground">Listing for eBay + Shopify.</span>
+              )}
+            </span>
+            <button type="button" className="text-xs font-medium underline" onClick={() => setWhatnotMode(!whatnotMode)}>
+              {whatnotMode ? "List for eBay instead" : "Switch to Whatnot"}
+            </button>
+          </div>
+        )}
+
+        {whatnotItem != null && !whatnotMode && !relist && !returnPlan && !dudBox && step !== "mode" && step !== "upc" && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-purple-300 bg-purple-50 px-3 py-2 text-sm text-purple-950">
+            <span className="flex min-w-0 items-center gap-2">
+              <Gavel className="size-4 shrink-0" aria-hidden />
+              <span>
+                <span className="font-semibold">Whatnot only.</span> Not worth it on eBay, so list this one for Whatnot.
+                A Whatnot label prints; put it in a Whatnot bin.
+              </span>
+            </span>
+            <button type="button" className="text-xs font-medium underline" onClick={() => setWhatnotItem(null)}>
+              Undo
+            </button>
+          </div>
+        )}
+
+        {shopifyOnly && !whatnotLane && !relist && !returnPlan && !dudBox && !isBundle && step !== "mode" && step !== "upc" && (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 text-sm text-violet-950">
             <span>
-              <span className="font-semibold">Shopify &amp; Whatnot only.</span> This one won&apos;t be listed on eBay.
+              <span className="font-semibold">Shopify only.</span> This one won&apos;t be listed on eBay.
             </span>
             <button
               type="button"
@@ -1988,20 +2070,9 @@ function ScanPageInner() {
         {step === "quantity" && (
           <Card className="flex flex-col gap-4">
             {/* A product picked by name or Item # has no UPC: the card goes by its manifest line key. */}
-            {(upc.trim() || pickedLine) && settingAside && activeManifestId ? (
-              <SetAsideCard
-                manifestId={activeManifestId}
-                upc={upc.trim() || pickedLine!.key}
-                units={settingAside.units}
-                why={settingAside.why}
-                stationId={station?.id ?? null}
-                onCancel={() => setSettingAside(null)}
-                onDone={(msg) => {
-                  resetForm();
-                  setMessage(msg);
-                }}
-              />
-            ) : (upc.trim() || pickedLine) && (
+            {(upc.trim() || pickedLine) && !whatnotLane && (
+              // Not in Whatnot mode: the card weighs eBay pack sizes and
+              // where else to sell, and a Whatnot listing is already decided.
               <PackSuggestionCard
                 upc={upc.trim() || pickedLine!.key}
                 manifestId={activeManifestId}
@@ -2012,12 +2083,19 @@ function ScanPageInner() {
                   setPackSize(size > 1 ? String(size) : "");
                   if (listings != null) setQuantity(String(listings));
                 }}
+                whatnotAside={!dudBox && !relist && !returnPlan}
                 onSetAside={(units, why) => {
-                  // Warehouse mode on a load: into a dud box, with the why.
-                  // From a dud box it's already in one; elsewhere there's
-                  // no load to put it against, so it's just skipped.
-                  if (warehouseMode && activeManifestId && !dudBox && !relist && !returnPlan) {
-                    setSettingAside({ units, why });
+                  // Not worth eBay: list it for Whatnot instead (Cristian,
+                  // 2026-11-06), one listing of every unit it set aside.
+                  // From a dud box it's already set aside; a relist or
+                  // return has its own lane, so those just skip it.
+                  if (!dudBox && !relist && !returnPlan) {
+                    setWhatnotItem(why);
+                    setShopifyOnly(false);
+                    setEbaySkipReason(null);
+                    setIsMultipack(false);
+                    setPackSize("");
+                    setQuantity(String(units && units > 0 ? units : 1));
                   } else {
                     resetForm();
                   }

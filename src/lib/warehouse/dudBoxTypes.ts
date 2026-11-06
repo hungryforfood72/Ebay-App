@@ -3,7 +3,7 @@
 // import from client components: no server imports here.
 
 // What happens to a dud product once someone processes the box:
-//   shopify    list it, Shopify & Whatnot only (from the box, at the listing station)
+//   shopify    list it, Shopify only (from the box, at the listing station)
 //   ebay       worth a try on eBay after all (listed from the box like any
 //              eBay item; if it sells, the Analyzer learns from it)
 //   not_worth  not even worth Shopify

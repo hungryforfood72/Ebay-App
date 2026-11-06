@@ -240,10 +240,10 @@ function itemLabelHtml(p: ItemLabelPayload, zoom: number): string {
   return (
     `<div class="wl-label">` +
     `<div class="wl-bars">${bars.svg}</div>` +
-    // Shopify & Whatnot only: a black tag next to the code, so it goes to
-    // a Whatnot bin (Cristian, 2026-11-03). Beside the code, not a line of
-    // its own: the 1" label has no room for another line.
-    `<div class="wl-code">${esc(p.code)}${p.shopOnly ? `<span class="wl-shop">SHOPIFY/WHATNOT</span>` : ""}</div>` +
+    // Whatnot only: a black tag next to the code, so it goes to a Whatnot
+    // bin (Cristian, 2026-11-03). Beside the code, not a line of its own:
+    // the 1" label has no room for another line.
+    `<div class="wl-code">${esc(p.code)}${p.whatnot ? `<span class="wl-shop">WHATNOT</span>` : ""}</div>` +
     (p.name ? `<div class="wl-name">${esc(p.name)}</div>` : "") +
     (meta ? `<div class="wl-meta">${esc(meta)}</div>` : "") +
     `</div>`
@@ -342,7 +342,7 @@ export function cleanLabelPayload(
       packSize,
       expiration: typeof p.expiration === "string" && p.expiration.trim() ? p.expiration.trim() : null,
       condition: typeof p.condition === "string" && p.condition.trim() ? p.condition.trim() : null,
-      ...(p.shopOnly === true ? { shopOnly: true } : {}),
+      ...(p.whatnot === true ? { whatnot: true } : {}),
     };
     return { payload };
   }

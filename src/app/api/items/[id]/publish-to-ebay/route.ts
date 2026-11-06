@@ -84,6 +84,15 @@ export async function POST(
     return NextResponse.json({ error: "Item not found." }, { status: 404 });
   }
 
+  // Off-eBay lanes never reach eBay, a Whatnot listing above all: its
+  // price is a $1-2 auction start (Cristian, 2026-11-04).
+  if (item.shopifyOnly || item.whatnotOnly) {
+    return NextResponse.json(
+      { error: `This one is set to ${item.whatnotOnly ? "Whatnot only" : "Shopify only"}, not eBay. Change where it sells in Review first.` },
+      { status: 400 }
+    );
+  }
+
   // The draft saw "Rx Only" on the package: eBay removes prescription
   // devices (Cristian, 2026-10-25), so it never goes up. "Not Rx only" on
   // the Review page clears it if the draft got it wrong.
@@ -105,7 +114,7 @@ export async function POST(
     if (item.expirationDate <= cutoff) {
       return NextResponse.json(
         {
-          error: `Its date (${formatExpiration(item.expirationDate)}) is ${bufferDays > 0 ? `past, or within ${bufferDays} days` : "past"}, so it can't go on eBay. Tick Shopify & Whatnot only, or set it aside to be pulled.`,
+          error: `Its date (${formatExpiration(item.expirationDate)}) is ${bufferDays > 0 ? `past, or within ${bufferDays} days` : "past"}, so it can't go on eBay. Set it to Shopify only, or set it aside to be pulled.`,
         },
         { status: 400 }
       );
@@ -152,7 +161,10 @@ async function publish(request: Request, id: string, item: Item) {
   try {
     const preCleaned = await stripKnownBlockedWords(item);
     if (preCleaned) autoFixes.push(preCleaned);
-    let current = preCleaned ? await prisma.item.findUniqueOrThrow({ where: { id } }) : item;
+    // Read again now the publish lock is ours: a store switch made before
+    // the claim must not reach eBay with the other lane's price.
+    let current = await prisma.item.findUniqueOrThrow({ where: { id } });
+    if (current.shopifyOnly || current.whatnotOnly) throw new Error("It was switched off eBay before publishing, so it wasn't listed.");
     let result;
     for (let round = 0; ; round++) {
       try {
@@ -180,6 +192,9 @@ async function publish(request: Request, id: string, item: Item) {
         if (!note) throw e;
         autoFixes.push(note);
         current = await prisma.item.findUniqueOrThrow({ where: { id } });
+        // Belt and braces (the store switch refuses while a publish runs):
+        // never send a Shopify/Whatnot-only item's price to eBay.
+        if (current.shopifyOnly || current.whatnotOnly) throw new Error("It was switched off eBay while publishing, so it wasn't listed.");
       }
     }
     const updated = await prisma.item.update({

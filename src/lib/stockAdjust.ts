@@ -85,7 +85,7 @@ export async function adjustItemStock(args: {
   try {
     let newQuantity: number;
     if (offEbay) {
-      // Not on eBay (Shopify & Whatnot only, or past-date): nothing there to
+      // Not on eBay (Shopify-only or Whatnot-only, or past-date): nothing there to
       // change. Shopify follows through queueShopifySync below.
       newQuantity = newAvailableQuantity + item.soldQuantity;
     } else if (item.ebayOfferId) {

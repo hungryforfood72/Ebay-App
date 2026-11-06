@@ -473,7 +473,7 @@ function ShelfPullRow({ item }: { item: ExpiredNeedingPullItem }) {
                 Past date ({describeBreakdown(item.expirySplit.pastDate)}):{" "}
                 {item.expirySplit.pastDateLane === false
                   ? "can't be resold (medicine, sunscreen or baby food), logged as expired and tossed."
-                  : `Shopify & Whatnot only, past-date deals page${item.expirySplit.relisted?.past ? " (done)" : ""}.`}
+                  : `Shopify only, past-date deals page${item.expirySplit.relisted?.past ? " (done)" : ""}.`}
               </li>
             </ul>
           </div>

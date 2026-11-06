@@ -297,7 +297,7 @@ ${examples.map((f) => `- "${f.description}": ${f.suggestedPackSize != null ? `th
 
 If what you found contradicts the store-price check above (a different count or a far different price), trust your own research.
 
-Before answering, work out the profit of one listing at your size: price, minus eBay fees, minus that size's label from the list above, minus item cost. If no size clears the profit bar (common with one or two cheap units left, since the label alone is several dollars), still pick the best size but say plainly in the reason that it won't make money on eBay with free shipping, so it's better kept for Shopify & Whatnot, where the buyer pays shipping.
+Before answering, work out the profit of one listing at your size: price, minus eBay fees, minus that size's label from the list above, minus item cost. If no size clears the profit bar (common with one or two cheap units left, since the label alone is several dollars), still pick the best size but say plainly in the reason that it won't make money on eBay with free shipping, so it's better kept for Shopify, where the buyer pays shipping.
 
 Then answer. packPrice = the buy-it-now price (free shipping) you'd put on ONE listing of that pack size so it sells within a few weeks, based on your research, or null if you found no prices. reason = one or two plain sentences the person at the table reads: what drove the call, in everyday words. No prices or dollar amounts in the reason (not even written out in words, like "five dollars"), no dashes, don't mention Cristian or his corrections, and don't claim it sells fast unless Cristian's own history shows it.
 
@@ -357,7 +357,7 @@ Respond with exactly one JSON object as your final line, no other text after it:
 // "Disagree? Teach it" but with no reason typed, so the next call on this
 // product sees it and the lessons pass can look for a pattern. Following
 // the plan (4-packs with 6 on hand going out as one 6-pack) isn't one, and
-// neither is Shopify & Whatnot only (a different lane, not a pack call).
+// neither is Shopify only (a different lane, not a pack call).
 export const OVERRIDE_NO_REASON = "(listed differently at the table, no reason typed)";
 
 export async function recordPackOverride(input: {

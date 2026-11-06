@@ -14,9 +14,10 @@ export type ItemLabelPayload = {
   // "MM/YYYY", the listing's earliest date, or null.
   expiration: string | null;
   condition: string | null;
-  // Shopify & Whatnot only: printed on the label so it goes to the
-  // Whatnot area (Cristian, 2026-11-03).
-  shopOnly?: boolean;
+  // Whatnot only (Item.whatnotOnly): WHATNOT printed on the label so it
+  // goes to the Whatnot area (Cristian, 2026-11-03; Whatnot-only since
+  // 2026-11-04, Shopify-only items go in regular bins now).
+  whatnot?: boolean;
 };
 
 // Bin, shelf, box and dud box labels: just the barcode and a big readable

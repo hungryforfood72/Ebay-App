@@ -31,7 +31,7 @@ import { useEffect, useState } from "react";
 // brand new. Brand new goes back on its listing, or onto a fresh copy if
 // that sold out or ended. Anything else gets the return agent's call
 // (src/lib/warehouse/returnAdvisor.ts): list it again in its real
-// condition, Shopify & Whatnot only, dispose or donate. Employees never see
+// condition, Shopify only, dispose or donate. Employees never see
 // money; the owner also sees the agent's money reasoning.
 
 type Photo = { id: string; previewUrl: string; status: "uploading" | "done" | "error"; url?: string };
@@ -75,7 +75,7 @@ const DECISION_TEXT: Record<string, string> = {
   add_back: "Back on its listing",
   relist_same: "New copy of the listing",
   relist_new: "List it again",
-  shopify_only: "Shopify & Whatnot only",
+  shopify_only: "Shopify only",
   dispose: "Throw it away",
   donate: "Donate it",
 };
@@ -125,7 +125,7 @@ function placeLines(plan: ReturnPlan, decision: ReturnDecisionNotSame): string[]
   return [
     plan.listUnits > 0
       ? decision === "shopify_only"
-        ? "The listed part gets a new Shopify & Whatnot listing. Take new photos of exactly what's in it, show any damage."
+        ? "The listed part gets a new Shopify-only listing. Take new photos of exactly what's in it, show any damage."
         : "The listed part gets a new listing in its real condition. Take new photos of exactly what's in it, show any damage."
       : null,
     plan.thrownUnits > 0 ? "Put the thrown-out ones in the dispose bin." : null,
@@ -835,7 +835,7 @@ function PlanEditor({
             eBay
           </ChoiceRow>
           <ChoiceRow selected={channel === "shopify_only"} onClick={() => onChannel("shopify_only")}>
-            Shopify &amp; Whatnot
+            Shopify only
           </ChoiceRow>
         </div>
       )}

@@ -8,10 +8,11 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 60;
 
-// The review page's Publish button for a Shopify & Whatnot only item (see
+// The review page's Publish button for a Shopify-only or Whatnot-only item (see
 // Item.shopifyOnly): the same explicit "make it live" step as
-// publish-to-eBay, just to the Shopify store, which feeds Whatnot. Flips
-// the item to "listed" once it's on the store's channels.
+// publish-to-eBay, just to the Shopify store (or, for a Whatnot-only item,
+// to the Whatnot channel alone). Flips the item to "listed" once it's on
+// its channels.
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   if (!getShopifyConfig()) {

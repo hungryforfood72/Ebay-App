@@ -40,7 +40,7 @@ export async function GET(request: NextRequest) {
   }
 
   const result = await expireDueListings(now);
-  // Off Whatnot, onto the past-date page (or off the store) right away
+  // Onto the past-date page (or off the store) right away
   // rather than at the next 10-minute sync.
   const shopify = result.changedItemIds.length > 0 ? await runShopifySync({ items: result.changedItemIds }) : null;
   // Then tell deal-alert subscribers, once the items are on the page.

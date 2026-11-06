@@ -158,7 +158,7 @@ export async function recordItemSale(
   }
 
   const storedAvailable = Math.max(0, item.quantity - item.soldQuantity);
-  // Off eBay (Shopify & Whatnot only, or on the past-date page): the app's
+  // Off eBay (Shopify-only or Whatnot-only, or on the past-date page): the app's
   // own count is the only one.
   const offEbay = item.shopifyOnly || Boolean(item.pastDateAt);
   const currentAvailable = (offEbay ? null : await getLiveAvailableQuantity(item)) ?? storedAvailable;
@@ -181,7 +181,7 @@ export async function recordItemSale(
     } else if (item.ebayListingId) {
       await reviseFixedPriceItemQuantity(item.ebayListingId, newAvailable);
     }
-    // Shopify & Whatnot only: no eBay listing; Shopify follows below.
+    // Shopify-only or Whatnot-only: no eBay listing; Shopify follows below.
     const adjustmentId = randomUUID();
     const [updatedItem, adjustment] = await prisma.$transaction([
       prisma.item.update({

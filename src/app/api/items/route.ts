@@ -22,6 +22,7 @@ import type { StoredReturnReport } from "@/lib/warehouse/returns";
 import { classifyScan, normalizeCode } from "@/lib/warehouse/codes";
 import { buildItemLabel, queueItemLabels } from "@/lib/warehouse/itemLabel";
 import { isWarehouseMode } from "@/lib/warehouse/settings";
+import { getWhatnotStartPrice } from "@/lib/shopifySync";
 import { binProgress } from "@/lib/warehouse/binGate";
 
 // Draft (up to 45s for a single item, or up to ~90s for a bundle — parallel
@@ -125,7 +126,7 @@ export async function POST(request: NextRequest) {
 
   // Guided relist of a split multi-date listing (src/lib/relist.ts): the
   // UPC and manifest come from the original, never the phone, and the
-  // past-date part is always Shopify & Whatnot only.
+  // past-date part is always Shopify only.
   const relistOf = typeof body.relistOf === "string" ? body.relistOf : null;
   const relistPart: RelistPart = body.relistPart === "past" ? "past" : "good";
   const original = relistOf ? await prisma.item.findUnique({ where: { id: relistOf } }) : null;
@@ -161,7 +162,7 @@ export async function POST(request: NextRequest) {
 
   // Listing from a dud box (src/lib/warehouse/dudBoxes.ts): units the dud
   // processor marked "shopify" or "ebay". The manifest is the box's; a
-  // Shopify one is Shopify & Whatnot only and an eBay one isn't, whatever
+  // Shopify one is Shopify only and an eBay one isn't, whatever
   // the page sent. The units come off the box's entries in the same
   // transaction as the item, which remembers the box (fromDudBoxId) so its
   // sales count as the extra money duds bring in.
@@ -197,11 +198,22 @@ export async function POST(request: NextRequest) {
       );
     }
   }
+  // Whatnot mode on the List page (Cristian, 2026-11-04): its own listing,
+  // on Whatnot only, at the auction start price. With or without a
+  // manifest, bundles too. Relists, returns and dud boxes have lanes of
+  // their own and never come in as Whatnot listings.
+  const whatnotOnly = body.whatnotOnly === true && !relistOf && !returnOf && !dudBox;
+  const whatnotStart = whatnotOnly ? await getWhatnotStartPrice() : null;
+
   // The pack card said eBay isn't worth it and the lister sent it to
-  // Shopify & Whatnot instead: kept so the Analyzer learns (ebaySkips.ts).
-  // Dud box listings already have theirs on the box entry.
+  // Shopify, or to Whatnot (its "not worth eBay" call since 2026-11-06),
+  // instead: kept so the Analyzer learns (ebaySkips.ts; a Whatnot-only item
+  // is always shopifyOnly too). Dud box listings already have theirs on the
+  // box entry.
   const ebaySkipReason =
-    !dudBox && !isBundle && body.shopifyOnly === true && isEbaySkipReason(body.ebaySkipReason) ? body.ebaySkipReason : null;
+    !dudBox && !isBundle && (whatnotOnly || body.shopifyOnly === true) && isEbaySkipReason(body.ebaySkipReason)
+      ? body.ebaySkipReason
+      : null;
 
   // Warehouse mode checks, all before anything is written: a wrong bin or a
   // deleted station should leave nothing behind (not even a used-up item
@@ -302,13 +314,17 @@ export async function POST(request: NextRequest) {
     bundleComponents: isBundle
       ? (body.bundleComponents as BundleComponentInput[]).map((c) => ({ ...c, photoUrls: ourPhotoUrls(c.photoUrls) }))
       : undefined,
+    // Off eBay: Whatnot only always is.
     shopifyOnly:
-      !isBundle &&
-      (dudBox
-        ? dudDecision === "shopify"
-        : body.shopifyOnly === true ||
-          (original != null && relistPart === "past") ||
-          returnRow?.decision === "shopify_only"),
+      whatnotOnly ||
+      (!isBundle &&
+        (dudBox
+          ? dudDecision === "shopify"
+          : body.shopifyOnly === true ||
+            (original != null && relistPart === "past") ||
+            returnRow?.decision === "shopify_only")),
+    whatnotOnly,
+    ...(whatnotStart != null ? { price: whatnotStart } : {}),
     ebaySkipReason,
     fromDudBoxId: dudBox?.id ?? null,
     ...(original ? inheritedFields(original) : {}),
@@ -341,7 +357,7 @@ export async function POST(request: NextRequest) {
         packSize: (data.packSize as number | null) ?? null,
         expirationDate: data.expirationDate instanceof Date ? data.expirationDate : null,
         condition: (data.condition as string | null | undefined) ?? null,
-        shopifyOnly: Boolean(data.shopifyOnly),
+        whatnotOnly,
       },
       typeof body.productName === "string" ? body.productName : (manifestLine?.description ?? null)
     );

@@ -78,8 +78,10 @@ type Item = {
   weightLbs: number | null;
   weightOz: number | null;
   localPickupOnly: boolean;
-  // Shopify & Whatnot only: never listed on eBay (see Item.shopifyOnly).
+  // Off eBay (see Item.shopifyOnly): Shopify only, or Whatnot only when
+  // whatnotOnly is set too.
   shopifyOnly: boolean;
+  whatnotOnly: boolean;
   // The draft saw "Rx Only" on the package (draftItem.ts): eBay and the
   // store both refuse it. rxOnlyNote = what it saw.
   rxOnly?: boolean | null;
@@ -324,8 +326,8 @@ export default function ReviewPage() {
   }
 
   // Distinct from "Mark ready" — this is the actual, not-cleanly-undoable
-  // publish to eBay via the real Inventory API (or, for a Shopify & Whatnot
-  // only item, to the Shopify store instead). Errors (a bad category ID,
+  // publish to eBay via the real Inventory API (or, for a Shopify-only or
+  // Whatnot-only item, to the Shopify store / Whatnot channel instead). Errors (a bad category ID,
   // a missing business policy, etc.) come back from the store's own
   // validation and are shown inline on the item rather than swallowed.
   // Returns whether it succeeded, so publishAllToEbay can tally results
@@ -368,7 +370,7 @@ export default function ReviewPage() {
     if (ready.length === 0) return;
     if (
       !confirm(
-        `Publish all ${ready.length} ready item(s) now? This creates real, live listings (on eBay, or on Shopify & Whatnot for the Shopify-only ones) and isn't easily undone.`
+        `Publish all ${ready.length} ready item(s) now? This creates real, live listings (on eBay, or on Shopify / Whatnot for the ones set to sell only there) and isn't easily undone.`
       )
     ) {
       return;
@@ -481,6 +483,8 @@ export default function ReviewPage() {
                 rules={rules}
                 boxSizes={boxSizes}
                 onChange={(data) => updateItem(item.id, data)}
+                // The server sets the price for the new lane, so read it back.
+                onLaneChange={(data) => void updateItem(item.id, data).then(load)}
                 onMarkReady={() => markReady(item)}
                 onGenerateDraft={() => generateDraft(item)}
                 onSaveRule={saveRule}
@@ -526,7 +530,7 @@ export default function ReviewPage() {
                       <p className="line-clamp-2 text-sm font-medium text-foreground">{item.finalTitle}</p>
                       <p className="flex flex-wrap items-center gap-2 text-sm font-semibold tabular-nums text-foreground">
                         ${item.price}
-                        {item.shopifyOnly && <Badge>Shopify &amp; Whatnot only</Badge>}
+                        <LaneBadge item={item} />
                       </p>
                     </div>
                     <Button
@@ -552,7 +556,7 @@ export default function ReviewPage() {
                         </p>
                       ) : (
                         <p className="min-w-0 flex-1">
-                          {item.shopifyOnly ? "Shopify" : "eBay"} rejected this:{" "}
+                          {item.whatnotOnly ? "Shopify (Whatnot channel)" : item.shopifyOnly ? "Shopify" : "eBay"} rejected this:{" "}
                           {item.shopifyOnly ? item.shopifyError : item.ebayPublishError}
                         </p>
                       )}
@@ -579,7 +583,7 @@ export default function ReviewPage() {
               {listed.map((item) => (
                 <div key={item.id} className="flex items-center gap-3 px-4 py-2.5 text-sm">
                   <span className="min-w-0 flex-1 truncate text-foreground">{item.finalTitle}</span>
-                  {item.shopifyOnly && <Badge>Shopify &amp; Whatnot</Badge>}
+                  <LaneBadge item={item} />
                   {item.ebayListingId && (
                     <a
                       href={
@@ -705,6 +709,13 @@ function binHoldBadge(item: Item): string {
 // most 3 run at a time, a failure is tried once more after a pause, and
 // what's shown is a plain message (a crashed request has no JSON body).
 // The fix agent tried and handed it back (publishFixAgent.ts).
+// Which lane a ready or listed item is in; nothing for eBay + Shopify.
+function LaneBadge({ item }: { item: Pick<Item, "shopifyOnly" | "whatnotOnly"> }) {
+  if (item.whatnotOnly) return <Badge tone="purple">Whatnot only</Badge>;
+  if (item.shopifyOnly) return <Badge>Shopify only</Badge>;
+  return null;
+}
+
 function needsYou(item: { shopifyOnly: boolean; ebayPublishError: string | null }): boolean {
   return !item.shopifyOnly && !!item.ebayPublishError?.startsWith(NEEDS_YOU_PREFIX);
 }
@@ -811,6 +822,7 @@ function ItemCard({
   rules,
   boxSizes,
   onChange,
+  onLaneChange,
   onMarkReady,
   onGenerateDraft,
   onSaveRule,
@@ -823,6 +835,7 @@ function ItemCard({
   rules: CategoryRule[];
   boxSizes: BoxSize[];
   onChange: (data: Partial<Item>) => void;
+  onLaneChange: (data: Partial<Item>) => void;
   onMarkReady: () => void;
   onGenerateDraft: () => void;
   onSaveRule: (keyword: string, categoryId: string, categoryName: string) => void;
@@ -1063,7 +1076,7 @@ function ItemCard({
               {sameProduct.findIndex((s) => s.id === item.id) + 1} of {sameProduct.length} listings of this product
             </Badge>
           )}
-          <FetchedLocationBadge itemId={item.id} shelfLocation={item.shelfLocation} shopifyOnly={item.shopifyOnly} />
+          <FetchedLocationBadge itemId={item.id} shelfLocation={item.shelfLocation} whatnotOnly={item.whatnotOnly} />
           {binHold(item) && <Badge tone="warning">{binHoldBadge(item)}</Badge>}
           {item.expirationBreakdown ? (
             <Badge tone="warning">Exp {describeBreakdown(item.expirationBreakdown)}</Badge>
@@ -1200,7 +1213,10 @@ function ItemCard({
       <div className="flex min-w-0 flex-col gap-4">
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-1 2xl:grid-cols-2">
             <div className="2xl:col-span-2">
-              <Field label="Price">
+              <Field
+                label={item.whatnotOnly ? "Whatnot starting price" : "Price"}
+                hint={item.whatnotOnly ? "Where the auction starts. Only shows on Whatnot, never on eBay or the store." : undefined}
+              >
                 <div className="relative">
                   <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-muted-foreground">
                     $
@@ -1374,24 +1390,40 @@ function ItemCard({
             </Field>
           </div>
 
-          {!item.isBundle && (
-            <CheckboxRow
-              label="Shopify & Whatnot only"
-              description={
-                item.shopifyOnly
+          <Field
+            label="Where it sells"
+            hint={
+              item.whatnotOnly
+                ? "Its own Whatnot listing at the starting price above. Not on eBay or the store."
+                : item.shopifyOnly
                   ? "Won't be listed on eBay. Price it like eBay; the Shopify store takes its discount off, and the buyer pays shipping."
-                  : "Skip eBay. For things that can't pay for an eBay label, since Shopify and Whatnot buyers pay their own shipping."
-              }
-              checked={item.shopifyOnly}
-              onChange={(e) => onChange({ shopifyOnly: e.target.checked })}
-            />
-          )}
+                  : "eBay, plus the Shopify store at its discount. Never on Whatnot."
+            }
+          >
+            <Select
+              value={item.whatnotOnly ? "whatnot" : item.shopifyOnly ? "shopify" : "ebay"}
+              onChange={(e) => {
+                const lane = e.target.value;
+                if (lane === "whatnot") return onLaneChange({ shopifyOnly: true, whatnotOnly: true });
+                if (lane === "shopify") return onLaneChange({ shopifyOnly: true, whatnotOnly: false });
+                if (item.whatnotOnly && !confirm("Move it off Whatnot? Its Whatnot starting price gets cleared, so price it again.")) return;
+                onLaneChange({ shopifyOnly: false, whatnotOnly: false });
+              }}
+            >
+              <option value="ebay">eBay + Shopify</option>
+              {/* Bundles never went Shopify-only (the dud and skip math is per product). */}
+              {(!item.isBundle || item.shopifyOnly) && <option value="shopify">Shopify only</option>}
+              <option value="whatnot">Whatnot only</option>
+            </Select>
+          </Field>
 
           <div className="rounded-lg border border-border p-3 sm:p-4">
             <p className="text-sm font-medium text-foreground">Shipping</p>
             <p className="mb-3 text-xs text-muted-foreground">
-              {item.shopifyOnly
-                ? "The buyer pays shipping on Shopify and Whatnot, worked out from this weight, so get it close."
+              {item.whatnotOnly
+                ? "The buyer pays shipping on Whatnot, worked out from this weight, so get it close."
+                : item.shopifyOnly
+                ? "The buyer pays shipping on Shopify, worked out from this weight, so get it close."
                 : item.localPickupOnly
                 ? "Local pickup only: the buyer pays on eBay and picks it up. No label, so no weight or box needed."
                 : "Free, USPS Ground Advantage. Weight/box matter either way — accurate numbers keep eBay's calculated cost (or your absorbed cost on free shipping) from defaulting high."}

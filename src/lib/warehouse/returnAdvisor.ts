@@ -139,10 +139,10 @@ export function adviseReturnFallback(input: ReturnAdviceInput): ReturnAdvice {
       "shopify_only",
       r.opened || r.used ? "for_parts" : "new_other",
       plan(here, 0),
-      "It's damaged, so it goes on Shopify & Whatnot at a lower price."
+      "It's damaged, so it goes on Shopify only at a lower price."
     );
   }
-  if (r.used) return done("shopify_only", "used", plan(here, 0), "It's used, so it goes on Shopify & Whatnot.");
+  if (r.used) return done("shopify_only", "used", plan(here, 0), "It's used, so it goes on Shopify only.");
   return done("relist_new", "new_other", plan(here, 0), missing > 0 ? "" : "Opened but complete, so it goes up as open box.");
 }
 
@@ -178,13 +178,13 @@ MONEY
 Listed price when new, per listing (${input.perUnit} unit${input.perUnit === 1 ? "" : "s"}): ${input.price != null ? money(input.price) : "unknown"}
 Cost per unit: ${input.unitCost != null ? money(input.unitCost) : "unknown"}
 eBay fees: about ${(FALLBACK_FEE_RATE * 100).toFixed(2)}% + ${money(FALLBACK_FEE_FIXED)}; seller pays the label, about ${money(label)}.
-Shopify & Whatnot: buyer pays shipping; Whatnot fees ${(WHATNOT_FEE_RATE * 100).toFixed(1)}% + ${money(WHATNOT_FEE_PER_ORDER)}.
+Shopify only: buyer pays shipping; fees (Whatnot-level estimate) ${(WHATNOT_FEE_RATE * 100).toFixed(1)}% + ${money(WHATNOT_FEE_PER_ORDER)}.
 
 CRISTIAN'S RULES
 - Target margin is ${targetMarginPct}% on what's left after fees and label.
-- If an eBay sale can't pay for the label (price in this condition minus fees minus label is too thin), it goes Shopify & Whatnot only.
+- If an eBay sale can't pay for the label (price in this condition minus fees minus label is too thin), it goes Shopify only.
 - OTC medicine, sunscreen, baby formula / baby food, or any food that has been opened: throw it out. Never resell.
-- Expired: throw out medicine, sunscreen and baby formula/food. Other expired goods may go Shopify & Whatnot only if clearly usable; otherwise throw out.
+- Expired: throw out medicine, sunscreen and baby formula/food. Other expired goods may go Shopify only if clearly usable; otherwise throw out.
 - Donate units that are usable but not worth listing anywhere.
 - Units that are fine can still be sold even when others in the same return are damaged: e.g. a 3-pack with one damaged unit becomes the 2 good ones listed as a 2-pack, and the damaged one thrown out.
 - Used or opened items sell for less: estimate the price in the real condition (open box roughly 70-85% of new, used roughly 40-60%, for parts roughly 15-30%).
@@ -194,7 +194,7 @@ THE PLAN (all counts are units/pieces, and they must add up to exactly ${input.r
 - thrownUnits: damaged or unusable units thrown out.
 - donateUnits: usable units donated.
 - missingUnits: units not in the box (exactly ${missing} per the report).
-decision: what happens to the listed part: relist_new (new eBay listing in its real condition) or shopify_only (Shopify & Whatnot only). If nothing is listed: dispose, or donate when the units left are donated.
+decision: what happens to the listed part: relist_new (new eBay listing in its real condition) or shopify_only (Shopify only). If nothing is listed: dispose, or donate when the units left are donated.
 condition (only when something is listed): new (sealed, untouched), new_other (open box, complete, unused), used, for_parts. null when nothing is listed.
 reason: short plain sentences for the employee that say what to do with each part (e.g. "List the 2 good ones as a 2-pack. Throw out the damaged one."), NO dollar amounts, NO numbers about money or margin.
 ownerReason: the money reasoning for Cristian, with the numbers.`;

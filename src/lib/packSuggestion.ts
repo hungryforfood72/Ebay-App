@@ -228,7 +228,7 @@ export async function packSuggestion({
   // The researched price more than double the store-price check's
   // (Cristian, 2026-11-03: a Sally Hansen hand mask researched at $12.99
   // off one outlier store, most stores $5.99-$6.99, the check $2.85).
-  // Neither can be trusted then, so it starts as Shopify & Whatnot only and
+  // Neither can be trusted then, so it starts as Shopify only and
   // Cristian decides at review: he unticks it there if it's right for eBay.
   const priceGap =
     recommendation &&
@@ -258,7 +258,7 @@ export async function packSuggestion({
   // with his real ~$7 label. When the recommended size fails, a bigger pack
   // (one label over more units) takes over if one clears the bar; if none
   // up to MAX_RECOMMENDED_PACK does, the whole lot is set aside, and the
-  // card points to Shopify & Whatnot, where the buyer pays the label.
+  // card points to Shopify, where the buyer pays the label.
   // "no_demand" (2026-10-19): the web check found no sign anyone buys it
   // now (DEMAND: DEAD), so none of it goes on eBay, whatever the math says.
   // "price_unclear" (2026-11-03): see priceGap above.
@@ -406,7 +406,7 @@ export async function packSuggestion({
         // of ReNu, a $1.28 loss as a single, and the card still said "OK to
         // sell", "sell as singles" and pre-filled a single, with "1 to set
         // aside" further down). Then it's not for eBay at all: same answer
-        // as the bundle check above, Shopify & Whatnot offered instead.
+        // as the bundle check above, Shopify offered instead.
         if (aside && kept.length === 0) {
           setAside = {
             units: asideUnits,
