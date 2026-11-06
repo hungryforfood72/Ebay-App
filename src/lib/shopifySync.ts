@@ -1,9 +1,11 @@
 import { after } from "next/server";
 import { descriptionBodyHtml } from "./listingDescription";
 import {
+  EbayApiError,
   endFixedPriceItem,
   getEbayEnvironment,
   getLiveAvailableQuantity,
+  getOfferDetails,
   reviseFixedPriceItemQuantity,
   updateOfferQuantity,
   withdrawOffer,
@@ -601,8 +603,13 @@ async function pushSaleToEbay(saleId: string, result: ShopifySyncResult, attempt
     // Re-read on a retry: another run may have ended the listing meanwhile.
     const item = attempt === 1 ? sale.item : ((await prisma.item.findUnique({ where: { id: sale.itemId } })) ?? sale.item);
     try {
-      if (!item.listingEndedAt && (item.ebayOfferId || item.ebayListingId)) {
-        const live = await getLiveAvailableQuantity(item);
+      // Already ended on eBay (an earlier attempt's withdraw went through
+      // but recording it didn't): record it now, nothing left to change.
+      const offer = !item.listingEndedAt && item.ebayOfferId ? await getOfferDetails(item.ebayOfferId) : null;
+      if (offer?.offerStatus === "UNPUBLISHED") {
+        await prisma.item.update({ where: { id: item.id }, data: { listingEndedAt: new Date() } });
+      } else if (!item.listingEndedAt && (item.ebayOfferId || item.ebayListingId)) {
+        const live = item.ebayOfferId ? (offer?.availableQuantity ?? null) : await getLiveAvailableQuantity(item);
         if (live == null) throw new Error("Couldn't read the eBay listing's count.");
         if (target == null) target = Math.max(0, live - sale.quantity);
         if (live > target) {
@@ -617,7 +624,10 @@ async function pushSaleToEbay(saleId: string, result: ShopifySyncResult, attempt
               // a 400 on the count change at 5:43 PM, while ending the same
               // listing at 5:50 went through). The last unit: end it instead
               // of leaving it buyable, as long as the app agrees it's sold out.
-              if (target !== 0 || item.status !== "sold") throw e;
+              // Only a real refusal (4xx): an eBay blip or network error
+              // goes back through the normal retry instead.
+              const refused = e instanceof EbayApiError && e.status >= 400 && e.status < 500;
+              if (target !== 0 || item.status !== "sold" || !refused) throw e;
               console.error(`[shopifySync] setting offer ${item.ebayOfferId} to 0 refused, ending it instead`, e);
               await withdrawOffer(item.ebayOfferId);
               await prisma.item.update({ where: { id: item.id }, data: { listingEndedAt: new Date() } });
