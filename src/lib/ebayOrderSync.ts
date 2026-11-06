@@ -1,6 +1,7 @@
 import {
   getEbayEnvironment,
   getMissingScopes,
+  getOfferDetails,
   getOrder,
   getListingStatus,
   getOrderEarnings,
@@ -101,7 +102,15 @@ const AD_FEE_RECHECK_WINDOW_DAYS = 4;
 // treated (never recorded at all) — nothing else in the app needs to
 // learn to filter out a "reversed" sale this way.
 async function reverseSale(
-  sale: { id: string; quantity: number; revenue: Prisma.Decimal; fees: Prisma.Decimal; shipping: Prisma.Decimal },
+  sale: {
+    id: string;
+    quantity: number;
+    revenue: Prisma.Decimal;
+    fees: Prisma.Decimal;
+    shipping: Prisma.Decimal;
+    ebayOrderId: string;
+    ebayOrderLineItemId: string;
+  },
   item: {
     id: string;
     sku: string;
@@ -111,11 +120,48 @@ async function reverseSale(
     ebayOfferId: string | null;
     ebayListingId: string | null;
     listingEndedAt: Date | null;
+    pastDateAt: Date | null;
+    expiredAt: Date | null;
   }
-): Promise<void> {
+): Promise<string | null> {
   const refunds = await prisma.ebayItemRefund.findMany({ where: { saleId: sale.id }, select: { amount: true } });
   const refundedAmount = refunds.reduce((sum, r) => sum + Number(r.amount), 0);
   const newSoldQuantity = Math.max(0, item.soldQuantity - sale.quantity);
+
+  // The account has eBay's Out-of-stock control off, so eBay ends a listing
+  // itself when its last unit sells, and the app may not have noticed yet
+  // (the sold-out sweep records it). Ask eBay when the app doesn't know.
+  // Only a sell-out counts (sold out here AND 0 left on eBay): a listing
+  // ended by hand or pulled by eBay for policy must not come back as a
+  // relist, so those are reported for Cristian to decide.
+  let listingEndedAt = item.listingEndedAt;
+  let endedOutsideApp = false;
+  let warning: string | null = null;
+  const soldOutHere = item.soldQuantity >= item.quantity;
+  if (!listingEndedAt && (item.ebayOfferId || item.ebayListingId)) {
+    const state = await ebayListingState(item);
+    if (state == null) {
+      if (soldOutHere) warning = `Couldn't check whether the eBay listing for item ${item.sku} ended after its order ${sale.ebayOrderId} was cancelled. Check it.`;
+    } else if (state.ended) {
+      endedOutsideApp = true;
+      if (soldOutHere && state.available === 0) listingEndedAt = new Date();
+      else warning = `Order ${sale.ebayOrderId} was cancelled and the eBay listing for item ${item.sku} had already ended with ${state.available} left, so it wasn't put up for relisting. Check it.`;
+    }
+  }
+  // Ended because it sold out: the unit is back but has nowhere to sell, so
+  // it waits on the Returns page to be relisted as a new listing (Cristian,
+  // 2026-11-06), flagged in the same transaction as the reversal. Loaded
+  // here: the returns code imports stockAdjust, which imports shopifySync.
+  const cancelled = await import("./warehouse/cancelledOrders");
+  const flag = cancelled.strandedByCancel({ ...item, listingEndedAt })
+    ? await cancelled.cancelledReturnData({
+        itemId: item.id,
+        channel: "ebay",
+        orderName: sale.ebayOrderId,
+        lineItemId: sale.ebayOrderLineItemId,
+        units: sale.quantity,
+      })
+    : null;
 
   await prisma.$transaction([
     prisma.ebayItemSale.delete({ where: { id: sale.id } }),
@@ -131,8 +177,10 @@ async function reverseSale(
         // longer fully sold — never touch a status this sale didn't cause
         // (an item manually set to something else stays that way).
         status: item.status === "sold" && newSoldQuantity < item.quantity ? "listed" : undefined,
+        ...(listingEndedAt && !item.listingEndedAt ? { listingEndedAt } : {}),
       },
     }),
+    ...(flag ? [prisma.itemReturn.create({ data: flag })] : []),
   ]);
 
   // Push the restored stock back to the live eBay listing too, not just
@@ -146,7 +194,8 @@ async function reverseSale(
   // single listing's eBay-side push.
   // A listing the app already ended for selling out stays ended — Cristian
   // never restocks a listing, so the returned unit goes on a new one.
-  if (item.listingEndedAt) return;
+  // Ended on eBay for another reason: nothing to push either.
+  if (listingEndedAt || endedOutsideApp) return warning;
 
   const newAvailableQuantity = Math.max(0, item.quantity - newSoldQuantity);
   try {
@@ -163,6 +212,32 @@ async function reverseSale(
   } catch (e) {
     console.error(`[ebayOrderSync] reverseSale: failed to push restored quantity to eBay for item ${item.id}`, e);
   }
+  return warning;
+}
+
+// Whether eBay has ended the listing, and how many it showed left. null
+// when eBay can't be read: never taken as ended (the restored count is
+// pushed as before), and reported when it matters.
+async function ebayListingState(item: {
+  ebayOfferId: string | null;
+  ebayListingId: string | null;
+}): Promise<{ ended: boolean; available: number } | null> {
+  try {
+    if (item.ebayOfferId) {
+      const offer = await getOfferDetails(item.ebayOfferId);
+      if (!offer) return null;
+      // Offer status, not listing.listingStatus alone: the latter keeps its
+      // last value after a withdraw (see endSoldOutListings).
+      return { ended: offer.offerStatus === "UNPUBLISHED" || offer.listingStatus === "ENDED", available: offer.availableQuantity };
+    }
+    if (item.ebayListingId) {
+      const live = await getListingStatus(item.ebayListingId);
+      return { ended: !live.active, available: live.available };
+    }
+  } catch (e) {
+    console.error("[ebayOrderSync] reading the listing's state for a cancelled order failed", e);
+  }
+  return null;
 }
 
 // `since`, when passed, overrides the normal incremental watermark — for a
@@ -369,7 +444,8 @@ export async function syncEbayOrders(
               include: { item: true },
             });
             if (!existingSale) continue;
-            await reverseSale(existingSale, existingSale.item);
+            const warning = await reverseSale(existingSale, existingSale.item);
+            if (warning) result.errors.push(warning);
             result.salesReversed++;
             changedItemIds.add(existingSale.itemId);
           } catch (e) {
