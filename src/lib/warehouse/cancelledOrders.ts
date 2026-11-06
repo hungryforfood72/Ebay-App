@@ -1,4 +1,5 @@
 import type { Item, Prisma } from "@/generated/prisma/client";
+import { STATION_SESSION_MS } from "../auth";
 import { prisma } from "../prisma";
 import { getItemLocations, removeUnitsBestEffort, WarehouseError } from "./bins";
 import { buildItemLabel, queueItemLabels } from "./itemLabel";
@@ -112,18 +113,63 @@ export async function listCancelledToRelist(): Promise<CancelledToRelist[]> {
   );
 }
 
+// Where relisting happens (Cristian, 2026-11-06): only the station with the
+// item-label stock, the Listing Station today. AppSetting
+// returns.relistStationId picks another (a returns station later); unset =
+// the station named "Listing...".
+const RELIST_STATION_KEY = "returns.relistStationId";
+
+export async function relistStation(): Promise<{ id: string; name: string } | null> {
+  const chosen = await prisma.appSetting.findUnique({ where: { key: RELIST_STATION_KEY } });
+  if (chosen?.value) {
+    const station = await prisma.station.findFirst({
+      where: { id: chosen.value, slipPrinter: false },
+      select: { id: true, name: true },
+    });
+    if (station) return station;
+  }
+  return await prisma.station.findFirst({
+    where: { name: { startsWith: "Listing", mode: "insensitive" }, slipPrinter: false },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, name: true },
+  });
+}
+
+// The station PC this sign-in is on (Session.stationId, set by the station
+// sign-in), never what the page says: that's what proves someone is
+// standing at the station.
+export async function sessionStationId(sessionToken: string | null | undefined): Promise<string | null> {
+  if (!sessionToken) return null;
+  const session = await prisma.session.findUnique({
+    where: { token: sessionToken },
+    select: { stationId: true, expiresAt: true, createdAt: true },
+  });
+  // The same expiry rules as getUserForSessionToken, so this holds even
+  // without proxy.ts in front of it.
+  if (!session || session.expiresAt.getTime() < Date.now()) return null;
+  if (session.stationId && session.createdAt.getTime() + STATION_SESSION_MS < Date.now()) return null;
+  return session.stationId;
+}
+
+export function goToStationMessage(station: { name: string } | null): string {
+  return station
+    ? `Relisting prints new item labels, so it's done at the ${station.name}. Go to the ${station.name} and sign in there.`
+    : "Relisting prints new item labels, so it's done at the listing station, and there isn't one set up yet. Ask Cristian.";
+}
+
 // The fresh copy. The old item hands its units over (quantity down, so it
 // reads sold out again and nothing counts them twice), and the units nobody
 // picked come out of the old item's bins too: the new labels go on them and
 // they're binned again under the new code.
 export async function relistCancelledOrder(args: {
   returnId: string;
-  stationId: string;
+  // The station this sign-in is on (sessionStationId); labels print there.
+  sessionStationId: string | null;
   by: string | null;
 }): Promise<{ newItem: { id: string; sku: string }; labelsQueued: number; units: number }> {
-  if (!args.stationId) throw new WarehouseError("Pick a station first, so the new labels print there.");
-  const station = await prisma.station.findUnique({ where: { id: args.stationId }, select: { id: true } });
-  if (!station) throw new WarehouseError("That station doesn't exist anymore. Pick a station again.", 404);
+  const station = await relistStation();
+  if (!station || args.sessionStationId !== station.id) throw new WarehouseError(goToStationMessage(station), 403);
+  const stationId = station.id;
   const row = await prisma.itemReturn.findUnique({ where: { id: args.returnId }, include: { item: true } });
   if (!row || row.decision !== CANCELLED_DECISION) {
     throw new WarehouseError("That one was already relisted. Refresh the page.", 409);
@@ -157,7 +203,7 @@ export async function relistCancelledOrder(args: {
       }
       const created = await tx.item.create({ data: await sameConditionCopy(tx, item, row.units, args.by) });
       const labelsQueued = await queueItemLabels(tx, {
-        stationId: args.stationId,
+        stationId,
         payload: { ...label, code: created.sku },
         copies: row.units,
         by: args.by,

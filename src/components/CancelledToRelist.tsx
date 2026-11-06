@@ -8,19 +8,29 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
 // Cancelled orders whose listing had already ended (cancelledOrders.ts).
-// The Returns page lists them with a Relist button; the dashboard just
-// says how many are waiting.
+// The Returns page lists them with a Relist button, only at the station
+// with the item labels (the Listing Station, Cristian 2026-11-06); anywhere
+// else it says to go there and sign in. The dashboard says how many wait.
 
-function useCancelled(refreshKey = 0) {
-  const [rows, setRows] = useState<CancelledToRelist[] | null>(null);
+type CancelledResponse = {
+  rows: CancelledToRelist[];
+  atStation: boolean;
+  stationName: string | null;
+  goTo?: string;
+};
+
+function useCancelled() {
+  const [data, setData] = useState<CancelledResponse | null>(null);
   const load = useCallback(() => {
     fetch("/api/returns/cancelled")
-      .then((r) => (r.ok ? r.json() : []))
-      .then((data: CancelledToRelist[]) => setRows(Array.isArray(data) ? data : []))
-      .catch(() => setRows([]));
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: CancelledResponse | null) =>
+        setData(d && Array.isArray(d.rows) ? d : { rows: [], atStation: false, stationName: null })
+      )
+      .catch(() => setData({ rows: [], atStation: false, stationName: null }));
   }, []);
-  useEffect(() => load(), [load, refreshKey]);
-  return { rows, reload: load };
+  useEffect(() => load(), [load]);
+  return { data, reload: load };
 }
 
 function orderText(r: CancelledToRelist): string {
@@ -28,31 +38,32 @@ function orderText(r: CancelledToRelist): string {
   return r.orderId ? `${where} ${r.orderId}` : where;
 }
 
-export function CancelledToRelistPanel({ stationId, onRelisted }: { stationId: string | null; onRelisted?: () => void }) {
-  const { rows, reload } = useCancelled();
+// stationId is accepted for the Returns page's call but not used: the
+// server prints at the relist station this sign-in is on, never one the
+// page names.
+export function CancelledToRelistPanel({ onRelisted }: { stationId?: string | null; onRelisted?: () => void }) {
+  const { data, reload } = useCancelled();
   const [busyId, setBusyId] = useState<string | null>(null);
   const [message, setMessage] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
 
-  if (!rows || rows.length === 0) return message ? <Alert tone={message.tone}>{message.text}</Alert> : null;
+  const rows = data?.rows ?? [];
+  if (rows.length === 0) return message ? <Alert tone={message.tone}>{message.text}</Alert> : null;
+  const atStation = data?.atStation ?? false;
 
   async function relist(r: CancelledToRelist) {
-    if (!stationId) {
-      setMessage({ tone: "danger", text: "Scan a station's QR code first, so the new labels print there." });
-      return;
-    }
     setBusyId(r.id);
     setMessage(null);
     try {
       const res = await fetch("/api/returns/cancelled", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: r.id, stationId }),
+        body: JSON.stringify({ id: r.id }),
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error ?? "Couldn't relist it. Try again.");
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error ?? "Couldn't relist it. Try again.");
       setMessage({
         tone: "success",
-        text: `New listing ${data.newItem.sku}: ${data.labelsQueued || r.units} label(s) printing. Put the new label on it, bin it, and it goes to Review.`,
+        text: `New listing ${body.newItem.sku}: ${body.labelsQueued || r.units} label(s) printing. Put the new label over the old one, bin it, and it goes to Review.`,
       });
       reload();
       onRelisted?.();
@@ -69,6 +80,11 @@ export function CancelledToRelistPanel({ stationId, onRelisted }: { stationId: s
         title={`Cancelled orders to relist (${rows.length})`}
         description="These sold their last unit, so the listing ended, then the order was cancelled. Relist makes a new listing."
       />
+      {!atStation && (
+        <Alert tone="warning" className="mb-2">
+          {data?.goTo ?? "Relisting is done at the Listing Station. Go there and sign in."}
+        </Alert>
+      )}
       {message && (
         <Alert tone={message.tone} className="mb-2">
           {message.text}
@@ -94,9 +110,11 @@ export function CancelledToRelistPanel({ stationId, onRelisted }: { stationId: s
                         : "Find it where the order was waiting."}
                 </p>
               </div>
-              <Button size="sm" onClick={() => relist(r)} disabled={busyId !== null}>
-                {busyId === r.id ? "Relisting…" : "Relist"}
-              </Button>
+              {atStation && (
+                <Button size="sm" onClick={() => relist(r)} disabled={busyId !== null}>
+                  {busyId === r.id ? "Relisting…" : "Relist"}
+                </Button>
+              )}
             </Card>
           </li>
         ))}
@@ -106,14 +124,16 @@ export function CancelledToRelistPanel({ stationId, onRelisted }: { stationId: s
 }
 
 export function CancelledToRelistAlert() {
-  const { rows } = useCancelled();
-  if (!rows || rows.length === 0) return null;
+  const { data } = useCancelled();
+  const rows = data?.rows ?? [];
+  if (rows.length === 0) return null;
+  const where = data?.stationName ? `at the ${data.stationName}` : "at the listing station";
   return (
     <Alert tone="warning" title={`Cancelled orders to relist (${rows.length})`}>
       <p>
         {rows.length === 1 ? "An order was" : "Orders were"} cancelled after the listing had already ended, so{" "}
         {rows.length === 1 ? "that unit has" : "those units have"} nowhere to sell. Relist{" "}
-        {rows.length === 1 ? "it" : "them"} from the Returns page.
+        {rows.length === 1 ? "it" : "them"} from the Returns page {where}, where the item labels are.
       </p>
       <Link href="/returns" className={buttonClasses({ size: "sm", className: "mt-3 w-fit" })}>
         Open Returns

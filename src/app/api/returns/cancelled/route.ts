@@ -1,13 +1,20 @@
-import { AuthError, requireUser } from "@/lib/auth";
+import { AUTH_COOKIE_NAME, AuthError, requireUser } from "@/lib/auth";
 import { WarehouseError } from "@/lib/warehouse/bins";
-import { listCancelledToRelist, relistCancelledOrder } from "@/lib/warehouse/cancelledOrders";
+import {
+  goToStationMessage,
+  listCancelledToRelist,
+  relistCancelledOrder,
+  relistStation,
+  sessionStationId,
+} from "@/lib/warehouse/cancelledOrders";
 import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 30;
 
 // GET — cancelled orders whose listing had already ended, waiting to be
-// relisted (src/lib/warehouse/cancelledOrders.ts). No money: employees see
-// this on the Returns page and dashboard.
+// relisted (src/lib/warehouse/cancelledOrders.ts), and whether this
+// sign-in is at the station where relisting happens. No money: employees
+// see this on the Returns page and dashboard.
 export async function GET(request: NextRequest) {
   try {
     requireUser(request);
@@ -15,18 +22,29 @@ export async function GET(request: NextRequest) {
     if (e instanceof AuthError) return NextResponse.json({ error: e.message }, { status: e.status });
     throw e;
   }
-  return NextResponse.json(await listCancelledToRelist());
+  const [rows, station, here] = await Promise.all([
+    listCancelledToRelist(),
+    relistStation(),
+    sessionStationId(request.cookies.get(AUTH_COOKIE_NAME)?.value),
+  ]);
+  const atStation = Boolean(station && here === station.id);
+  return NextResponse.json({
+    rows,
+    atStation,
+    stationName: station?.name ?? null,
+    ...(atStation ? {} : { goTo: goToStationMessage(station) }),
+  });
 }
 
-// POST { id, stationId } — relists one as a fresh copy; labels print at the
-// station.
+// POST { id } — relists one as a fresh copy. Only from a sign-in at the
+// relist station (the Listing Station); the labels print there.
 export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({}));
   try {
     const user = requireUser(request);
     const result = await relistCancelledOrder({
       returnId: String(body.id ?? ""),
-      stationId: typeof body.stationId === "string" ? body.stationId : "",
+      sessionStationId: await sessionStationId(request.cookies.get(AUTH_COOKIE_NAME)?.value),
       by: user.username,
     });
     return NextResponse.json(result, { status: 201 });
