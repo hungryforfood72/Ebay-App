@@ -24,6 +24,8 @@ export const SHOPIFY_REQUIRED_SCOPES = [
   "write_fulfillments",
   // In-person sales paid by card: an emailed invoice (counterSale.ts).
   "write_draft_orders",
+  // Shop Campaign ad spend for the dashboard's profit (shopCampaigns.ts).
+  "read_reports",
 ];
 
 export type ShopifyConfig = { shop: string; clientId: string; clientSecret: string };

@@ -496,6 +496,7 @@ type SalesSummary = {
   shipping: number;
   cogs: number;
   refunded: number;
+  shopAds: { spend: number; sales: number; customers: number; error: string | null };
   profit: number;
   revenueByChannel: Record<string, number>;
 };
@@ -667,12 +668,13 @@ function SalesSection({ refreshKey }: { refreshKey: number }) {
           <Stat label="Shipping" value={summary.shipping} format="currency" />
           <Stat label="COGS" value={summary.cogs} format="currency" />
           <Stat label="Refunds" value={summary.refunded} format="currency" highlight={summary.refunded > 0} />
+          {summary.shopAds.spend > 0 && <Stat label="Shop ads" value={summary.shopAds.spend} format="currency" />}
           <Stat
             label="Profit"
             value={summary.profit}
             format="currency"
             highlight={summary.units > 0 && summary.profit < 0}
-            className="col-span-2 sm:col-span-3"
+            className={summary.shopAds.spend > 0 ? "sm:col-span-2" : "col-span-2 sm:col-span-3"}
           />
         </div>
       ) : (
@@ -687,6 +689,14 @@ function SalesSection({ refreshKey }: { refreshKey: number }) {
             .join(" · ")}
         </p>
       )}
+      {summary && summary.shopAds.spend > 0 && (
+        <p className="mt-2 text-sm text-muted-foreground">
+          Shop ads (autopilot): ${summary.shopAds.spend.toFixed(2)} spent, ${summary.shopAds.sales.toFixed(2)} in sales from{" "}
+          {summary.shopAds.customers} customer{summary.shopAds.customers === 1 ? "" : "s"}
+          {` (${(summary.shopAds.sales / summary.shopAds.spend).toFixed(1)}x return)`}. Already taken off profit.
+        </p>
+      )}
+      {summary?.shopAds.error && <p className="mt-2 text-sm font-medium text-warning">{summary.shopAds.error}</p>}
       <p className="mt-2 text-xs text-muted-foreground">
         Only counts items scanned and listed through this app. Profit uses manifest COGS where available, $0 for
         anything with no manifest. Whatnot fees are estimated from Whatnot&apos;s published rates (Whatnot doesn&apos;t
