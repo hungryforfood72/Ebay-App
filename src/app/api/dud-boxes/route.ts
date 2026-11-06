@@ -13,8 +13,6 @@ const STATUSES: DudBoxStatus[] = ["open", "closed", "done"];
 // Dud boxes for the /duds page and the sort station.
 // ?status=open,closed (any of open|closed|done; none = all)
 // ?manifestId= (the sort station looking for an open box for its load)
-// ?forListing=1 only the listing station's set-aside boxes, 0 only the
-// sorters' (none = both)
 export async function GET(request: NextRequest) {
   try {
     requireUser(request);
@@ -26,22 +24,15 @@ export async function GET(request: NextRequest) {
           .map((s) => s.trim())
           .filter((s): s is DudBoxStatus => (STATUSES as string[]).includes(s))
       : null;
-    const forListingParam = params.get("forListing");
-    const boxes = await listDudBoxes({
-      statuses,
-      manifestId: params.get("manifestId") || null,
-      forListing: forListingParam === "1" ? true : forListingParam === "0" ? false : null,
-    });
+    const boxes = await listDudBoxes({ statuses, manifestId: params.get("manifestId") || null });
     return NextResponse.json({ boxes });
   } catch (e) {
     return errorResponse(e);
   }
 }
 
-// Start a dud box for a load: { manifestId, stationId?, forListing? }.
-// forListing: a box for the listing station's set-asides (closes that
-// load's open listing box it replaces). With a station, its label prints
-// there right away. The box is made even
+// Start a dud box for a load at the sort station: { manifestId, stationId? }.
+// With a station, its label prints there right away. The box is made even
 // if the label can't be queued (station deleted, say): printError says
 // why, and the sort page offers a reprint.
 export async function POST(request: NextRequest) {
@@ -59,13 +50,7 @@ export async function POST(request: NextRequest) {
     if (!manifest) throw new WarehouseError("That load doesn't exist anymore. Pick the load again.", 404);
     if (!manifest.purchased) throw new WarehouseError("That load hasn't been bought yet, so there's nothing to sort.");
 
-    const box = await createDudBox({
-      manifestId: manifest.id,
-      by: user.username,
-      forListing: body.forListing === true,
-      // The listing box the screen showed (closed and replaced), or null.
-      replaces: typeof body.replaces === "string" && body.replaces ? body.replaces : null,
-    });
+    const box = await createDudBox({ manifestId: manifest.id, by: user.username });
     let printed = false;
     let printError: string | null = null;
     if (stationId) {
@@ -89,7 +74,6 @@ export async function POST(request: NextRequest) {
           status: box.status,
           manifestId: box.manifestId,
           manifestTitle: manifest.title,
-          forListing: box.forListing,
           units: 0,
         },
         printed,

@@ -14,10 +14,6 @@ import { useEffect, useState } from "react";
 // the Analyzer it called something sellable that wasn't worth it on eBay
 // (src/lib/ebaySkips.ts). No open box: start one, its label prints at this
 // station.
-// Only the listing station's own boxes (DudBox.forListing, Cristian
-// 2026-11-06): the sorters' dud boxes are stacked away once full, so the
-// card used to send set-asides to a box nobody at the table could reach.
-// The station PC's Dud boxes card starts and reprints these too.
 export function SetAsideCard({
   manifestId,
   upc,
@@ -40,26 +36,16 @@ export function SetAsideCard({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
-  const [confirmNext, setConfirmNext] = useState(false);
-
-  // The table's box right now (after a 409: someone else started one).
-  async function refreshBox() {
-    const params = new URLSearchParams({ status: "open", manifestId, forListing: "1" });
-    const data = await fetch(`/api/dud-boxes?${params}`, { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : null))
-      .catch(() => null);
-    if (data) setBox((data as { boxes?: { code: string }[] }).boxes?.[0] ?? null);
-  }
 
   useEffect(() => {
     let cancelled = false;
-    const params = new URLSearchParams({ status: "open", manifestId, forListing: "1" });
+    const params = new URLSearchParams({ status: "open", manifestId });
     fetch(`/api/dud-boxes?${params}`, { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
       .catch(() => null)
       .then((data: { boxes?: { code: string }[] } | null) => {
         if (cancelled) return;
-        // Newest first: the one on the listing table.
+        // Newest first: the box the sorter (or the last set-aside) opened.
         setBox(data?.boxes?.[0] ?? null);
       });
     return () => {
@@ -74,19 +60,15 @@ export function SetAsideCard({
       const r = await fetch("/api/dud-boxes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ manifestId, stationId, forListing: true, replaces: box?.code ?? null }),
+        body: JSON.stringify({ manifestId, stationId }),
       });
       const data = await r.json().catch(() => null);
-      if (!r.ok || !data?.box) {
-        if (r.status === 409) await refreshBox();
-        throw new Error(data?.error ?? "Couldn't start a dud box.");
-      }
+      if (!r.ok || !data?.box) throw new Error(data?.error ?? "Couldn't start a dud box.");
       setBox({ code: data.box.code });
-      setConfirmNext(false);
       setNote(
         data.printed
-          ? `${dudBoxName(data.box.code)} started${box ? ` (${dudBoxName(box.code)} is closed)` : ""}. Its label is printing at the station, stick it on a box.`
-          : `${dudBoxName(data.box.code)} started${data.printError ? `, but its label didn't print: ${data.printError}` : ". Print its label from the station PC's Dud boxes card."}`
+          ? `${dudBoxName(data.box.code)} started. Stick its label on a box.`
+          : `${dudBoxName(data.box.code)} started${data.printError ? `, but its label didn't print: ${data.printError}` : ". Print its label from the Duds page."}`
       );
     } catch (e) {
       setError((e as Error).message);
@@ -129,9 +111,7 @@ export function SetAsideCard({
             </p>
           ) : box === null ? (
             <>
-              <p className="mt-0.5 text-amber-900/80">
-                No dud box at the listing table for this load yet. Start one, its label prints at the station.
-              </p>
+              <p className="mt-0.5 text-amber-900/80">This load has no open dud box. Start one, its label prints here.</p>
               <div className="mt-3 flex flex-wrap gap-2">
                 <Button size="sm" onClick={startBox} disabled={busy}>
                   Start a dud box
@@ -167,26 +147,6 @@ export function SetAsideCard({
                   Back
                 </Button>
               </div>
-              {confirmNext ? (
-                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                  <span>Close {dudBoxName(box.code)} and start the next one?</span>
-                  <Button size="sm" onClick={startBox} disabled={busy}>
-                    Yes, start the next
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={() => setConfirmNext(false)} disabled={busy}>
-                    Cancel
-                  </Button>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  className="mt-2 text-xs font-medium underline"
-                  onClick={() => setConfirmNext(true)}
-                  disabled={busy}
-                >
-                  {dudBoxName(box.code)} is full, start the next one
-                </button>
-              )}
             </>
           )}
           {error && (

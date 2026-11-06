@@ -16,42 +16,13 @@ type Tx = Prisma.TransactionClient;
 // Starts a dud box for a load: the load's next box number (its old
 // DB0001-style boxes count too), QR code DB-<load>-<n>. Serialized so two
 // sorters starting a box at once can't get the same number.
-// forListing: a box for the listing station's set-asides. Starting one
-// closes that load's open listing box, which must be `replaces` (the box
-// the screen showed; null = it showed none), so a screen that's out of
-// date can't close a box someone else just started.
-export async function createDudBox(args: {
-  manifestId: string;
-  by: string | null;
-  forListing?: boolean;
-  replaces?: string | null;
-}) {
+export async function createDudBox(args: { manifestId: string; by: string | null }) {
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext('warehouse_create_dud_box'))`;
     const existing = await tx.dudBox.findMany({ where: { manifestId: args.manifestId }, select: { code: true } });
     const next = nextLoadBoxNumber(existing.map((b) => b.code));
-    if (args.forListing) {
-      const replaces = args.replaces ? normalizeCode(args.replaces) : null;
-      const openNow = await tx.dudBox.findMany({
-        where: { manifestId: args.manifestId, forListing: true, status: "open" },
-        select: { code: true },
-      });
-      const other = openNow.find((b) => b.code !== replaces);
-      if (other) {
-        throw new WarehouseError(`${dudBoxName(other.code)} is the box on the table now. Use that one.`, 409);
-      }
-      await tx.dudBox.updateMany({
-        where: { manifestId: args.manifestId, forListing: true, status: "open" },
-        data: { status: "closed", closedAt: new Date() },
-      });
-    }
     return tx.dudBox.create({
-      data: {
-        code: loadBoxCode(DUD_BOX_CODE_PREFIX, args.manifestId, next),
-        manifestId: args.manifestId,
-        createdBy: args.by,
-        forListing: args.forListing ?? false,
-      },
+      data: { code: loadBoxCode(DUD_BOX_CODE_PREFIX, args.manifestId, next), manifestId: args.manifestId, createdBy: args.by },
     });
   });
 }

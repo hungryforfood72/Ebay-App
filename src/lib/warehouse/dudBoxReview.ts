@@ -120,16 +120,6 @@ export async function addDudEntry(args: {
         409
       );
     }
-    // Sorters' boxes and the listing table's set-aside boxes stay apart
-    // (DudBox.forListing, 2026-11-06), whatever the screen sent.
-    if (Boolean(args.setAsideReason) !== box.forListing) {
-      throw new WarehouseError(
-        box.forListing
-          ? `${dudBoxName(box.code)} is the listing table's box. Use a sorting dud box.`
-          : `${dudBoxName(box.code)} is a sorting box. Set-asides go in the listing table's dud box.`,
-        409
-      );
-    }
     // A set-aside comes out of what's left from the sort boxes: no more
     // than that, or the load's counts would show units that were never
     // there. Nothing sorted = nothing to set aside. One set-aside of a
@@ -351,15 +341,9 @@ export async function getDudBoxDetail(rawCode: string, isOwner: boolean): Promis
 export async function listDudBoxes(filter: {
   statuses: DudBoxStatus[] | null;
   manifestId: string | null;
-  // true = only the listing station's set-aside boxes, false = only the
-  // sorters' boxes, absent = both.
-  forListing?: boolean | null;
 }): Promise<DudBoxSummary[]> {
   const boxes = await prisma.dudBox.findMany({
-    where: {
-      ...(filter.manifestId ? { manifestId: filter.manifestId } : {}),
-      ...(filter.forListing != null ? { forListing: filter.forListing } : {}),
-    },
+    where: filter.manifestId ? { manifestId: filter.manifestId } : undefined,
     orderBy: { createdAt: "desc" },
     include: {
       manifest: { select: { title: true } },
@@ -388,7 +372,6 @@ export async function listDudBoxes(filter: {
         shopifyUnits: shopify.reduce((sum, e) => sum + e.quantity, 0),
         ebayUnits: ebay.reduce((sum, e) => sum + e.quantity, 0),
         listedUnits: [...shopify, ...ebay].reduce((sum, e) => sum + Math.min(e.listedUnits, e.quantity), 0),
-        forListing: b.forListing,
         createdBy: b.createdBy,
         createdAt: b.createdAt.toISOString(),
         closedAt: b.closedAt?.toISOString() ?? null,
