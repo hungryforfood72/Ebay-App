@@ -2,6 +2,7 @@ import { isCronRequest } from "@/lib/cronAuth";
 import { syncEbaySales } from "@/lib/channelSync";
 import { settleOpenInvoices } from "@/lib/counterSale";
 import { runShopifySync } from "@/lib/shopifySync";
+import { runWhatnotSync } from "@/lib/whatnotSync";
 import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 300;
@@ -11,15 +12,21 @@ export const maxDuration = 300;
 // shipping recheck; that's the 4-hourly full-sync's job), then every
 // Shopify product's count and price checked against the app's, then up to
 // 15 items that are live on eBay but not on Shopify yet, then any unpaid
-// in-person invoice that's been paid since (counterSale.ts). Vercel sends
+// in-person invoice that's been paid since (counterSale.ts), then Whatnot. Vercel sends
 // `Authorization: Bearer $CRON_SECRET` automatically on requests it
 // generates from that config; anything else is rejected.
 export async function GET(request: NextRequest) {
   if (!isCronRequest(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  const startedAt = Date.now();
   const sales = await syncEbaySales("quick");
   const shopify = await runShopifySync({ items: "all", publish: { limit: 15 } });
   const invoices = await settleOpenInvoices().catch((e) => ({ checked: 0, sold: 0, errors: [String(e)] }));
-  return NextResponse.json({ ...sales, shopifyAll: shopify, inPersonInvoices: invoices });
+  // Whatnot (whatnotSync.ts): orders the webhook missed, bins to shows,
+  // every Whatnot count and price, then the next batch to cross-list.
+  // Whatever is left of the 300 seconds, less a margin.
+  const whatnotBudget = Math.max(20_000, 270_000 - (Date.now() - startedAt));
+  const whatnot = await runWhatnotSync(whatnotBudget).catch((e) => ({ listed: 0, errors: [String(e)] }));
+  return NextResponse.json({ ...sales, shopifyAll: shopify, inPersonInvoices: invoices, whatnot });
 }

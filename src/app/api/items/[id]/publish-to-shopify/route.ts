@@ -8,11 +8,10 @@ import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 60;
 
-// The review page's Publish button for a Shopify-only or Whatnot-only item (see
+// The review page's Publish button for a Shopify-only item (see
 // Item.shopifyOnly): the same explicit "make it live" step as
-// publish-to-eBay, just to the Shopify store (or, for a Whatnot-only item,
-// to the Whatnot channel alone). Flips the item to "listed" once it's on
-// its channels.
+// publish-to-eBay, just to the Shopify store. Flips the item to "listed"
+// once it's on its channels. Whatnot-only items use publish-to-whatnot.
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   if (!getShopifyConfig()) {
@@ -22,6 +21,10 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   if (!item) return NextResponse.json({ error: "Item not found." }, { status: 404 });
   if (!item.shopifyOnly) {
     return NextResponse.json({ error: "This item is set to list on eBay, not Shopify only." }, { status: 400 });
+  }
+  // Whatnot listings go up through Whatnot's API (publish-to-whatnot).
+  if (item.whatnotOnly) {
+    return NextResponse.json({ error: "This is a Whatnot listing. It publishes to Whatnot, not Shopify." }, { status: 400 });
   }
   if (item.status !== "ready") {
     return NextResponse.json({ error: "Mark it ready in review first." }, { status: 400 });

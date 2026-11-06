@@ -372,6 +372,30 @@ model Item {
   expirySplit              Json?
   shopifyPastDateAppliedAt DateTime?
 
+  // Listed on Whatnot directly through Whatnot's Seller API (Cristian,
+  // 2026-11-06; src/lib/whatnotSync.ts), not through Shopify. Whatnot-only
+  // items go up as auctions at the start price, only sold in shows (their
+  // bin's show, BinShow). Everything live on eBay/Shopify is cross-listed
+  // as buy-it-now in the Whatnot shop at the Shopify price. One stock count:
+  // whatnotQuantity is what Whatnot was last told is available, and every
+  // sale anywhere brings the others down. Whatnot sales are ShopifySale
+  // rows with channel "whatnot" (shopifyLineItemId "whatnot:<order item>").
+  whatnotProductId   String?   @unique
+  whatnotVariantId   String?   @unique
+  // "auction" | "buy_it_now"
+  whatnotFormat      String?
+  whatnotPrice       Decimal?  @db.Decimal(10, 2)
+  whatnotQuantity    Int?
+  whatnotPublishedAt DateTime?
+  // Taken off Whatnot (sold out, ended elsewhere, or no longer allowed).
+  whatnotEndedAt     DateTime?
+  // The show its auction was last put in (from its bin's BinShow).
+  whatnotShowId      String?
+  whatnotError       String?
+  // Why a cross-list skipped it (Whatnot doesn't allow it, too close to
+  // its date, no photos...), so it isn't retried every run.
+  whatnotSkipReason  String?
+
   shopifySales ShopifySale[]
   inPersonSales InPersonSale[]
   // Warehouse mode (src/lib/warehouse): which bins hold this listing's
@@ -1577,8 +1601,36 @@ model Bin {
   createdAt  DateTime  @default(now())
 
   contents BinContent[]
+  show     BinShow?
 
   @@index([shelfLabel])
+}
+
+// A Whatnot bin assigned to one of Cristian's shows on the Whatnot page
+// (2026-11-06): its Whatnot-only auctions are put in that show. One show
+// per bin at a time (assigning the next show moves its unsold items
+// there); many bins can be on one show.
+model BinShow {
+  id           String    @id @default(uuid())
+  bin          Bin       @relation(fields: [binId], references: [id], onDelete: Cascade)
+  binId        String    @unique
+  showId       String
+  showTitle    String
+  showStartsAt DateTime?
+  assignedBy   String?
+  assignedAt   DateTime  @default(now())
+
+  @@index([showId])
+}
+
+// Whatnot webhook deliveries already handled, by their webhook-id
+// (Whatnot delivers at least once and retries with the same id).
+model WhatnotWebhookEvent {
+  id         String   @id
+  type       String
+  receivedAt DateTime @default(now())
+
+  @@index([receivedAt])
 }
 
 // How many of one listing's sellable units are in one bin. A unit is one of

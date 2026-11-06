@@ -87,6 +87,7 @@ type Item = {
   rxOnly?: boolean | null;
   rxOnlyNote?: string | null;
   shopifyError: string | null;
+  whatnotError?: string | null;
   ebayListingId: string | null;
   ebayPublishError: string | null;
   // A publish running on the server (src/lib/publishLock.ts), even one
@@ -359,7 +360,8 @@ export default function ReviewPage() {
     setPublishingId(item.id);
     setError(null);
     try {
-      const res = await fetch(`/api/items/${item.id}/${item.shopifyOnly ? "publish-to-shopify" : "publish-to-ebay"}`, {
+      const route = item.whatnotOnly ? "publish-to-whatnot" : item.shopifyOnly ? "publish-to-shopify" : "publish-to-ebay";
+      const res = await fetch(`/api/items/${item.id}/${route}`, {
         method: "POST",
       });
       const result = await res.json();
@@ -393,7 +395,7 @@ export default function ReviewPage() {
     if (ready.length === 0) return;
     if (
       !confirm(
-        `Publish all ${ready.length} ready item(s) now? This creates real, live listings (on eBay, or on Shopify / Whatnot for the ones set to sell only there) and isn't easily undone.`
+        `Publish all ${ready.length} ready item(s) now? This creates real, live listings (on eBay, on Shopify for the Shopify-only ones, and as Whatnot auctions for the Whatnot ones) and isn't easily undone.`
       )
     ) {
       return;
@@ -599,7 +601,7 @@ export default function ReviewPage() {
                       {isPublishing(item) ? "Publishing…" : "Publish"}
                     </Button>
                   </div>
-                  {(item.shopifyOnly ? item.shopifyError : item.ebayPublishError) && (
+                  {publishError(item) && (
                     <div
                       className={cn(
                         "flex flex-wrap items-center gap-2 rounded-lg px-3 py-2 text-xs",
@@ -613,8 +615,8 @@ export default function ReviewPage() {
                         </p>
                       ) : (
                         <p className="min-w-0 flex-1">
-                          {item.whatnotOnly ? "Shopify (Whatnot channel)" : item.shopifyOnly ? "Shopify" : "eBay"} rejected this:{" "}
-                          {item.shopifyOnly ? item.shopifyError : item.ebayPublishError}
+                          {item.whatnotOnly ? "Whatnot" : item.shopifyOnly ? "Shopify" : "eBay"} rejected this:{" "}
+                          {publishError(item)}
                         </p>
                       )}
                       <Button
@@ -771,6 +773,12 @@ function LaneBadge({ item }: { item: Pick<Item, "shopifyOnly" | "whatnotOnly"> }
   if (item.whatnotOnly) return <Badge tone="purple">Whatnot only</Badge>;
   if (item.shopifyOnly) return <Badge>Shopify only</Badge>;
   return null;
+}
+
+// The publish error from the item's own channel.
+function publishError(item: Pick<Item, "whatnotOnly" | "shopifyOnly" | "shopifyError" | "ebayPublishError" | "whatnotError">): string | null {
+  if (item.whatnotOnly) return item.whatnotError ?? null;
+  return item.shopifyOnly ? item.shopifyError : item.ebayPublishError;
 }
 
 function needsYou(item: { shopifyOnly: boolean; ebayPublishError: string | null }): boolean {

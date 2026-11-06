@@ -14,7 +14,7 @@ export const USER_ID_HEADER = "x-user-id";
 export const USER_ROLE_HEADER = "x-user-role";
 export const USERNAME_HEADER = "x-username";
 
-const PUBLIC_WEBHOOK_PATHS = ["/api/shopify/webhook", "/api/ebay/notifications", "/api/ebay/account-deletion"];
+const PUBLIC_WEBHOOK_PATHS = ["/api/shopify/webhook", "/api/ebay/notifications", "/api/ebay/account-deletion", "/api/whatnot/webhook"];
 
 // Public pages anyone can open signed-out: the landing page and the privacy
 // policy eBay's API License requires. Exact paths only.
@@ -131,6 +131,9 @@ export async function proxy(request: NextRequest, event: NextFetchEvent) {
   const ownerOnlyPrefixes = [
     "/settings",
     "/api/settings",
+    // The Whatnot page (shows, bins, cross-listing): Cristian only.
+    "/whatnot",
+    "/api/whatnot",
     "/api/ebay/",
     "/api/users",
     "/analyzer",
@@ -141,7 +144,10 @@ export async function proxy(request: NextRequest, event: NextFetchEvent) {
     "/one-time",
     "/api/one-time",
   ];
-  if (user.role !== "owner" && ownerOnlyPrefixes.some((p) => pathname.startsWith(p)) && !PUBLIC_WEBHOOK_PATHS.includes(pathname)) {
+  // Exact or a sub-path ("/api/whatnot" must not catch "/api/whatnot-check",
+  // the List page's check every lister uses).
+  const ownerOnlyPath = (p: string) => pathname === p || pathname.startsWith(p.endsWith("/") ? p : `${p}/`);
+  if (user.role !== "owner" && ownerOnlyPrefixes.some(ownerOnlyPath) && !PUBLIC_WEBHOOK_PATHS.includes(pathname)) {
     if (pathname.startsWith("/api/")) {
       return NextResponse.json({ error: "Owner access required." }, { status: 403 });
     }

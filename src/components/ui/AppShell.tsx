@@ -24,6 +24,7 @@ import {
   Settings,
   SplitSquareHorizontal,
   Target,
+  Gavel,
   Tag,
   Timer,
   Truck,
@@ -84,6 +85,8 @@ const NAV: NavEntry[] = [
     items: [
       { href: "/manifests", label: "Manifests", icon: FileSpreadsheet },
       { href: "/inventory", label: "Inventory", icon: Package },
+      // Shows, bins and cross-listing (Cristian only, proxy.ts too).
+      { href: "/whatnot", label: "Whatnot", icon: Gavel, ownerOnly: true },
     ],
   },
   {
