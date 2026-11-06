@@ -1,5 +1,5 @@
 import { syncEbaySales } from "@/lib/channelSync";
-import { challengeResponse, recordAlertReceived, verifyNotificationSignature } from "@/lib/ebayNotifications";
+import { challengeResponse, recordAlertOutcome, recordAlertReceived, verifyNotificationSignature } from "@/lib/ebayNotifications";
 import { after, NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 180;
@@ -40,9 +40,51 @@ export async function POST(request: NextRequest) {
   if (!verified) return new NextResponse(null, { status: 412 });
 
   after(async () => {
-    const result = await syncEbaySales("quick", orderId && !test ? [orderId] : []);
-    const errors = [...result.ebay.flatMap((r) => r.errors), ...(result.shopify?.errors ?? [])];
+    const wanted = orderId && !test ? orderId : null;
+    const startedAt = Date.now();
+    const errors: string[] = [];
+    let attempts = 0;
+    let seen = !wanted;
+    // The alert lands about a second after the sale. If that run doesn't
+    // get to the order (eBay not showing it yet, another sync holding the
+    // lock, a hiccup), go again shortly instead of leaving it to the
+    // 10-minute cron, so the Shopify count comes down within seconds.
+    for (;;) {
+      attempts++;
+      try {
+        const result = await syncEbaySales("quick", wanted ? [wanted] : []);
+        const runErrors = [...result.ebay.flatMap((r) => r.errors), ...(result.shopify?.errors ?? [])];
+        errors.push(...runErrors);
+        if (wanted) {
+          seen =
+            result.ran &&
+            result.ebay.some((r) => r.orderIdsSeen.includes(wanted)) &&
+            !runErrors.some((e) => e.includes(wanted) || e.startsWith("Fetching orders failed"));
+        }
+      } catch (e) {
+        // A database hiccup taking the sync lock: try again, don't give up.
+        errors.push(`Attempt ${attempts}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      // No new attempt late in the run: one can take a while, and a run cut
+      // off at maxDuration would leave the sync locks held for minutes.
+      if (seen || attempts >= ALERT_ATTEMPTS || Date.now() - startedAt > ALERT_LAST_START_MS) break;
+      await new Promise((r) => setTimeout(r, ALERT_RETRY_WAIT_MS));
+    }
     if (errors.length) console.error("[ebay notification] sync errors", errors);
+    await recordAlertOutcome({
+      at: new Date(startedAt).toISOString(),
+      orderId: wanted,
+      attempts,
+      seen,
+      recordedMs: Date.now() - startedAt,
+      errors: errors.slice(0, 5).map((e) => e.slice(0, 300)),
+    }).catch((e) => console.error("[ebay notification] outcome not saved", e));
   });
   return new NextResponse(null, { status: 204 });
 }
+
+// Up to 5 tries, 10s apart, none starting after 60s, well inside the 180s
+// function limit.
+const ALERT_ATTEMPTS = 5;
+const ALERT_RETRY_WAIT_MS = 10_000;
+const ALERT_LAST_START_MS = 50_000;

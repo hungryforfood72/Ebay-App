@@ -86,6 +86,34 @@ export async function recordAlertReceived(info: { verified: boolean; orderId: st
   await putSetting(LAST_RECEIVED_KEY, JSON.stringify({ at: new Date().toISOString(), ...info }));
 }
 
+// What each alert's sync actually did, newest first, so a slow sale can be
+// traced later without server logs (Cristian, 2026-11-05: a Shopify sale
+// took 7 minutes to end its eBay listing, and eBay sales were taking 3-10
+// minutes to reach Shopify). recordedMs = alert to sale recorded.
+const RECENT_KEY = "ebay.notifications.recent";
+const RECENT_KEEP = 100;
+
+export type AlertOutcome = {
+  at: string;
+  orderId: string | null;
+  attempts: number;
+  seen: boolean;
+  recordedMs: number;
+  errors: string[];
+};
+
+// Prepends in one statement, so two alerts finishing together both land.
+export async function recordAlertOutcome(outcome: AlertOutcome): Promise<void> {
+  const entry = JSON.stringify([outcome]);
+  await prisma.$executeRaw`
+    INSERT INTO "AppSetting" ("key", "value") VALUES (${RECENT_KEY}, ${entry})
+    ON CONFLICT ("key") DO UPDATE SET "value" = (
+      SELECT COALESCE(jsonb_agg(e ORDER BY i), '[]'::jsonb)::text
+      FROM jsonb_array_elements(${entry}::jsonb || "AppSetting"."value"::jsonb) WITH ORDINALITY AS t(e, i)
+      WHERE i <= ${RECENT_KEEP}
+    )`;
+}
+
 export type SaleAlertStatus = {
   hasScope: boolean;
   endpoint: string | null;

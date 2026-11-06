@@ -1364,7 +1364,7 @@ export async function getOrderIdsCreatedBetween(from: Date, to: Date): Promise<s
     const page = (await ebayFetch(
       `/sell/fulfillment/v1/order?filter=${encodeURIComponent(filter)}&limit=${limit}&offset=${offset}`
     )) as { orders?: { orderId: string }[] };
-    const pageOrders = page.orders ?? [];
+    const pageOrders = page?.orders ?? [];
     ids.push(...pageOrders.map((o) => o.orderId));
     if (pageOrders.length < limit) return ids;
   }
@@ -1380,7 +1380,7 @@ export async function getOrdersAwaitingShipment(): Promise<Record<string, unknow
     const page = (await ebayFetch(
       `/sell/fulfillment/v1/order?filter=${encodeURIComponent(filter)}&limit=${limit}&offset=${offset}`
     )) as { orders?: Record<string, unknown>[] };
-    const orders = page.orders ?? [];
+    const orders = page?.orders ?? [];
     out.push(...orders);
     if (orders.length < limit) return out;
   }
@@ -1404,7 +1404,7 @@ export async function getRecentOrders(from: Date, to: Date): Promise<EbayOrder[]
       }[];
       total?: number;
     };
-    const pageOrders = page.orders ?? [];
+    const pageOrders = page?.orders ?? [];
     for (const o of pageOrders) {
       orders.push({
         orderId: o.orderId,
@@ -1508,8 +1508,14 @@ export async function getOrderEarnings(orderId: string): Promise<EbayOrderEarnin
       references?: { referenceId: string; referenceType: string }[];
       orderLineItems?: { lineItemId: string; marketplaceFees?: { amount: { value: string } }[] }[];
     }[];
-  };
-  const transactions = result.transactions ?? [];
+  } | null;
+  // 204 with no body (ebayFetch's null) when the order has no transactions
+  // yet: confirmed live 2026-11-05, which is every order for its first few
+  // minutes. Reading .transactions off that null threw, killing the whole
+  // order sync, so eBay's instant sale alert never recorded a sale and the
+  // 10-minute cron always did (sales reached Shopify 3-10 minutes late).
+  // Fees come in later: the full sync re-checks a new sale's fees.
+  const transactions = result?.transactions ?? [];
 
   // Only SALE transactions' orderLineItems represent fees actually
   // charged — a REFUND transaction's orderLineItems.marketplaceFees are

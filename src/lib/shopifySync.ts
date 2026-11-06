@@ -579,35 +579,66 @@ function channelFor(order: ShopifyOrder): string {
 // Brings the eBay listing's count down by a recorded Shopify sale. From
 // eBay's live count, never the app's own, so an eBay sale the app hasn't
 // synced yet stays counted.
-async function pushSaleToEbay(saleId: string, result: ShopifySyncResult): Promise<void> {
+// A failed push used to wait for the next 10-minute cron (Cristian,
+// 2026-11-05: Shopify #1228 sold the last unit at 5:43 PM and the eBay
+// listing stayed buyable until 5:50). A fresh sale now tries again within
+// seconds; a push still pending from an earlier run gets one try per run.
+const EBAY_PUSH_ATTEMPTS = 3;
+const EBAY_PUSH_RETRY_WAIT_MS = 2_000;
+
+async function pushSaleToEbay(saleId: string, result: ShopifySyncResult, attempts = 1): Promise<void> {
   const sale = await prisma.shopifySale.findUnique({ where: { id: saleId }, include: { item: true } });
   if (!sale || sale.ebayPushedAt) return;
-  const item = sale.item;
-  try {
-    if (!item.listingEndedAt && (item.ebayOfferId || item.ebayListingId)) {
-      const live = await getLiveAvailableQuantity(item);
-      if (live == null) throw new Error("Couldn't read the eBay listing's count.");
-      const newAvailable = Math.max(0, live - sale.quantity);
-      if (item.ebayOfferId) {
-        await updateOfferQuantity(item.ebayOfferId, { sku: item.sku, soldQuantity: item.soldQuantity }, newAvailable);
-      } else if (newAvailable === 0) {
-        // An older listing (Trading API) can't be revised to 0 available
-        // ("The quantity must be a valid number greater than 0"), so the
-        // last one selling on Shopify ends it instead (Cristian, 2026-10-26:
-        // Liquid I.V. sold on Shopify #1225 and stayed buyable on eBay).
-        await endFixedPriceItem(item.ebayListingId!);
-        await prisma.item.update({ where: { id: item.id }, data: { listingEndedAt: new Date() } });
-      } else {
-        await reviseFixedPriceItemQuantity(item.ebayListingId!, newAvailable);
+  // The count eBay should end up at, worked out once from the first live
+  // read. A retry writes the same number, and skips the write when eBay is
+  // already there or lower, so a call that failed after eBay applied it
+  // can't take the unit off twice.
+  let target: number | null = null;
+  let lastError: unknown = null;
+  let pushed = false;
+  for (let attempt = 1; attempt <= attempts && !pushed; attempt++) {
+    // Re-read on a retry: another run may have ended the listing meanwhile.
+    const item = attempt === 1 ? sale.item : ((await prisma.item.findUnique({ where: { id: sale.itemId } })) ?? sale.item);
+    try {
+      if (!item.listingEndedAt && (item.ebayOfferId || item.ebayListingId)) {
+        const live = await getLiveAvailableQuantity(item);
+        if (live == null) throw new Error("Couldn't read the eBay listing's count.");
+        if (target == null) target = Math.max(0, live - sale.quantity);
+        if (live > target) {
+          if (item.ebayOfferId) {
+            // 0 rather than ending it: nobody can buy it either way, and a
+            // cancelled order can still put the unit back. The order sync's
+            // sold-out sweep ends it.
+            await updateOfferQuantity(item.ebayOfferId, { sku: item.sku, soldQuantity: item.soldQuantity }, target);
+          } else if (target === 0) {
+            // An older listing (Trading API) can't be revised to 0 available
+            // ("The quantity must be a valid number greater than 0"), so the
+            // last one selling on Shopify ends it instead (Cristian, 2026-10-26:
+            // Liquid I.V. sold on Shopify #1225 and stayed buyable on eBay).
+            await endFixedPriceItem(item.ebayListingId!);
+            await prisma.item.update({ where: { id: item.id }, data: { listingEndedAt: new Date() } });
+          } else {
+            await reviseFixedPriceItemQuantity(item.ebayListingId!, target);
+          }
+          result.ebayPushes++;
+        }
       }
-      result.ebayPushes++;
+      pushed = true;
+    } catch (e) {
+      lastError = e;
+      console.error(`[shopifySync] eBay push attempt ${attempt}/${attempts} for Shopify ${sale.shopifyOrderName}`, e);
+      if (attempt < attempts) await new Promise((r) => setTimeout(r, EBAY_PUSH_RETRY_WAIT_MS * attempt));
     }
-    await prisma.shopifySale.update({ where: { id: sale.id }, data: { ebayPushedAt: new Date(), ebayPushError: null } });
-  } catch (e) {
-    const message = errorText(e);
-    result.errors.push(`eBay count for ${item.finalTitle ?? item.id} (Shopify order ${sale.shopifyOrderName}): ${message}`);
-    await prisma.shopifySale.update({ where: { id: sale.id }, data: { ebayPushError: message } }).catch(() => {});
   }
+  if (pushed) {
+    await prisma.shopifySale
+      .update({ where: { id: sale.id }, data: { ebayPushedAt: new Date(), ebayPushError: null } })
+      .catch((e) => result.errors.push(`Shopify order ${sale.shopifyOrderName}: eBay updated, but marking it done failed: ${errorText(e)}`));
+    return;
+  }
+  const message = errorText(lastError);
+  result.errors.push(`eBay count for ${sale.item.finalTitle ?? sale.item.id} (Shopify order ${sale.shopifyOrderName}): ${message}`);
+  await prisma.shopifySale.update({ where: { id: sale.id }, data: { ebayPushError: message } }).catch(() => {});
 }
 
 // A cancelled order: the sale comes off the records (its refunds go with
@@ -719,7 +750,7 @@ async function processOrder(order: ShopifyOrder, result: ShopifySyncResult, chan
       result.salesRecorded++;
       changed.add(item.id);
       pushed.add(sale.id);
-      await pushSaleToEbay(sale.id, result);
+      await pushSaleToEbay(sale.id, result, EBAY_PUSH_ATTEMPTS);
     } catch (e) {
       // A unique-key clash means another run recorded this line first.
       if ((e as { code?: string }).code === "P2002") continue;

@@ -30,6 +30,9 @@ export type EbayOrderSyncResult = {
   // Items whose sold count changed this run (new sales, reversals), so the
   // caller can bring Shopify's count along.
   changedItemIds: string[];
+  // Every order this run read from eBay, so an instant sale alert can tell
+  // whether its order was actually seen yet (and try again if not).
+  orderIdsSeen: string[];
   errors: string[];
 };
 
@@ -199,6 +202,7 @@ export async function syncEbayOrders(
     listingsEnded: 0,
     soldOutLeftUp: [],
     changedItemIds: [],
+    orderIdsSeen: [],
     errors: [],
   };
   const changedItemIds = new Set<string>();
@@ -263,6 +267,7 @@ export async function syncEbayOrders(
     }
 
     result.ordersScanned = orders.length;
+    result.orderIdsSeen = orders.map((o) => o.orderId);
 
     // Resolve every combine-shipped label's group BEFORE processing
     // individual orders — Cristian: split a shared label's cost evenly

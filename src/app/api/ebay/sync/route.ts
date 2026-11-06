@@ -66,6 +66,7 @@ function emptyResult(): EbayOrderSyncResult {
     listingsEnded: 0,
     soldOutLeftUp: [],
     changedItemIds: [],
+    orderIdsSeen: [],
     errors: [],
   };
 }
