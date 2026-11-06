@@ -1,5 +1,6 @@
 "use client";
 
+import { CancelledToRelistAlert } from "@/components/CancelledToRelist";
 import { BuyerOffersSection } from "@/components/BuyerOffersSection";
 import { LocationBadge } from "@/components/LocationBadge";
 import { SendOffersSection } from "@/components/SendOffersSection";
@@ -306,6 +307,8 @@ export default function DashboardPage() {
             )}
           </Card>
         )}
+
+        <CancelledToRelistAlert />
 
         {expiredNeedingPull.length > 0 && (
           <Alert tone="danger" title={`Needs pulling from the shelf (${expiredNeedingPull.length})`} className="scroll-mt-20">

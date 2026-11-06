@@ -519,7 +519,7 @@ export async function recordReturn(input: RecordReturnInput): Promise<RecordRetu
 // The undiscounted price, since a fresh listing shouldn't start with the old
 // one's markdown (the price review shows it anyway). Goes to review like
 // any new item.
-async function sameConditionCopy(
+export async function sameConditionCopy(
   tx: Prisma.TransactionClient,
   original: Item,
   units: number,

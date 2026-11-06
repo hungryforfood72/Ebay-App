@@ -1,7 +1,6 @@
 import { after } from "next/server";
 import { descriptionBodyHtml } from "./listingDescription";
 import {
-  EbayApiError,
   endFixedPriceItem,
   getEbayEnvironment,
   getLiveAvailableQuantity,
@@ -613,32 +612,26 @@ async function pushSaleToEbay(saleId: string, result: ShopifySyncResult, attempt
         if (live == null) throw new Error("Couldn't read the eBay listing's count.");
         if (target == null) target = Math.max(0, live - sale.quantity);
         if (live > target) {
-          if (item.ebayOfferId) {
-            // 0 rather than ending it: nobody can buy it either way, and a
-            // cancelled order can still put the unit back. The order sync's
-            // sold-out sweep ends it.
-            try {
-              await updateOfferQuantity(item.ebayOfferId, { sku: item.sku, soldQuantity: item.soldQuantity }, target);
-            } catch (e) {
-              // eBay can refuse a revise outright (Shopify #1228, 2026-11-05:
-              // a 400 on the count change at 5:43 PM, while ending the same
-              // listing at 5:50 went through). The last unit: end it instead
-              // of leaving it buyable, as long as the app agrees it's sold out.
-              // Only a real refusal (4xx): an eBay blip or network error
-              // goes back through the normal retry instead.
-              const refused = e instanceof EbayApiError && e.status >= 400 && e.status < 500;
-              if (target !== 0 || item.status !== "sold" || !refused) throw e;
-              console.error(`[shopifySync] setting offer ${item.ebayOfferId} to 0 refused, ending it instead`, e);
-              await withdrawOffer(item.ebayOfferId);
-              await prisma.item.update({ where: { id: item.id }, data: { listingEndedAt: new Date() } });
+          if (target === 0) {
+            // The last one sold: end the listing. The account has eBay's
+            // Out-of-stock control off, so eBay never lets a listing sit at
+            // 0 ("The quantity must be a valid number greater than 0",
+            // Shopify #1225, #1228, #1229). Cristian, 2026-11-06: end it
+            // straight away. If the order is cancelled, the unit goes on a
+            // new listing from the Returns page (cancelledOrders.ts).
+            // Only when the app agrees it's sold out: the two counts have
+            // disagreed before (20 on eBay vs 19 here). Otherwise the
+            // listing stays up and the mismatch shows as an error.
+            const fresh = await prisma.item.findUnique({ where: { id: item.id }, select: { quantity: true, soldQuantity: true } });
+            const appLeft = fresh ? fresh.quantity - fresh.soldQuantity : null;
+            if (appLeft == null || appLeft > 0) {
+              throw new Error(`eBay would be sold out but the app shows ${appLeft ?? "?"} left, so the listing was left up. Check the count.`);
             }
-          } else if (target === 0) {
-            // An older listing (Trading API) can't be revised to 0 available
-            // ("The quantity must be a valid number greater than 0"), so the
-            // last one selling on Shopify ends it instead (Cristian, 2026-10-26:
-            // Liquid I.V. sold on Shopify #1225 and stayed buyable on eBay).
-            await endFixedPriceItem(item.ebayListingId!);
+            if (item.ebayOfferId) await withdrawOffer(item.ebayOfferId);
+            else await endFixedPriceItem(item.ebayListingId!);
             await prisma.item.update({ where: { id: item.id }, data: { listingEndedAt: new Date() } });
+          } else if (item.ebayOfferId) {
+            await updateOfferQuantity(item.ebayOfferId, { sku: item.sku, soldQuantity: item.soldQuantity }, target);
           } else {
             await reviseFixedPriceItemQuantity(item.ebayListingId!, target);
           }
@@ -673,6 +666,21 @@ async function reverseShopifySale(
   const item = sale.item;
   const refunded = sale.refunds.reduce((sum, r) => sum + Number(r.amount), 0);
   const newSoldQuantity = Math.max(0, item.soldQuantity - sale.quantity);
+  // The listing already ended because this sale sold it out: the unit is
+  // back but has nowhere to sell, so it waits on the Returns page to be
+  // relisted as a new listing. Flagged in the same transaction as the
+  // reversal, so it can't be lost. Loaded here, not at the top: the
+  // returns code imports stockAdjust, which imports this file.
+  const cancelled = await import("./warehouse/cancelledOrders");
+  const flag = cancelled.strandedByCancel(item)
+    ? await cancelled.cancelledReturnData({
+        itemId: item.id,
+        channel: "shopify",
+        orderName: sale.shopifyOrderName,
+        lineItemId: sale.shopifyLineItemId,
+        units: sale.quantity,
+      })
+    : null;
   await prisma.$transaction([
     prisma.shopifySale.delete({ where: { id: sale.id } }),
     prisma.item.update({
@@ -685,10 +693,13 @@ async function reverseShopifySale(
         status: item.status === "sold" && newSoldQuantity < item.quantity ? "listed" : undefined,
       },
     }),
+    ...(flag ? [prisma.itemReturn.create({ data: flag })] : []),
   ]);
   result.salesReversed++;
 
-  if (!sale.ebayPushedAt || item.listingEndedAt || !(item.ebayOfferId || item.ebayListingId)) return;
+  // An ended listing stays ended (Cristian never restocks a listing).
+  if (item.listingEndedAt) return;
+  if (!sale.ebayPushedAt || !(item.ebayOfferId || item.ebayListingId)) return;
   try {
     const live = await getLiveAvailableQuantity(item);
     if (live == null) throw new Error("Couldn't read the eBay listing's count.");

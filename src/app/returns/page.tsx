@@ -1,5 +1,6 @@
 "use client";
 
+import { CancelledToRelistPanel } from "@/components/CancelledToRelist";
 import { ScanField } from "@/components/ScanField";
 import { ScanStationCard, StationOnline, useChosenStation } from "@/components/StationPicker";
 import { StationSignOutButton } from "@/components/StationSignIn";
@@ -493,6 +494,10 @@ export default function ReturnsPage() {
               hint={looking ? "Looking it up…" : "The ES label, or the UPC on the package for older items."}
             />
           </Card>
+        )}
+
+        {phase === "scan" && (
+          <CancelledToRelistPanel stationId={station?.id ?? null} onRelisted={() => setRecentKey((k) => k + 1)} />
         )}
 
         {phase === "pick" && (

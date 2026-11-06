@@ -53,6 +53,10 @@ const ITEM_SELECT = { upc: true, isMultipack: true, packSize: true, isBundle: tr
 type StoredBits = {
   plan?: { listUnits?: number; returnedUnits?: number };
   leftoverEntries?: { damaged?: number; dud?: number };
+  // A cancelled order relisted (cancelledOrders.ts): the units moved from
+  // the old item to the new one (old quantity went down), so nothing was
+  // counted twice and there's nothing to take back.
+  cancelled?: boolean;
 };
 
 const add = (into: Map<string, number>, upc: string, units: number) => into.set(upc, (into.get(upc) ?? 0) + units);
@@ -72,7 +76,7 @@ function physicalByUpc(item: ItemShape, quantity: number, into: Map<string, numb
 export async function returnedUnitsByUpc(manifestId: string): Promise<Map<string, number>> {
   const returns = await prisma.itemReturn.findMany({
     // Pending = the agent was asked but nothing was done yet.
-    where: { decision: { not: "pending" }, item: { manifestId } },
+    where: { decision: { notIn: ["pending", "cancelled"] }, item: { manifestId } },
     select: { units: true, decision: true, newItemId: true, report: true, item: { select: ITEM_SELECT } },
   });
   const out = new Map<string, number>();
@@ -90,6 +94,7 @@ export async function returnedUnitsByUpc(manifestId: string): Promise<Map<string
 
   for (const r of returns) {
     const stored = (r.report ?? {}) as StoredBits;
+    if (stored.cancelled) continue;
     // Leftover entries are only written for an original with one UPC (not
     // a bundle) on this manifest, which is what this query selected.
     const leftovers = (stored.leftoverEntries?.damaged ?? 0) + (stored.leftoverEntries?.dud ?? 0);

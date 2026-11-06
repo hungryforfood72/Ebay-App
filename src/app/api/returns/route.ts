@@ -1,6 +1,7 @@
 import { getRequestUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { WarehouseError } from "@/lib/warehouse/bins";
+import { CANCELLED_DECISION } from "@/lib/warehouse/cancelledOrders";
 import { itemTitle, PENDING_DECISION, recordReturn, type StoredReturnReport } from "@/lib/warehouse/returns";
 import { NextRequest, NextResponse } from "next/server";
 
@@ -17,7 +18,8 @@ export async function GET(request: NextRequest) {
   const since = new Date(`${today}T05:00:00Z`);
   const rows = await prisma.itemReturn.findMany({
     // Pending = the agent was asked but nobody finished; not a return yet.
-    where: { createdAt: { gte: since }, decision: { not: PENDING_DECISION } },
+    // Cancelled orders still waiting have their own list (cancelledOrders.ts).
+    where: { createdAt: { gte: since }, decision: { notIn: [PENDING_DECISION, CANCELLED_DECISION] } },
     orderBy: { createdAt: "desc" },
     take: 50,
     include: { item: { select: { sku: true, finalTitle: true, aiTitle: true, upc: true } } },
