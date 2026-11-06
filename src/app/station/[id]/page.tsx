@@ -10,6 +10,8 @@ import { Button, buttonClasses } from "@/components/ui/Button";
 import { Card, SectionHeader } from "@/components/ui/Card";
 import { Select } from "@/components/ui/Input";
 import { printLabels, printPage } from "@/lib/warehouse/labelPrint";
+import { dudBoxName } from "@/lib/warehouse/codes";
+import type { DudBoxSummary } from "@/lib/warehouse/dudBoxTypes";
 import { formatOunces, formatPoundsOunces, scaleStatusMessage, type ScaleStatus } from "@/lib/warehouse/scale";
 import { DEFAULT_CHROME_PATH, stationPolicyRegFile, stationShortcutArgs } from "@/lib/warehouse/stationSetup";
 import type { PrintJobRow } from "@/lib/warehouse/stations";
@@ -26,7 +28,7 @@ import {
   type PrintJobPayload,
   type StationStatus,
 } from "@/lib/warehouse/types";
-import { Copy, Download, LogOut, Power, Printer, QrCode, RefreshCw, RotateCcw, Scale, Usb } from "lucide-react";
+import { Copy, Download, LogOut, PackageMinus, Power, Printer, QrCode, RefreshCw, RotateCcw, Scale, Usb } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useScale, type ScaleState } from "./useScale";
@@ -549,6 +551,17 @@ export default function StationPage() {
         <div className="flex min-w-0 flex-col gap-4">
           <ScaleCard scale={scale} weightOz={weightOz} stable={stable} now={now} scalePolicy={station?.scalePolicy ?? null} viaHelper={helperScale} />
 
+          {/* Right under the scale: the station PC window is usually narrow,
+              so the right column ends up far down the page. */}
+          <ListingDudBoxCard
+            stationId={id}
+            disabled={stopped}
+            onQueued={() => {
+              lastActivityAt.current = Date.now();
+              hb.current.sentAt = 0; // check right away
+            }}
+          />
+
           <Card>
             <SectionHeader
               title="Labels"
@@ -687,6 +700,260 @@ export default function StationPage() {
         </div>
       </div>
     </AppShell>
+  );
+}
+
+// The listing table's dud box for set-asides (Cristian, 2026-11-06): the
+// pack card's "Set aside" puts units in the load's open listing dud box
+// (DudBox.forListing), never a sorter's (those are stacked away). Here, at
+// the PC with the printer, they start one for the load being listed, start
+// the next when it's full (the full one closes), and reprint its label.
+// The load defaults to the one this station last printed item labels for.
+// Only on the Listing Station (Cristian, 2026-11-06); hidden elsewhere.
+function ListingDudBoxCard({
+  stationId,
+  disabled,
+  onQueued,
+}: {
+  stationId: string;
+  disabled: boolean;
+  onQueued: () => void;
+}) {
+  const [loads, setLoads] = useState<{ id: string; title: string }[] | null>(null);
+  const [manifestId, setManifestId] = useState<string | null>(null);
+  const [box, setBox] = useState<DudBoxSummary | null | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const [confirmNext, setConfirmNext] = useState(false);
+  const [listingStation, setListingStation] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [list, current] = await Promise.all([
+        fetch("/api/manifests", { cache: "no-store" })
+          .then((r) => (r.ok ? r.json() : []))
+          .catch(() => []),
+        fetch(`/api/stations/${stationId}/listing-load`, { cache: "no-store" })
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null),
+      ]);
+      if (cancelled) return;
+      if (!current?.listingStation) return;
+      setListingStation(true);
+      const options = (Array.isArray(list) ? list : []).map((m: { id: string; title: string }) => ({
+        id: m.id,
+        title: m.title,
+      }));
+      setLoads(options);
+      setManifestId(current?.manifestId ?? options[0]?.id ?? null);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [stationId]);
+
+  async function loadBox(forManifest: string | null) {
+    if (!forManifest) return setBox(null);
+    const params = new URLSearchParams({ status: "open", forListing: "1", manifestId: forManifest });
+    const data = await fetch(`/api/dud-boxes?${params}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null);
+    setBox((data?.boxes as DudBoxSummary[] | undefined)?.[0] ?? null);
+  }
+
+  useEffect(() => {
+    if (!manifestId) return;
+    let cancelled = false;
+    const params = new URLSearchParams({ status: "open", forListing: "1", manifestId });
+    fetch(`/api/dud-boxes?${params}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null)
+      .then((data) => {
+        if (!cancelled) setBox((data?.boxes as DudBoxSummary[] | undefined)?.[0] ?? null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [manifestId]);
+
+  function pickLoad(id: string | null) {
+    setBox(undefined);
+    setMessage(null);
+    setConfirmNext(false);
+    setManifestId(id);
+  }
+
+  async function startBox() {
+    if (!manifestId) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const r = await fetch("/api/dud-boxes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ manifestId, stationId, forListing: true, replaces: box?.code ?? null }),
+      });
+      const data = await r.json().catch(() => null);
+      if (!r.ok || !data?.box) {
+        // 409: another screen started one, show the box on the table now.
+        if (r.status === 409) await loadBox(manifestId);
+        throw new Error(data?.error ?? "Couldn't start a dud box.");
+      }
+      onQueued();
+      const closed = box ? ` ${dudBoxName(box.code)} is closed, set it aside for processing.` : "";
+      setMessage(
+        data.printed
+          ? { ok: true, text: `${dudBoxName(data.box.code)} started, its label is printing.${closed}` }
+          : {
+              ok: false,
+              text: `${dudBoxName(data.box.code)} started, but its label didn't print: ${data.printError ?? "unknown error"}.${closed}`,
+            }
+      );
+      setConfirmNext(false);
+      await loadBox(manifestId);
+    } catch (e) {
+      setMessage({ ok: false, text: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Close it without starting another (done with this load, say). The next
+  // set-aside then asks for a new box.
+  async function closeBox() {
+    if (!box || !manifestId) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const r = await fetch(`/api/dud-boxes/${encodeURIComponent(box.code)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "closed" }),
+      });
+      const data = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(data?.error ?? "Couldn't close the box.");
+      setMessage({ ok: true, text: `${dudBoxName(box.code)} closed. Set it aside for processing.` });
+      setConfirmNext(false);
+      await loadBox(manifestId);
+    } catch (e) {
+      setMessage({ ok: false, text: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reprint() {
+    if (!box) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const r = await fetch(`/api/dud-boxes/${encodeURIComponent(box.code)}/print`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stationId }),
+      });
+      const data = await r.json().catch(() => null);
+      if (!r.ok) throw new Error(data?.error ?? "Couldn't reprint the label.");
+      onQueued();
+      setMessage({ ok: true, text: `${dudBoxName(box.code)} label is printing.` });
+    } catch (e) {
+      setMessage({ ok: false, text: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!listingStation) return null;
+
+  return (
+    <Card>
+      <SectionHeader
+        title="Dud boxes"
+        description="Where the listing table's set-asides go. Labels print here."
+        action={
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => void loadBox(manifestId)}
+            disabled={busy || !manifestId}
+            aria-label="Refresh"
+          >
+            <RefreshCw className="size-4" aria-hidden />
+          </Button>
+        }
+      />
+      {loads === null ? (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      ) : loads.length === 0 ? (
+        <p className="text-sm text-muted-foreground">No bought loads yet.</p>
+      ) : (
+        <div className="flex flex-col gap-3 text-sm">
+          <label className="flex flex-col gap-1">
+            <span className="text-muted-foreground">Load</span>
+            <Select
+              value={manifestId ?? ""}
+              onChange={(e) => pickLoad(e.target.value || null)}
+              disabled={busy || disabled}
+              aria-label="Load"
+            >
+              {loads.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.title}
+                </option>
+              ))}
+            </Select>
+          </label>
+          {box === undefined ? (
+            <p className="text-muted-foreground">Finding this load&apos;s dud box…</p>
+          ) : box === null ? (
+            <>
+              <p className="text-foreground">No dud box at the listing table for this load yet.</p>
+              <div>
+                <Button size="sm" onClick={startBox} disabled={busy || disabled}>
+                  <PackageMinus className="size-4" aria-hidden />
+                  Start a dud box
+                </Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="text-foreground">
+                <span className="font-semibold">{dudBoxName(box.code)}</span>{" "}
+                <span className="text-muted-foreground">
+                  · {box.units} {box.units === 1 ? "unit" : "units"} in it
+                </span>
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" size="sm" onClick={reprint} disabled={busy || disabled}>
+                  <Printer className="size-4" aria-hidden />
+                  Reprint label
+                </Button>
+                {confirmNext ? (
+                  <>
+                    <Button size="sm" onClick={startBox} disabled={busy || disabled}>
+                      Close it, start the next
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={closeBox} disabled={busy || disabled}>
+                      Just close it
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => setConfirmNext(false)} disabled={busy}>
+                      Cancel
+                    </Button>
+                  </>
+                ) : (
+                  <Button variant="outline" size="sm" onClick={() => setConfirmNext(true)} disabled={busy || disabled}>
+                    <PackageMinus className="size-4" aria-hidden />
+                    Close this box
+                  </Button>
+                )}
+              </div>
+            </>
+          )}
+          {message && <p className={message.ok ? "text-green-700" : "text-red-700"}>{message.text}</p>}
+        </div>
+      )}
+    </Card>
   );
 }
 

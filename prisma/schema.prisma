@@ -1182,6 +1182,11 @@ model DudBox {
   // open (sorter still filling it) | closed (full, waiting to be processed)
   // | done (every entry decided and handled)
   status      String    @default("open")
+  // Started for the listing station's set-asides (Cristian, 2026-11-06),
+  // not by a sorter. The pack card's "Set aside" only uses these: the
+  // sorters' dud boxes are stacked away once full, so nobody can reach
+  // them at the listing table. The sort station doesn't offer these.
+  forListing  Boolean   @default(false)
   createdBy   String?
   createdAt   DateTime  @default(now())
   closedAt    DateTime?

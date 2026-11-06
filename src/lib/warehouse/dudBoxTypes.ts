@@ -90,6 +90,8 @@ export type DudBoxSummary = {
   shopifyUnits: number;
   ebayUnits: number;
   listedUnits: number;
+  // Started at the listing station for set-asides (DudBox.forListing).
+  forListing: boolean;
   createdBy: string | null;
   createdAt: string;
   closedAt: string | null;

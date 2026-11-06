@@ -415,7 +415,8 @@ export default function SortPage() {
       let others: DudBoxSummary[] = [];
       try {
         const list = await readJson<{ boxes: DudBoxSummary[] }>(
-          await fetch(`/api/dud-boxes?status=open&manifestId=${encodeURIComponent(manifestId)}`),
+          // Not the listing station's set-aside boxes (DudBox.forListing).
+          await fetch(`/api/dud-boxes?status=open&forListing=0&manifestId=${encodeURIComponent(manifestId)}`),
           ""
         );
         others = list.boxes.filter((b) => b.code !== dud?.code);
