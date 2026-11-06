@@ -1,4 +1,4 @@
-import { getRequestUser } from "@/lib/auth";
+import { AuthError, requireUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { productCodeFromScan } from "@/lib/upcMatch";
 import { NextRequest, NextResponse } from "next/server";
@@ -12,8 +12,18 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  let username: string;
+  try {
+    username = requireUser(request).username;
+  } catch (e) {
+    if (e instanceof AuthError) return NextResponse.json({ error: e.message }, { status: e.status });
+    throw e;
+  }
   const { id } = await params;
-  const body = await request.json().catch(() => ({}));
+  const body = (await request.json().catch(() => null)) ?? {};
+  if (!(await prisma.manifest.findUnique({ where: { id }, select: { id: true } }))) {
+    return NextResponse.json({ error: "That manifest doesn't exist." }, { status: 404 });
+  }
 
   // A GS1 box code or Digital Link scan is stored as the UPC inside it.
   const upc = productCodeFromScan(String(body.upc ?? ""));
@@ -31,9 +41,9 @@ export async function POST(
       manifestId: id,
       upc,
       quantity: Math.round(quantity),
-      note: body.note ?? null,
+      note: typeof body.note === "string" ? body.note.slice(0, 500) : null,
       // From the signed-in session (see /reports/scan-speed), not the body.
-      recordedBy: getRequestUser(request)?.username ?? null,
+      recordedBy: username,
     },
   });
 

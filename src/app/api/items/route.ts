@@ -23,6 +23,7 @@ import { classifyScan, normalizeCode } from "@/lib/warehouse/codes";
 import { buildItemLabel, queueItemLabels } from "@/lib/warehouse/itemLabel";
 import { isWarehouseMode } from "@/lib/warehouse/settings";
 import { getWhatnotStartPrice } from "@/lib/shopifySync";
+import { checkWhatnot, supplementsApproved, whatnotBanReason, whatnotDaysNeeded } from "@/lib/whatnotPolicy";
 import { binProgress } from "@/lib/warehouse/binGate";
 
 // Draft (up to 45s for a single item, or up to ~90s for a bundle — parallel
@@ -281,6 +282,31 @@ export async function POST(request: NextRequest) {
     });
     if (!manifestLine) {
       return NextResponse.json({ error: "That product isn't on this manifest anymore. Search for it again." }, { status: 400 });
+    }
+  }
+
+  // Whatnot's rules (whatnotPolicy.ts), whatever the page sent: nothing
+  // Whatnot won't allow, and nothing too close to its date for a show.
+  if (whatnotOnly && !isBundle) {
+    const verdict = has(body.upc)
+      ? await checkWhatnot(String(body.upc), has(body.manifestId) ? String(body.manifestId) : null)
+      : manifestLine
+        ? {
+            allowed: !whatnotBanReason(manifestLine.description, null, { supplementsOk: await supplementsApproved() }),
+            reason: whatnotBanReason(manifestLine.description, null, { supplementsOk: await supplementsApproved() }),
+            minDaysToExpiry: whatnotDaysNeeded(manifestLine.description),
+          }
+        : null;
+    if (verdict && !verdict.allowed) {
+      return NextResponse.json({ error: `${verdict.reason} Set it aside for donation.` }, { status: 400 });
+    }
+    const days = verdict?.minDaysToExpiry ?? 30;
+    const dateMs = expirationDate ? new Date(expirationDate).getTime() : null;
+    if (dateMs != null && (!Number.isFinite(dateMs) || dateMs < Date.now() + days * 24 * 60 * 60 * 1000)) {
+      return NextResponse.json(
+        { error: `Whatnot needs at least ${days} days before the date so the buyer gets it in time. Set it aside for donation.` },
+        { status: 400 }
+      );
     }
   }
 

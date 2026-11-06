@@ -143,8 +143,31 @@ function groupSameProduct(pending: Item[]): Item[] {
 
 type BoxSize = { id: string; label: string };
 
+// Which listings Review shows (Cristian, 2026-11-06: "so I can focus on
+// what I'm working on"). Shopify-only items count as eBay + Shopify work.
+// Remembered on this device only.
+type LaneFilter = "all" | "ebay" | "whatnot";
+const LANE_FILTER_KEY = "ebay-tool.reviewLane";
+function readLaneFilter(): LaneFilter {
+  try {
+    const v = typeof window === "undefined" ? null : localStorage.getItem(LANE_FILTER_KEY);
+    return v === "ebay" || v === "whatnot" ? v : "all";
+  } catch {
+    return "all";
+  }
+}
+
 export default function ReviewPage() {
   const [items, setItems] = useState<Item[] | null>(null);
+  const [lane, setLaneState] = useState<LaneFilter>(readLaneFilter);
+  function setLane(next: LaneFilter) {
+    setLaneState(next);
+    try {
+      localStorage.setItem(LANE_FILTER_KEY, next);
+    } catch {
+      // Private window: just not remembered.
+    }
+  }
   const [rules, setRules] = useState<CategoryRule[]>([]);
   const [boxSizes, setBoxSizes] = useState<BoxSize[]>([]);
   const [exporting, setExporting] = useState(false);
@@ -434,12 +457,20 @@ export default function ReviewPage() {
     );
   }
 
-  const pending = groupSameProduct(items.filter((i) => i.status === "pending_review"));
-  const ready = items.filter((i) => i.status === "ready");
+  const inLane = (i: Item) => lane === "all" || (lane === "whatnot" ? Boolean(i.whatnotOnly) : !i.whatnotOnly);
+  const laneCount = (l: LaneFilter) =>
+    items.filter(
+      (i) =>
+        (i.status === "pending_review" || i.status === "ready") &&
+        (l === "all" || (l === "whatnot" ? Boolean(i.whatnotOnly) : !i.whatnotOnly))
+    ).length;
+  const pending = groupSameProduct(items.filter((i) => i.status === "pending_review" && inLane(i)));
+  // Publish all goes by this too: only what's showing.
+  const ready = items.filter((i) => i.status === "ready" && inLane(i));
   // Publishing here, or on the server from before a refresh.
   const isPublishing = (item: Item) => publishingId === item.id || publishingOnServer(item);
-  const exported = items.filter((i) => i.status === "exported");
-  const listed = items.filter((i) => i.status === "listed");
+  const exported = items.filter((i) => i.status === "exported" && inLane(i));
+  const listed = items.filter((i) => i.status === "listed" && inLane(i));
 
   return (
     <AppShell
@@ -454,6 +485,32 @@ export default function ReviewPage() {
       }
     >
       <div className="flex flex-col gap-8">
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Show listings for">
+          {(
+            [
+              ["all", "All"],
+              ["ebay", "eBay + Shopify"],
+              ["whatnot", "Whatnot"],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={lane === value}
+              onClick={() => setLane(value)}
+              className={cn(
+                "rounded-full border px-4 py-1.5 text-sm font-medium",
+                lane === value
+                  ? value === "whatnot"
+                    ? "border-purple-400 bg-purple-100 text-purple-950"
+                    : "border-primary bg-primary text-primary-foreground"
+                  : "border-border bg-surface text-foreground hover:bg-muted"
+              )}
+            >
+              {label} <span className="tabular-nums opacity-75">{laneCount(value)}</span>
+            </button>
+          ))}
+        </div>
         {error && <Alert tone="danger">{error}</Alert>}
         {autoFixNotes.length > 0 && (
           <Alert tone="info">

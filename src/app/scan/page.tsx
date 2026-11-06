@@ -4,6 +4,7 @@ import BarcodeScanner from "@/components/BarcodeScanner";
 import { formatLbOz, formatOz, LiveWeightReadout, packageWeight, useStationWeight } from "@/components/LiveWeight";
 import { ExpirationPicker } from "@/components/ExpirationPicker";
 import { ManifestSearch, type ManifestSearchResult } from "@/components/ManifestSearch";
+import { WhatnotBlockCard } from "@/components/WhatnotBlockCard";
 import { PackSuggestionCard, type SetAsideWhy } from "@/components/PackSuggestionCard";
 import { PullBanner } from "@/components/PullBanner";
 import { ScanField } from "@/components/ScanField";
@@ -336,6 +337,15 @@ function ScanPageInner() {
   // into a Whatnot bin. Holds the card's why, saved with the item so the
   // Analyzer learns (ebaySkips.ts). Cleared for every new item.
   const [whatnotItem, setWhatnotItem] = useState<SetAsideWhy | null>(null);
+  // Whatnot's rules for the product being listed for Whatnot
+  // (src/lib/whatnotPolicy.ts, plain word rules, no AI): what it can't
+  // take is set aside for donation instead (WhatnotBlockCard).
+  const [whatnotCheck, setWhatnotCheck] = useState<{
+    code: string;
+    allowed: boolean;
+    reason: string | null;
+    minDaysToExpiry: number;
+  } | null>(null);
   // What the pack card suggested for the product being listed (sent with
   // the save, so Cristian listing it differently teaches the pack agent).
   const [packSuggestion, setPackSuggestion] = useState<{ recommended: number; sizes: number[] } | null>(null);
@@ -365,6 +375,28 @@ function ScanPageInner() {
   // Whatnot mode applies to plain listings only: relists, returns and dud
   // boxes keep their own lanes.
   const whatnotLane = (whatnotMode || whatnotItem != null) && !relist && !returnPlan && !dudBox;
+  const whatnotCheckCode = whatnotLane ? upc.trim() || pickedLine?.key || "" : "";
+  useEffect(() => {
+    if (!whatnotCheckCode) return;
+    let cancelled = false;
+    const params = new URLSearchParams({ code: whatnotCheckCode, ...(activeManifestId ? { manifestId: activeManifestId } : {}) });
+    fetch(`/api/whatnot-check?${params}`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null)
+      .then((data: { allowed?: boolean; reason?: string | null; minDaysToExpiry?: number } | null) => {
+        if (cancelled) return;
+        // Can't check (offline): let it through; the save checks again.
+        setWhatnotCheck({
+          code: whatnotCheckCode,
+          allowed: data?.allowed ?? true,
+          reason: data?.reason ?? null,
+          minDaysToExpiry: data?.minDaysToExpiry ?? 30,
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [whatnotCheckCode, activeManifestId]);
   // Warehouse mode, listing into a manifest: the load was sorted into sort
   // boxes first. Scanning a product pulls every unit of it out of its boxes
   // to the table (POST /api/sort-boxes/pull); this is what to go grab, for
@@ -745,6 +777,7 @@ function ScanPageInner() {
     setShopifyOnly(false);
     setEbaySkipReason(null);
     setWhatnotItem(null);
+    setWhatnotCheck(null);
     setPackSuggestion(null);
     setPhotos([]);
     setUpc("");
@@ -1053,6 +1086,19 @@ function ScanPageInner() {
   const dateRows = [{ date: expirationDate, units: firstDateUnits }, ...extraDates];
   const datedUnits = dateRows.reduce((sum, r) => sum + (Number(r.units) || 0), 0);
 
+  // Whatnot: the product's check, and its earliest date against the days
+  // Whatnot needs (the buyer has to get it before the date).
+  const whatnotCode = upc.trim() || pickedLine?.key || "";
+  const whatnotBlocked =
+    whatnotLane && !isBundle && whatnotCheck != null && whatnotCheck.code === whatnotCode && !whatnotCheck.allowed;
+  const earliestDate = dateRows.map((r) => r.date).filter(Boolean).sort()[0] ?? "";
+  const whatnotMinDays = whatnotCheck?.minDaysToExpiry ?? 30;
+  const whatnotDateBlocked =
+    whatnotLane &&
+    !isBundle &&
+    Boolean(earliestDate) &&
+    new Date(earliestDate).getTime() < Date.now() + whatnotMinDays * 24 * 60 * 60 * 1000;
+
   function datesProblem(): string | null {
     if (extraDates.length === 0) return null;
     if (dateRows.some((r) => !r.date)) return "Every row needs a date.";
@@ -1065,6 +1111,20 @@ function ScanPageInner() {
 
   function goNext() {
     setMessage(null);
+    if (step === "quantity" && whatnotLane && whatnotCode && !isBundle) {
+      if (whatnotCheck?.code !== whatnotCode) {
+        setMessage("Checking Whatnot's rules, one second.");
+        return;
+      }
+      if (!whatnotCheck.allowed) {
+        setMessage("Whatnot doesn't allow this. Set it aside for donation.");
+        return;
+      }
+    }
+    if (step === "expiration" && whatnotDateBlocked) {
+      setMessage("Its date is too close for Whatnot. Set it aside for donation.");
+      return;
+    }
     if (step === "expiration" && datesProblem()) {
       setMessage(datesProblem());
       return;
@@ -2070,6 +2130,21 @@ function ScanPageInner() {
         {step === "quantity" && (
           <Card className="flex flex-col gap-4">
             {/* A product picked by name or Item # has no UPC: the card goes by its manifest line key. */}
+            {whatnotBlocked && whatnotCheck && (
+              <WhatnotBlockCard
+                code={whatnotCode}
+                manifestId={activeManifestId}
+                reason={whatnotCheck.reason ?? "Whatnot doesn't allow this kind of item."}
+                units={totalUnits}
+                why={whatnotItem}
+                canAllow={isOwner}
+                onDone={(msg) => {
+                  resetForm();
+                  setMessage(msg);
+                }}
+                onAllowed={() => setWhatnotCheck({ ...whatnotCheck, allowed: true, reason: null })}
+              />
+            )}
             {(upc.trim() || pickedLine) && !whatnotLane && (
               // Not in Whatnot mode: the card weighs eBay pack sizes and
               // where else to sell, and a Whatnot listing is already decided.
@@ -2140,6 +2215,22 @@ function ScanPageInner() {
               />
             </Field>
           </Card>
+        )}
+
+        {step === "expiration" && whatnotDateBlocked && (
+          <WhatnotBlockCard
+            code={whatnotCode}
+            manifestId={activeManifestId}
+            reason={`Its date is too close: Whatnot needs at least ${whatnotMinDays} days left so the buyer gets it in time.`}
+            units={totalUnits}
+            why={whatnotItem}
+            canAllow={false}
+            onDone={(msg) => {
+              resetForm();
+              setMessage(msg);
+            }}
+            onAllowed={() => {}}
+          />
         )}
 
         {step === "expiration" && (

@@ -1,4 +1,5 @@
 import { after } from "next/server";
+import { allowedByOwner, supplementsApproved, whatnotBanReason } from "./whatnotPolicy";
 import { descriptionBodyHtml } from "./listingDescription";
 import {
   endFixedPriceItem,
@@ -295,12 +296,13 @@ export async function shopifyCounts(): Promise<{ onShopify: number; waiting: num
 // Channel rules
 // ---------------------------------------------------------------------------
 
-// eBay categories Whatnot doesn't allow: its supplements policy bars
-// over-the-counter medications (Tylenol, NyQuil, Mucinex...). A
-// Whatnot-only listing in one is refused at publish. Matched against the
-// item's eBay category path. Vitamins and dietary supplements are allowed
-// there and aren't matched.
-export const WHATNOT_BLOCKED_CATEGORY = /Over-the-Counter Medications/i;
+// eBay categories Whatnot doesn't allow (its Prohibited Items policy, read
+// 2026-11-06: medicine incl. over-the-counter, medical devices, nicotine and
+// vapes, sexual products; see whatnotPolicy.ts). A Whatnot-only listing in
+// one is refused at publish. Matched against the item's eBay category path.
+// Supplements are handled by whatnotPolicy.ts (approved sellers only).
+export const WHATNOT_BLOCKED_CATEGORY =
+  /Over-the-Counter Medications|Medical & Mobility|Healthcare, Lab & Dental|Medical, Lab & Dental|Smoking Cessation|Vaping|Sexual Wellness/i;
 
 function isWhatnotChannel(name: string): boolean {
   return /whatnot/i.test(name);
@@ -472,8 +474,15 @@ export async function publishItemToShopify(itemId: string, options?: { fromRevie
     // disclosure, tags and Online Store only, never a moment at full price
     // or on Whatnot. (A Whatnot-only item never enters that lane.)
     const pastDate = Boolean(item.pastDateAt) && !item.whatnotOnly;
-    if (item.whatnotOnly && WHATNOT_BLOCKED_CATEGORY.test(category?.path ?? "")) {
-      throw new Error("Whatnot doesn't allow over-the-counter medications. List it for eBay instead.");
+    if (item.whatnotOnly) {
+      // Same rules as the List page's check (whatnotPolicy.ts), on the
+      // listing's own title and eBay category, unless Cristian allowed it.
+      const reason = WHATNOT_BLOCKED_CATEGORY.test(category?.path ?? "")
+        ? "Whatnot doesn't allow medicine or medical supplies."
+        : whatnotBanReason(item.finalTitle ?? item.aiTitle ?? "", category?.path ?? null, { supplementsOk: await supplementsApproved() });
+      if (reason && !(item.upc && (await allowedByOwner(item.upc, item.finalTitle ?? "")))) {
+        throw new Error(`${reason} Set it aside for donation.`);
+      }
     }
     const prices = expectedPrices(item, pricing, (await retailPrices([item])).get(item.id) ?? null);
     const tags = item.condition ? [`Condition: ${CONDITION_LABEL[item.condition] ?? item.condition}`] : [];

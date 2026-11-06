@@ -14,8 +14,10 @@ import { prisma } from "./prisma";
 // If it later sells on eBay (listed from a dud box, say), our own eBay
 // sales take over as they do for any product.
 
-// The pack card's setAside.why values (packSuggestion.ts).
-export const EBAY_SKIP_REASONS = ["slow_single", "low_return", "no_demand", "price_unclear"] as const;
+// The pack card's setAside.why values (packSuggestion.ts), plus
+// whatnot_banned: listed in Whatnot mode (no pack card call) and Whatnot
+// doesn't allow it, so it was set aside for donation (whatnotPolicy.ts).
+export const EBAY_SKIP_REASONS = ["slow_single", "low_return", "no_demand", "price_unclear", "whatnot_banned"] as const;
 export type EbaySkipReason = (typeof EBAY_SKIP_REASONS)[number];
 
 export function isEbaySkipReason(v: unknown): v is EbaySkipReason {
@@ -31,6 +33,7 @@ export const EBAY_SKIP_TEXT: Record<EbaySkipReason, string> = {
   low_return: "Set aside at listing: shipping and fees eat the eBay sale",
   no_demand: "Set aside at listing: no eBay demand found",
   price_unclear: "Set aside at listing: price research didn't agree",
+  whatnot_banned: "Set aside at listing: Whatnot doesn't allow it",
 };
 
 // Dud entries the sort station logged (the units never went in a sort
