@@ -6,6 +6,7 @@ import {
   getLiveAvailableQuantity,
   reviseFixedPriceItemQuantity,
   updateOfferQuantity,
+  withdrawOffer,
 } from "./ebay";
 import { formatExpiration } from "./formatExpiration";
 import { parseBundleComponentUnits } from "./itemUnits";
@@ -609,7 +610,18 @@ async function pushSaleToEbay(saleId: string, result: ShopifySyncResult, attempt
             // 0 rather than ending it: nobody can buy it either way, and a
             // cancelled order can still put the unit back. The order sync's
             // sold-out sweep ends it.
-            await updateOfferQuantity(item.ebayOfferId, { sku: item.sku, soldQuantity: item.soldQuantity }, target);
+            try {
+              await updateOfferQuantity(item.ebayOfferId, { sku: item.sku, soldQuantity: item.soldQuantity }, target);
+            } catch (e) {
+              // eBay can refuse a revise outright (Shopify #1228, 2026-11-05:
+              // a 400 on the count change at 5:43 PM, while ending the same
+              // listing at 5:50 went through). The last unit: end it instead
+              // of leaving it buyable, as long as the app agrees it's sold out.
+              if (target !== 0 || item.status !== "sold") throw e;
+              console.error(`[shopifySync] setting offer ${item.ebayOfferId} to 0 refused, ending it instead`, e);
+              await withdrawOffer(item.ebayOfferId);
+              await prisma.item.update({ where: { id: item.id }, data: { listingEndedAt: new Date() } });
+            }
           } else if (target === 0) {
             // An older listing (Trading API) can't be revised to 0 available
             // ("The quantity must be a valid number greater than 0"), so the

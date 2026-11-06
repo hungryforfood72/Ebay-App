@@ -571,11 +571,19 @@ async function ebayFetch(path: string, init: RequestInit = {}, baseOverride?: st
   });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    const errors = (body as { errors?: { message: string; longMessage?: string }[] } | null)?.errors;
+    // Bulk calls (bulk_update_price_quantity) put their errors one level
+    // down, per request: responses[].errors. Without reading those, a
+    // rejected quantity change only said "eBay API error (400)" (Shopify
+    // #1228, 2026-11-05).
+    const parsed = body as {
+      errors?: { message: string; longMessage?: string }[];
+      responses?: { errors?: { message: string; longMessage?: string }[] }[];
+    } | null;
+    const errors = parsed?.errors?.length ? parsed.errors : parsed?.responses?.flatMap((r) => r.errors ?? []);
     const message = errors?.length
       ? errors.map((e) => e.longMessage ?? e.message).join("; ")
       : `eBay API error (${res.status})`;
-    throw new EbayApiError(message, res.status, errors ?? body);
+    throw new EbayApiError(message, res.status, errors?.length ? errors : body);
   }
   if (res.status === 204) return null;
   return res.json();
