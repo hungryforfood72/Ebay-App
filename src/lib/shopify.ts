@@ -109,6 +109,7 @@ type GraphqlError = { message: string; extensions?: { code?: string } };
 export async function shopifyGraphql<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
   const config = requireConfig();
   let token = await getAccessToken();
+  let scopeRetried = false;
   for (let attempt = 0; ; attempt++) {
     const res = await fetch(`https://${config.shop}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
       method: "POST",
@@ -122,6 +123,31 @@ export async function shopifyGraphql<T>(query: string, variables?: Record<string
     }
     const json = (await res.json().catch(() => null)) as { data?: T; errors?: GraphqlError[] | string } | null;
     const errors = Array.isArray(json?.errors) ? json.errors : json?.errors ? [{ message: String(json.errors) }] : [];
+    // A token minted before a new scope was granted (it's kept up to a day)
+    // still lacks it: one fresh token, then a real "no access" stands. Only
+    // for reads (a mutation may already have run), and at most one
+    // mint per 15 min across instances, so a scope that's really missing
+    // doesn't mint a token on every call.
+    if (
+      !scopeRetried &&
+      !/^\s*mutation\b/.test(query) &&
+      errors.some((e) => e.extensions?.code === "ACCESS_DENIED")
+    ) {
+      scopeRetried = true;
+      const row = await prisma.shopifyAppToken.findUnique({ where: { shop: config.shop } });
+      if (row && row.accessToken !== token) {
+        token = row.accessToken; // another call already refreshed it
+        continue;
+      }
+      if (!row || Date.now() - row.updatedAt.getTime() > 15 * 60_000) {
+        try {
+          token = await getAccessToken(true);
+          continue;
+        } catch {
+          // Can't sign in again right now: report the real "no access" below.
+        }
+      }
+    }
     const throttled = res.status === 429 || errors.some((e) => e.extensions?.code === "THROTTLED");
     if (throttled && attempt < 4) {
       await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
