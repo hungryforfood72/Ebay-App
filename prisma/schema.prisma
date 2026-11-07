@@ -191,10 +191,19 @@ model Item {
   whatnotOnly      Boolean        @default(false)
   // Why it's off eBay, when the pack card said eBay isn't worth it and the
   // lister sent it to Shopify & Whatnot instead (packSuggestion.ts setAside
-  // why: slow_single, low_return, no_demand, price_unclear). Ignored once
-  // it isn't Shopify & Whatnot only anymore (unticked at review, so it went
-  // on eBay after all). The Analyzer learns from it (ebaySkips.ts).
+  // why: slow_single, low_return, no_demand; price_unclear only on items
+  // listed before 2026-11-06). Ignored once it isn't Shopify & Whatnot only
+  // anymore (unticked at review, so it went on eBay after all). The
+  // Analyzer learns from it (ebaySkips.ts).
   ebaySkipReason   String?
+  // "Check the price" on Review (Cristian, 2026-11-06): the pack card's
+  // researched price was above store retail (or, with no retail, more than
+  // 2x the store-price check), so it went on eBay as normal but he checks
+  // sold comps before publishing. Never decides the lane: only the profit
+  // check sends things to Whatnot. { why: "above_retail" | "prices_disagree",
+  // research, retail, check } (per manifest unit, dollars). Cleared when
+  // Cristian saves a price on Review.
+  priceCheck       Json?
   // Listed out of a dud box (dud or set aside at listing), so its sales are
   // the extra money duds bring in, kept apart from the eBay-first numbers.
   fromDudBox       DudBox?        @relation(fields: [fromDudBoxId], references: [id], onDelete: SetNull)

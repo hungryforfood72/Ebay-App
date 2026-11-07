@@ -28,6 +28,7 @@ import { describeBreakdown, type ExpirationBatch } from "@/lib/expirationBreakdo
 import { ebayDescriptionHtml } from "@/lib/listingDescription";
 import { priceOutcome } from "@/lib/offerMath";
 import type { RetailCheckLine, RetailCheckRow } from "@/lib/retailCheck";
+import type { PriceCheck } from "@/lib/priceCheck";
 import { labelForWeight } from "@/lib/shippingZone";
 import { NEEDS_YOU_PREFIX } from "@/lib/needsYou";
 import Link from "next/link";
@@ -91,6 +92,9 @@ type Item = {
   // The draft saw a different product in the photos than the barcode
   // names (src/lib/barcodeMismatch.ts).
   barcodeMismatch?: string | null;
+  // "Check the price" (src/lib/priceCheck.ts): the researched price looked
+  // high at listing. Cleared when Cristian saves a price here.
+  priceCheck?: PriceCheck | null;
   shopifyError: string | null;
   whatnotError?: string | null;
   ebayListingId: string | null;
@@ -1149,6 +1153,7 @@ function ItemCard({
             </Badge>
           )}
           <FetchedLocationBadge itemId={item.id} shelfLocation={item.shelfLocation} whatnotOnly={item.whatnotOnly} />
+          {item.priceCheck && !item.whatnotOnly && <Badge tone="warning">Check the price</Badge>}
           {binHold(item) && <Badge tone="warning">{binHoldBadge(item)}</Badge>}
           {item.expirationBreakdown ? (
             <Badge tone="warning">Exp {describeBreakdown(item.expirationBreakdown)}</Badge>
@@ -1386,6 +1391,15 @@ function ItemCard({
                     })()}
                   </span>
                 </div>
+                {item.priceCheck && !item.whatnotOnly && (
+                  <span className="font-medium text-amber-800">
+                    {isOwner && item.priceCheck.research != null
+                      ? item.priceCheck.why === "above_retail"
+                        ? `Check the price: researched at $${item.priceCheck.research.toFixed(2)}, above the ${item.priceCheck.retail != null ? `$${item.priceCheck.retail.toFixed(2)} ` : ""}store retail. Look at Sold or Terapeak before you price it.`
+                        : `Check the price: researched at $${item.priceCheck.research.toFixed(2)}, the store-price check ${item.priceCheck.check != null ? `$${item.priceCheck.check.toFixed(2)}` : "under half that"}. Look at Sold or Terapeak before you price it.`
+                      : "Check the price: look at Sold or Terapeak before you price it."}
+                  </span>
+                )}
                 {priceResearching && <span className="text-muted-foreground">Loading retail…</span>}
                 {priceResearchError && (
                   <span className="text-danger">

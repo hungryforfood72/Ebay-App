@@ -3,13 +3,17 @@
 import { Button } from "@/components/ui/Button";
 import { Field, Select, Textarea } from "@/components/ui/Input";
 import { MAX_RECOMMENDED_PACK, splitIntoPacks } from "@/lib/packSize";
+import type { PriceCheck } from "@/lib/priceCheck";
 import { Boxes, CircleCheck, CircleX, Hourglass, LoaderCircle, PackageMinus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 type PackPlanGroup = { packSize: number; listings: number };
 
-// Same values as EbaySkipReason (src/lib/ebaySkips.ts).
-export type SetAsideWhy = "slow_single" | "low_return" | "no_demand" | "price_unclear";
+// The pack card's EbaySkipReason values (src/lib/ebaySkips.ts).
+export type SetAsideWhy = "slow_single" | "low_return" | "no_demand";
+
+// "Check the price" (src/lib/priceCheck.ts). Prices are null for employees.
+export type PriceCheckFlag = PriceCheck;
 
 type PackSuggestion = {
   isOwner: boolean;
@@ -42,8 +46,6 @@ type PackSuggestion = {
     // "slow_single": a lone single of something meant for multi-packs.
     // "low_return": wouldn't make Cristian's target profit on its cost.
     // "no_demand": no sign anyone buys it now, judged from outside eBay.
-    // "price_unclear": the research and the store-price check are more
-    // than 2x apart, so it starts on Shopify (see priceGap).
     why: SetAsideWhy;
     // No pack size up to the max makes Cristian's target on eBay, so the
     // whole lot is set aside, and shopPlan is how it'd split for
@@ -68,8 +70,9 @@ type PackSuggestion = {
   // Worth listing? From the eBay-free web check (store prices, Amazon
   // demand). null = nothing to judge from yet.
   verdict?: "sell" | "slow" | "dont_list" | null;
-  // Owner only: the researched and store-check prices per unit that disagreed.
-  priceGap?: { research: number; check: number } | null;
+  // The researched price is above store retail (or far over the store-price
+  // check): it still goes on eBay, flagged "Check the price" on Review.
+  priceCheck?: PriceCheckFlag | null;
   market?: { demand: "FAST" | "NORMAL" | "SLOW" | "DEAD" | null; note?: string | null; pricePerUnit?: number | null } | null;
   recommendation: {
     packSize: number;
@@ -147,7 +150,8 @@ export function PackSuggestionCard({
   // choice by Cristian is learned from (see packOverride in the items
   // route). sizes = every pack size in the plan (4-packs with 6 on hand go
   // out as one 6-pack, which is following it). null = no call.
-  onSuggestion?: (s: { recommended: number; sizes: number[] } | null) => void;
+  // priceCheck: saved with the item for "Check the price" on Review.
+  onSuggestion?: (s: { recommended: number; sizes: number[]; priceCheck: PriceCheckFlag | null } | null) => void;
 }) {
   const onSuggestionRef = useRef(onSuggestion);
   useEffect(() => {
@@ -183,7 +187,11 @@ export function PackSuggestionCard({
         const rec = data?.recommendation;
         onSuggestionRef.current?.(
           rec && !data.alreadyMultipack && !data.setAside?.everything
-            ? { recommended: rec.packSize, sizes: [...new Set([rec.packSize, ...(data.plan ?? []).map((g) => g.packSize)])] }
+            ? {
+                recommended: rec.packSize,
+                sizes: [...new Set([rec.packSize, ...(data.plan ?? []).map((g) => g.packSize)])],
+                priceCheck: data.priceCheck ?? null,
+              }
             : null
         );
       });
@@ -238,9 +246,7 @@ export function PackSuggestionCard({
         <div className="min-w-0">
           <p className="font-semibold">
             {notForEbay
-              ? data.setAside?.why === "price_unclear"
-                ? "Shopify only for now"
-                : data.verdict === "dont_list" ? (whatnotAside ? "List it for Whatnot" : "Set it aside") : "Not worth listing on eBay"
+              ? data.verdict === "dont_list" ? (whatnotAside ? "List it for Whatnot" : "Set it aside") : "Not worth listing on eBay"
               : data.manifestPackSize > 1
                 ? `Suggested: ${rec.packSize > 1 ? `${rec.packSize} of these ${data.manifestPackSize}-packs per listing (${rec.packSize * data.manifestPackSize} total)` : `one ${data.manifestPackSize}-pack per listing`}`
                 : `Suggested: sell as ${rec.packSize > 1 ? `${rec.packSize}-packs` : "singles"}`}
@@ -252,8 +258,6 @@ export function PackSuggestionCard({
             {notForEbay
               ? data.setAside?.why === "no_demand"
                 ? "There's no sign anyone is buying this right now, so it would just sit on eBay."
-                : data.setAside?.why === "price_unclear"
-                ? `The price is unclear: the research said ${data.priceGap ? money(data.priceGap.research) : "one price"} each, the store-price check ${data.priceGap ? money(data.priceGap.check) : "less than half that"}. It starts on Shopify only; check comps in review and switch it to eBay + Shopify if it's right for eBay.`
                 : data.setAside?.allLeftover
                   ? `Shipping eats the whole sale: with ${data.setAside.units === 1 ? "just 1" : `only ${data.setAside.units}`} on hand, it wouldn't make enough profit on eBay after fees and a label.`
                   : `Shipping eats the whole sale: even bundled up to ${MAX_RECOMMENDED_PACK}-packs, or as one lot, it wouldn't make enough profit on eBay after fees and a label.`
@@ -268,6 +272,17 @@ export function PackSuggestionCard({
                 About {money(rec.perPackPrice)} per {packLabel(rec.packSize)}, {money(rec.netPerUnit)} per item after
                 fees and shipping
                 {rec.packSize > 1 && rec.singleNetPerUnit != null && <> vs {money(rec.singleNetPerUnit)} as singles</>}.
+              </>
+            )}
+            {!notForEbay && data.priceCheck && (
+              <>
+                {" "}
+                <span className="font-medium text-amber-800">
+                  {data.priceCheck.why === "above_retail"
+                    ? `Check the price in Review: researched ${data.priceCheck.research != null ? money(data.priceCheck.research) : "a price"}, above the ${data.priceCheck.retail != null ? money(data.priceCheck.retail) : "store"} retail.`
+                    : `Check the price in Review: researched ${data.priceCheck.research != null ? money(data.priceCheck.research) : "a price"}, the store-price check ${data.priceCheck.check != null ? money(data.priceCheck.check) : "under half that"}.`}{" "}
+                  It still goes on eBay.
+                </span>
               </>
             )}
           </p>
@@ -534,8 +549,6 @@ function SetAsideNote({
   const why =
     setAside.why === "no_demand"
       ? "Nobody seems to be buying this right now."
-      : setAside.why === "price_unclear"
-      ? "The price is unclear, so it starts on Shopify only."
       : setAside.why === "slow_single"
       ? `Singles of this don't sell well on their own, it's meant to go out as ${recommendedPackSize}-packs.`
       : setAside.everything

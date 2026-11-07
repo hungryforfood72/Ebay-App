@@ -177,6 +177,17 @@ export async function PATCH(
       }
     }
   }
+  // "Check the price" is done once Cristian saves a price on Review (an
+  // employee typing one doesn't count). The activity log keeps what it said.
+  if (
+    "price" in data &&
+    data.price != null &&
+    data.price !== "" &&
+    getRequestUser(request)?.role === "owner" &&
+    (await prisma.item.count({ where: { id, priceCheck: { not: Prisma.DbNull } } })) > 0
+  ) {
+    data.priceCheck = Prisma.DbNull;
+  }
   if ("status" in data && data.status === "ready") {
     // Warehouse items stay in review until every unit is in a bin
     // (src/lib/warehouse/binGate.ts).

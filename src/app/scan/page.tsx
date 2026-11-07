@@ -5,7 +5,7 @@ import { formatLbOz, formatOz, LiveWeightReadout, packageWeight, useStationWeigh
 import { ExpirationPicker } from "@/components/ExpirationPicker";
 import { ManifestSearch, type ManifestSearchResult } from "@/components/ManifestSearch";
 import { WhatnotBlockCard } from "@/components/WhatnotBlockCard";
-import { PackSuggestionCard, type SetAsideWhy } from "@/components/PackSuggestionCard";
+import { PackSuggestionCard, type PriceCheckFlag, type SetAsideWhy } from "@/components/PackSuggestionCard";
 import { PullBanner } from "@/components/PullBanner";
 import { ScanField } from "@/components/ScanField";
 import { SortBoxesCard } from "@/components/SortBoxesCard";
@@ -357,7 +357,11 @@ function ScanPageInner() {
   } | null>(null);
   // What the pack card suggested for the product being listed (sent with
   // the save, so Cristian listing it differently teaches the pack agent).
-  const [packSuggestion, setPackSuggestion] = useState<{ recommended: number; sizes: number[] } | null>(null);
+  const [packSuggestion, setPackSuggestion] = useState<{
+    recommended: number;
+    sizes: number[];
+    priceCheck: PriceCheckFlag | null;
+  } | null>(null);
   const [packSize, setPackSize] = useState("");
   const [expirationDate, setExpirationDate] = useState("");
   // Units that came in with a different date than the first one (a 3-pack
@@ -1428,6 +1432,12 @@ function ScanPageInner() {
           relistOf: relist?.plan.id,
           relistPart: relist?.part,
           packSuggestion: isBundle ? undefined : (packSuggestion ?? undefined),
+          // "Check the price" on Review: only for a plain eBay listing (the
+          // server checks the same).
+          priceCheck:
+            !isBundle && !whatnotLane && !shopifyOnly && !dudBox && !relist && !returnPlan
+              ? (packSuggestion?.priceCheck ?? undefined)
+              : undefined,
           returnOf: returnPlan?.id,
           dudBoxCode: dudBox?.code,
         }),

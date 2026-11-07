@@ -31,6 +31,41 @@ import { isWarehouseMode } from "./warehouse/settings";
 import { sortedLeft } from "./warehouse/sortCount";
 import { dudBoxUnitsLeft } from "./warehouse/dudBoxes";
 import type { Prisma } from "../generated/prisma/client";
+import { cents, type PriceCheck } from "./priceCheck";
+
+// The figures behind a "Check the price" flag the List page's card showed,
+// looked up again on the server when the item is saved (so nothing but the
+// flag's kind comes from the browser, and Cristian sees the numbers on items
+// an employee listed too). Only what the card already found: the newest
+// researched pack price, the manifest's retail and the cached store-price
+// check. No new research, no AI call.
+export async function priceCheckFigures(
+  why: PriceCheck["why"],
+  upc: string | null,
+  manifestId: string | null
+): Promise<PriceCheck> {
+  if (!upc) return { why, research: null, retail: null, check: null };
+  const [decision, line] = await Promise.all([
+    prisma.packDecision.findFirst({
+      where: { upc, packPrice: { not: null } },
+      orderBy: { createdAt: "desc" },
+      select: { packSize: true, packPrice: true },
+    }),
+    manifestId
+      ? prisma.manifestLine.findFirst({ where: { manifestId, upc }, select: { retailPrice: true, description: true } })
+      : Promise.resolve(null),
+  ]);
+  const market = await scanMarketCheck(
+    { upc, description: line?.description ?? `UPC ${upc}` },
+    { cachedOnly: true }
+  ).catch(() => null);
+  return {
+    why,
+    research: decision?.packPrice != null && decision.packSize > 0 ? cents(decision.packPrice / decision.packSize) : null,
+    retail: line ? cents(Number(line.retailPrice)) : null,
+    check: cents(market?.pricePerUnit),
+  };
+}
 
 
 // The scan page's pack card (GET /api/pack-suggestion), also started early
@@ -209,20 +244,33 @@ export async function packSuggestion({
     stats = [{ packSize: recommendation.packSize, count: 1, medianTotal: packPrice }];
   }
   const demand: DemandTier | null = market?.demand ?? null;
-  // The researched price more than double the store-price check's
-  // (Cristian, 2026-11-03: a Sally Hansen hand mask researched at $12.99
-  // off one outlier store, most stores $5.99-$6.99, the check $2.85).
-  // Neither can be trusted then, so it starts as Shopify only and
-  // Cristian decides at review: he unticks it there if it's right for eBay.
-  const priceGap =
-    recommendation &&
-    packPrice != null &&
-    packPrice > 0 &&
-    market?.pricePerUnit != null &&
-    market.pricePerUnit > 0 &&
-    packPrice / recommendation.packSize > 2 * market.pricePerUnit
-      ? { research: packPrice / recommendation.packSize, check: market.pricePerUnit }
-      : null;
+  // A price worth a second look before publishing: "Check the price" on
+  // Review. It never decides where the item sells (Cristian, 2026-11-06):
+  // that's only the profit check below, at the researched price. It used to
+  // send the whole lot off eBay (Shopify only, then Whatnot), and it fired
+  // on ordinary prices because the store-price check is a low resale guess
+  // (about half the store price): a Crest 3-pack researched at $11.99,
+  // checked at $5.99, $16.99 retail, went to Whatnot over a 1 cent gap.
+  // Now the researched price is held to store retail, since everyday store
+  // items rarely sell above it on eBay (CoverGirl Outlast at $11.99 vs
+  // $9.99 retail did, at $14.52, so it's a flag, not a no). With no retail
+  // on the manifest, the old test: more than 2x the store-price check (a
+  // Sally Hansen hand mask researched at $12.99 off one outlier store, the
+  // check $2.85, 2026-11-03).
+  const researchPerUnit =
+    recommendation && packPrice != null && packPrice > 0 ? packPrice / recommendation.packSize : null;
+  const unitRetail = lines[0] ? Number(lines[0].retailPrice) : 0;
+  const checkPerUnit = market?.pricePerUnit != null && market.pricePerUnit > 0 ? market.pricePerUnit : null;
+  const priceCheck: PriceCheck | null =
+    researchPerUnit == null
+      ? null
+      : unitRetail > 0
+        ? researchPerUnit > unitRetail
+          ? { why: "above_retail", research: cents(researchPerUnit), retail: cents(unitRetail), check: cents(checkPerUnit) }
+          : null
+        : checkPerUnit != null && researchPerUnit > 2 * checkPerUnit
+          ? { why: "prices_disagree", research: cents(researchPerUnit), retail: null, check: cents(checkPerUnit) }
+          : null;
 
   // Units that shouldn't be listed at the size they'd have to go in. They
   // come out of the plan and Lizvet sets them aside for Cristian to decide
@@ -245,8 +293,8 @@ export async function packSuggestion({
   // card points to Shopify, where the buyer pays the label.
   // "no_demand" (2026-10-19): the web check found no sign anyone buys it
   // now (DEMAND: DEAD), so none of it goes on eBay, whatever the math says.
-  // "price_unclear" (2026-11-03): see priceGap above.
-  type SetAsideWhy = "slow_single" | "low_return" | "no_demand" | "price_unclear";
+  // (A price that looks off is no reason, see priceCheck above.)
+  type SetAsideWhy = "slow_single" | "low_return" | "no_demand";
   let setAside: {
     units: number | null;
     packSize: number;
@@ -352,15 +400,14 @@ export async function packSuggestion({
     }
 
     const recommended = recommendation.packSize;
-    if (notWorthOnEbay || demand === "DEAD" || priceGap) {
+    if (notWorthOnEbay || demand === "DEAD") {
       const shopPlan = available != null ? splitIntoPacks(available, recommended) : null;
       plan = available != null ? [] : null;
       setAside = {
         units: available,
         packSize: recommended,
-        why: demand === "DEAD" ? "no_demand" : priceGap ? "price_unclear" : "low_return",
-        // No eBay money math on a price nobody can vouch for.
-        worth: priceGap && demand !== "DEAD" ? null : worthAt(recommended),
+        why: demand === "DEAD" ? "no_demand" : "low_return",
+        worth: worthAt(recommended),
         everything: true,
         shopPlan,
       };
@@ -492,8 +539,15 @@ export async function packSuggestion({
     // FAST / NORMAL / SLOW / DEAD, judged from outside eBay. note = what it's
     // based on (owner only, it has store prices in it).
     market: market && { demand: market.demand, ...(isOwner ? { note: market.note, pricePerUnit: market.pricePerUnit } : {}) },
-    // The two prices that disagreed (owner only), for "price_unclear".
-    priceGap: isOwner ? priceGap : null,
+    // "Check the price" (see priceCheck above), only when some of it goes on
+    // eBay. Everyone gets the flag, since the List page saves it with the
+    // item whoever lists it; the prices are the owner's.
+    priceCheck:
+      priceCheck && !setAside?.everything
+        ? isOwner
+          ? priceCheck
+          : { why: priceCheck.why, research: null, retail: null, check: null }
+        : null,
     recommendation: recommendation && {
       packSize: recommendation.packSize,
       basis: recommendation.basis,

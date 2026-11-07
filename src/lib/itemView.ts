@@ -1,4 +1,5 @@
 import { getRequestUser } from "@/lib/auth";
+import { blankPriceCheck } from "@/lib/priceCheck";
 
 // Employees see no sales money and no units sold (Cristian's rule), but Item
 // rows carry both. Every route that hands an item (or a stock-count result)
@@ -13,6 +14,8 @@ const SALES_MONEY_FIELDS = ["soldRevenueTotal", "soldFeesTotal", "soldShippingTo
 function hideSales(row: Record<string, unknown>): Record<string, unknown> {
   const out = { ...row };
   for (const field of SALES_MONEY_FIELDS) delete out[field];
+  // "Check the price": employees get the flag, not the owner's figures.
+  if ("priceCheck" in out) out.priceCheck = blankPriceCheck(out.priceCheck);
   if (typeof out.quantity === "number" && typeof out.soldQuantity === "number") {
     out.quantity = Math.max(0, out.quantity - out.soldQuantity);
     out.soldQuantity = 0;

@@ -18,6 +18,8 @@ import { claimDudUnits, dudListDecision, findDudBox, physicalUnits } from "@/lib
 import { settleDudBox } from "@/lib/warehouse/dudBoxReview";
 import type { DudListDecision } from "@/lib/warehouse/dudBoxTypes";
 import { isEbaySkipReason } from "@/lib/ebaySkips";
+import { parsePriceCheckWhy } from "@/lib/priceCheck";
+import { priceCheckFigures } from "@/lib/packSuggestion";
 import type { StoredReturnReport } from "@/lib/warehouse/returns";
 import { classifyScan, normalizeCode } from "@/lib/warehouse/codes";
 import { buildItemLabel, queueItemLabels } from "@/lib/warehouse/itemLabel";
@@ -215,6 +217,17 @@ export async function POST(request: NextRequest) {
     !dudBox && !isBundle && (whatnotOnly || body.shopifyOnly === true) && isEbaySkipReason(body.ebaySkipReason)
       ? body.ebaySkipReason
       : null;
+  // "Check the price" on Review (Cristian, 2026-11-06): the pack card's
+  // researched price looked high, so he checks comps before publishing.
+  // Only on a plain eBay listing; it's a reminder, never a lane decision.
+  // Only the flag's kind comes from the page; the prices are looked up here.
+  const priceCheckWhy =
+    !dudBox && !isBundle && !whatnotOnly && body.shopifyOnly !== true && !relistOf && !returnOf
+      ? parsePriceCheckWhy(body.priceCheck)
+      : null;
+  const priceCheck = priceCheckWhy
+    ? await priceCheckFigures(priceCheckWhy, has(body.upc) ? String(body.upc) : null, has(body.manifestId) ? String(body.manifestId) : null)
+    : null;
 
   // Warehouse mode checks, all before anything is written: a wrong bin or a
   // deleted station should leave nothing behind (not even a used-up item
@@ -352,6 +365,7 @@ export async function POST(request: NextRequest) {
     whatnotOnly,
     ...(whatnotStart != null ? { price: whatnotStart } : {}),
     ebaySkipReason,
+    ...(priceCheck ? { priceCheck } : {}),
     fromDudBoxId: dudBox?.id ?? null,
     ...(original ? inheritedFields(original) : {}),
     ...(returnOriginal
