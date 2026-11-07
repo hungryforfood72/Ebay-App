@@ -126,14 +126,13 @@ export async function packSuggestion({
   // includes an extra that's on some older manifest (Cristian, 2026-11-06:
   // Josi pulled 2 Hawaiian Tropic sprays sorted as extras on the 10/14
   // Pallet 2 load, and the card counted the 1 left on "Pallet 2 Sunblock"
-  // instead): the older manifest's line still says what the product is and
-  // its retail, but the count is this load's sort.
+  // instead; his word: "completely wrong manifest"). Nothing from another
+  // manifest is used then: the name comes from the sorter's lookup.
   const sort = !dudBox && manifestId && (await isWarehouseMode()) ? await sortedLeft(manifestId, upc) : null;
-  let linesFromOtherLoad = false;
   if (sort && countManifestId !== manifestId) {
-    linesFromOtherLoad = lines.length > 0;
     countManifestId = manifestId;
     inferredManifestTitle = null;
+    lines = [];
     unitsLeft = null;
   }
   // A count typed on the card still wins when it's newer than the sorting.
@@ -485,7 +484,7 @@ export async function packSuggestion({
     // was picked) — its title, so the card can say where the count's from.
     manifestTitle: inferredManifestTitle,
     alreadyScannedIn,
-    expected: linesFromOtherLoad ? null : lines.reduce((sum, l) => sum + l.expectedQuantity, 0) || null,
+    expected: lines.reduce((sum, l) => sum + l.expectedQuantity, 0) || null,
     plan,
     setAside: setAside && {
       units: setAside.units,
