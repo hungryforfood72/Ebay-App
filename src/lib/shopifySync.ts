@@ -306,8 +306,12 @@ export async function shopifyCounts(): Promise<{ onShopify: number; waiting: num
 // vapes, sexual products; see whatnotPolicy.ts). A Whatnot-only listing in
 // one is refused at publish. Matched against the item's eBay category path.
 // Supplements are handled by whatnotPolicy.ts (approved sellers only).
+// The medical-device categories (2026-11-06, when cross-listing first ran:
+// "Medicine and medical devices are not permitted"): first aid (wound
+// dressings, surgical gauze, tongue depressors), contact lens solution, ear
+// devices, nasal dilators, neti pots.
 export const WHATNOT_BLOCKED_CATEGORY =
-  /Over-the-Counter Medications|Medical & Mobility|Healthcare, Lab & Dental|Medical, Lab & Dental|Smoking Cessation|Vaping|Sexual Wellness/i;
+  /Over-the-Counter Medications|Medical & Mobility|Healthcare, Lab & Dental|Medical, Lab & Dental|Smoking Cessation|Vaping|Sexual Wellness|Health Care > First Aid|Contact Lens Care|Health Care > Ear Care|Nasal Dilators|Neti Pots/i;
 
 function isWhatnotChannel(name: string): boolean {
   return /whatnot/i.test(name);
