@@ -1,6 +1,8 @@
 "use client";
 
 import { Alert } from "@/components/ui/Alert";
+import { BARCODE_MISMATCH_CLEARED, barcodeMismatchBlocks } from "@/lib/barcodeMismatch";
+import { useCurrentUser } from "@/components/UserNav";
 import { AppShell } from "@/components/ui/AppShell";
 import { Badge } from "@/components/ui/Badge";
 import { FetchedLocationBadge } from "@/components/LocationBadge";
@@ -86,6 +88,9 @@ type Item = {
   // store both refuse it. rxOnlyNote = what it saw.
   rxOnly?: boolean | null;
   rxOnlyNote?: string | null;
+  // The draft saw a different product in the photos than the barcode
+  // names (src/lib/barcodeMismatch.ts).
+  barcodeMismatch?: string | null;
   shopifyError: string | null;
   whatnotError?: string | null;
   ebayListingId: string | null;
@@ -907,6 +912,8 @@ function ItemCard({
   onDelete: () => void;
   drafting: boolean;
 }) {
+  // Only the owner can say a flagged barcode is right (the route checks too).
+  const isOwner = useCurrentUser()?.role === "owner";
   const [ruleKeyword, setRuleKeyword] = useState("");
   const [showPreview, setShowPreview] = useState(false);
   const [ruleName, setRuleName] = useState("");
@@ -1162,6 +1169,28 @@ function ItemCard({
             <Button variant="outline" size="sm" className="mt-2" onClick={() => onChange({ rxOnly: false, rxOnlyNote: "Cleared on the Review page" })}>
               It&apos;s not Rx only
             </Button>
+          </div>
+        )}
+
+        {barcodeMismatchBlocks(item.barcodeMismatch) && (
+          <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-950">
+            <p className="font-semibold">The photos don&apos;t match the barcode</p>
+            <p className="mt-0.5">
+              {item.barcodeMismatch} The wrong barcode was probably scanned, which throws off the load&apos;s counts.{" "}
+              {isOwner
+                ? "Delete this one and list it again, scanning the barcode on the product itself."
+                : "Set it aside and tell Cristian."}
+            </p>
+            {isOwner && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-2"
+                onClick={() => onChange({ barcodeMismatch: `${BARCODE_MISMATCH_CLEARED} on the Review page` })}
+              >
+                The barcode is right
+              </Button>
+            )}
           </div>
         )}
 
@@ -1783,8 +1812,14 @@ function ItemCard({
         </Button>
         <Button
           onClick={onMarkReady}
-          disabled={binHold(item) != null || Boolean(item.rxOnly)}
-          title={item.rxOnly ? "The package says Rx Only" : (binHold(item) ?? undefined)}
+          disabled={binHold(item) != null || Boolean(item.rxOnly) || barcodeMismatchBlocks(item.barcodeMismatch)}
+          title={
+            item.rxOnly
+              ? "The package says Rx Only"
+              : barcodeMismatchBlocks(item.barcodeMismatch)
+                ? "The photos don't match the barcode"
+                : (binHold(item) ?? undefined)
+          }
         >
           <Check className="size-4" aria-hidden />
           {binHold(item) ? "Waiting for a bin" : "Mark ready"}

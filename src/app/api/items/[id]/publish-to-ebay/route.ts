@@ -1,3 +1,4 @@
+import { barcodeMismatchBlocks } from "@/lib/barcodeMismatch";
 import {
   createOffer,
   createOrReplaceInventoryItem,
@@ -91,6 +92,10 @@ export async function POST(
       { error: `This one is set to ${item.whatnotOnly ? "Whatnot only" : "Shopify only"}, not eBay. Change where it sells in Review first.` },
       { status: 400 }
     );
+  }
+
+  if (barcodeMismatchBlocks(item.barcodeMismatch)) {
+    return NextResponse.json({ error: `The photos don't match the barcode: ${item.barcodeMismatch} Fix it in Review first.` }, { status: 400 });
   }
 
   // The draft saw "Rx Only" on the package: eBay removes prescription

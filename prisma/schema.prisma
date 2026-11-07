@@ -330,6 +330,12 @@ model Item {
   // publishing is blocked for it. null = not checked (older items).
   rxOnly                  Boolean?
   rxOnlyNote              String?
+  // The draft saw a different product in the photos than the barcode names
+  // (Cristian, 2026-11-06: a Mrs. Meyer's soap barcode saved with WaterWipes
+  // photos threw off the load's counts). The AI's one-line note; blocks
+  // publishing until fixed. "Cleared..." = the owner said the barcode is
+  // right, and a regenerate keeps it cleared. src/lib/barcodeMismatch.ts
+  barcodeMismatch         String?
 
   // Set when the order sync ended this item's listing because it sold out
   // (src/lib/endSoldOutListings.ts). Cristian never restocks a listing —

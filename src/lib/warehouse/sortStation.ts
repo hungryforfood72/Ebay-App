@@ -1,3 +1,4 @@
+import { BARCODE_OK_WHERE } from "../barcodeMismatch";
 import { readableProductName } from "../packAdvisor";
 import { prisma } from "../prisma";
 import { lookupUpc } from "../upcLookup";
@@ -148,7 +149,8 @@ async function lookupExtraName(upc: string, research: boolean): Promise<string |
   if (d.length < 6) return null;
   const variants = [...new Set([d, d.replace(/^0+/, ""), d.padStart(12, "0"), d.padStart(13, "0")])];
   const listed = await prisma.item.findFirst({
-    where: { upc: { in: variants }, OR: [{ finalTitle: { not: null } }, { aiTitle: { not: null } }] },
+    // Not from a listing flagged as the wrong product for this barcode.
+    where: { upc: { in: variants }, OR: [{ finalTitle: { not: null } }, { aiTitle: { not: null } }], AND: [BARCODE_OK_WHERE] },
     orderBy: { createdAt: "desc" },
     select: { finalTitle: true, aiTitle: true },
   });

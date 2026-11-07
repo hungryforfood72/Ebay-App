@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { barcodeMismatchBlocks } from "./barcodeMismatch";
 import type { Item } from "@/generated/prisma/client";
 import { formatExpiration } from "./formatExpiration";
 import { prisma } from "./prisma";
@@ -122,6 +123,7 @@ async function whatnotProblem(item: Item, categoryPath: string | null): Promise<
   if (packageWeightOz(item) <= 0) return "No weight";
   if (item.localPickupOnly) return "Local pickup only";
   if (item.rxOnly) return "Rx only";
+  if (barcodeMismatchBlocks(item.barcodeMismatch)) return "Photos don't match the barcode";
   const banned = WHATNOT_BLOCKED_CATEGORY.test(categoryPath ?? "")
     ? "Whatnot doesn't allow medicine or medical supplies."
     : whatnotBanReason(title, categoryPath, { supplementsOk: await supplementsApproved() });
@@ -220,6 +222,9 @@ export async function publishWhatnotOnlyItem(itemId: string): Promise<void> {
   if (!item || !item.whatnotOnly) throw new Error("This isn't a Whatnot listing.");
   const left = item.quantity - item.soldQuantity;
   if (left <= 0) throw new Error("There's no stock left on this item to sell.");
+  if (barcodeMismatchBlocks(item.barcodeMismatch)) {
+    throw new Error(`The photos don't match the barcode: ${item.barcodeMismatch} Fix it in Review first.`);
+  }
   const path = await categoryPathOf(item);
   const problem = await whatnotProblem(item, path);
   if (problem) throw new Error(`${problem}. Set it aside for donation.`);

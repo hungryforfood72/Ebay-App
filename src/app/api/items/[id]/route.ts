@@ -3,9 +3,10 @@ import { changedFields, logActivity } from "@/lib/activityLog";
 import { Prisma } from "@/generated/prisma/client";
 import { normalizeBreakdown } from "@/lib/expirationBreakdown";
 import { prisma } from "@/lib/prisma";
-import { AuthError, getRequestUser, requireOwner } from "@/lib/auth";
+import { AuthError, getRequestUser, requireOwner, requireUser } from "@/lib/auth";
 import { PUBLISH_STALE_MS } from "@/lib/publishLock";
 import { binGateError } from "@/lib/warehouse/binGate";
+import { BARCODE_MISMATCH_CLEARED, barcodeMismatchBlocks } from "@/lib/barcodeMismatch";
 import { fillCategorySpecifics } from "@/lib/categorySpecifics";
 import { getWhatnotStartPrice } from "@/lib/shopifySync";
 import { after, NextRequest, NextResponse } from "next/server";
@@ -35,6 +36,12 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  try {
+    requireUser(request);
+  } catch (e) {
+    if (e instanceof AuthError) return NextResponse.json({ error: e.message }, { status: e.status });
+    throw e;
+  }
   const { id } = await params;
   const body = await request.json();
 
@@ -54,9 +61,22 @@ export async function PATCH(
       shopifyProductId: true,
       whatnotOnly: true,
       publishStartedAt: true,
+      barcodeMismatch: true,
     },
   });
   if (!current) return NextResponse.json({ error: "That item doesn't exist anymore." }, { status: 404 });
+  // "The barcode is right" on Review: the owner only, since a wrong scan
+  // throws off the load's counts. Only clearing; the draft sets it.
+  if (typeof body.barcodeMismatch === "string" && body.barcodeMismatch.startsWith(BARCODE_MISMATCH_CLEARED)) {
+    const user = getRequestUser(request);
+    if (user?.role !== "owner") {
+      return NextResponse.json({ error: "Only Cristian can say the barcode is right." }, { status: 403 });
+    }
+    data.barcodeMismatch = `${BARCODE_MISMATCH_CLEARED} by ${user.username} on the Review page`;
+  }
+  if (data.status === "ready" && barcodeMismatchBlocks(current.barcodeMismatch) && !("barcodeMismatch" in data)) {
+    return NextResponse.json({ error: `The photos don't match the barcode: ${current.barcodeMismatch}` }, { status: 400 });
+  }
   const inReview = current.status === "pending_review" || current.status === "ready";
   const live = Boolean(current.ebayOfferId || current.ebayListingId || current.shopifyPublishedAt);
   // Review only ever moves an item between these two, and only an item

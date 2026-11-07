@@ -1,15 +1,29 @@
 import { prisma } from "@/lib/prisma";
+import { AuthError, requireUser } from "@/lib/auth";
+import { BARCODE_OK_WHERE } from "@/lib/barcodeMismatch";
 import { itemsToFileExchangeCsv } from "@/lib/csv";
 import { NextRequest, NextResponse } from "next/server";
 
 // Bundles every "ready" item into a new export batch, marks them exported,
 // and returns the File Exchange CSV as a download.
 export async function POST(request: NextRequest) {
+  try {
+    requireUser(request);
+  } catch (e) {
+    if (e instanceof AuthError) return NextResponse.json({ error: e.message }, { status: e.status });
+    throw e;
+  }
   const body = await request.json().catch(() => ({}));
 
   const readyItems = await prisma.item.findMany({
     // Shopify-only or Whatnot-only items never go to eBay.
-    where: { status: "ready", shopifyOnly: false, whatnotOnly: false },
+    // Nor anything flagged: Rx only, or photos that don't match the barcode.
+    where: {
+      status: "ready",
+      shopifyOnly: false,
+      whatnotOnly: false,
+      AND: [BARCODE_OK_WHERE, { OR: [{ rxOnly: null }, { rxOnly: false }] }],
+    },
   });
 
   if (readyItems.length === 0) {

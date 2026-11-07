@@ -1,4 +1,5 @@
 import { after } from "next/server";
+import { BARCODE_OK_WHERE } from "./barcodeMismatch";
 import { descriptionBodyHtml } from "./listingDescription";
 import {
   endFixedPriceItem,
@@ -283,7 +284,7 @@ function waitingForShopifyWhere(): Prisma.ItemWhereInput {
     // Package says Rx Only: not on the store either (an Rx device sold
     // without a prescription breaks FDA labeling rules). Spelled out as
     // null-or-false: "not true" in SQL drops the nulls (every older item).
-    AND: [{ OR: [{ rxOnly: null }, { rxOnly: false }] }],
+    AND: [{ OR: [{ rxOnly: null }, { rxOnly: false }] }, BARCODE_OK_WHERE],
   };
 }
 

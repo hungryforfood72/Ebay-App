@@ -1,5 +1,6 @@
 import { getRequestUser, requireUser } from "@/lib/auth";
 import { pullForListing } from "@/lib/warehouse/sortBoxes";
+import { productNameOnLoad } from "@/lib/warehouse/sortCount";
 import { nameExtraForListing } from "@/lib/warehouse/sortStation";
 import { errorResponse } from "@/lib/warehouse/stations";
 import { after, NextRequest, NextResponse } from "next/server";
@@ -27,7 +28,9 @@ export async function POST(request: NextRequest) {
     // on the scan that pulled it, so each single listed after doesn't pay
     // for another search when no name was found.
     if (result.pulled.some((p) => p.units > 0)) after(() => nameExtraForListing(manifestId, upc));
-    return NextResponse.json(result);
+    // What the load calls this barcode, shown big so a wrong scan is seen.
+    const name = await productNameOnLoad(manifestId, upc).catch(() => null);
+    return NextResponse.json({ ...result, name });
   } catch (e) {
     return errorResponse(e);
   }

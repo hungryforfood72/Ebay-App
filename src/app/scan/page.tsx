@@ -414,6 +414,8 @@ function ScanPageInner() {
     upc: string;
     pulled: { boxCode: string; units: number }[];
     locations: SortLocation[];
+    // What the load calls this barcode, shown big so a wrong scan is seen.
+    name?: string | null;
   } | null>(null);
   // Bumped by "Count was off" so the pack card plans for the real count.
   const [boxCountFixes, setBoxCountFixes] = useState(0);
@@ -468,6 +470,39 @@ function ScanPageInner() {
   } | null>(null);
   const [reprinting, setReprinting] = useState(false);
   const [reprintMessage, setReprintMessage] = useState<string | null>(null);
+  // The photos of an item just saved show a different product than its
+  // barcode (the draft checks, a few seconds after the save): tell the
+  // lister while it's still in hand (Cristian, 2026-11-06).
+  const [savedMismatch, setSavedMismatch] = useState<{ code: string; note: string } | null>(null);
+  useEffect(() => {
+    if (!lastSaved) return;
+    const { itemId } = lastSaved;
+    let stopped = false;
+    let tries = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const check = async () => {
+      if (stopped) return;
+      tries++;
+      try {
+        const r = await fetch(`/api/items/${itemId}/barcode-check`, { cache: "no-store" });
+        const d = r.ok ? await r.json() : null;
+        if (stopped) return;
+        if (d?.mismatch) {
+          setSavedMismatch({ code: d.code, note: d.mismatch });
+          return;
+        }
+        if (d?.drafted) return;
+      } catch {
+        // Try again on the next tick.
+      }
+      if (tries < 18) timer = setTimeout(check, 5000);
+    };
+    timer = setTimeout(check, 4000);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [lastSaved]);
 
   const [showScanner, setShowScanner] = useState(false);
   const [scanTarget, setScanTarget] = useState<"item" | "component" | "location">("item");
@@ -1260,7 +1295,7 @@ function ScanPageInner() {
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (!data || !Array.isArray(data.pulled)) return;
-        setSortPull({ upc: code, pulled: data.pulled, locations: data.locations ?? [] });
+        setSortPull({ upc: code, pulled: data.pulled, locations: data.locations ?? [], name: data.name ?? null });
       })
       .catch(() => {
         // No sort box info is fine: the lister has the product in hand.
@@ -2036,8 +2071,30 @@ function ScanPageInner() {
           </div>
         )}
 
+        {savedMismatch && (
+          <Alert tone="danger">
+            <p className="font-semibold">{savedMismatch.code}: the photos don&apos;t match the barcode</p>
+            <p className="mt-0.5">
+              {savedMismatch.note} Take its label off, set it aside, and tell Cristian. It needs listing again, scanning the
+              barcode on the product itself.
+            </p>
+            <Button variant="outline" size="sm" className="mt-2" onClick={() => setSavedMismatch(null)}>
+              Got it
+            </Button>
+          </Alert>
+        )}
+
         {warehouseMode && sortPull && sortPull.upc === upc.trim() && step !== "mode" && step !== "upc" && (
-          <SortBoxesCard pull={sortPull} onPutBack={putBackInBox} onFixCount={fixBoxCount} />
+          <>
+            {sortPull.name && (
+              <div className="rounded-xl border border-border bg-surface px-3 py-2 shadow-sm">
+                <p className="text-xs text-muted-foreground">You scanned</p>
+                <p className="font-semibold text-foreground">{sortPull.name}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">Not what&apos;s in your hand? Go back and scan the product again.</p>
+              </div>
+            )}
+            <SortBoxesCard pull={sortPull} onPutBack={putBackInBox} onFixCount={fixBoxCount} />
+          </>
         )}
 
         <StepProgress current={stepIndex} total={steps.length} />

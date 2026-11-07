@@ -1,5 +1,6 @@
 import { forViewer } from "@/lib/itemView";
 import { draftItem } from "@/lib/draftItem";
+import { AuthError, requireUser } from "@/lib/auth";
 import { NextResponse } from "next/server";
 
 // A bundle drafts each component in its own call (parallel) plus one final
@@ -11,6 +12,12 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  try {
+    requireUser(request);
+  } catch (e) {
+    if (e instanceof AuthError) return NextResponse.json({ error: e.message }, { status: e.status });
+    throw e;
+  }
   const { id } = await params;
   try {
     const updated = await draftItem(id);

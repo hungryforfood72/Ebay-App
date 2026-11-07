@@ -8,6 +8,29 @@ import { sortedByUpc } from "./sortBoxes";
 // The pack card's real count when a load was sorted into sort boxes first
 // (GET /api/pack-suggestion). Server only.
 
+// What this load says a barcode is: its manifest line, else the name the
+// sorter's lookup gave an extra. Shown on the List page right after the
+// scan and given to the draft, so a scan of the wrong product shows up
+// (Cristian, 2026-11-06: a soap barcode was scanned for a pack of wipes and
+// nothing on screen named the soap). Any stored form of the barcode
+// matches. null = the load doesn't know it.
+export async function productNameOnLoad(manifestId: string, upc: string): Promise<string | null> {
+  const keys = new Set(upcMatchKeys(upc));
+  if (keys.size === 0) return null;
+  const same = (u: string | null) => Boolean(u) && (u === upc || upcMatchKeys(u).some((k) => keys.has(k)));
+  const lines = await prisma.manifestLine.findMany({
+    where: { manifestId, upc: { contains: upc.slice(-7, -1) } },
+    select: { upc: true, description: true },
+  });
+  const line = lines.find((l) => same(l.upc) && l.description?.trim());
+  if (line) return line.description.trim();
+  const entries = await prisma.sortBoxEntry.findMany({
+    where: { manifestId, name: { not: null }, upc: { contains: upc.slice(-7, -1) } },
+    select: { upc: true, name: true },
+  });
+  return entries.find((e) => same(e.upc))?.name?.trim() || null;
+}
+
 // Good units of this product the sorter put in sort boxes on this load
 // (pulled to the listing table or not), less every unit of it saved since:
 // listed (on its own or in a bundle) or sold at a walk-up. Units a customer
