@@ -38,6 +38,8 @@ type Overview = {
   crossList: boolean;
   categoryMap: CategoryMap;
   showBoxes: ShowBoxRow[];
+  // Daily check of Whatnot's API for offers on listings (whatnotOfferWatch.ts).
+  offerWatch: { checkedAt: string | null; found: string[]; foundAt: string | null; emailed: string[]; error: string | null };
   giveawayExports: GiveawayExportRow[];
   counts: { onWhatnot: number; waiting: number };
   skipped: { reason: string; count: number }[];
@@ -228,6 +230,16 @@ export default function WhatnotPage() {
               </span>
             </span>
           </label>
+          {data.offerWatch.found.length > 0 ? (
+            <Alert tone="success" title="Whatnot's API has offers now" className="mb-3">
+              Ready to build the offer profit view (like eBay&apos;s). What showed up: {data.offerWatch.found.join(", ")}
+            </Alert>
+          ) : (
+            <p className="mb-3 text-xs text-muted-foreground">
+              Offers on these: turn on Accept Offers per listing in Whatnot&apos;s Seller Hub. Whatnot&apos;s API can&apos;t yet; the app checks
+              daily and emails you when it can{data.offerWatch.checkedAt ? ` (last checked ${when(data.offerWatch.checkedAt)})` : ""}.
+            </p>
+          )}
           {data.skipped.length > 0 && (() => {
             const noCategory = data.skipped.filter((s) => s.reason.startsWith(NO_CATEGORY_PREFIX));
             const other = data.skipped.filter((s) => !s.reason.startsWith(NO_CATEGORY_PREFIX));

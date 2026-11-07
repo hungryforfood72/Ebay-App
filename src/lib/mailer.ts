@@ -17,6 +17,13 @@ export async function sendEmail(message: { to: string; subject: string; html: st
   const user = process.env.EPIC_STEALS_GMAIL_USER;
   const pass = process.env.EPIC_STEALS_GMAIL_APP_PASSWORD;
   if (!user || !pass) throw new Error("Email isn't set up: add EPIC_STEALS_GMAIL_USER and EPIC_STEALS_GMAIL_APP_PASSWORD in Vercel.");
-  transport ??= nodemailer.createTransport({ service: "gmail", auth: { user, pass } });
+  // Hard timeouts: a hung Gmail connection must not eat a cron's whole run.
+  transport ??= nodemailer.createTransport({
+    service: "gmail",
+    auth: { user, pass },
+    connectionTimeout: 10_000,
+    greetingTimeout: 10_000,
+    socketTimeout: 20_000,
+  });
   await transport.sendMail({ from: `"Epic Steals" <${user}>`, ...message });
 }

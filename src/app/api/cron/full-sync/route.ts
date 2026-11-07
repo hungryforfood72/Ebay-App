@@ -4,6 +4,7 @@ import { updatePackStrategyKnowledge } from "@/lib/packAdvisor";
 import { runPredictionTracker } from "@/lib/predictionTracker";
 import { runShopifySync } from "@/lib/shopifySync";
 import { updateSourcingKnowledge } from "@/lib/sourcingAgent";
+import { checkWhatnotOffers } from "@/lib/whatnotOfferWatch";
 import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 300;
@@ -41,5 +42,14 @@ export async function GET(request: NextRequest) {
   }
 
   const shopify = await runShopifySync({ items: [], publish: { limit: 25, retryFailed: true } });
+
+  // Once a day: has Whatnot's API added offers yet? (Cristian wants the
+  // eBay-style offer profit view built once it can be.) Last, so it can
+  // never hold up the real work.
+  try {
+    await checkWhatnotOffers();
+  } catch (e) {
+    console.error("[cron] checkWhatnotOffers failed", e);
+  }
   return NextResponse.json({ ...sales, shopifyRetry: shopify });
 }

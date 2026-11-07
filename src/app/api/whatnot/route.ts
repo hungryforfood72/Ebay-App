@@ -5,6 +5,7 @@ import type { Prisma } from "@/generated/prisma/client";
 import { getItemLocations, WarehouseError } from "@/lib/warehouse/bins";
 import { showBoxCode } from "@/lib/warehouse/codes";
 import { buildGiveawayCsv } from "@/lib/whatnotGiveaways";
+import { getOfferWatch } from "@/lib/whatnotOfferWatch";
 import { makeShowBoxes, releaseBoxes } from "@/lib/whatnotShow";
 import { getShow, listProducts, listShows, whatnotConfigured, type WhatnotShow } from "@/lib/whatnot";
 import {
@@ -99,6 +100,7 @@ export async function GET(request: NextRequest) {
     }),
     prisma.giveawayExport.findMany({ orderBy: { createdAt: "desc" }, take: 10 }),
   ]);
+  const offerWatch = await getOfferWatch();
   const locations = await getItemLocations(sales.map((s) => s.item));
   const showById = new Map(binShows.map((b) => [b.binId, b]));
 
@@ -127,6 +129,7 @@ export async function GET(request: NextRequest) {
         ? { buyer: b.assignments[0].buyer.buyerName, show: b.assignments[0].buyer.showTitle ?? b.assignments[0].buyer.showId }
         : null,
     })),
+    offerWatch,
     giveawayExports: exports.map((x) => ({ id: x.id, show: x.showTitle, bins: x.binCodes, rows: x.rows, by: x.createdBy, at: x.createdAt })),
     counts: { onWhatnot, waiting },
     skipped: skipped.map((s) => ({ reason: s.whatnotSkipReason, count: s._count._all })).sort((a, b) => b.count - a.count),
