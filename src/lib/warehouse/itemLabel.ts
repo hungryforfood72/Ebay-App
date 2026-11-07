@@ -116,6 +116,7 @@ export async function buildItemLabel(
     finalTitle?: string | null;
     aiTitle?: string | null;
     whatnotOnly?: boolean | null;
+    whatnotGiveaway?: boolean | null;
   },
   // A name the scan page already had on screen, if any.
   clientName?: string | null
@@ -138,6 +139,7 @@ export async function buildItemLabel(
     expiration: labelExpiration(item.expirationDate),
     condition: item.condition ? (CONDITION_TEXT[item.condition] ?? item.condition) : null,
     ...(item.whatnotOnly ? { whatnot: true } : {}),
+    ...(item.whatnotGiveaway ? { giveaway: true } : {}),
   };
 }
 

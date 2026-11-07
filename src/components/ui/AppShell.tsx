@@ -74,6 +74,10 @@ const NAV: NavEntry[] = [
       { href: "/pulls", label: "Pull from shelves", icon: PackageMinus, warehouseOnly: true },
       // Scan a box's pick slip, its shipping label prints.
       { href: "/shipping", label: "Shipping", icon: Tag, warehouseOnly: true },
+      // Whatnot shows (2026-11-07): sort each sale into its buyer's show
+      // box during the show, then pack and label each box after it.
+      { href: "/show", label: "Whatnot show", icon: Gavel, warehouseOnly: true },
+      { href: "/show/pack", label: "Pack Whatnot orders", icon: PackageCheck, warehouseOnly: true },
       // Epic Steals local delivery runs; any signed-in user can drive.
       { href: "/deliveries", label: "Deliveries", icon: Truck },
       { href: "/returns", label: "Returns", icon: Undo2, warehouseOnly: true },

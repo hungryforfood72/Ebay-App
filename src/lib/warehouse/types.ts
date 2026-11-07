@@ -18,6 +18,9 @@ export type ItemLabelPayload = {
   // goes to the Whatnot area (Cristian, 2026-11-03; Whatnot-only since
   // 2026-11-04, Shopify-only items go in regular bins now).
   whatnot?: boolean;
+  // A Whatnot giveaway (Item.whatnotGiveaway): GIVEAWAY instead of WHATNOT,
+  // so it goes in a giveaway bin (Cristian, 2026-11-07).
+  giveaway?: boolean;
 };
 
 // Bin, shelf, box and dud box labels: just the barcode and a big readable
@@ -29,7 +32,8 @@ export type CodeLabelPayload = {
 
 // dud = a dud box label (DB0001), caption = the manifest it belongs to.
 // sort = a sort box label (SB0001), caption = the load it belongs to.
-export type PrintJobKind = "item" | "bin" | "shelf" | "box" | "dud" | "sort";
+// showbox = a Whatnot show box label (WS-23).
+export type PrintJobKind = "item" | "bin" | "shelf" | "box" | "dud" | "sort" | "showbox";
 
 export type PrintJobPayload = ItemLabelPayload | CodeLabelPayload;
 
@@ -60,6 +64,10 @@ export function labelSizeOf(v: unknown): LabelSize {
 // (every 6h, a restart, or Reinstall). Later versions only need to be
 // greater; this stays the first one with the feature.
 export const LABEL_HELPER_VERSION = "2026-10-24.1";
+
+// The first print helper that prints a PDF shipping label (Whatnot show
+// labels, whatnotPack.ts). Packing mode asks an older one to update first.
+export const PDF_LABEL_HELPER_VERSION = "2026-11-07.1";
 
 export function helperCanPrintLabels(version: string | null): boolean {
   return version != null && version >= LABEL_HELPER_VERSION;

@@ -206,7 +206,11 @@ export async function POST(request: NextRequest) {
   // manifest, bundles too. Relists, returns and dud boxes have lanes of
   // their own and never come in as Whatnot listings.
   const whatnotOnly = body.whatnotOnly === true && !relistOf && !returnOf && !dudBox;
-  const whatnotStart = whatnotOnly ? await getWhatnotStartPrice() : null;
+  // Giveaway mode (Cristian, 2026-11-07): a Whatnot-only item kept for
+  // giveaways. No price (it's never sold), a GIVEAWAY label, giveaway bins
+  // only, and it goes up on a show by the Whatnot page's CSV.
+  const whatnotGiveaway = whatnotOnly && body.whatnotGiveaway === true;
+  const whatnotStart = whatnotOnly && !whatnotGiveaway ? await getWhatnotStartPrice() : null;
 
   // The pack card said eBay isn't worth it and the lister sent it to
   // Shopify, or to Whatnot (its "not worth eBay" call since 2026-11-06),
@@ -363,6 +367,7 @@ export async function POST(request: NextRequest) {
             (original != null && relistPart === "past") ||
             returnRow?.decision === "shopify_only")),
     whatnotOnly,
+    whatnotGiveaway,
     ...(whatnotStart != null ? { price: whatnotStart } : {}),
     ebaySkipReason,
     ...(priceCheck ? { priceCheck } : {}),
@@ -398,6 +403,7 @@ export async function POST(request: NextRequest) {
         expirationDate: data.expirationDate instanceof Date ? data.expirationDate : null,
         condition: (data.condition as string | null | undefined) ?? null,
         whatnotOnly,
+        whatnotGiveaway,
       },
       typeof body.productName === "string" ? body.productName : (manifestLine?.description ?? null)
     );

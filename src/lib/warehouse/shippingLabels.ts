@@ -214,12 +214,18 @@ function toRow(l: RowData, hasImage: boolean): LabelRow {
   };
 }
 
+// Whatnot show labels (whatnotPack.ts) are kept here too, under batch ids
+// starting with this, but they're printed from packing mode, not listed on
+// the Shipping page.
+export const WHATNOT_LABEL_BATCH = "whatnot:";
+
 export async function listLabels(): Promise<LabelRow[]> {
   await cleanUp().catch((e) => console.error("[shippingLabels] cleanup failed", e));
   const since = new Date(Date.now() - LIST_DAYS * 24 * 60 * 60 * 1000);
+  const where = { createdAt: { gte: since }, NOT: { batchId: { startsWith: WHATNOT_LABEL_BATCH } } };
   const [rows, withImage] = await Promise.all([
-    prisma.shippingLabel.findMany({ where: { createdAt: { gte: since } }, select: ROW_SELECT, orderBy: [{ createdAt: "desc" }, { page: "asc" }] }),
-    prisma.shippingLabel.findMany({ where: { createdAt: { gte: since }, image: { not: null } }, select: { id: true } }),
+    prisma.shippingLabel.findMany({ where, select: ROW_SELECT, orderBy: [{ createdAt: "desc" }, { page: "asc" }] }),
+    prisma.shippingLabel.findMany({ where: { ...where, image: { not: null } }, select: { id: true } }),
   ]);
   const has = new Set(withImage.map((r) => r.id));
   return rows.map((r) => toRow(r, has.has(r.id)));
@@ -298,6 +304,61 @@ export async function printLabelForOrder(input: {
     },
   });
   return { status: "queued", station: station.name, online: station.online, orderId, others, reprint, labelId: label.id };
+}
+
+// A label file that didn't come from an uploaded eBay PDF (a Whatnot show
+// label: PDF or PNG, as Whatnot's label provider sends it), kept like the
+// uploaded ones (gone 3 days after it prints) and sent to a station's
+// print helper. Returns the label row's id.
+export async function storeAndPrintLabel(args: {
+  file: Uint8Array;
+  batchId: string;
+  orderIds: string[];
+  trackingNumber: string | null;
+  carrier: string | null;
+  stationId: string;
+  by: string | null;
+  code: string;
+}): Promise<string> {
+  await cleanUp().catch((e) => console.error("[shippingLabels] cleanup failed", e));
+  const label = await prisma.shippingLabel.create({
+    data: {
+      batchId: args.batchId,
+      page: 1,
+      trackingNumber: args.trackingNumber,
+      carrier: args.carrier,
+      orderIds: args.orderIds,
+      image: Buffer.from(args.file),
+      widthIn: 4,
+      heightIn: 6,
+      uploadedBy: args.by,
+      printedAt: new Date(),
+      printedBy: args.by,
+      printCount: 1,
+    },
+    select: { id: true },
+  });
+  await prisma.printJob.create({
+    data: {
+      stationId: args.stationId,
+      kind: "shipping_label",
+      payload: { code: args.code.slice(0, 80), html: labelHtml(label.id) } as Prisma.InputJsonValue,
+      copies: 1,
+      createdBy: args.by,
+    },
+  });
+  return label.id;
+}
+
+// Prints a kept label again (Reprint in packing mode).
+export async function reprintStoredLabel(labelId: string, stationId: string, by: string | null, code: string): Promise<boolean> {
+  const has = await prisma.shippingLabel.count({ where: { id: labelId, image: { not: null } } });
+  if (!has) return false;
+  await prisma.shippingLabel.update({ where: { id: labelId }, data: { printCount: { increment: 1 } } });
+  await prisma.printJob.create({
+    data: { stationId, kind: "shipping_label", payload: { code: code.slice(0, 80), html: labelHtml(labelId) } as Prisma.InputJsonValue, copies: 1, createdBy: by },
+  });
+  return true;
 }
 
 // A station picked on the Shipping page, in packingStation()'s shape.

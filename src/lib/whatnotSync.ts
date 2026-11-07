@@ -30,7 +30,9 @@ import {
   whatnotConfigured,
   WhatnotError,
 } from "./whatnot";
+import { recordGiveaway } from "./whatnotGiveaways";
 import { allowedByOwner, supplementsApproved, whatnotBanReason, whatnotDaysNeeded } from "./whatnotPolicy";
+import { recordShowOrder } from "./whatnotShow";
 
 // Whatnot through its own Seller API (Cristian, 2026-11-06), replacing the
 // Shopify app channel:
@@ -93,14 +95,14 @@ export function whatnotDollars(price: number): number {
 
 // The first rule whose text appears in the eBay category path, else the
 // default.
-function categoryFor(path: string | null, map: CategoryMap): { id: string } | null {
+export function categoryFor(path: string | null, map: CategoryMap): { id: string } | null {
   const p = (path ?? "").toLowerCase();
   const rule = map.rules.find((r) => p.includes(r.match.toLowerCase()));
   if (rule) return { id: rule.categoryId };
   return map.defaultId ? { id: map.defaultId } : null;
 }
 
-function description(item: Item): string {
+export function description(item: Item): string {
   const lines = [(item.finalDescription ?? "").trim()];
   if (item.condition) lines.push(`Condition: ${CONDITION_LABEL[item.condition] ?? item.condition}`);
   if (item.expirationDate) {
@@ -109,7 +111,7 @@ function description(item: Item): string {
   return lines.filter(Boolean).join("\n\n").slice(0, 5000);
 }
 
-function packageWeightOz(item: Item): number {
+export function packageWeightOz(item: Item): number {
   return (item.weightLbs ?? 0) * 16 + (item.weightOz ?? 0);
 }
 
@@ -122,7 +124,7 @@ async function boxDimensions(label: string | null): Promise<{ length: number; wi
 
 // Why it can't go on Whatnot, or null. Same rules as the List page, on the
 // listing's own title and eBay category, unless Cristian allowed it.
-async function whatnotProblem(item: Item, categoryPath: string | null): Promise<string | null> {
+export async function whatnotProblem(item: Item, categoryPath: string | null): Promise<string | null> {
   const title = item.finalTitle ?? item.aiTitle ?? "";
   if (!title) return "No title yet";
   if (item.photoUrls.length === 0) return "No photos";
@@ -141,7 +143,7 @@ async function whatnotProblem(item: Item, categoryPath: string | null): Promise<
   return null;
 }
 
-async function categoryPathOf(item: Item): Promise<string | null> {
+export async function categoryPathOf(item: Item): Promise<string | null> {
   if (!item.categoryId) return null;
   return (await prisma.ebayCategory.findUnique({ where: { id: item.categoryId }, select: { path: true } }))?.path ?? null;
 }
@@ -270,6 +272,9 @@ export async function publishWhatnotOnlyItem(itemId: string): Promise<void> {
   if (!whatnotConfigured()) throw new Error("Whatnot isn't connected yet. Add the API token in Vercel first.");
   const item = await prisma.item.findUnique({ where: { id: itemId } });
   if (!item || !item.whatnotOnly) throw new Error("This isn't a Whatnot listing.");
+  // Whatnot's API can't make a giveaway, and an auction of it would sell
+  // it: giveaways go up by the Whatnot page's CSV.
+  if (item.whatnotGiveaway) throw new Error("This is a giveaway. Put it on a show with the giveaway CSV on the Whatnot page.");
   const left = item.quantity - item.soldQuantity;
   if (left <= 0) throw new Error("There's no stock left on this item to sell.");
   if (barcodeMismatchBlocks(item.barcodeMismatch)) {
@@ -422,6 +427,10 @@ export async function processWhatnotOrder(orderId: string): Promise<{ changed: s
   const lines = await listOrderItems(orderId);
   const amount = (m: { amount: string } | null | undefined) => Number(m?.amount ?? 0);
   const orderTotal = lines.reduce((sum, l) => sum + amount(l.unit_price) * l.quantity, 0);
+  const cancelled = Boolean(order.cancelled_at);
+  const giveawayOrder = order.transaction_type === "giveaway";
+  // Order item id -> the app's item, for the show's box sorting.
+  const matched = new Map<string, string>();
   for (const line of lines) {
     // Only listings this app put on Whatnot through the API: by the ids
     // Whatnot gave it, or by SKU for one of those. Orders from the old
@@ -436,15 +445,46 @@ export async function processWhatnotOrder(orderId: string): Promise<{ changed: s
     // Matched by Whatnot's ids: only this app's API calls made those, so
     // it's ours even if the run that published it never finished.
     const byId = ids.length ? await prisma.item.findFirst({ where: { OR: ids }, select: { id: true, whatnotPublishedAt: true } }) : null;
-    const item =
+    let item =
       byId ??
       (sku
         ? await prisma.item.findFirst({ where: { sku, whatnotPublishedAt: { not: null } }, select: { id: true, whatnotPublishedAt: true } })
         : null);
-    if (!item) continue;
     // By SKU only, placed before this listing went up through the API: an
     // old Shopify-channel order, not ours.
-    if (!byId && (!item.whatnotPublishedAt || new Date(order.created_at).getTime() < item.whatnotPublishedAt.getTime() - 60_000)) continue;
+    if (item && !byId && (!item.whatnotPublishedAt || new Date(order.created_at).getTime() < item.whatnotPublishedAt.getTime() - 60_000)) {
+      item = null;
+    }
+    // A giveaway from the Whatnot page's CSV (Cristian, 2026-11-07): made on
+    // Whatnot by the upload, not the API, so only its SKU (the item's label
+    // code) ties it to the app. Only giveaway items match this way; they've
+    // never been on any other channel.
+    const giveawaySku = line.purchased_item?.sku?.trim() || sku;
+    const giveawayItem =
+      !item && giveawaySku
+        ? await prisma.item.findFirst({ where: { sku: giveawaySku, whatnotGiveaway: true }, select: { id: true } })
+        : null;
+    if (giveawayItem || (item && giveawayOrder)) {
+      const itemId = (giveawayItem ?? item)!.id;
+      matched.set(line.id, itemId);
+      try {
+        const did = await recordGiveaway({
+          itemId,
+          orderId: order.id,
+          orderItemId: line.id,
+          quantity: line.quantity,
+          givenAt: new Date(order.created_at),
+          showId: order.show_id,
+          cancelled,
+        });
+        if (did) changed.add(itemId);
+      } catch (e) {
+        errors.push(`Whatnot giveaway ${order.id}: ${errorText(e)}`);
+      }
+      continue;
+    }
+    if (!item) continue;
+    matched.set(line.id, item.id);
     const revenue = amount(line.unit_price) * line.quantity;
     try {
       const r = await recordWhatnotSale({
@@ -455,7 +495,7 @@ export async function processWhatnotOrder(orderId: string): Promise<{ changed: s
         revenue,
         orderShare: orderTotal > 0 ? revenue / orderTotal : 1 / lines.length,
         soldAt: new Date(order.created_at),
-        cancelled: Boolean(order.cancelled_at),
+        cancelled,
       });
       errors.push(...r.errors);
       if (r.changed) {
@@ -463,7 +503,7 @@ export async function processWhatnotOrder(orderId: string): Promise<{ changed: s
         // Whatnot puts a cancelled order's units back on its own count
         // (recordWhatnotSale takes a sale's off in the same transaction),
         // so the stock sync below only sends what changed elsewhere.
-        if (order.cancelled_at) {
+        if (cancelled) {
           await prisma.item.updateMany({
             where: { id: item.id, whatnotQuantity: { not: null } },
             data: { whatnotQuantity: { increment: line.quantity } },
@@ -473,6 +513,10 @@ export async function processWhatnotOrder(orderId: string): Promise<{ changed: s
     } catch (e) {
       errors.push(`Whatnot order ${order.id}: ${errorText(e)}`);
     }
+  }
+  // Placed in a show: onto the buyer's show box (whatnotShow.ts).
+  if (order.show_id) {
+    await recordShowOrder(order, lines, matched).catch((e) => errors.push(`Whatnot show order ${order.id}: ${errorText(e)}`));
   }
   // Shopify's count, then Whatnot's own (Shopify's sync only covers items
   // on Shopify; a second pass is a no-op for the rest).
@@ -610,6 +654,12 @@ export async function runWhatnotSync(budgetMs = 120_000): Promise<WhatnotSyncRes
   const run = await withSyncLock("whatnot", "quick", async () => {
     // Webhook deliveries are retried for a few days at most.
     await prisma.whatnotWebhookEvent.deleteMany({ where: { receivedAt: { lt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } } });
+    // Show buyers' Whatnot usernames aren't kept past 90 days after their
+    // order was packed (security review, 2026-11-07).
+    await prisma.showBuyer.updateMany({
+      where: { packedAt: { lt: new Date(Date.now() - 90 * 24 * 60 * 60 * 1000) }, buyerName: { not: null } },
+      data: { buyerName: null },
+    });
     let ordersChecked = true;
     await pollOrders(deadline, errors).catch((e) => {
       ordersChecked = false;

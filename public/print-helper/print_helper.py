@@ -76,7 +76,7 @@ try:
 except Exception:
     hid = None
 
-VERSION = "2026-11-01.1"
+VERSION = "2026-11-07.1"
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE / "config.json"
 # The code this process is running, as it was when it started. Updates are
@@ -358,8 +358,12 @@ def print_job(station: Station, job: dict):
     if job.get("kind") == "shipping_label" and (m := LABEL_IMG.search(html)):
         # The label is already a 4x6 PNG: print it as is. Starting headless
         # Chrome for it took 1s on a good run and 15-20s on a bad one, and
-        # the shipper stood waiting for it.
-        pages = [png_page(station.label_png(m.group(1)))]
+        # the shipper stood waiting for it. A Whatnot show label can be the
+        # PDF Whatnot's label provider made (2026-11-07): its pages, as is.
+        data = station.label_png(m.group(1))
+        pages = pdf_pages(data) if data[:4] == b"%PDF" else [png_page(data)]
+        if len(pages) > 4:
+            raise RuntimeError(f"That label file has {len(pages)} pages; a shipping label has 1 or 2. Not printed.")
     else:
         pages = pdf_pages(html_to_pdf(station.inline_images(html)))
     print_pages(station.printer, pages, payload.get("code") or job.get("kind") or "Label", max(1, int(job.get("copies") or 1)))

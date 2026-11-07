@@ -24,14 +24,15 @@ export async function GET() {
   });
 }
 
-// Makes new bins: { count, whatnot? } -> { codes }. Owner only, so nobody
-// makes a pile of bin numbers by accident. whatnot = Whatnot bins.
+// Makes new bins: { count, whatnot?, giveaway? } -> { codes }. Owner only, so
+// nobody makes a pile of bin numbers by accident. whatnot = Whatnot bins,
+// giveaway = Whatnot giveaway bins (Whatnot bins too).
 export async function POST(request: NextRequest) {
   const denied = ownerOnly(request);
   if (denied) return denied;
   const body = await request.json().catch(() => ({}));
   try {
-    const codes = await createBins(Number(body.count), body.whatnot === true);
+    const codes = await createBins(Number(body.count), body.whatnot === true, body.giveaway === true);
     return NextResponse.json({ codes }, { status: 201 });
   } catch (e) {
     return binsErrorResponse(e);

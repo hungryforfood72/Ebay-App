@@ -141,6 +141,22 @@ export type WhatnotShipment = {
   fulfillment_method: "shipping" | "pickup";
   required_actions?: string[];
   created_at?: string | null;
+  // Needs read:customers; null without it.
+  recipient?: { id: string; username: string; display_name: string | null } | null;
+  tracking?: { carrier?: string | null; tracking_code?: string | null } | null;
+  // label_url = the label (from the label provider); bundled_url = label
+  // plus packing slip, or the pickup slip (presigned, about an hour). Needs
+  // read:customers; null without it.
+  documents?: { label_url?: string | null; bundled_url?: string | null } | null;
+  // After Whatnot re-bundles or splits it, the shipment that took its items.
+  replacement_shipment_id?: string | null;
+};
+
+export type WhatnotShipmentItem = {
+  id: string;
+  shipment_id: string;
+  order_id: string | null;
+  order_item_id: string | null;
 };
 
 export type WhatnotOrderItem = {
@@ -300,6 +316,29 @@ export async function getShipment(shipmentId: string): Promise<WhatnotShipment> 
 // Newest first.
 export async function listShipments(cursor?: string): Promise<{ items: WhatnotShipment[]; next: string | null }> {
   return pageItems(await call<Page<WhatnotShipment>>("GET", `/shipments?limit=50&reverse=true${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`));
+}
+
+// Every item on a shipment (several orders from one buyer share one).
+export async function listShipmentItems(shipmentId: string): Promise<WhatnotShipmentItem[]> {
+  const out: WhatnotShipmentItem[] = [];
+  let cursor: string | null = null;
+  do {
+    const page: { items: WhatnotShipmentItem[]; next: string | null } = pageItems(
+      await call<Page<WhatnotShipmentItem>>("GET", `/shipments/${id(shipmentId)}/items?limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`)
+    );
+    out.push(...page.items);
+    cursor = page.next;
+  } while (cursor);
+  return out;
+}
+
+// Asks Whatnot for the shipment's label with its saved settings (weight
+// from the items' dimension profiles). 200 = queued, not made yet: it
+// arrives as the shipments.label_generated webhook, or on the shipment
+// itself (documents.label_url) a little later. 409 = the shipment's state
+// or the seller's setup won't allow it.
+export async function generateLabel(shipmentId: string): Promise<void> {
+  await call("POST", `/shipments/${id(shipmentId)}/generate_label`);
 }
 
 export async function listOrderItems(orderId: string): Promise<WhatnotOrderItem[]> {

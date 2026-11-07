@@ -37,8 +37,9 @@ export async function nextItemCode(tx: Tx | typeof prisma = prisma): Promise<str
 }
 
 // Makes `count` new bins numbered after the highest existing one.
-// whatnot = Whatnot bins (see assertBinArea).
-export async function createBins(count: number, whatnot = false): Promise<string[]> {
+// whatnot = Whatnot bins, giveaway = Whatnot giveaway bins (always Whatnot
+// bins too; see assertBinArea).
+export async function createBins(count: number, whatnot = false, giveaway = false): Promise<string[]> {
   if (!Number.isInteger(count) || count < 1 || count > 500) {
     throw new WarehouseError("Make between 1 and 500 bins at a time.");
   }
@@ -49,7 +50,7 @@ export async function createBins(count: number, whatnot = false): Promise<string
     const existing = await tx.bin.findMany({ select: { code: true } });
     const start = Math.max(0, ...existing.map((b) => codeNumber(b.code, BIN_CODE_PREFIX) ?? 0)) + 1;
     const codes = Array.from({ length: count }, (_, i) => formatBinCode(start + i));
-    await tx.bin.createMany({ data: codes.map((code) => ({ code, whatnot })) });
+    await tx.bin.createMany({ data: codes.map((code) => ({ code, whatnot: whatnot || giveaway, giveaway })) });
     return codes;
   });
 }
@@ -79,17 +80,36 @@ export async function findBin(tx: Tx | typeof prisma, rawCode: string) {
 // any Whatnot bin exists), and nothing else ever goes in a Whatnot bin. A
 // regular oversized shelf's own bin takes any eBay/Shopify item (big items
 // go where they fit); a Whatnot oversized shelf's bin is a Whatnot bin.
+// Giveaways the same way inside the Whatnot area (Cristian, 2026-11-07): a
+// giveaway item goes only in a giveaway bin and a giveaway bin takes
+// nothing else, so picking giveaway bins for a show's CSV picks exactly
+// the giveaways.
 export async function assertBinArea(
   tx: Tx | typeof prisma,
-  bin: { code: string; whatnot: boolean; shelfBin: boolean },
+  bin: { code: string; whatnot: boolean; giveaway: boolean; shelfBin: boolean },
   itemIds: string[]
 ): Promise<void> {
   if (itemIds.length === 0) return;
   const wrong = await tx.item.findFirst({
-    where: { id: { in: itemIds }, whatnotOnly: !bin.whatnot },
-    select: { sku: true },
+    where: { id: { in: itemIds }, OR: [{ whatnotOnly: !bin.whatnot }, { whatnotGiveaway: !bin.giveaway }] },
+    select: { sku: true, whatnotOnly: true, whatnotGiveaway: true },
   });
   if (!wrong) return;
+  if (bin.giveaway && !wrong.whatnotGiveaway) {
+    throw new WarehouseError(
+      `${wrong.sku} isn't a giveaway, and ${bin.code} is a giveaway bin. Put it in a ${wrong.whatnotOnly ? "Whatnot" : "regular"} bin.`,
+      409
+    );
+  }
+  if (wrong.whatnotGiveaway && !bin.giveaway) {
+    const anyGiveawayBin = await tx.bin.findFirst({ where: { giveaway: true }, select: { id: true } });
+    throw new WarehouseError(
+      anyGiveawayBin
+        ? `${wrong.sku} is a giveaway. Put it in a giveaway bin, not ${bin.code}.`
+        : `${wrong.sku} is a giveaway and can only go in a giveaway bin, and there aren't any yet. Make giveaway bins on the Bins page first.`,
+      409
+    );
+  }
   if (bin.whatnot) {
     throw new WarehouseError(
       `${wrong.sku} isn't a Whatnot listing, and ${bin.code} is a Whatnot bin. Put it in a regular bin.`,

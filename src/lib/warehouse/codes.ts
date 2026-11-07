@@ -5,6 +5,7 @@
 //   BX001     box size
 //   DB-1A2B3C4D-2  dud box 2 of a load (one manifest's duds, from the sort station)
 //   SB-1A2B3C4D-2  sort box 2 of a load (good units sorted out of a load)
+//   WS-23     Whatnot show box 23 (reusable, one buyer per show; QR label)
 // Box codes are QR codes since 2026-11-01 (Cristian): the code carries the
 // load (first 8 of its id) and the box's number within that load, so every
 // load counts its boxes from 1 again and two loads never share a code.
@@ -22,6 +23,7 @@ export const BIN_CODE_PREFIX = "BN";
 export const BOX_CODE_PREFIX = "BX";
 export const DUD_BOX_CODE_PREFIX = "DB";
 export const SORT_BOX_CODE_PREFIX = "SB";
+export const SHOW_BOX_CODE_PREFIX = "WS-";
 // An oversized shelf's hidden bin (Bin.shelfBin): "OS-" + the shelf label.
 // Never printed: people scan the shelf's own label.
 export const SHELF_BIN_CODE_PREFIX = "OS-";
@@ -36,9 +38,10 @@ const BOX_RE = /^BX\d{3,}$/;
 const DUD_BOX_RE = /^DB(\d{4,}|-[0-9A-Z]{8}-\d+)$/;
 const SORT_BOX_RE = /^SB(\d{4,}|-[0-9A-Z]{8}-\d+)$/;
 const LOAD_BOX_RE = /^(SB|DB)-[0-9A-Z]{8}-(\d+)$/;
+const SHOW_BOX_RE = /^WS-(\d{1,4})$/;
 const UPC_RE = /^\d{8,14}$/;
 
-export type ScanKind = "item" | "bin" | "box" | "dudbox" | "sortbox" | "upc" | "other";
+export type ScanKind = "item" | "bin" | "box" | "dudbox" | "sortbox" | "showbox" | "upc" | "other";
 
 // Scanners sometimes add whitespace or send lowercase; normalize first.
 export function normalizeCode(raw: string): string {
@@ -53,6 +56,7 @@ export function classifyScan(raw: string): ScanKind {
   if (BOX_RE.test(code)) return "box";
   if (DUD_BOX_RE.test(code)) return "dudbox";
   if (SORT_BOX_RE.test(code)) return "sortbox";
+  if (SHOW_BOX_RE.test(code)) return "showbox";
   if (UPC_RE.test(code)) return "upc";
   return "other";
 }
@@ -101,6 +105,16 @@ export function dudBoxName(code: string): string {
 export function boxShortName(code: string): string {
   const n = loadBoxNumber(code);
   return n == null ? code : `Box ${n}`;
+}
+
+// A Whatnot show box's QR code and its number back out of a scan.
+export function showBoxCode(n: number): string {
+  return `${SHOW_BOX_CODE_PREFIX}${n}`;
+}
+
+export function showBoxNumber(code: string): number | null {
+  const m = SHOW_BOX_RE.exec(normalizeCode(code));
+  return m ? Number(m[1]) : null;
 }
 
 export function formatBoxCode(n: number): string {

@@ -7,7 +7,7 @@ import {
   type PrintJobKind,
   type PrintJobPayload,
 } from "@/lib/warehouse/types";
-import { dudBoxName, sortBoxName } from "@/lib/warehouse/codes";
+import { dudBoxName, showBoxNumber, sortBoxName } from "@/lib/warehouse/codes";
 import { barcodeSvg } from "./barcode";
 import { qrSvg } from "./qr";
 
@@ -17,7 +17,7 @@ import { qrSvg } from "./qr";
 // or React; LabelPreview renders the same strings on screen. Plain inline
 // CSS in inches and points only, black on white, no Tailwind.
 
-export const LABEL_KINDS: PrintJobKind[] = ["item", "bin", "shelf", "box", "dud", "sort"];
+export const LABEL_KINDS: PrintJobKind[] = ["item", "bin", "shelf", "box", "dud", "sort", "showbox"];
 
 export function isLabelKind(v: unknown): v is PrintJobKind {
   return typeof v === "string" && (LABEL_KINDS as string[]).includes(v);
@@ -133,6 +133,17 @@ export const LABEL_CSS = `
   line-height: 1;
   overflow-wrap: anywhere;
 }
+.wl-show-kicker {
+  font-size: 8pt;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.3pt;
+}
+.wl-show-number {
+  font-size: 34pt;
+  font-weight: 700;
+  line-height: 0.95;
+}
 .wl-box-title {
   margin-top: 3pt;
   font-size: 7.5pt;
@@ -243,7 +254,9 @@ function itemLabelHtml(p: ItemLabelPayload, zoom: number): string {
     // Whatnot only: a black tag next to the code, so it goes to a Whatnot
     // bin (Cristian, 2026-11-03). Beside the code, not a line of its own:
     // the 1" label has no room for another line.
-    `<div class="wl-code">${esc(p.code)}${p.whatnot ? `<span class="wl-shop">WHATNOT</span>` : ""}</div>` +
+    // Giveaway stock (Cristian, 2026-11-07) says GIVEAWAY instead: it goes
+    // in a giveaway bin, not with the auctions.
+    `<div class="wl-code">${esc(p.code)}${p.giveaway ? `<span class="wl-shop">GIVEAWAY</span>` : p.whatnot ? `<span class="wl-shop">WHATNOT</span>` : ""}</div>` +
     (p.name ? `<div class="wl-name">${esc(p.name)}</div>` : "") +
     (meta ? `<div class="wl-meta">${esc(meta)}</div>` : "") +
     `</div>`
@@ -285,6 +298,24 @@ function boxLabelHtml(p: CodeLabelPayload, name: string, zoom: number): string {
   );
 }
 
+// A Whatnot show box (Cristian, 2026-11-07): the QR on the left (WS-23),
+// "WHATNOT SHOW BOX" and the number as big as it fits on the right, so the
+// runner finds box 23 from across the table.
+function showBoxLabelHtml(p: CodeLabelPayload, zoom: number): string {
+  const n = showBoxNumber(p.code);
+  const qr = qrSvg(p.code, 0.88, zoom);
+  if (!qr || n == null) return badLabel(p.code);
+  return (
+    `<div class="wl-label wl-box">` +
+    `<div class="wl-box-qr">${qr}</div>` +
+    `<div class="wl-box-text">` +
+    `<div class="wl-show-kicker">WHATNOT SHOW BOX</div>` +
+    `<div class="wl-show-number">${n}</div>` +
+    `</div>` +
+    `</div>`
+  );
+}
+
 // One label's markup, laid out at 2" x 1". zoom = the box it goes in is
 // CSS-zoomed by this much (labelZoom), so the bars are sized to still land
 // on whole printer dots.
@@ -292,6 +323,7 @@ function labelBody(kind: PrintJobKind, payload: PrintJobPayload, zoom: number): 
   if (kind === "item") return itemLabelHtml(payload as ItemLabelPayload, zoom);
   if (kind === "dud") return boxLabelHtml(payload as CodeLabelPayload, dudBoxName((payload as CodeLabelPayload).code), zoom);
   if (kind === "sort") return boxLabelHtml(payload as CodeLabelPayload, sortBoxName((payload as CodeLabelPayload).code), zoom);
+  if (kind === "showbox") return showBoxLabelHtml(payload as CodeLabelPayload, zoom);
   return codeLabelHtml(kind, payload as CodeLabelPayload, zoom);
 }
 
@@ -343,9 +375,11 @@ export function cleanLabelPayload(
       expiration: typeof p.expiration === "string" && p.expiration.trim() ? p.expiration.trim() : null,
       condition: typeof p.condition === "string" && p.condition.trim() ? p.condition.trim() : null,
       ...(p.whatnot === true ? { whatnot: true } : {}),
+      ...(p.giveaway === true ? { giveaway: true } : {}),
     };
     return { payload };
   }
+  if (kind === "showbox" && showBoxNumber(code) == null) return { error: `"${code}" isn't a show box code.` };
   const caption = typeof p.caption === "string" && p.caption.trim() ? p.caption.trim().slice(0, 60) : undefined;
   const payload: CodeLabelPayload = caption ? { code, caption } : { code };
   return { payload };

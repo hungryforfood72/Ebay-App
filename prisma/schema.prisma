@@ -189,6 +189,12 @@ model Item {
   // the $1-2 auction starts never show on the store. Listed from the List
   // page in Whatnot mode, with or without a manifest; kept in Whatnot bins.
   whatnotOnly      Boolean        @default(false)
+  // A Whatnot giveaway (Cristian, 2026-11-07): small, light stock listed in
+  // Giveaway mode on the List page, kept in giveaway bins, and put on a
+  // show by the CSV the Whatnot page makes (Whatnot's API can't make a
+  // giveaway). Always whatnotOnly too; never priced, never published by
+  // the app. A win is a WhatnotGiveaway row, not a sale.
+  whatnotGiveaway  Boolean        @default(false)
   // Why it's off eBay, when the pack card said eBay isn't worth it and the
   // lister sent it to Shopify & Whatnot instead (packSuggestion.ts setAside
   // why: slow_single, low_return, no_demand; price_unclear only on items
@@ -418,6 +424,9 @@ model Item {
   binContents BinContent[]
   orderPicks  OrderPick[]
   returns     ItemReturn[]
+  // Whatnot shows: lines sold in a show, and giveaways won.
+  showSales   ShowSale[]
+  giveaways   WhatnotGiveaway[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1613,6 +1622,10 @@ model Bin {
   // can't go in any other bin.
   // Enforced only once at least one Whatnot bin exists (bins.ts).
   whatnot    Boolean   @default(false)
+  // A Whatnot giveaway bin (Cristian, 2026-11-07): always a Whatnot bin
+  // too; holds only giveaway items (Item.whatnotGiveaway) and they go in
+  // no other bin. Picked on the Whatnot page to make a show's giveaway CSV.
+  giveaway   Boolean   @default(false)
   createdAt  DateTime  @default(now())
 
   contents BinContent[]
@@ -1646,6 +1659,152 @@ model WhatnotWebhookEvent {
   receivedAt DateTime @default(now())
 
   @@index([receivedAt])
+}
+
+// A reusable Whatnot show box (Cristian, 2026-11-07): a bin labeled
+// "WHATNOT SHOW BOX 23" with a QR code (WS-23, codes.ts). During a show
+// each buyer gets one on their first buy and everything they win goes in
+// it; after the show it's packed into a shipping box and is free again.
+model ShowBox {
+  id        String   @id @default(uuid())
+  number    Int      @unique
+  createdAt DateTime @default(now())
+
+  assignments ShowBoxAssignment[]
+}
+
+// One buyer in one Whatnot show (src/lib/whatnotShow.ts). buyerKey is the
+// Whatnot user id, or "shipment:<id>" when the API token can't see buyers
+// (read:customers), so their orders still group by Whatnot's shipment.
+model ShowBuyer {
+  id         String    @id @default(uuid())
+  showId     String
+  showTitle  String?
+  buyerKey   String
+  buyerName  String?
+  createdAt  DateTime  @default(now())
+  // Packing mode: every item checked by scan, then the label asked for
+  // (labelStationId = where it prints, labelShipmentIds = the Whatnot
+  // shipments asked for) and printed. Packed = boxes freed.
+  labelRequestedAt DateTime?
+  labelRequestedBy String?
+  labelStationId   String?
+  labelShipmentIds String[]  @default([])
+  labelPrintedAt   DateTime?
+  labelError       String?
+  packedAt   DateTime?
+  packedBy   String?
+
+  sales     ShowSale[]
+  boxes     ShowBoxAssignment[]
+  packScans ShowPackScan[]
+
+  @@unique([showId, buyerKey])
+  @@index([showId])
+}
+
+// A show box in use by a buyer. seq 1 = their first box, 2 = the one after
+// "Box full", and so on. releasedAt = packed (or let go), free to reuse.
+model ShowBoxAssignment {
+  id         String    @id @default(uuid())
+  box        ShowBox   @relation(fields: [boxId], references: [id], onDelete: Restrict)
+  boxId      String
+  buyer      ShowBuyer @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  buyerId    String
+  seq        Int
+  assignedAt DateTime  @default(now())
+  releasedAt DateTime?
+
+  @@index([boxId, releasedAt])
+  @@index([buyerId])
+}
+
+// One line of a Whatnot order placed in a show, as it came in (webhook or
+// the show screen's check). itemId = the app's listing it matched (null =
+// something the app doesn't know, e.g. a quick listing made in the show).
+// sortedUnits = units put in the buyer's show box: by the runner's scan, or
+// as the sale arrives in solo mode. fromBinCode = the bin it came out of,
+// so a cancelled one can go back.
+model ShowSale {
+  id          String    @id @default(uuid())
+  showId      String
+  buyer       ShowBuyer @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  buyerId     String
+  orderId     String
+  orderItemId String    @unique
+  // auction | giveaway | buy_it_now | other
+  saleType    String
+  title       String
+  sku         String?
+  quantity    Int
+  item        Item?     @relation(fields: [itemId], references: [id], onDelete: SetNull)
+  itemId      String?
+  shipmentId  String?
+  soldAt      DateTime
+  cancelledAt DateTime?
+  sortedUnits Int       @default(0)
+  sortedAt    DateTime?
+  sortedBy    String?
+  // The show box it went in (a buyer with two boxes: which one).
+  boxNumber   Int?
+  fromBinCode String?
+  // A cancelled unit that was already in the box, put back in a bin.
+  returnedAt  DateTime?
+  returnedTo  String?
+  createdAt   DateTime  @default(now())
+
+  @@index([showId, soldAt])
+  @@index([itemId])
+  @@index([orderId])
+}
+
+// Packing mode: units of one Whatnot order line scanned into the shipping
+// box (or, for one the app can't scan, ticked by hand).
+model ShowPackScan {
+  id          String    @id @default(uuid())
+  buyer       ShowBuyer @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  buyerId     String
+  orderItemId String
+  units       Int       @default(0)
+  byHand      Boolean   @default(false)
+  scannedBy   String?
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([buyerId, orderItemId])
+}
+
+// A giveaway won in a Whatnot show (Cristian, 2026-11-07): the unit left
+// stock as a giveaway cost, not a sale, so it stays out of ShopifySale and
+// everything that learns from sales.
+model WhatnotGiveaway {
+  id          String    @id @default(uuid())
+  item        Item      @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  itemId      String
+  orderId     String
+  orderItemId String    @unique
+  showId      String?
+  quantity    Int
+  givenAt     DateTime
+  cancelledAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([givenAt])
+  @@index([itemId])
+}
+
+// Giveaway bins put on a Whatnot CSV for a show (the Whatnot page), so the
+// same bins aren't uploaded to the same show twice by mistake.
+model GiveawayExport {
+  id        String   @id @default(uuid())
+  showId    String?
+  showTitle String?
+  binCodes  String[]
+  itemIds   String[]
+  rows      Int
+  createdBy String?
+  createdAt DateTime @default(now())
+
+  @@index([showId])
 }
 
 // How many of one listing's sellable units are in one bin. A unit is one of

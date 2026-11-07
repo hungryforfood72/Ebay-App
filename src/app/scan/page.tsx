@@ -32,6 +32,7 @@ import {
   CircleCheck,
   FileSpreadsheet,
   Gavel,
+  Gift,
   LoaderCircle,
   Package,
   PackageX,
@@ -164,6 +165,10 @@ const ACTIVE_MANIFEST_KEY = "ebay-tool.activeManifestId";
 // only, as its own listing at the auction start price. Kept across reloads
 // like the active manifest, and works with or without one.
 const WHATNOT_MODE_KEY = "ebay-tool.whatnotMode";
+// Giveaway mode (Cristian, 2026-11-07): Whatnot mode for giveaway stock.
+// Each item is a Whatnot giveaway (GIVEAWAY label, giveaway bins), put on
+// a show with the Whatnot page's CSV. Only ever on with Whatnot mode.
+const GIVEAWAY_MODE_KEY = "ebay-tool.giveawayMode";
 
 function startSinglePhotoUpload(file: File, setPhoto: (p: Photo | null) => void) {
   const id = `${Date.now()}-${Math.random()}`;
@@ -234,10 +239,24 @@ function ScanPageInner() {
     if (typeof window === "undefined") return false;
     return localStorage.getItem(WHATNOT_MODE_KEY) === "1";
   });
+  const [giveawayMode, setGiveawayModeState] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem(GIVEAWAY_MODE_KEY) === "1" && localStorage.getItem(WHATNOT_MODE_KEY) === "1";
+  });
   function setWhatnotMode(on: boolean) {
     setWhatnotModeState(on);
     if (on) localStorage.setItem(WHATNOT_MODE_KEY, "1");
     else localStorage.removeItem(WHATNOT_MODE_KEY);
+    if (!on) {
+      setGiveawayModeState(false);
+      localStorage.removeItem(GIVEAWAY_MODE_KEY);
+    }
+  }
+  function setGiveawayMode(on: boolean) {
+    if (on) setWhatnotMode(true);
+    setGiveawayModeState(on);
+    if (on) localStorage.setItem(GIVEAWAY_MODE_KEY, "1");
+    else localStorage.removeItem(GIVEAWAY_MODE_KEY);
   }
   const [damagedMode, setDamagedMode] = useState(false);
   const [damagedUpc, setDamagedUpc] = useState("");
@@ -1429,6 +1448,8 @@ function ScanPageInner() {
           // Whatnot mode: its own Whatnot-only listing (the server ignores
           // it for relists, returns and dud boxes too).
           whatnotOnly: whatnotLane || undefined,
+          // Giveaway mode: a Whatnot giveaway instead of an auction.
+          whatnotGiveaway: (whatnotLane && whatnotMode && giveawayMode) || undefined,
           relistOf: relist?.plan.id,
           relistPart: relist?.part,
           packSuggestion: isBundle ? undefined : (packSuggestion ?? undefined),
@@ -2188,8 +2209,13 @@ function ScanPageInner() {
             )}
           >
             <span className="flex min-w-0 items-center gap-2">
-              {whatnotMode && <Gavel className="size-4 shrink-0" aria-hidden />}
-              {whatnotMode ? (
+              {whatnotMode && (giveawayMode ? <Gift className="size-4 shrink-0" aria-hidden /> : <Gavel className="size-4 shrink-0" aria-hidden />)}
+              {whatnotMode && giveawayMode ? (
+                <span>
+                  <span className="font-semibold">Whatnot giveaways.</span> Small, light things to give away in shows. A
+                  GIVEAWAY label prints; put them in a giveaway bin.
+                </span>
+              ) : whatnotMode ? (
                 <span>
                   <span className="font-semibold">Whatnot only.</span> Each item gets its own Whatnot listing at the
                   starting price. Not on eBay or the store.
@@ -2198,9 +2224,21 @@ function ScanPageInner() {
                 <span className="text-muted-foreground">Listing for eBay + Shopify.</span>
               )}
             </span>
-            <button type="button" className="text-xs font-medium underline" onClick={() => setWhatnotMode(!whatnotMode)}>
-              {whatnotMode ? "List for eBay instead" : "Switch to Whatnot"}
-            </button>
+            <span className="flex flex-wrap gap-3">
+              {whatnotMode && (
+                <button type="button" className="text-xs font-medium underline" onClick={() => setGiveawayMode(!giveawayMode)}>
+                  {giveawayMode ? "Auctions instead" : "Giveaways instead"}
+                </button>
+              )}
+              {!whatnotMode && step === "mode" && (
+                <button type="button" className="text-xs font-medium underline" onClick={() => setGiveawayMode(true)}>
+                  Giveaways
+                </button>
+              )}
+              <button type="button" className="text-xs font-medium underline" onClick={() => setWhatnotMode(!whatnotMode)}>
+                {whatnotMode ? "List for eBay instead" : "Switch to Whatnot"}
+              </button>
+            </span>
           </div>
         )}
 

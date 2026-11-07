@@ -49,18 +49,16 @@ export async function POST(request: NextRequest) {
     // one can be retried alone. createMany instead of queuePrintJob in a
     // loop: hundreds of one-row inserts would be slow over the network.
     const by = getRequestUser(request)?.username ?? null;
-    // Whatnot bins say so in big letters, the bin number under it.
-    const whatnot =
-      kind === "bin"
-        ? new Set(
-            (await prisma.bin.findMany({ where: { code: { in: codes }, whatnot: true }, select: { code: true } })).map((b) => b.code)
-          )
-        : new Set<string>();
+    // Whatnot bins say so in big letters, the bin number under it; giveaway
+    // bins say GIVEAWAY.
+    const areaBins = kind === "bin" ? await prisma.bin.findMany({ where: { code: { in: codes }, whatnot: true }, select: { code: true, giveaway: true } }) : [];
+    const whatnot = new Set(areaBins.filter((b) => !b.giveaway).map((b) => b.code));
+    const giveaway = new Set(areaBins.filter((b) => b.giveaway).map((b) => b.code));
     await prisma.printJob.createMany({
       data: codes.map((code) => ({
         stationId,
         kind,
-        payload: (whatnot.has(code) ? { code, caption: "WHATNOT" } : { code }) satisfies CodeLabelPayload as Prisma.InputJsonValue,
+        payload: (giveaway.has(code) ? { code, caption: "GIVEAWAY" } : whatnot.has(code) ? { code, caption: "WHATNOT" } : { code }) satisfies CodeLabelPayload as Prisma.InputJsonValue,
         copies,
         createdBy: by,
       })),

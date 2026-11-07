@@ -8,6 +8,7 @@ import { Card, SectionHeader } from "@/components/ui/Card";
 import { Input, Select } from "@/components/ui/Input";
 import { Gavel, RefreshCw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { GiveawaysCard, ShowBoxesCard, type GiveawayExportRow, type ShowBoxRow } from "./ShowCards";
 
 // Whatnot (Cristian, 2026-11-06; owner only): which Whatnot bins go in
 // which show, cross-listing everything live on eBay/Shopify as buy-it-now,
@@ -15,7 +16,14 @@ import { useCallback, useEffect, useState } from "react";
 // each item is. Everything goes through Whatnot's own API (whatnotSync.ts).
 
 type Show = { id: string; title: string; status: string; startsAt: string | null; url: string };
-type BinRow = { code: string; shelf: string | null; units: number; onWhatnot: number; show: { id: string; title: string; startsAt: string | null } | null };
+type BinRow = {
+  code: string;
+  giveaway: boolean;
+  shelf: string | null;
+  units: number;
+  onWhatnot: number;
+  show: { id: string; title: string; startsAt: string | null } | null;
+};
 type CategoryRule = { match: string; categoryId: string; categoryName: string };
 // What the sync writes when an item's eBay category has no Whatnot one
 // (whatnotSync.ts NO_CATEGORY).
@@ -29,6 +37,8 @@ type Overview = {
   bins: BinRow[];
   crossList: boolean;
   categoryMap: CategoryMap;
+  showBoxes: ShowBoxRow[];
+  giveawayExports: GiveawayExportRow[];
   counts: { onWhatnot: number; waiting: number };
   skipped: { reason: string; count: number }[];
   failed: { id: string; sku: string; finalTitle: string | null; whatnotError: string; whatnotOnly: boolean }[];
@@ -91,8 +101,17 @@ export default function WhatnotPage() {
     );
   }
 
+  // Giveaway bins go on a show by CSV (the Giveaways card), not by
+  // assigning them here.
+  const auctionBins = data.bins.filter((b) => !b.giveaway);
+  const giveawayBins = data.bins.filter((b) => b.giveaway);
   const binsByShow = new Map<string, BinRow[]>();
-  for (const b of data.bins) if (b.show) binsByShow.set(b.show.id, [...(binsByShow.get(b.show.id) ?? []), b]);
+  for (const b of auctionBins) if (b.show) binsByShow.set(b.show.id, [...(binsByShow.get(b.show.id) ?? []), b]);
+  const reload = () => {
+    load()
+      .then(setData)
+      .catch((e) => setError((e as Error).message));
+  };
 
   return (
     <AppShell
@@ -141,11 +160,11 @@ export default function WhatnotPage() {
               ))}
             </div>
           )}
-          {data.bins.length === 0 ? (
+          {auctionBins.length === 0 ? (
             <p className="text-sm text-muted-foreground">No Whatnot bins yet. Make them on the Bins page.</p>
           ) : (
             <div className="divide-y divide-border rounded-lg border border-border">
-              {data.bins.map((b) => (
+              {auctionBins.map((b) => (
                 <div key={b.code} className="flex flex-wrap items-center gap-3 p-3 text-sm">
                   <div className="min-w-32">
                     <p className="font-mono font-semibold">{b.code}</p>
@@ -179,6 +198,15 @@ export default function WhatnotPage() {
             </div>
           )}
         </Card>
+
+        <ShowBoxesCard boxes={data.showBoxes} onChanged={reload} />
+
+        <GiveawaysCard
+          bins={giveawayBins.map((b) => ({ code: b.code, shelf: b.shelf, units: b.units }))}
+          shows={data.shows}
+          exports={data.giveawayExports}
+          onChanged={reload}
+        />
 
         <Card>
           <SectionHeader

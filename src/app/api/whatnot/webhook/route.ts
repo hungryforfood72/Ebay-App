@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { verifyWhatnotWebhook } from "@/lib/whatnot";
+import { labelGenerated } from "@/lib/whatnotPack";
 import { processWhatnotOrder, syncWhatnotStock } from "@/lib/whatnotSync";
 import { after, NextRequest, NextResponse } from "next/server";
 
@@ -51,6 +52,11 @@ export async function POST(request: NextRequest) {
           const r = await processWhatnotOrder(orderId);
           if (r.errors.length) console.error("[whatnot webhook] order errors", r.errors);
         }
+      } else if (type === "shipments.label_generated") {
+        // A show order's label packing mode asked for: print it now
+        // (whatnotPack.ts). Others (made in Whatnot by hand) are left alone.
+        const shipmentId = typeof data.shipment_id === "string" ? data.shipment_id : null;
+        if (shipmentId) await labelGenerated(shipmentId);
       } else if (type === "products.deleted") {
         // Deleted on Whatnot by hand: a choice, not a problem. Stop
         // tracking it so it isn't put back.

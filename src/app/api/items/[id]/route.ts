@@ -148,6 +148,9 @@ export async function PATCH(
     if ("whatnotOnly" in data) data.whatnotOnly = data.whatnotOnly === true;
     if (data.whatnotOnly === true) data.shopifyOnly = true;
     if (data.shopifyOnly === false) data.whatnotOnly = false;
+    // Out of Whatnot = not a giveaway any more either (giveaways are only
+    // ever made on the List page, never switched into).
+    if (data.whatnotOnly === false) data.whatnotGiveaway = false;
     // Into or out of Whatnot once it's in a bin: it would sit in the wrong
     // kind of bin, since Whatnot-only items live only in Whatnot bins and
     // nothing else does (Cristian, 2026-11-06: block it; the List page's

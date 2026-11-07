@@ -33,6 +33,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       finalTitle: true,
       aiTitle: true,
       whatnotOnly: true,
+      whatnotGiveaway: true,
       quantity: true,
       soldQuantity: true,
     },

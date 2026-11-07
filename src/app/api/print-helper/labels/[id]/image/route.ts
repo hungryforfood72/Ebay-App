@@ -17,7 +17,12 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (!sent) return NextResponse.json({ error: "That label wasn't sent to this station." }, { status: 404 });
     const image = await labelImage(id);
     if (!image) return NextResponse.json({ error: "That label isn't kept anymore." }, { status: 404 });
-    return new NextResponse(Buffer.from(image), { headers: { "Content-Type": "image/png", "Cache-Control": "private, no-store" } });
+    // PNG from an uploaded eBay PDF; a Whatnot show label can be the PDF
+    // Whatnot's label provider sent (print helper 2026-11-07.1 prints those).
+    const pdf = image.length > 4 && Buffer.from(image.subarray(0, 4)).toString("latin1") === "%PDF";
+    return new NextResponse(Buffer.from(image), {
+      headers: { "Content-Type": pdf ? "application/pdf" : "image/png", "Cache-Control": "private, no-store" },
+    });
   } catch (e) {
     return errorResponse(e);
   }

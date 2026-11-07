@@ -497,6 +497,7 @@ type SalesSummary = {
   cogs: number;
   refunded: number;
   shopAds: { spend: number; sales: number; customers: number; error: string | null };
+  giveaways?: { units: number; cost: number };
   profit: number;
   revenueByChannel: Record<string, number>;
 };
@@ -697,6 +698,11 @@ function SalesSection({ refreshKey }: { refreshKey: number }) {
         </p>
       )}
       {summary?.shopAds.error && <p className="mt-2 text-sm font-medium text-warning">{summary.shopAds.error}</p>}
+      {summary?.giveaways && summary.giveaways.units > 0 && (
+        <p className="mt-2 text-sm text-muted-foreground">
+          Whatnot giveaways: {summary.giveaways.units} given away, ${summary.giveaways.cost.toFixed(2)} in cost. Already taken off profit.
+        </p>
+      )}
       <p className="mt-2 text-xs text-muted-foreground">
         Only counts items scanned and listed through this app. Profit uses manifest COGS where available, $0 for
         anything with no manifest. Whatnot fees are estimated from Whatnot&apos;s published rates (Whatnot doesn&apos;t

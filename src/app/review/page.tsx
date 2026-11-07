@@ -85,6 +85,9 @@ type Item = {
   // whatnotOnly is set too.
   shopifyOnly: boolean;
   whatnotOnly: boolean;
+  // A Whatnot giveaway (Giveaway mode on the List page): never priced or
+  // published from here; it goes on a show with the Whatnot page's CSV.
+  whatnotGiveaway?: boolean;
   // The draft saw "Rx Only" on the package (draftItem.ts): eBay and the
   // store both refuse it. rxOnlyNote = what it saw.
   rxOnly?: boolean | null;
@@ -477,7 +480,8 @@ export default function ReviewPage() {
     ).length;
   const pending = groupSameProduct(items.filter((i) => i.status === "pending_review" && inLane(i)));
   // Publish all goes by this too: only what's showing.
-  const ready = items.filter((i) => i.status === "ready" && inLane(i));
+  // Giveaways aren't published from here (the Whatnot page's CSV puts them on a show).
+  const ready = items.filter((i) => i.status === "ready" && inLane(i) && !i.whatnotGiveaway);
   // Publishing here, or on the server from before a refresh.
   const isPublishing = (item: Item) => publishingId === item.id || publishingOnServer(item);
   const exported = items.filter((i) => i.status === "exported" && inLane(i));
@@ -778,7 +782,8 @@ function binHoldBadge(item: Item): string {
 // what's shown is a plain message (a crashed request has no JSON body).
 // The fix agent tried and handed it back (publishFixAgent.ts).
 // Which lane a ready or listed item is in; nothing for eBay + Shopify.
-function LaneBadge({ item }: { item: Pick<Item, "shopifyOnly" | "whatnotOnly"> }) {
+function LaneBadge({ item }: { item: Pick<Item, "shopifyOnly" | "whatnotOnly" | "whatnotGiveaway"> }) {
+  if (item.whatnotGiveaway) return <Badge tone="purple">Whatnot giveaway</Badge>;
   if (item.whatnotOnly) return <Badge tone="purple">Whatnot only</Badge>;
   if (item.shopifyOnly) return <Badge>Shopify only</Badge>;
   return null;
@@ -1313,9 +1318,16 @@ function ItemCard({
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-1 2xl:grid-cols-2">
             <div className="2xl:col-span-2">
               <Field
-                label={item.whatnotOnly ? "Whatnot starting price" : "Price"}
-                hint={item.whatnotOnly ? "Where the auction starts. Only shows on Whatnot, never on eBay or the store." : undefined}
+                label={item.whatnotGiveaway ? "Price" : item.whatnotOnly ? "Whatnot starting price" : "Price"}
+                hint={
+                  item.whatnotGiveaway
+                    ? "A giveaway: no price. It goes on a show with the giveaway CSV on the Whatnot page."
+                    : item.whatnotOnly
+                      ? "Where the auction starts. Only shows on Whatnot, never on eBay or the store."
+                      : undefined
+                }
               >
+                {item.whatnotGiveaway ? null : (
                 <div className="relative">
                   <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-muted-foreground">
                     $
@@ -1337,6 +1349,7 @@ function ItemCard({
                     className="pl-7"
                   />
                 </div>
+                )}
               </Field>
               {sameProduct.length > 1 && (
                 <SameProductPrices item={item} listings={sameProduct} typedPrice={typedPrice} />
@@ -1508,6 +1521,9 @@ function ItemCard({
                   : "eBay, plus the Shopify store at its discount. Never on Whatnot."
             }
           >
+            {item.whatnotGiveaway ? (
+              <p className="text-sm font-medium text-foreground">Whatnot giveaway (chosen on the List page)</p>
+            ) : (
             <Select
               value={item.whatnotOnly ? "whatnot" : item.shopifyOnly ? "shopify" : "ebay"}
               onChange={(e) => {
@@ -1523,6 +1539,7 @@ function ItemCard({
               {(!item.isBundle || item.shopifyOnly) && <option value="shopify">Shopify only</option>}
               <option value="whatnot">Whatnot only</option>
             </Select>
+            )}
           </Field>
 
           <div className="rounded-lg border border-border p-3 sm:p-4">

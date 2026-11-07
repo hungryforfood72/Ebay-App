@@ -1,7 +1,11 @@
 import { logActivity } from "@/lib/activityLog";
 import { getRequestUser, ownerOnly } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { getItemLocations } from "@/lib/warehouse/bins";
+import type { Prisma } from "@/generated/prisma/client";
+import { getItemLocations, WarehouseError } from "@/lib/warehouse/bins";
+import { showBoxCode } from "@/lib/warehouse/codes";
+import { buildGiveawayCsv } from "@/lib/whatnotGiveaways";
+import { makeShowBoxes, releaseBoxes } from "@/lib/whatnotShow";
 import { getShow, listProducts, listShows, whatnotConfigured, type WhatnotShow } from "@/lib/whatnot";
 import {
   applyBinShows,
@@ -34,11 +38,17 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  const [bins, binShows, crossList, categoryMap, onWhatnot, waiting, skipped, failed, sales] = await Promise.all([
+  const [bins, binShows, crossList, categoryMap, onWhatnot, waiting, skipped, failed, sales, showBoxes, exports] = await Promise.all([
     prisma.bin.findMany({
       where: { whatnot: true },
       orderBy: { code: "asc" },
-      select: { id: true, code: true, shelfLabel: true, contents: { select: { units: true, item: { select: { whatnotPublishedAt: true, whatnotEndedAt: true } } } } },
+      select: {
+        id: true,
+        code: true,
+        shelfLabel: true,
+        giveaway: true,
+        contents: { select: { units: true, item: { select: { whatnotPublishedAt: true, whatnotEndedAt: true } } } },
+      },
     }),
     prisma.binShow.findMany({ include: { bin: { select: { code: true } } } }),
     getCrossList(),
@@ -80,6 +90,14 @@ export async function GET(request: NextRequest) {
         item: { select: { id: true, sku: true, finalTitle: true, shelfLocation: true } },
       },
     }),
+    prisma.showBox.findMany({
+      orderBy: { number: "asc" },
+      select: {
+        number: true,
+        assignments: { where: { releasedAt: null }, select: { buyer: { select: { buyerName: true, showTitle: true, showId: true } } } },
+      },
+    }),
+    prisma.giveawayExport.findMany({ orderBy: { createdAt: "desc" }, take: 10 }),
   ]);
   const locations = await getItemLocations(sales.map((s) => s.item));
   const showById = new Map(binShows.map((b) => [b.binId, b]));
@@ -93,6 +111,7 @@ export async function GET(request: NextRequest) {
       const assigned = showById.get(b.id);
       return {
         code: b.code,
+        giveaway: b.giveaway,
         shelf: b.shelfLabel,
         units: b.contents.reduce((sum, c) => sum + c.units, 0),
         onWhatnot: b.contents.filter((c) => c.item.whatnotPublishedAt && !c.item.whatnotEndedAt).length,
@@ -101,6 +120,14 @@ export async function GET(request: NextRequest) {
     }),
     crossList,
     categoryMap,
+    showBoxes: showBoxes.map((b) => ({
+      number: b.number,
+      code: showBoxCode(b.number),
+      inUse: b.assignments[0]
+        ? { buyer: b.assignments[0].buyer.buyerName, show: b.assignments[0].buyer.showTitle ?? b.assignments[0].buyer.showId }
+        : null,
+    })),
+    giveawayExports: exports.map((x) => ({ id: x.id, show: x.showTitle, bins: x.binCodes, rows: x.rows, by: x.createdBy, at: x.createdAt })),
     counts: { onWhatnot, waiting },
     skipped: skipped.map((s) => ({ reason: s.whatnotSkipReason, count: s._count._all })).sort((a, b) => b.count - a.count),
     failed,
@@ -179,6 +206,100 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true });
     }
 
+    // Show boxes (Cristian, 2026-11-07): make boxes 1..upTo that don't exist.
+    if (body.action === "show_boxes") {
+      const made = await makeShowBoxes(Number(body.upTo));
+      return NextResponse.json({ ok: true, made: made.length });
+    }
+
+    // Show box labels, from..to, at a station's label printer.
+    if (body.action === "print_show_boxes") {
+      const from = Number(body.from);
+      const to = Number(body.to);
+      const stationId = typeof body.stationId === "string" ? body.stationId : "";
+      if (!Number.isInteger(from) || !Number.isInteger(to) || from < 1 || to < from || to - from > 299) {
+        return NextResponse.json({ error: "Pick a range of box numbers (300 at most)." }, { status: 400 });
+      }
+      const station = stationId ? await prisma.station.findUnique({ where: { id: stationId }, select: { id: true } }) : null;
+      if (!station) return NextResponse.json({ error: "Pick a station." }, { status: 400 });
+      const boxes = await prisma.showBox.findMany({ where: { number: { gte: from, lte: to } }, orderBy: { number: "asc" }, select: { number: true } });
+      if (boxes.length === 0) return NextResponse.json({ error: "No show boxes in that range. Make them first." }, { status: 400 });
+      const by = getRequestUser(request)?.username ?? null;
+      const copies = Number.isInteger(body.copies) && body.copies >= 1 && body.copies <= 4 ? body.copies : 1;
+      await prisma.printJob.createMany({
+        data: boxes.map((b) => ({
+          stationId: station.id,
+          kind: "showbox",
+          payload: { code: showBoxCode(b.number) } as Prisma.InputJsonValue,
+          copies,
+          createdBy: by,
+        })),
+      });
+      return NextResponse.json({ ok: true, queued: boxes.length });
+    }
+
+    // A show box stuck on an old buyer (never packed in the app): free it.
+    if (body.action === "free_box") {
+      const n = Number(body.number);
+      const a = Number.isInteger(n)
+        ? await prisma.showBoxAssignment.findFirst({ where: { box: { number: n }, releasedAt: null }, select: { buyerId: true } })
+        : null;
+      if (!a) return NextResponse.json({ error: "That box is already free." }, { status: 400 });
+      await prisma.showBoxAssignment.updateMany({ where: { box: { number: n }, releasedAt: null }, data: { releasedAt: new Date() } });
+      // The buyer's other boxes stay theirs unless none are left in use.
+      const left = await prisma.showBoxAssignment.count({ where: { buyerId: a.buyerId, releasedAt: null } });
+      if (left === 0) await releaseBoxes(prisma, a.buyerId);
+      await logActivity({ request }, { action: "whatnot.free_show_box", summary: `Freed Whatnot show box ${n}`, targetType: "show_box", targetId: String(n) });
+      return NextResponse.json({ ok: true });
+    }
+
+    // The giveaway CSV for a show (Cristian, 2026-11-07): every giveaway in
+    // the picked giveaway bins, in Whatnot's bulk-upload format. Warns
+    // before the same items go on the same show twice (force = do it anyway).
+    if (body.action === "giveaway_csv") {
+      const binCodes = Array.isArray(body.binCodes) ? body.binCodes.filter((c: unknown): c is string => typeof c === "string").slice(0, 50) : [];
+      if (binCodes.length === 0) return NextResponse.json({ error: "Pick at least one giveaway bin." }, { status: 400 });
+      const showId = typeof body.showId === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(body.showId) ? body.showId : null;
+      let csv;
+      try {
+        csv = await buildGiveawayCsv(binCodes);
+      } catch (e) {
+        return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 400 });
+      }
+      if (csv.rows.length === 0) {
+        return NextResponse.json({ error: "Nothing in those bins can go up as a giveaway.", skipped: csv.skipped }, { status: 400 });
+      }
+      if (showId && body.force !== true) {
+        const before = await prisma.giveawayExport.findFirst({
+          where: { showId, itemIds: { hasSome: csv.itemIds } },
+          orderBy: { createdAt: "desc" },
+          select: { binCodes: true },
+        });
+        if (before) {
+          return NextResponse.json(
+            {
+              duplicate: true,
+              error: `Some of these already went on this show's CSV (${before.binCodes.join(", ")}). Make it again only if the first upload didn't go in.`,
+            },
+            { status: 409 }
+          );
+        }
+      }
+      const show = showId ? await getShow(showId).catch(() => null) : null;
+      await prisma.giveawayExport.create({
+        data: {
+          showId,
+          showTitle: show?.title.slice(0, 200) ?? null,
+          binCodes: csv.binCodes,
+          itemIds: csv.itemIds,
+          rows: csv.rows.length,
+          createdBy: getRequestUser(request)?.username ?? null,
+        },
+      });
+      const stamp = new Date().toISOString().slice(0, 10);
+      return NextResponse.json({ csv: csv.csv, rows: csv.rows, skipped: csv.skipped, filename: `whatnot-giveaways-${stamp}.csv` });
+    }
+
     if (body.action === "retry") {
       const { count } = await prisma.item.updateMany({ where: { whatnotError: { not: null }, whatnotEndedAt: null }, data: { whatnotError: null } });
       return NextResponse.json({ ok: true, cleared: count });
@@ -206,6 +327,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ error: "Unknown action." }, { status: 400 });
   } catch (e) {
+    if (e instanceof WarehouseError) return NextResponse.json({ error: e.message }, { status: e.status });
     return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 502 });
   }
 }

@@ -2,6 +2,7 @@ import { cogsMapsFor, costPerListingUnit } from "./cogs";
 import { getConsignmentLedger } from "./consignmentLedger";
 import { prisma } from "./prisma";
 import { shopAdSpend, type ShopAdSpend } from "./shopCampaigns";
+import { giveawayCost } from "./whatnotGiveaways";
 
 export type SalesSummary = {
   units: number;
@@ -16,6 +17,9 @@ export type SalesSummary = {
   // Shop Campaigns (Shopify autopilot ads) spend for the range, read from
   // Shopify's reports: it's on the Shopify bill, not on any order.
   shopAds: ShopAdSpend;
+  // Whatnot giveaways given in the range (Cristian, 2026-11-07): what those
+  // units cost, a cost like ad spend, never a sale (not in units/revenue).
+  giveaways: { units: number; cost: number };
   profit: number;
   // Revenue split by where it sold: "ebay", "shopify", "whatnot", ...
   revenueByChannel: Record<string, number>;
@@ -42,6 +46,7 @@ export async function salesSummary(from: Date | null, to: Date | null): Promise<
     bundleComponents: true,
   } as const;
   const shopAdsRead = shopAdSpend(from, to);
+  const giveawaysRead = giveawayCost(from, to);
   const [sales, refunds, shopifySales, shopifyRefunds, inPersonSales, manifestWalkups] = await Promise.all([
     // Full rows, not an aggregate — computing profit needs each sale's item
     // (for manifestId/upc/multipack) to look up COGS, which a plain _sum
@@ -136,6 +141,7 @@ export async function salesSummary(from: Date | null, to: Date | null): Promise<
   }
 
   const shopAds = await shopAdsRead;
+  const giveaways = await giveawaysRead;
 
   return {
     units,
@@ -146,7 +152,8 @@ export async function salesSummary(from: Date | null, to: Date | null): Promise<
     refunded,
     supplierShare,
     shopAds,
-    profit: revenue - fees - shipping - cogs - (refunded - refundFeeCredit) - supplierShare - shopAds.spend,
+    giveaways,
+    profit: revenue - fees - shipping - cogs - (refunded - refundFeeCredit) - supplierShare - shopAds.spend - giveaways.cost,
     revenueByChannel,
   };
 }
