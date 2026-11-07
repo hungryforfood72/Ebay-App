@@ -223,7 +223,9 @@ export function PackSuggestionCard({
   // worth selling (or there are no comps to tell either way).
   const allAside = Boolean(data.setAside) && (!data.plan || data.plan.length === 0);
   const shopChannel = data.setAside?.shopChannel ?? null;
-  const offerShop = allAside && shopChannel != null && shopChannel.worthIt !== false;
+  // Not when not-worth-eBay units go to Whatnot (Cristian, 2026-11-06: "if
+  // it can't be sold on eBay then Shopify is no too. Only Whatnot.").
+  const offerShop = !whatnotAside && allAside && shopChannel != null && shopChannel.worthIt !== false;
   const notForEbay = Boolean(data.setAside?.everything);
   const shopFirst = data.setAside?.shopPlan?.[0] ?? null;
   const shopRest = data.setAside?.shopPlan?.slice(1) ?? [];
@@ -547,9 +549,7 @@ function SetAsideNote({
         <p className="mt-0.5 text-amber-900/80">
           {explain && <>{why} </>}
           {whatnot
-            ? shopOffered
-              ? `Don't list ${n === 1 || n == null ? "it" : "them"} on eBay. Send ${n === 1 || n == null ? "it" : "them"} to Shopify below, or list ${n === 1 || n == null ? "it" : "them"} for Whatnot.`
-              : `Don't list ${n === 1 || n == null ? "it" : "them"} on eBay. List ${n === 1 || n == null ? "it" : "them"} for Whatnot below: same steps, a Whatnot label prints, then into a Whatnot bin.`
+            ? `Don't list ${n === 1 || n == null ? "it" : "them"} on eBay. List ${n === 1 || n == null ? "it" : "them"} for Whatnot below: same steps, a Whatnot label prints, then into a Whatnot bin.`
             : shopOffered
               ? `Don't list ${n === 1 || n == null ? "it" : "them"} on eBay. Send ${n === 1 || n == null ? "it" : "them"} to Shopify below, or set ${n === 1 || n == null ? "it" : "them"} aside.`
               : `Don't list ${n === 1 || n == null ? "it" : "them"}, just set ${n === 1 || n == null ? "it" : "them"} aside and move on to the next item.`}
@@ -572,7 +572,7 @@ function SetAsideNote({
             .
           </p>
         )}
-        {explain && setAside.shopChannel && <ShopChannelLine shop={setAside.shopChannel} what={what} />}
+        {explain && !whatnot && setAside.shopChannel && <ShopChannelLine shop={setAside.shopChannel} what={what} />}
       </div>
     </div>
   );
