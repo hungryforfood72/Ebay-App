@@ -122,15 +122,18 @@ export async function packSuggestion({
   // and everything works off the manifest as before. Extras the sorter
   // boxed that aren't on the manifest count too (Cristian, 2026-11-02: 6
   // Sharpie S-Gel cards sorted as extras, and the card said "if you have
-  // fewer than 4" since it found no manifest line to count from).
-  const sort =
-    !dudBox && manifestId && (countManifestId === manifestId || lines.length === 0) && (await isWarehouseMode())
-      ? await sortedLeft(manifestId, upc)
-      : null;
+  // fewer than 4" since it found no manifest line to count from). That
+  // includes an extra that's on some older manifest (Cristian, 2026-11-06:
+  // Josi pulled 2 Hawaiian Tropic sprays sorted as extras on the 10/14
+  // Pallet 2 load, and the card counted the 1 left on "Pallet 2 Sunblock"
+  // instead): the older manifest's line still says what the product is and
+  // its retail, but the count is this load's sort.
+  const sort = !dudBox && manifestId && (await isWarehouseMode()) ? await sortedLeft(manifestId, upc) : null;
+  let linesFromOtherLoad = false;
   if (sort && countManifestId !== manifestId) {
+    linesFromOtherLoad = lines.length > 0;
     countManifestId = manifestId;
     inferredManifestTitle = null;
-    lines = [];
     unitsLeft = null;
   }
   // A count typed on the card still wins when it's newer than the sorting.
@@ -482,7 +485,7 @@ export async function packSuggestion({
     // was picked) — its title, so the card can say where the count's from.
     manifestTitle: inferredManifestTitle,
     alreadyScannedIn,
-    expected: lines.reduce((sum, l) => sum + l.expectedQuantity, 0) || null,
+    expected: linesFromOtherLoad ? null : lines.reduce((sum, l) => sum + l.expectedQuantity, 0) || null,
     plan,
     setAside: setAside && {
       units: setAside.units,
