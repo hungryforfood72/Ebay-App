@@ -28,9 +28,6 @@ type PackSuggestion = {
   // been listed since; sorted = every good unit the sorter boxed.
   countedBySort?: boolean;
   sorted?: number | null;
-  // Set when the count came from a load other than the one being scanned
-  // into (or none was picked): that load's title.
-  manifestTitle: string | null;
   // Every unit the manifest listed is already scanned in; `available` is
   // then 1, for the one in hand.
   alreadyScannedIn: boolean;
@@ -97,14 +94,12 @@ const listingsOf = (g: PackPlanGroup) =>
       : "1 single"
     : `${g.listings} listings of ${g.packSize > 1 ? `${g.packSize}-packs` : "singles"}`;
 const money = (n: number) => `$${n.toFixed(2)}`;
-const manifestLabel = (d: { manifestTitle: string | null }) =>
-  d.manifestTitle ? `the "${d.manifestTitle}" manifest` : "this manifest";
 // "5 on hand:" for a typed count, "3 left on this manifest:" otherwise.
 const countLabel = (d: PackSuggestion, what = "") =>
   d.countedBySort
     ? `${d.available}${what} sorted and not listed yet${d.manifestLeft != null && d.manifestLeft !== d.available ? ` (manifest says ${d.manifestLeft})` : ""}`
     : !d.countedByHand
-    ? `${d.available}${what} left on ${manifestLabel(d)}`
+    ? `${d.available}${what} left on this manifest`
     : d.handCount != null && d.available !== d.handCount
       ? `${d.available}${what} left of the ${d.handCount} you counted`
       : `You have ${d.available}${what}${d.manifestLeft != null ? ` (the manifest said ${d.manifestLeft} left)` : ""}`;
@@ -114,7 +109,7 @@ const countLabel = (d: PackSuggestion, what = "") =>
 const allScannedIn = (d: PackSuggestion) =>
   d.countedBySort && d.sorted != null
     ? `All ${d.sorted} sorted ${d.sorted === 1 ? "is" : "are"} already listed, so this one looks extra.`
-    : `All ${d.expected ?? ""} on ${manifestLabel(d)} ${d.expected === 1 ? "is" : "are"} already scanned in, so this one looks extra.`;
+    : `All ${d.expected ?? ""} on this manifest ${d.expected === 1 ? "is" : "are"} already scanned in, so this one looks extra.`;
 
 // On the scan page's quantity step: whether it's worth listing, what pack
 // size this UPC sells best in (see /api/pack-suggestion) and, on a manifest,

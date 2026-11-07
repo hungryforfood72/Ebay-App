@@ -52,7 +52,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { describeBreakdown } from "@/lib/expirationBreakdown";
 import type { RelistPart, RelistPlan } from "@/lib/relist";
 import { upcMatchKeys } from "@/lib/upcMatch";
-import { classifyScan, dudBoxName, normalizeCode } from "@/lib/warehouse/codes";
+import { classifyScan, dudBoxName, normalizeCode, sortBoxName } from "@/lib/warehouse/codes";
 import type { ReturnListingPlan } from "@/lib/warehouse/returns";
 import type { SortLocation } from "@/lib/warehouse/sortBoxes";
 import { Suspense, useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
@@ -207,7 +207,8 @@ function ScanPageInner() {
   const searchParams = useSearchParams();
   // Cost and the floor price are the owner's; the lookups leave them out
   // for everyone else.
-  const isOwner = useCurrentUser()?.role === "owner";
+  const currentUser = useCurrentUser();
+  const isOwner = currentUser?.role === "owner";
   const router = useRouter();
   const [scanning, setScanning] = useState(false);
   const [savedThisSession, setSavedThisSession] = useState(0);
@@ -221,6 +222,14 @@ function ScanPageInner() {
     return searchParams.get("manifestId") ?? localStorage.getItem(ACTIVE_MANIFEST_KEY);
   });
   const [manifestTitle, setManifestTitle] = useState<string | null>(null);
+  // Listing starts by scanning a box label (Cristian, 2026-11-06): the label
+  // names its load, so the load is locked in from the box and nobody picks
+  // the wrong manifest by hand. "ebay" | "whatnot" = which kind of listing
+  // the box is for; null = no box prompt up.
+  const [boxGate, setBoxGate] = useState<"ebay" | "whatnot" | null>(null);
+  const [boxGateScan, setBoxGateScan] = useState("");
+  const [boxGateError, setBoxGateError] = useState<string | null>(null);
+  const [boxGateBusy, setBoxGateBusy] = useState(false);
   const [whatnotMode, setWhatnotModeState] = useState<boolean>(() => {
     if (typeof window === "undefined") return false;
     return localStorage.getItem(WHATNOT_MODE_KEY) === "1";
@@ -889,6 +898,80 @@ function ScanPageInner() {
     endRelist();
   }
 
+  // --- Starting from a box label ---------------------------------------------
+
+  // The load a sort box belongs to (boxes aren't reused, so it keeps it).
+  async function sortBoxLoad(code: string): Promise<{ manifestId: string; manifestTitle: string | null }> {
+    const r = await fetch(`/api/sort-boxes/${encodeURIComponent(code)}`, { cache: "no-store" });
+    const data = await r.json().catch(() => null);
+    if (!r.ok) throw new Error(data?.error ?? `Couldn't look up box ${code}.`);
+    if (!data?.manifestId) throw new Error(`${sortBoxName(code)} isn't on a load yet. Scan a box that has items in it.`);
+    return { manifestId: data.manifestId, manifestTitle: data.manifestTitle ?? null };
+  }
+
+  // The box prompt's scan: a sort box (SB...) or a dud box (DB...) label.
+  // Its load becomes the one for the whole session, until Finish.
+  async function startFromBox(raw: string) {
+    const code = normalizeCode(raw);
+    setBoxGateScan("");
+    setBoxGateError(null);
+    if (!code) return;
+    const kind = classifyScan(code);
+    if (kind !== "sortbox" && kind !== "dudbox") {
+      setBoxGateError(`${code} isn't a box label. Scan the QR label on a sort box or a dud box.`);
+      return;
+    }
+    setBoxGateBusy(true);
+    try {
+      if (kind === "sortbox") {
+        const load = await sortBoxLoad(code);
+        setActiveManifestId(load.manifestId);
+        setManifestTitle(load.manifestTitle);
+      } else {
+        const box = await loadDudBox(code);
+        setActiveManifestId(box.manifestId);
+        setManifestTitle(box.manifestTitle);
+        // Leaving the dud box goes back to its load, not to no load.
+        preDudManifest.current = box.manifestId;
+        setDudBox(box);
+        setIsBundle(false);
+        setUpc("");
+        setStep("upc");
+      }
+      if (boxGate) setWhatnotMode(boxGate === "whatnot");
+      setBoxGate(null);
+      startScanning();
+    } catch (e) {
+      setBoxGateError(e instanceof Error ? e.message : `Couldn't look up box ${code}.`);
+    } finally {
+      setBoxGateBusy(false);
+    }
+  }
+
+  // A sort box label scanned where a product goes, mid-session. Same load:
+  // fine, scan the product. Another load: never switch silently, the load
+  // only changes by finishing and scanning that box to start.
+  async function sortBoxMidSession(raw: string) {
+    const code = normalizeCode(raw);
+    setMessage(null);
+    try {
+      const load = await sortBoxLoad(code);
+      if (!activeManifestId) {
+        setActiveManifestId(load.manifestId);
+        setManifestTitle(load.manifestTitle);
+        setMessage(`Listing into ${load.manifestTitle ?? "that box's load"}. Now scan the product.`);
+      } else if (load.manifestId === activeManifestId) {
+        setMessage(`That's ${sortBoxName(code)} from this load. Now scan the product.`);
+      } else {
+        setMessage(
+          `${sortBoxName(code)} is from ${load.manifestTitle ? `"${load.manifestTitle}"` : "another load"}, not the one you're listing. To list that load, tap Finish, then scan this box.`
+        );
+      }
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : `Couldn't look up box ${code}.`);
+    }
+  }
+
   // --- Warehouse mode: listing from a dud box -------------------------------
 
   async function loadDudBox(code: string): Promise<DudBoxInfo> {
@@ -956,6 +1039,12 @@ function ScanPageInner() {
       const code = upc;
       setUpc("");
       enterDudBox(code);
+      return;
+    }
+    if (classifyScan(upc) === "sortbox") {
+      const code = upc;
+      setUpc("");
+      sortBoxMidSession(code);
       return;
     }
     goNext();
@@ -1509,6 +1598,75 @@ function ScanPageInner() {
     );
   }
 
+  // An employee listing with no load (an old session, or a link with no
+  // box behind it) gets the box prompt instead of the steps. Relists,
+  // returns and dud boxes carry their own load.
+  const needsBox =
+    scanning && currentUser != null && !isOwner && !activeManifestId && !relist && !returnPlan && !dudBox;
+  if (boxGate || needsBox) {
+    const forWhatnot = boxGate ? boxGate === "whatnot" : whatnotMode;
+    return (
+      <AppShell
+        width="narrow"
+        title={forWhatnot ? "List for Whatnot" : "Start listing"}
+        subtitle="Scan a box label first. The label says which load it's from, so everything you list goes to that load."
+      >
+        <div className="flex flex-col gap-3">
+          <Card>
+            <ScanField
+              id="scan-start-box"
+              label="Scan a box"
+              prompt="Scan the QR label on a sort box or dud box"
+              autoFocus
+              value={boxGateScan}
+              onChange={setBoxGateScan}
+              onScan={() => startFromBox(boxGateScan)}
+              hint={boxGateBusy ? "Looking up the box…" : "Sort boxes say \"Sort Box 3\", dud boxes \"Dud Box 3\"."}
+            />
+            {boxGateError && (
+              <Alert tone="danger" className="mt-3">
+                {boxGateError}
+              </Alert>
+            )}
+          </Card>
+          {isOwner && (
+            <Card className="text-sm">
+              <p className="font-medium text-foreground">Owner only</p>
+              <p className="mt-1 text-muted-foreground">For a load sorted without boxes, or listing with no load.</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Link href="/manifests" className={buttonClasses({ variant: "outline", size: "sm" })}>
+                  Pick a manifest
+                </Link>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    if (boxGate) setWhatnotMode(boxGate === "whatnot");
+                    setBoxGate(null);
+                    startScanning();
+                  }}
+                >
+                  Start without a box
+                </Button>
+              </div>
+            </Card>
+          )}
+          <Button
+            variant="ghost"
+            onClick={() => {
+              setBoxGateError(null);
+              setBoxGateScan("");
+              if (boxGate) setBoxGate(null);
+              else finishScanning();
+            }}
+          >
+            Cancel
+          </Button>
+        </div>
+      </AppShell>
+    );
+  }
+
   if (!scanning) {
     return (
       <AppShell width="narrow" title="List inventory" subtitle="Start listing, or sell something already on the shelf.">
@@ -1517,27 +1675,29 @@ function ScanPageInner() {
             primary
             icon={ScanBarcode}
             title="Start scanning"
-            description="Photograph, scan, and shelve items for listing on eBay and Shopify."
+            description="Scan a box label, then photograph, scan, and shelve items for listing on eBay and Shopify."
             onClick={() => {
-              setWhatnotMode(false);
-              startScanning();
+              setBoxGateError(null);
+              setBoxGate("ebay");
             }}
           />
           <OptionCard
             icon={Gavel}
             title="List for Whatnot"
-            description="Its own Whatnot-only listing at the auction start price. Pick a manifest after, or skip it."
+            description="Scan a box label, then make Whatnot-only listings at the auction start price."
             onClick={() => {
-              setWhatnotMode(true);
-              startScanning();
+              setBoxGateError(null);
+              setBoxGate("whatnot");
             }}
           />
-          <OptionCard
-            href="/manifests"
-            icon={FileSpreadsheet}
-            title="Scan with a manifest"
-            description="Pick or upload a manifest to reconcile against as you go."
-          />
+          {isOwner && (
+            <OptionCard
+              href="/manifests"
+              icon={FileSpreadsheet}
+              title="Scan with a manifest"
+              description="Owner only: pick or upload a manifest by hand (a load sorted without boxes)."
+            />
+          )}
           <OptionCard
             icon={ShoppingBag}
             title="Sell shelf item"

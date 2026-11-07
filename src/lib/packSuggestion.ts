@@ -81,15 +81,14 @@ export async function packSuggestion({
     (!noUpc && (await prisma.item.count({ where: { upc, OR: [{ rxOnly: true }, { pullReason: "rx_return" }] } })) > 0);
   if (rxOnly) return { upc, isOwner, rxOnly: true };
 
-  // Which manifest to count against: the one being scanned into, when it
-  // lists this UPC. Otherwise (no manifest picked on the scanner, or a
-  // different load) the newest bought load that has units of it left, or
-  // the newest one listing it at all. Cristian: it knew the manifest said 1
-  // but still said "if you have fewer than 3".
+  // Counted against the load being listed into, and only that load
+  // (Cristian, 2026-11-06: the card went looking on other manifests, found
+  // "Pallet 2 Sunblock" for a product on the 10/14 Pallet 2 load and used
+  // its count; "manifests get locked to that one only"). No load, or a
+  // product that isn't on it: no manifest count.
   let countManifestId: string | null = null;
   let lines: ManifestLineInfo[] = [];
   let unitsLeft: number | null = null;
-  let inferredManifestTitle: string | null = null;
   if (manifestId) {
     if (noUpc) {
       const found = await linesForKey(manifestId, upc);
@@ -103,14 +102,6 @@ export async function packSuggestion({
       unitsLeft = await unitsLeftOnManifest(manifestId, upc, lines);
     }
   }
-  if (!countManifestId && !noUpc) {
-    const found = await findManifestForUpc(upc);
-    if (found) {
-      ({ lines, unitsLeft } = found);
-      countManifestId = found.manifestId;
-      inferredManifestTitle = found.title;
-    }
-  }
   // How many Lizvet says she actually has, typed on the card when it doesn't
   // match the manifest (Cristian, 2026-10-15: 5 Hawaiian Tropic in hand,
   // manifest said 3 left), less what she's saved of it since.
@@ -122,19 +113,10 @@ export async function packSuggestion({
   // and everything works off the manifest as before. Extras the sorter
   // boxed that aren't on the manifest count too (Cristian, 2026-11-02: 6
   // Sharpie S-Gel cards sorted as extras, and the card said "if you have
-  // fewer than 4" since it found no manifest line to count from). That
-  // includes an extra that's on some older manifest (Cristian, 2026-11-06:
-  // Josi pulled 2 Hawaiian Tropic sprays sorted as extras on the 10/14
-  // Pallet 2 load, and the card counted the 1 left on "Pallet 2 Sunblock"
-  // instead; his word: "completely wrong manifest"). Nothing from another
-  // manifest is used then: the name comes from the sorter's lookup.
+  // fewer than 4" since it found no manifest line to count from); the name
+  // then comes from the sorter's lookup.
   const sort = !dudBox && manifestId && (await isWarehouseMode()) ? await sortedLeft(manifestId, upc) : null;
-  if (sort && countManifestId !== manifestId) {
-    countManifestId = manifestId;
-    inferredManifestTitle = null;
-    lines = [];
-    unitsLeft = null;
-  }
+  if (sort) countManifestId = manifestId;
   // A count typed on the card still wins when it's newer than the sorting.
   const handWins = hand != null && (sort == null || hand.createdAt >= sort.latestAt);
   const countedBySort = !handWins && sort != null;
@@ -480,9 +462,6 @@ export async function packSuggestion({
     sorted: countedBySort ? sort.sorted : null,
     // What the manifest says is left, for "the manifest says 3".
     manifestLeft: unitsLeft,
-    // Counted against a load other than the one being scanned into (or none
-    // was picked) — its title, so the card can say where the count's from.
-    manifestTitle: inferredManifestTitle,
     alreadyScannedIn,
     expected: lines.reduce((sum, l) => sum + l.expectedQuantity, 0) || null,
     plan,
@@ -615,30 +594,6 @@ async function productNameForUpc(upc: string): Promise<string | null> {
 
 const LINE_SELECT = { description: true, expectedQuantity: true, retailPrice: true, category: true } as const;
 type ManifestLineInfo = { description: string; expectedQuantity: number; retailPrice: Prisma.Decimal; category: string | null };
-
-async function findManifestForUpc(
-  upc: string
-): Promise<{ manifestId: string; title: string; lines: ManifestLineInfo[]; unitsLeft: number } | null> {
-  const found = await prisma.manifestLine.findMany({
-    where: { upc, manifest: { purchased: true } },
-    select: { ...LINE_SELECT, manifestId: true, manifest: { select: { title: true, createdAt: true } } },
-  });
-  const byManifest = new Map<string, { title: string; createdAt: Date; lines: ManifestLineInfo[] }>();
-  for (const l of found) {
-    const entry = byManifest.get(l.manifestId) ?? { title: l.manifest.title, createdAt: l.manifest.createdAt, lines: [] };
-    entry.lines.push(l);
-    byManifest.set(l.manifestId, entry);
-  }
-  const newestFirst = [...byManifest.entries()].sort(([, a], [, b]) => b.createdAt.getTime() - a.createdAt.getTime());
-  let fallback: { manifestId: string; title: string; lines: ManifestLineInfo[]; unitsLeft: number } | null = null;
-  for (const [id, m] of newestFirst) {
-    const unitsLeft = await unitsLeftOnManifest(id, upc, m.lines);
-    const candidate = { manifestId: id, title: m.title, lines: m.lines, unitsLeft };
-    if (unitsLeft > 0) return candidate;
-    fallback ??= candidate;
-  }
-  return fallback;
-}
 
 // Units of this UPC the manifest said were coming, minus everything
 // already accounted for: scanned in (on its own or inside a bundle), sold

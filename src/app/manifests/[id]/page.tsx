@@ -313,10 +313,14 @@ export default function ManifestDetailPage({ params }: { params: Promise<{ id: s
         </span>
       }
       actions={
-        <Link href={`/scan?manifestId=${manifest.id}`} className={buttonClasses({ size: "lg" })}>
-          <ScanBarcode className="size-5" aria-hidden />
-          Scan into this manifest
-        </Link>
+        // Owner only: everyone else starts listing by scanning a box label,
+        // which locks in its load (Cristian, 2026-11-06).
+        isOwner ? (
+          <Link href={`/scan?manifestId=${manifest.id}`} className={buttonClasses({ size: "lg" })}>
+            <ScanBarcode className="size-5" aria-hidden />
+            Scan into this manifest
+          </Link>
+        ) : undefined
       }
     >
       <div className="flex flex-col gap-6">
