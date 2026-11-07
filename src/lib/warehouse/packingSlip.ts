@@ -72,6 +72,9 @@ export async function shipToForSlip(order: OrderForSlip): Promise<ShipTo | null>
   if (order.handoff === "pickup" || order.handoff === "counter") return null;
   try {
     if (order.channel === "ebay") return await getOrderShipTo(order.orderId);
+    // Whatnot's API never gives the buyer's address; it's on Whatnot's own
+    // label.
+    if (order.channel === "whatnot") return null;
     const data = await shopifyGraphql<{
       order: {
         shippingAddress: {

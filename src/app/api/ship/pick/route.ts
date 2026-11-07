@@ -1,6 +1,6 @@
 import { getRequestUser } from "@/lib/auth";
 import { printPackingSlip } from "@/lib/warehouse/packingSlip";
-import { pickUnit, type PickChannel } from "@/lib/warehouse/picking";
+import { isPickChannel, pickUnit, type PickChannel } from "@/lib/warehouse/picking";
 import { NextRequest, NextResponse } from "next/server";
 
 export const maxDuration = 30;
@@ -15,7 +15,7 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({}));
   const channel = body.channel as PickChannel;
   if (
-    (channel !== "ebay" && channel !== "shopify") ||
+    !isPickChannel(channel) ||
     typeof body.orderId !== "string" ||
     typeof body.lineItemId !== "string" ||
     (typeof body.scannedCode !== "string" && body.manual !== true)

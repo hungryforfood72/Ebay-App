@@ -409,7 +409,7 @@ export default function ShipPage() {
           note: json.scannedItem ? putBack(json.scannedItem.location) : null,
         });
       } else {
-        show({ tone: "bad", headline: json.code === "not_open" ? "Not open any more" : "Wrong item", detail: json.reason });
+        show({ tone: "bad", headline: json.code === "not_open" ? "Not open any more" : json.code === "cancel_requested" ? "Buyer asked to cancel" : "Wrong item", detail: json.reason });
         if (json.code === "not_open") load(true);
       }
     } catch (e) {
@@ -659,7 +659,9 @@ export default function ShipPage() {
                             <p className="mt-1 text-sm text-foreground">
                               {holding
                                 ? `Hold: order ${orderList(card.waitingOn)} isn't picked yet. Same buyer, same address, so it all goes in one box.`
-                                : "Same buyer, same address: pack them in one box and buy one combined label in eBay."}
+                                : first.lines[0]?.channel === "whatnot"
+                                  ? "Same buyer: Whatnot ships these on one label, so pack them in one box."
+                                  : "Same buyer, same address: pack them in one box and buy one combined label in eBay."}
                             </p>
                           )}
                           {slipMessage?.key === card.key && <p className="mt-1 text-xs text-foreground">{slipMessage.text}</p>}
@@ -671,8 +673,8 @@ export default function ShipPage() {
                               className="mt-2 inline-flex h-9 items-center gap-1.5 rounded-lg bg-primary px-3 text-sm font-medium text-primary-foreground"
                             >
                               <ExternalLink className="size-4" aria-hidden />
-                              {first.lines[0].channel === "ebay" ? "Open in eBay" : "Open in Shopify"}
-                              {first.pickup ? "" : combined ? " to combine and buy the label" : " to buy the label"}
+                              {first.lines[0].channel === "ebay" ? "Open in eBay" : first.lines[0].channel === "whatnot" ? "Open in Whatnot" : "Open in Shopify"}
+                              {first.pickup ? "" : first.lines[0].channel === "whatnot" ? " to print the label" : combined ? " to combine and buy the label" : " to buy the label"}
                             </a>
                           )}
                           {card.orders.map((o) => (
@@ -862,6 +864,7 @@ export default function ShipPage() {
             <p className="text-center text-xs text-muted-foreground">
               Updated {new Date(data.fetchedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}. Refreshes every minute.
               {data.shopify === "off" ? " Shopify orders aren't connected here." : ""}
+              {data.whatnot === "off" ? " Whatnot orders aren't connected here." : ""}
             </p>
           </>
         )}

@@ -127,6 +127,18 @@ export type WhatnotOrder = {
   updated_at: string;
   cancelled_at: string | null;
   amounts?: { subtotal?: Money | null; shipping?: Money | null; total?: Money | null } | null;
+  // The order in the seller dashboard.
+  url?: string | null;
+  // Needs read:customers; null without it.
+  buyer?: { id: string; username: string; display_name: string | null } | null;
+};
+
+export type WhatnotShipment = {
+  id: string;
+  status: string;
+  fulfillment_method: "shipping" | "pickup";
+  required_actions?: string[];
+  created_at?: string | null;
 };
 
 export type WhatnotOrderItem = {
@@ -139,6 +151,8 @@ export type WhatnotOrderItem = {
   purchased_item: { title: string; sku: string | null } | null;
   quantity: number;
   unit_price: Money;
+  // Orders from one buyer that go in one box share a shipment.
+  shipment_id?: string | null;
 };
 
 type Page<T> = { data: T[]; next_cursor?: string | null; cursor?: string | null; has_more?: boolean };
@@ -263,6 +277,15 @@ export async function getOrder(orderId: string): Promise<WhatnotOrder> {
 
 export async function listOrders(cursor?: string): Promise<{ items: WhatnotOrder[]; next: string | null }> {
   return pageItems(await call<Page<WhatnotOrder>>("GET", `/orders?limit=50&reverse=true${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`));
+}
+
+export async function getShipment(shipmentId: string): Promise<WhatnotShipment> {
+  return call("GET", `/shipments/${id(shipmentId)}`);
+}
+
+// Newest first.
+export async function listShipments(cursor?: string): Promise<{ items: WhatnotShipment[]; next: string | null }> {
+  return pageItems(await call<Page<WhatnotShipment>>("GET", `/shipments?limit=50&reverse=true${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`));
 }
 
 export async function listOrderItems(orderId: string): Promise<WhatnotOrderItem[]> {

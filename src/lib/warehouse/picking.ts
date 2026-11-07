@@ -8,6 +8,16 @@ import { IN_PERSON_TAG } from "../counterSale";
 import { getShopifyConfig, shopifyGraphql } from "../shopify";
 import { parseBundleComponentUnits } from "../itemUnits";
 import { upcMatchKeys } from "../upcMatch";
+import {
+  getShipment,
+  listOrderItems,
+  listOrders,
+  listShipments,
+  whatnotConfigured,
+  type WhatnotOrder,
+  type WhatnotOrderItem,
+  type WhatnotShipment,
+} from "../whatnot";
 import { getItemLocations, placeInBin, removeUnits, WarehouseError } from "./bins";
 import { classifyScan, normalizeCode } from "./codes";
 import { formatLocation } from "./location";
@@ -17,13 +27,16 @@ import type { ItemLocation } from "./types";
 // the shelves, and checking each unit by scanning its label so a picker
 // can't grab the 3-pack dated 05/2027 when the order is for the one dated
 // 09/2026. Nothing here is stored about orders themselves: the open list
-// comes live from eBay (and the Shopify store, which also carries Whatnot
-// sales) on every load, and the only thing written is one OrderPick row per
+// comes live from eBay, the Shopify store and Whatnot on every load, and the only thing written is one OrderPick row per
 // unit picked, plus the bin count coming down.
 //
 // Nothing in these shapes is money. Employees use this page.
 
-export type PickChannel = "ebay" | "shopify";
+export type PickChannel = "ebay" | "shopify" | "whatnot";
+
+export function isPickChannel(v: unknown): v is PickChannel {
+  return v === "ebay" || v === "shopify" || v === "whatnot";
+}
 
 // labelled: has an ES label; scanning it is the only check. Usually in a
 //   bin, but new stock can still be loose on the binning table (the lister
@@ -118,6 +131,8 @@ export type ShipOrdersResponse = {
   fetchedAt: string;
   // off = the Shopify env vars aren't set (always the case locally).
   shopify: "ok" | "off" | "error";
+  // off = no WHATNOT_API_TOKEN.
+  whatnot: "ok" | "off" | "error";
   warnings: string[];
 };
 
@@ -142,10 +157,17 @@ type RawLine = {
   // custom label eBay cut short.
   listingId: string | null;
   shopifyVariantId: string | null;
+  // Whatnot's ids for the product sold, matched against the Item's.
+  whatnotProductId?: string | null;
+  whatnotVariantId?: string | null;
+  // The order's own page, when the store gives one (Whatnot does).
+  url?: string | null;
   cancelRequested: boolean;
   handoff: Handoff;
-  // Same value = same buyer, same address (see shipGroupKey). Only for
-  // eBay orders that ship. A hash, so no address leaves this module.
+  // Same value = ships in one box. eBay: same buyer, same address (see
+  // shipGroupKey), a hash so no address leaves this module. Whatnot: the
+  // shipment the orders share (Whatnot puts one buyer's orders on one
+  // label itself).
   shipGroup: string | null;
 };
 
@@ -373,15 +395,120 @@ function shopifyLines(orders: ShopifyOpenOrder[]): RawLine[] {
   return out;
 }
 
+// Whatnot buy-it-now orders waiting to ship (Cristian, 2026-11-06; show
+// auctions come later). Whatnot's order list can't be filtered, so it's
+// read newest first back WHATNOT_DAYS (Whatnot wants orders shipped within
+// days, so an open one is never that old), then each open order's items.
+// An order's items don't change, so they're read once per server instance.
+// The shipments say which orders go out together, which are pickups, and
+// which have a cancellation pending.
+const WHATNOT_DAYS = 21;
+const WHATNOT_ORDER_PAGES = 10;
+const WHATNOT_SHIPMENT_PAGES = 4;
+const whatnotItemCache = new Map<string, WhatnotOrderItem[]>();
+
+// Buy-it-now only for now. Whatnot leaves transaction_type empty when it
+// wasn't recorded; an order made outside any show is then a shop purchase.
+function whatnotBuyItNow(o: WhatnotOrder): boolean {
+  return o.transaction_type === "buy_it_now" || (o.transaction_type == null && !o.show_id);
+}
+
+async function getWhatnotOpenLines(): Promise<RawLine[]> {
+  const since = Date.now() - WHATNOT_DAYS * 24 * 60 * 60 * 1000;
+  const tooOld = (at: string | null | undefined) => {
+    const t = Date.parse(at ?? "");
+    return Number.isFinite(t) && t < since;
+  };
+  const open: WhatnotOrder[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < WHATNOT_ORDER_PAGES; page++) {
+    const { items, next } = await listOrders(cursor);
+    let reachedOld = false;
+    for (const o of items) {
+      if (tooOld(o.created_at)) {
+        reachedOld = true;
+        continue;
+      }
+      if (o.status === "pending_fulfillment" && !o.cancelled_at && whatnotBuyItNow(o)) open.push(o);
+    }
+    if (reachedOld || !next) break;
+    cursor = next;
+  }
+  if (open.length === 0) return [];
+
+  const shipments = new Map<string, WhatnotShipment>();
+  let shipCursor: string | undefined;
+  for (let page = 0; page < WHATNOT_SHIPMENT_PAGES; page++) {
+    const { items, next } = await listShipments(shipCursor);
+    for (const sh of items) shipments.set(sh.id, sh);
+    if (!next || items.some((sh) => tooOld(sh.created_at))) break;
+    shipCursor = next;
+  }
+
+  if (whatnotItemCache.size > 2000) whatnotItemCache.clear();
+  const itemsByOrder = new Map<string, WhatnotOrderItem[]>();
+  for (const o of open) {
+    let items = whatnotItemCache.get(o.id);
+    if (!items) {
+      items = await listOrderItems(o.id);
+      whatnotItemCache.set(o.id, items);
+    }
+    itemsByOrder.set(o.id, items);
+  }
+  // A shipment past the pages read above: read it by itself, so a pickup or
+  // a pending cancellation is never missed.
+  const missing = new Set<string>();
+  for (const items of itemsByOrder.values()) {
+    for (const li of items) if (li.shipment_id && !shipments.has(li.shipment_id)) missing.add(li.shipment_id);
+  }
+  for (const sid of [...missing].slice(0, 30)) shipments.set(sid, await getShipment(sid));
+
+  const out: RawLine[] = [];
+  for (const o of open) {
+    for (const li of itemsByOrder.get(o.id) ?? []) {
+      if (li.quantity < 1) continue;
+      const shipment = li.shipment_id ? shipments.get(li.shipment_id) : undefined;
+      const handoff: Handoff = shipment?.fulfillment_method === "pickup" ? "pickup" : "ship";
+      out.push({
+        channel: "whatnot",
+        source: "Whatnot",
+        orderId: o.id,
+        orderNumber: o.id,
+        orderedAt: o.created_at,
+        buyer: o.buyer?.username ?? null,
+        lineItemId: li.id,
+        quantity: li.quantity,
+        sku: li.purchased_item?.sku?.trim() || li.variant_external_id?.trim() || li.product_external_id?.trim() || null,
+        title: li.purchased_item?.title ?? "Whatnot item",
+        image: null,
+        listingId: null,
+        shopifyVariantId: null,
+        whatnotProductId: li.product_id,
+        whatnotVariantId: li.variant_id,
+        url: o.url ?? null,
+        cancelRequested: Boolean(shipment?.required_actions?.includes("order_pending_cancellation")),
+        handoff,
+        shipGroup: handoff === "ship" && li.shipment_id ? `whatnot:${li.shipment_id}` : null,
+      });
+    }
+  }
+  return out;
+}
+
 // One eBay Fulfillment call per load is plenty, but a pick right after the
 // list loaded shouldn't make another, and three handhelds refreshing every
 // minute shouldn't make three. Per server instance; an order that isn't in
 // the cached copy forces a fresh read (see findOpenLine).
 const CACHE_MS = 30_000;
-let cache: { at: number; promise: Promise<{ lines: RawLine[]; shopify: ShipOrdersResponse["shopify"]; warnings: string[] }> } | null =
-  null;
+type OpenLines = {
+  lines: RawLine[];
+  shopify: ShipOrdersResponse["shopify"];
+  whatnot: ShipOrdersResponse["whatnot"];
+  warnings: string[];
+};
+let cache: { at: number; promise: Promise<OpenLines> } | null = null;
 
-async function fetchOpenLines(): Promise<{ lines: RawLine[]; shopify: ShipOrdersResponse["shopify"]; warnings: string[] }> {
+async function fetchOpenLines(): Promise<OpenLines> {
   const warnings: string[] = [];
   const ebayPromise = getOrdersAwaitingShipment().then((o) => ebayLines(o as unknown as EbayRawOrder[]));
   let shopify: ShipOrdersResponse["shopify"] = "off";
@@ -398,8 +525,22 @@ async function fetchOpenLines(): Promise<{ lines: RawLine[]; shopify: ShipOrders
         return [];
       });
   }
-  const [ebay, shop] = await Promise.all([ebayPromise, shopifyPromise]);
-  return { lines: [...ebay, ...shop], shopify, warnings };
+  let whatnot: ShipOrdersResponse["whatnot"] = "off";
+  let whatnotPromise: Promise<RawLine[]> = Promise.resolve([]);
+  if (whatnotConfigured()) {
+    whatnotPromise = getWhatnotOpenLines()
+      .then((l) => {
+        whatnot = "ok";
+        return l;
+      })
+      .catch((e) => {
+        whatnot = "error";
+        warnings.push(`Couldn't read Whatnot orders: ${e instanceof Error ? e.message : String(e)}`);
+        return [];
+      });
+  }
+  const [ebay, shop, wn] = await Promise.all([ebayPromise, shopifyPromise, whatnotPromise]);
+  return { lines: [...ebay, ...shop, ...wn], shopify, whatnot, warnings };
 }
 
 async function getOpenLines(fresh = false) {
@@ -436,6 +577,8 @@ export const ITEM_SELECT = {
   isBundle: true,
   bundleComponents: true,
   shelfLocation: true,
+  whatnotProductId: true,
+  whatnotVariantId: true,
 } as const;
 
 export type MatchedItem = {
@@ -456,6 +599,8 @@ export type MatchedItem = {
   isBundle: boolean;
   bundleComponents: unknown;
   shelfLocation: string;
+  whatnotProductId: string | null;
+  whatnotVariantId: string | null;
 };
 
 // eBay caps a custom label at 50 characters. Listings uploaded by CSV
@@ -467,8 +612,10 @@ async function matchItems(lines: RawLine[]): Promise<Map<string, MatchedItem>> {
   const skus = [...new Set(lines.map((l) => l.sku).filter((s): s is string => Boolean(s)))];
   const listingIds = [...new Set(lines.map((l) => l.listingId).filter((s): s is string => Boolean(s)))];
   const variantIds = [...new Set(lines.map((l) => l.shopifyVariantId).filter((s): s is string => Boolean(s)))];
+  const wnVariants = [...new Set(lines.map((l) => l.whatnotVariantId).filter((s): s is string => Boolean(s)))];
+  const wnProducts = [...new Set(lines.map((l) => l.whatnotProductId).filter((s): s is string => Boolean(s)))];
   const cutShort = skus.filter((s) => s.length === EBAY_SKU_MAX);
-  if (skus.length + listingIds.length + variantIds.length === 0) return new Map();
+  if (skus.length + listingIds.length + variantIds.length + wnVariants.length + wnProducts.length === 0) return new Map();
 
   const items: MatchedItem[] = await prisma.item.findMany({
     where: {
@@ -477,6 +624,8 @@ async function matchItems(lines: RawLine[]): Promise<Map<string, MatchedItem>> {
         { sku: { in: skus } },
         { ebayListingId: { in: listingIds } },
         { shopifyVariantId: { in: variantIds } },
+        { whatnotVariantId: { in: wnVariants } },
+        { whatnotProductId: { in: wnProducts } },
         ...cutShort.map((s) => ({ sku: { startsWith: s } })),
       ],
     },
@@ -491,6 +640,8 @@ async function matchItems(lines: RawLine[]): Promise<Map<string, MatchedItem>> {
     const s = line.sku;
     const found =
       (line.shopifyVariantId && items.find((i) => i.shopifyVariantId === line.shopifyVariantId)) ||
+      (line.whatnotVariantId && items.find((i) => i.whatnotVariantId === line.whatnotVariantId)) ||
+      (line.whatnotProductId && items.find((i) => i.whatnotProductId === line.whatnotProductId)) ||
       (s && items.find((i) => i.ebaySku === s)) ||
       (s && items.find((i) => i.sku === s)) ||
       (s && s.length === EBAY_SKU_MAX && line.channel === "ebay" && items.find((i) => i.sku.startsWith(s))) ||
@@ -594,7 +745,7 @@ function toPickItem(item: MatchedItem, verifyBy: VerifyBy): PickItem {
 // ---------------------------------------------------------------------------
 
 export async function getPickList(options?: { fresh?: boolean }): Promise<ShipOrdersResponse> {
-  const { lines: raw, shopify, warnings } = await getOpenLines(options?.fresh);
+  const { lines: raw, shopify, whatnot, warnings } = await getOpenLines(options?.fresh);
   const matched = await matchItems(raw);
   const matchedItems = [...new Map([...matched.values()].map((i) => [i.id, i])).values()];
   const locations = await getItemLocations(matchedItems);
@@ -660,7 +811,7 @@ export async function getPickList(options?: { fresh?: boolean }): Promise<ShipOr
     };
   });
 
-  return { lines: sortWalkingPath(lines), fetchedAt: new Date().toISOString(), shopify, warnings };
+  return { lines: sortWalkingPath(lines), fetchedAt: new Date().toISOString(), shopify, whatnot, warnings };
 }
 
 // The old VA's lines: nobody here picks or packs those, so they never make
@@ -700,10 +851,12 @@ function combineGroups(lines: RawLine[]): Map<string, GroupOrder[]> {
 // to come back for it.
 // Shipping labels are bought on the order's own store (Cristian,
 // 2026-10-17), so Ready to pack links straight to it. eBay: the Seller Hub
-// order page (has Print shipping label). Shopify and Whatnot: the order in
-// Shopify admin ({shop}/admin/orders/{id} goes to admin.shopify.com).
-function orderUrl(l: Pick<RawLine, "channel" | "orderId">): string | null {
+// order page (has Print shipping label). Shopify: the order in Shopify admin
+// ({shop}/admin/orders/{id} goes to admin.shopify.com). Whatnot: the order
+// in the seller dashboard, the link Whatnot gives (whatnot.com only).
+function orderUrl(l: Pick<RawLine, "channel" | "orderId" | "url">): string | null {
   if (l.channel === "ebay") return `https://www.ebay.com/sh/ord/details?orderid=${encodeURIComponent(l.orderId)}`;
+  if (l.channel === "whatnot") return l.url && /^https:\/\/([a-z0-9-]+\.)*whatnot\.com\//i.test(l.url) ? l.url : null;
   const shop = getShopifyConfig()?.shop;
   const id = l.orderId.split("/").pop();
   return shop && id ? `https://${shop}/admin/orders/${id}` : null;
@@ -797,7 +950,7 @@ export type PickResponse =
   | {
       ok: false;
       reason: string;
-      // wrong_item | already_picked | not_open | not_in_app | scan_label | not_an_item
+      // wrong_item | already_picked | not_open | not_in_app | scan_label | not_an_item | cancel_requested
       code: string;
       scannedItem?: ScannedItem | null;
       expected?: ExpectedItem;
@@ -824,6 +977,12 @@ export async function pickUnit(req: PickRequest, by: string | null): Promise<Pic
   const line = await findOpenLine(req);
   if (!line) {
     return { ok: false, code: "not_open", reason: "That order isn't waiting to ship any more. It may have shipped or been cancelled." };
+  }
+  // Whatnot puts a cancellation on hold for the seller; it almost always
+  // goes through, so nothing comes off the shelf for it meanwhile. (eBay
+  // cancel requests stay a warning on the page, as before.)
+  if (line.channel === "whatnot" && line.cancelRequested) {
+    return { ok: false, code: "cancel_requested", reason: "The buyer asked to cancel this Whatnot order. Leave it on the shelf until that's sorted." };
   }
   const item = (await matchItems([line])).get(lineKey(line.channel, line.lineItemId));
   if (!item) {
