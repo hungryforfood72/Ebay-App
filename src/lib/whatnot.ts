@@ -87,7 +87,9 @@ function describeError(json: unknown): string {
 }
 
 export type Money = { amount: string; currency: string };
-export const usd = (n: number): Money => ({ amount: n.toFixed(2), currency: "USD" });
+// Whatnot takes whole dollars only ("amount must be a whole number of USD",
+// first live run 2026-11-06): the sync rounds before it gets here.
+export const usd = (n: number): Money => ({ amount: Number.isInteger(n) ? String(n) : n.toFixed(2), currency: "USD" });
 
 export type WhatnotProduct = {
   id: string;

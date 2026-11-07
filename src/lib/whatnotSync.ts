@@ -19,7 +19,6 @@ import {
   adjustInventory,
   createProduct,
   deleteProduct,
-  getMerchandising,
   getOrder,
   listOrderItems,
   listOrders,
@@ -85,6 +84,12 @@ export async function setCrossList(on: boolean): Promise<void> {
 }
 
 const NO_CATEGORY = "No Whatnot category for eBay category: ";
+
+// Whatnot takes whole-dollar prices only: the store price to the nearest
+// dollar, at least $1 (2026-11-06, first live run).
+export function whatnotDollars(price: number): number {
+  return Math.max(1, Math.round(price));
+}
 
 // The first rule whose text appears in the eBay category path, else the
 // default.
@@ -228,26 +233,18 @@ async function putOnWhatnot(
   try {
     await merchandise(productId, { transactionType: format, ...(format === "buy_it_now" ? { reserveForLive: false } : {}) });
   } catch (e) {
-    // Refused outright, or (a timeout) did it go up anyway? Ask.
-    let published: boolean | null = null;
-    if (e instanceof WhatnotError && (e.status === 422 || e.status === 403)) published = false;
-    else {
-      try {
-        const m = await getMerchandising(productId);
-        published = Boolean(m?.transaction_type || m?.active_in_shows);
-      } catch {
-        published = null;
-      }
-    }
+    // Refused outright: still a draft. Anything else (a timeout) can't be
+    // told apart from live (Whatnot reports a sale format even for drafts),
+    // so it stays on the books as on Whatnot and the error shows on the
+    // Whatnot page.
+    const published = e instanceof WhatnotError && (e.status === 422 || e.status === 403) ? false : null;
     if (published === false) {
       // Still a draft: off the books again, its count back to 0.
       await setInventory(variantId, 0, randomUUID()).catch(() => {});
       await prisma.item.update({ where: { id: item.id }, data: { whatnotPublishedAt: null, whatnotQuantity: null } });
       throw e;
     }
-    // Unknown: it stays on the books as on Whatnot; the stock sync keeps
-    // its count right either way.
-    if (published === null) throw e;
+    throw e;
   }
   // Live now. These two fix themselves if they fail: a missing price is
   // sent by the next stock sync, a missing show by applyBinShows.
@@ -283,7 +280,7 @@ export async function publishWhatnotOnlyItem(itemId: string): Promise<void> {
   if (problem) throw new Error(`${problem}. Set it aside for donation.`);
   const category = categoryFor(path, await getCategoryMap());
   if (!category) throw new Error(`${NO_CATEGORY}${path ?? "none"}. Set one on the Whatnot page.`);
-  const price = Number(item.price ?? (await getWhatnotStartPrice()));
+  const price = whatnotDollars(Number(item.price ?? (await getWhatnotStartPrice())));
   try {
     await putOnWhatnot(item, "auction", price, left, category.id);
     await prisma.item.update({ where: { id: item.id }, data: { status: "listed" } });
@@ -335,7 +332,8 @@ async function crossListWaiting(limit: number, deadline: number, errors: string[
       continue;
     }
     try {
-      const price = storePriceFor(item, pricing, retail.get(item.id) ?? null);
+      if (item.price == null || Number(item.price) <= 0) throw new Error("No price set for it yet.");
+      const price = whatnotDollars(storePriceFor(item, pricing, retail.get(item.id) ?? null));
       await putOnWhatnot(item, "buy_it_now", price, item.quantity - item.soldQuantity, category.id);
       listed++;
       // A sale while it was going up: the count catches up now.
@@ -401,7 +399,8 @@ export async function syncWhatnotStock(scope: string[] | "all"): Promise<string[
         }
       }
       if (item.whatnotFormat === "buy_it_now") {
-        const price = storePriceFor(item, pricing, retail.get(item.id) ?? null);
+        if (item.price == null || Number(item.price) <= 0) throw new Error("It has no price in the app, so its Whatnot price wasn't changed.");
+        const price = whatnotDollars(storePriceFor(item, pricing, retail.get(item.id) ?? null));
         if (item.whatnotPrice == null || Math.abs(Number(item.whatnotPrice) - price) >= 0.005) {
           await updateVariant(item.whatnotProductId!, { id: item.whatnotVariantId!, price });
           await prisma.item.update({ where: { id: item.id }, data: { whatnotPrice: price } });
@@ -543,32 +542,34 @@ export async function applyBinShows(itemIds?: string[]): Promise<string[]> {
 
 export type WhatnotSyncResult = { skipped?: string; listed: number; errors: string[] };
 
-// Takes a draft this app made off Whatnot, only once Whatnot confirms it
-// isn't live (one published by hand stays, flagged for Cristian). Its ids
-// are kept unless it's really gone. true = gone.
+// Takes a draft this app made off Whatnot: its count to 0 (best effort),
+// then deleted. (Whatnot reports a sale format even for drafts, so that
+// can't tell a draft from a live one; deleting is safe either way.) The
+// ids are kept and it's marked ended, like a sold-out listing, so an order
+// on it that comes in late (one Cristian published by hand) still matches
+// and gets recorded. Whatnot refuses the delete (409) while an order holds
+// it: left as is and flagged. true = gone.
 async function removeDraft(item: Item, errors: string[]): Promise<boolean> {
   const label = item.finalTitle ?? item.sku;
   try {
-    const m = await getMerchandising(item.whatnotProductId!);
-    if (m && (m.transaction_type || m.active_in_shows)) {
-      await prisma.item.update({
-        where: { id: item.id },
-        data: { whatnotError: "It's live on Whatnot, but the app doesn't have it as listed there. Check it in Whatnot by hand." },
+    if (item.whatnotVariantId) {
+      await setInventory(item.whatnotVariantId, 0, randomUUID()).catch((e) => {
+        if (e instanceof WhatnotError && e.status === 409) throw e;
       });
-      errors.push(`${label}: live on Whatnot but not tracked by the app`);
-      return false;
     }
-    if (m) {
-      if (item.whatnotVariantId) await setInventory(item.whatnotVariantId, 0, randomUUID());
-      await deleteProduct(item.whatnotProductId!);
-    }
+    await deleteProduct(item.whatnotProductId!);
   } catch (e) {
     if (!(e instanceof WhatnotError && e.status === 404)) {
+      if (e instanceof WhatnotError && e.status === 409) {
+        await prisma.item
+          .update({ where: { id: item.id }, data: { whatnotError: "Whatnot won't delete it (an order may hold it). Check it in Whatnot by hand." } })
+          .catch(() => {});
+      }
       errors.push(`Deleting the Whatnot draft of ${label}: ${errorText(e)}`);
       return false;
     }
   }
-  await prisma.item.update({ where: { id: item.id }, data: { whatnotProductId: null, whatnotVariantId: null, whatnotFormat: null } });
+  await prisma.item.update({ where: { id: item.id }, data: { whatnotQuantity: 0, whatnotEndedAt: new Date() } });
   return true;
 }
 
@@ -580,6 +581,7 @@ async function cleanUpDrafts(deadline: number, errors: string[]): Promise<void> 
       whatnotOnly: false,
       whatnotProductId: { not: null },
       whatnotPublishedAt: null,
+      whatnotEndedAt: null,
       OR: [
         { quantity: { lte: prisma.item.fields.soldQuantity } },
         { status: { notIn: ["listed", "exported"] } },
@@ -589,6 +591,8 @@ async function cleanUpDrafts(deadline: number, errors: string[]): Promise<void> 
         { whatnotSkipReason: { not: null } },
       ],
     },
+    // Oldest first, so a few stuck ones can't keep the rest waiting.
+    orderBy: { updatedAt: "asc" },
     take: 20,
   });
   for (const item of drafts) {
@@ -606,11 +610,17 @@ export async function runWhatnotSync(budgetMs = 120_000): Promise<WhatnotSyncRes
   const run = await withSyncLock("whatnot", "quick", async () => {
     // Webhook deliveries are retried for a few days at most.
     await prisma.whatnotWebhookEvent.deleteMany({ where: { receivedAt: { lt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } } });
-    await pollOrders(deadline, errors).catch((e) => errors.push(`Whatnot orders: ${errorText(e)}`));
+    let ordersChecked = true;
+    await pollOrders(deadline, errors).catch((e) => {
+      ordersChecked = false;
+      errors.push(`Whatnot orders: ${errorText(e)}`);
+    });
     errors.push(...(await applyBinShows()));
     errors.push(...(await syncWhatnotStock("all")));
     listed = await crossListWaiting(20, deadline, errors);
-    await cleanUpDrafts(deadline, errors);
+    // Only once this run's orders are in, so a sale on a draft is
+    // recorded before the draft goes.
+    if (ordersChecked) await cleanUpDrafts(deadline, errors);
   });
   if (!run.ran) return { skipped: "Another Whatnot sync is running.", listed: 0, errors: [] };
   return { listed, errors };
