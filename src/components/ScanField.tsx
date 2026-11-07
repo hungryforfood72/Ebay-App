@@ -269,6 +269,7 @@ export function ScanField({
           <input
             ref={inputRef}
             id={id}
+            data-scan-field=""
             type="text"
             inputMode={typing ? (numeric ? "numeric" : "text") : "none"}
             autoComplete="off"

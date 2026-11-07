@@ -35,6 +35,7 @@ import {
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { StationSignInCatcher } from "@/components/StationSignIn";
 import { logout, useCurrentUser } from "@/components/UserNav";
 import { cn } from "./cn";
 
@@ -193,6 +194,7 @@ export function AppShell({
 
   return (
     <div className="flex min-h-dvh flex-col">
+      {user && <StationSignInCatcher />}
       <header
         className="sticky top-0 z-30 border-b border-border bg-surface/90 backdrop-blur"
         style={{ paddingTop: "env(safe-area-inset-top)" }}

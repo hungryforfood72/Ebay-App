@@ -196,7 +196,19 @@ export function StationPicker({
   );
 }
 
-export function StationOnline({ online }: { online: boolean }) {
+// pcSignedIn false = the printer helper is up (labels still print) but
+// nobody's signed in on the station PC's screen (Cristian, 2026-11-06: the
+// handheld said Online while the PC had signed itself out after an idle
+// hour). Scanning the QR on its screen signs back in.
+export function StationOnline({ online, pcSignedIn }: { online: boolean; pcSignedIn?: boolean }) {
+  if (online && pcSignedIn === false) {
+    return (
+      <span className="inline-flex shrink-0 items-center gap-1.5 text-xs font-medium text-amber-700">
+        <span className="size-2 rounded-full bg-amber-500" aria-hidden />
+        PC signed out: scan its QR
+      </span>
+    );
+  }
   return (
     <span
       className={cn(

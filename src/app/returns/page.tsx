@@ -474,7 +474,7 @@ export default function ReturnsPage() {
               <span className="flex min-w-0 items-center gap-2">
                 <span className="text-muted-foreground">Labels print at</span>
                 <span className="truncate font-medium text-foreground">{station.name}</span>
-                <StationOnline online={station.online || station.helperOnline} />
+                <StationOnline online={station.online || station.helperOnline} pcSignedIn={station.online} />
               </span>
               <StationSignOutButton stationId={station.id} stationName={station.name} />
             </div>

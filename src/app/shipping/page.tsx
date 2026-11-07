@@ -257,7 +257,7 @@ export default function ShippingPage() {
                 ) : null}
               </p>
             </div>
-            <StationOnline online={station.online || station.helperActive} />
+            <StationOnline online={station.online || station.helperActive} pcSignedIn={station.online} />
             <StationSignOutButton stationId={station.id} stationName={station.name} />
           </Card>
         )}

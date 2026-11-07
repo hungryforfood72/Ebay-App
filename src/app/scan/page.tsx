@@ -1987,7 +1987,10 @@ function ScanPageInner() {
                 <span className="flex min-w-0 items-center gap-2">
                   <span className="hidden text-muted-foreground sm:inline">Station</span>
                   <span className="truncate font-medium text-foreground">{station.name}</span>
-                  <StationOnline online={Boolean(liveWeight.status?.scaleOnline) || station.online || station.helperOnline} />
+                  <StationOnline
+                    online={Boolean(liveWeight.status?.scaleOnline) || station.online || station.helperOnline}
+                    pcSignedIn={liveWeight.status?.online ?? station.online}
+                  />
                 </span>
                 <StationSignOutButton stationId={station.id} stationName={station.name} />
               </div>

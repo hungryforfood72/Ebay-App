@@ -2,7 +2,14 @@
 
 import { Button } from "@/components/ui/Button";
 import { Field, Input } from "@/components/ui/Input";
-import { HANDHELD_STATION_KEYS, PIN_PATTERN } from "@/lib/stationSignInCode";
+import {
+  HANDHELD_STATION_KEYS,
+  isStationSignInCode,
+  PIN_PATTERN,
+  SIGN_IN_CODE_ALPHABET,
+  SIGN_IN_CODE_LENGTH,
+  SIGN_IN_CODE_PREFIX,
+} from "@/lib/stationSignInCode";
 import { PinPad } from "./PinPad";
 import { CircleCheck, LoaderCircle, Monitor } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -133,6 +140,99 @@ function MovingNote({ from, to }: { from: string[]; to: string }) {
       You&apos;re signed in at <span className="font-semibold">{from.join(", ")}</span>. Signing in at {to} signs you out
       there.
     </p>
+  );
+}
+
+// A station PC's sign-in QR scanned on a screen with no scan box to take it
+// (Cristian, 2026-11-06: Josi scanned it on the List page's quantity step
+// and nothing happened). Mounted once per page by AppShell. It watches the
+// scanner's keystrokes (and inserted text, for a scanner that commits text
+// instead of keys) page-wide; a scan box (ScanField, data-scan-field)
+// handles its own. Once "SIGNIN-" has come in, the rest of the code is kept
+// out of whatever field had the cursor, so its digits can't land in a
+// quantity; any of the prefix's letters that did land in a text box are
+// taken back out.
+const SCAN_GAP_MS = 120;
+
+export function StationSignInCatcher() {
+  const [code, setCode] = useState<string | null>(null);
+  const openRef = useRef(false);
+  useEffect(() => {
+    const prefix = SIGN_IN_CODE_PREFIX;
+    const full = prefix.length + SIGN_IN_CODE_LENGTH;
+    const bufs = { key: { text: "", at: 0 }, input: { text: "", at: 0 } };
+    // Scan boxes catch their own; password and one-time-code fields are
+    // never watched at all.
+    const leaveAlone = (t: EventTarget | null) =>
+      t instanceof Element &&
+      t.closest('[data-scan-field], input[type="password"], [autocomplete="one-time-code"], [data-no-scan-catch]') != null;
+    const reset = () => {
+      bufs.key.text = "";
+      bufs.input.text = "";
+    };
+
+    function stripFrom(el: Element | null) {
+      if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return;
+      if (el instanceof HTMLInputElement && el.type === "number") return;
+      // Keys are held back from the "-" on, so at most "SIGNIN" got in.
+      const cleaned = el.value.replace(/SIGNIN$/i, "");
+      if (cleaned === el.value) return;
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value")?.set?.call(el, cleaned);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+
+    function feed(which: "key" | "input", chars: string, e: Event) {
+      if (!e.isTrusted || openRef.current || leaveAlone(e.target)) return;
+      const b = bufs[which];
+      const now = performance.now();
+      if (now - b.at > SCAN_GAP_MS) b.text = "";
+      b.at = now;
+      b.text = (b.text + chars.toUpperCase()).slice(-(full + 8));
+      const at = b.text.lastIndexOf(prefix);
+      if (at < 0) return;
+      const candidate = b.text.slice(at);
+      // Something that can't be a code after the prefix: not a sign-in
+      // scan, so nothing is held back.
+      if (![...candidate.slice(prefix.length, full)].every((c) => SIGN_IN_CODE_ALPHABET.includes(c))) {
+        reset();
+        return;
+      }
+      // Prefix in: this part of the scan stays out of the page's fields.
+      e.preventDefault();
+      if (candidate.length < full) return;
+      reset();
+      if (!isStationSignInCode(candidate.slice(0, full))) return;
+      stripFrom(document.activeElement);
+      openRef.current = true;
+      setCode(candidate.slice(0, full));
+    }
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) feed("key", e.key, e);
+    };
+    // Typed or scanned text only: never a paste, a drop or autocorrect.
+    const onBeforeInput = (e: Event) => {
+      const ie = e as InputEvent;
+      if (ie.inputType !== "insertText" || ie.isComposing || !ie.data) return;
+      feed("input", ie.data, e);
+    };
+    window.addEventListener("keydown", onKey, true);
+    window.addEventListener("beforeinput", onBeforeInput, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("beforeinput", onBeforeInput, true);
+    };
+  }, []);
+  if (!code) return null;
+  return (
+    <StationSignInDialog
+      code={code}
+      onClose={() => {
+        openRef.current = false;
+        setCode(null);
+      }}
+    />
   );
 }
 
