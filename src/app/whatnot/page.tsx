@@ -17,6 +17,9 @@ import { useCallback, useEffect, useState } from "react";
 type Show = { id: string; title: string; status: string; startsAt: string | null; url: string };
 type BinRow = { code: string; shelf: string | null; units: number; onWhatnot: number; show: { id: string; title: string; startsAt: string | null } | null };
 type CategoryRule = { match: string; categoryId: string; categoryName: string };
+// What the sync writes when an item's eBay category has no Whatnot one
+// (whatnotSync.ts NO_CATEGORY).
+const NO_CATEGORY_PREFIX = "No Whatnot category for eBay category: ";
 type CategoryMap = { rules: CategoryRule[]; defaultId: string | null; defaultName: string | null };
 type Overview = {
   connected: boolean;
@@ -197,18 +200,47 @@ export default function WhatnotPage() {
               </span>
             </span>
           </label>
-          {data.skipped.length > 0 && (
-            <div className="mb-3 text-sm">
-              <p className="font-medium">Not going on Whatnot</p>
-              <ul className="mt-1 list-disc space-y-0.5 pl-5 text-muted-foreground">
-                {data.skipped.map((s) => (
-                  <li key={s.reason}>
-                    {s.reason}: {s.count}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+          {data.skipped.length > 0 && (() => {
+            const noCategory = data.skipped.filter((s) => s.reason.startsWith(NO_CATEGORY_PREFIX));
+            const other = data.skipped.filter((s) => !s.reason.startsWith(NO_CATEGORY_PREFIX));
+            const waitingOnCategory = noCategory.reduce((sum, s) => sum + s.count, 0);
+            return (
+              <div className="mb-3 text-sm">
+                {waitingOnCategory > 0 && (
+                  <div className="mb-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-amber-950">
+                    <p className="font-medium">
+                      {waitingOnCategory} waiting for a Whatnot category, from {noCategory.length} eBay categor{noCategory.length === 1 ? "y" : "ies"}.
+                    </p>
+                    <p className="mt-0.5 text-amber-900/80">
+                      Pick categories below (at least the &quot;Everything else&quot; one). They go up on the next sync after you save.
+                    </p>
+                    <details className="mt-1">
+                      <summary className="cursor-pointer text-xs font-medium">Which eBay categories</summary>
+                      <ul className="mt-1 space-y-0.5 text-xs">
+                        {noCategory.map((s) => (
+                          <li key={s.reason}>
+                            {s.reason.slice(NO_CATEGORY_PREFIX.length)}: {s.count}
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  </div>
+                )}
+                {other.length > 0 && (
+                  <>
+                    <p className="font-medium">Not going on Whatnot</p>
+                    <ul className="mt-1 list-disc space-y-0.5 pl-5 text-muted-foreground">
+                      {other.map((s) => (
+                        <li key={s.reason}>
+                          {s.reason.replace(/\.\s*$/, "")}: {s.count}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </div>
+            );
+          })()}
           {data.failed.length > 0 && (
             <div className="text-sm">
               <div className="flex items-center justify-between gap-2">
@@ -299,7 +331,7 @@ function CategoryCard({
     <Card>
       <SectionHeader
         title="Categories"
-        description="Whatnot needs a category for every listing. A rule matches text in the item's eBay category (like &quot;Makeup&quot; or &quot;Hair Care&quot;)."
+        description="Whatnot needs a category for every listing. Tap Find, then pick one for everything else. Add rules for anything that should go somewhere else: a rule matches text in the item's eBay category (like &quot;Hair Care&quot; or &quot;Food &amp; Beverages&quot;). Save when done."
         action={
           <Button size="sm" variant="outline" onClick={find} disabled={finding || !connected}>
             {finding ? "Looking…" : "Find my Whatnot categories"}
@@ -311,10 +343,30 @@ function CategoryCard({
           {found.length === 0 ? (
             <p>No listings on Whatnot to read categories from. List one item in the Whatnot app in each category you use, then try again.</p>
           ) : (
-            <ul className="space-y-1">
+            <ul className="space-y-2">
               {found.map((c) => (
-                <li key={c.id}>
-                  <span className="font-mono">{c.id}</span> · {c.name ?? "unnamed"} · {c.count} listing{c.count === 1 ? "" : "s"} (e.g. {c.example})
+                <li key={c.id} className="flex flex-wrap items-center gap-2">
+                  <span className="min-w-0 flex-1">
+                    <span className="font-medium">{c.name ?? "Unnamed"}</span> <span className="font-mono text-muted-foreground">{c.id}</span> ·{" "}
+                    {c.count} listing{c.count === 1 ? "" : "s"} (e.g. {c.example})
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setDefaultId(c.id);
+                      setDefaultName(c.name ?? "");
+                    }}
+                  >
+                    Use for everything else
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setRules([...rules, { match: "", categoryId: c.id, categoryName: c.name ?? "" }])}
+                  >
+                    Add a rule with it
+                  </Button>
                 </li>
               ))}
             </ul>
