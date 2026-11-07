@@ -106,7 +106,10 @@ export function whatnotBanReason(name: string, category: string | null, opts: { 
   if (category && CATEGORY_RULE.test(normalize(category))) {
     return "Whatnot doesn't allow medicine or medical supplies.";
   }
-  if (!opts.supplementsOk && SUPPLEMENT.test(n) && !SKINCARE.test(n)) {
+  // By eBay category too (2026-11-06: "HALLS Vitamin C Drops" and "Vitex
+  // Fruit 400mg Vegan Capsules" got past the wording; their category says
+  // Vitamins & Lifestyle Supplements).
+  if (!opts.supplementsOk && ((SUPPLEMENT.test(n) && !SKINCARE.test(n)) || SUPPLEMENT_CATEGORY.test(category ?? ""))) {
     return "Whatnot only lets approved sellers sell supplements and vitamins, and this account isn't approved.";
   }
   return null;
@@ -115,8 +118,13 @@ export function whatnotBanReason(name: string, category: string | null, opts: { 
 // Supplements need 3 months left at the time of order; everything else
 // has to reach the buyer before its date, and a Whatnot show can be weeks
 // after listing.
-export function whatnotDaysNeeded(name: string): number {
-  return SUPPLEMENT.test(normalize(name)) ? 90 : 30;
+// eBay categories that are supplements whatever the title says.
+const SUPPLEMENT_CATEGORY = /Vitamins & Lifestyle Supplements|Sports Nutrition/i;
+
+// category: the eBay category path, when known (supplements by category get
+// Whatnot's 90 days too).
+export function whatnotDaysNeeded(name: string, category?: string | null): number {
+  return SUPPLEMENT.test(normalize(name)) || SUPPLEMENT_CATEGORY.test(category ?? "") ? 90 : 30;
 }
 
 export type WhatnotVerdict = {

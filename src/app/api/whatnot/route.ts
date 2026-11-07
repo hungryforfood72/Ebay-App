@@ -47,7 +47,7 @@ export async function GET(request: NextRequest) {
     prisma.item.count({
       where: {
         whatnotOnly: false,
-        whatnotProductId: null,
+        OR: [{ whatnotProductId: null }, { whatnotPublishedAt: null, whatnotEndedAt: null }],
         whatnotSkipReason: null,
         whatnotError: null,
         status: { in: ["listed", "exported"] },

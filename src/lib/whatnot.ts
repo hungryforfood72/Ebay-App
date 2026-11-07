@@ -263,6 +263,18 @@ export async function merchandise(
   });
 }
 
+// A product's sale state: transaction_type is null while it's a draft.
+// null = no such product.
+export type WhatnotMerchandising = { transaction_type?: string | null; reserve_for_live?: boolean | null; active_in_shows?: boolean | null };
+export async function getMerchandising(productId: string): Promise<WhatnotMerchandising | null> {
+  try {
+    return await call<WhatnotMerchandising>("GET", `/merchandising/products/${id(productId)}`);
+  } catch (e) {
+    if (e instanceof WhatnotError && e.status === 404) return null;
+    throw e;
+  }
+}
+
 export async function listShows(status: "scheduled" | "live"): Promise<WhatnotShow[]> {
   return pageItems(await call<Page<WhatnotShow>>("GET", `/shows?status=${status}&limit=50`)).items;
 }

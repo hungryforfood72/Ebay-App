@@ -26,7 +26,12 @@ export async function GET(request: NextRequest) {
   // Whatnot (whatnotSync.ts): orders the webhook missed, bins to shows,
   // every Whatnot count and price, then the next batch to cross-list.
   // Whatever is left of the 300 seconds, less a margin.
-  const whatnotBudget = Math.max(20_000, 270_000 - (Date.now() - startedAt));
-  const whatnot = await runWhatnotSync(whatnotBudget).catch((e) => ({ listed: 0, errors: [String(e)] }));
+  // Too little left: skip it this run rather than be cut off mid-listing
+  // (the webhook still records Whatnot sales; the next run catches up).
+  const whatnotBudget = 270_000 - (Date.now() - startedAt);
+  const whatnot =
+    whatnotBudget < 30_000
+      ? { skipped: "Not enough time left this run.", listed: 0, errors: [] }
+      : await runWhatnotSync(whatnotBudget).catch((e) => ({ listed: 0, errors: [String(e)] }));
   return NextResponse.json({ ...sales, shopifyAll: shopify, inPersonInvoices: invoices, whatnot });
 }

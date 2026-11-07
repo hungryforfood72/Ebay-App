@@ -19,6 +19,7 @@ import {
   adjustInventory,
   createProduct,
   deleteProduct,
+  getMerchandising,
   getOrder,
   listOrderItems,
   listOrders,
@@ -128,7 +129,7 @@ async function whatnotProblem(item: Item, categoryPath: string | null): Promise<
     ? "Whatnot doesn't allow medicine or medical supplies."
     : whatnotBanReason(title, categoryPath, { supplementsOk: await supplementsApproved() });
   if (banned && !(item.upc && (await allowedByOwner(item.upc, title)))) return banned;
-  const days = whatnotDaysNeeded(title);
+  const days = whatnotDaysNeeded(title, categoryPath);
   if (item.expirationDate && item.expirationDate.getTime() < Date.now() + days * 24 * 60 * 60 * 1000) {
     return `Less than ${days} days before its date`;
   }
@@ -194,25 +195,77 @@ async function putOnWhatnot(
     variantId = variants[0].id;
     await prisma.item.update({ where: { id: item.id }, data: { whatnotVariantId: variantId } });
   }
-  // Sale format first: the price applies under it.
-  await merchandise(productId, { transactionType: format, ...(format === "buy_it_now" ? { reserveForLive: false } : {}) });
+  // The count as it is now, not as it was when the run started: a sale in
+  // the meantime must not go back up for sale.
+  const fresh = await prisma.item.findUniqueOrThrow({ where: { id: item.id } });
+  const left = Math.max(0, fresh.quantity - fresh.soldQuantity);
+  const qty = format === "buy_it_now" && !(isLive(fresh) && !fresh.pastDateAt) ? 0 : Math.min(quantity, left);
+  if (qty <= 0) throw new Error("Nothing left to sell: it sold or came down before it went up on Whatnot.");
+
+  // Price and stock first: setting the sale format publishes the product,
+  // and Whatnot refuses that for an unpriced variant (first live run,
+  // 2026-11-06: "Every variant must have a price before this product can be
+  // merchandised"). The price applies under the product's sale format, so
+  // it's set once more after the format, in case that moved it.
   await updateVariant(productId, { id: variantId, sku: item.sku, externalId: item.sku, price });
-  await setInventory(variantId, quantity, randomUUID());
-  const show = format === "auction" ? await showForItem(item.id) : null;
-  if (show) await merchandise(productId, { shows: { strategy: "REPLACE", showIds: [show.showId] } });
+  await setInventory(variantId, qty, randomUUID());
+  // On the app's books as on Whatnot before the call that publishes it: if
+  // the run dies right after, the stock sync and order matching already
+  // know it's there (security review, 2026-11-06).
   await prisma.item.update({
     where: { id: item.id },
     data: {
       whatnotFormat: format,
       whatnotPrice: price,
-      whatnotQuantity: quantity,
+      whatnotQuantity: qty,
       whatnotPublishedAt: new Date(),
       whatnotEndedAt: null,
-      whatnotShowId: show?.showId ?? null,
+      whatnotShowId: null,
       whatnotError: null,
       whatnotSkipReason: null,
     },
   });
+  try {
+    await merchandise(productId, { transactionType: format, ...(format === "buy_it_now" ? { reserveForLive: false } : {}) });
+  } catch (e) {
+    // Refused outright, or (a timeout) did it go up anyway? Ask.
+    let published: boolean | null = null;
+    if (e instanceof WhatnotError && (e.status === 422 || e.status === 403)) published = false;
+    else {
+      try {
+        const m = await getMerchandising(productId);
+        published = Boolean(m?.transaction_type || m?.active_in_shows);
+      } catch {
+        published = null;
+      }
+    }
+    if (published === false) {
+      // Still a draft: off the books again, its count back to 0.
+      await setInventory(variantId, 0, randomUUID()).catch(() => {});
+      await prisma.item.update({ where: { id: item.id }, data: { whatnotPublishedAt: null, whatnotQuantity: null } });
+      throw e;
+    }
+    // Unknown: it stays on the books as on Whatnot; the stock sync keeps
+    // its count right either way.
+    if (published === null) throw e;
+  }
+  // Live now. These two fix themselves if they fail: a missing price is
+  // sent by the next stock sync, a missing show by applyBinShows.
+  try {
+    await updateVariant(productId, { id: variantId, price });
+  } catch (e) {
+    console.error(`[whatnot] price for ${item.sku} after publishing`, e);
+    await prisma.item.update({ where: { id: item.id }, data: { whatnotPrice: null } });
+  }
+  const show = format === "auction" ? await showForItem(item.id) : null;
+  if (show) {
+    try {
+      await merchandise(productId, { shows: { strategy: "REPLACE", showIds: [show.showId] } });
+      await prisma.item.update({ where: { id: item.id }, data: { whatnotShowId: show.showId } });
+    } catch (e) {
+      console.error(`[whatnot] show for ${item.sku}`, e);
+    }
+  }
 }
 
 // Review's Publish on a Whatnot-only item: an auction at its start price.
@@ -246,7 +299,9 @@ async function crossListWaiting(limit: number, deadline: number, errors: string[
   const candidates = await prisma.item.findMany({
     where: {
       whatnotOnly: false,
-      whatnotProductId: null,
+      // Not on Whatnot, or made there but never published (a failed run):
+      // putOnWhatnot picks the same product back up.
+      OR: [{ whatnotProductId: null }, { whatnotPublishedAt: null, whatnotEndedAt: null }],
       whatnotSkipReason: null,
       whatnotError: null,
       status: { in: ["listed", "exported"] },
@@ -263,12 +318,16 @@ async function crossListWaiting(limit: number, deadline: number, errors: string[
   const retail = await retailPrices(candidates);
   let listed = 0;
   for (const item of candidates) {
-    if (Date.now() > deadline) break;
+    // Room to finish this one before the function's time runs out.
+    if (Date.now() > deadline - 20_000) break;
     if (!isLive(item)) continue;
     const path = await categoryPathOf(item);
     const problem = await whatnotProblem(item, path);
     const category = problem ? null : categoryFor(path, map);
     if (problem || !category) {
+      // A draft made on Whatnot before the item was blocked: delete it, so
+      // nothing that can't be sold there sits in the account.
+      if (problem && item.whatnotProductId && !item.whatnotPublishedAt && !(await removeDraft(item, errors))) continue;
       await prisma.item.update({
         where: { id: item.id },
         data: { whatnotSkipReason: problem ?? `${NO_CATEGORY}${path ?? "none"}` },
@@ -279,6 +338,8 @@ async function crossListWaiting(limit: number, deadline: number, errors: string[
       const price = storePriceFor(item, pricing, retail.get(item.id) ?? null);
       await putOnWhatnot(item, "buy_it_now", price, item.quantity - item.soldQuantity, category.id);
       listed++;
+      // A sale while it was going up: the count catches up now.
+      errors.push(...(await syncWhatnotStock([item.id])));
     } catch (e) {
       const message = errorText(e);
       errors.push(`Listing ${item.finalTitle ?? item.sku} on Whatnot: ${message}`);
@@ -373,14 +434,18 @@ export async function processWhatnotOrder(orderId: string): Promise<{ changed: s
       ...(line.variant_id ? [{ whatnotVariantId: line.variant_id }] : []),
       ...(line.product_id ? [{ whatnotProductId: line.product_id }] : []),
     ];
+    // Matched by Whatnot's ids: only this app's API calls made those, so
+    // it's ours even if the run that published it never finished.
+    const byId = ids.length ? await prisma.item.findFirst({ where: { OR: ids }, select: { id: true, whatnotPublishedAt: true } }) : null;
     const item =
-      (ids.length ? await prisma.item.findFirst({ where: { OR: ids }, select: { id: true, whatnotPublishedAt: true } }) : null) ??
+      byId ??
       (sku
         ? await prisma.item.findFirst({ where: { sku, whatnotPublishedAt: { not: null } }, select: { id: true, whatnotPublishedAt: true } })
         : null);
-    if (!item?.whatnotPublishedAt) continue;
-    // Placed before this listing went up through the API: not ours.
-    if (new Date(order.created_at).getTime() < item.whatnotPublishedAt.getTime() - 60_000) continue;
+    if (!item) continue;
+    // By SKU only, placed before this listing went up through the API: an
+    // old Shopify-channel order, not ours.
+    if (!byId && (!item.whatnotPublishedAt || new Date(order.created_at).getTime() < item.whatnotPublishedAt.getTime() - 60_000)) continue;
     const revenue = amount(line.unit_price) * line.quantity;
     try {
       const r = await recordWhatnotSale({
@@ -478,6 +543,60 @@ export async function applyBinShows(itemIds?: string[]): Promise<string[]> {
 
 export type WhatnotSyncResult = { skipped?: string; listed: number; errors: string[] };
 
+// Takes a draft this app made off Whatnot, only once Whatnot confirms it
+// isn't live (one published by hand stays, flagged for Cristian). Its ids
+// are kept unless it's really gone. true = gone.
+async function removeDraft(item: Item, errors: string[]): Promise<boolean> {
+  const label = item.finalTitle ?? item.sku;
+  try {
+    const m = await getMerchandising(item.whatnotProductId!);
+    if (m && (m.transaction_type || m.active_in_shows)) {
+      await prisma.item.update({
+        where: { id: item.id },
+        data: { whatnotError: "It's live on Whatnot, but the app doesn't have it as listed there. Check it in Whatnot by hand." },
+      });
+      errors.push(`${label}: live on Whatnot but not tracked by the app`);
+      return false;
+    }
+    if (m) {
+      if (item.whatnotVariantId) await setInventory(item.whatnotVariantId, 0, randomUUID());
+      await deleteProduct(item.whatnotProductId!);
+    }
+  } catch (e) {
+    if (!(e instanceof WhatnotError && e.status === 404)) {
+      errors.push(`Deleting the Whatnot draft of ${label}: ${errorText(e)}`);
+      return false;
+    }
+  }
+  await prisma.item.update({ where: { id: item.id }, data: { whatnotProductId: null, whatnotVariantId: null, whatnotFormat: null } });
+  return true;
+}
+
+// Drafts left from failed runs whose item can't go up any more (sold out,
+// came down, skipped): off Whatnot, so nothing unsellable sits there.
+async function cleanUpDrafts(deadline: number, errors: string[]): Promise<void> {
+  const drafts = await prisma.item.findMany({
+    where: {
+      whatnotOnly: false,
+      whatnotProductId: { not: null },
+      whatnotPublishedAt: null,
+      OR: [
+        { quantity: { lte: prisma.item.fields.soldQuantity } },
+        { status: { notIn: ["listed", "exported"] } },
+        { expiredAt: { not: null } },
+        { pastDateAt: { not: null } },
+        { listingEndedAt: { not: null } },
+        { whatnotSkipReason: { not: null } },
+      ],
+    },
+    take: 20,
+  });
+  for (const item of drafts) {
+    if (Date.now() > deadline - 10_000) break;
+    await removeDraft(item, errors);
+  }
+}
+
 // The 10-minute cron's Whatnot step.
 export async function runWhatnotSync(budgetMs = 120_000): Promise<WhatnotSyncResult> {
   if (!whatnotConfigured()) return { skipped: "Whatnot isn't connected.", listed: 0, errors: [] };
@@ -491,6 +610,7 @@ export async function runWhatnotSync(budgetMs = 120_000): Promise<WhatnotSyncRes
     errors.push(...(await applyBinShows()));
     errors.push(...(await syncWhatnotStock("all")));
     listed = await crossListWaiting(20, deadline, errors);
+    await cleanUpDrafts(deadline, errors);
   });
   if (!run.ran) return { skipped: "Another Whatnot sync is running.", listed: 0, errors: [] };
   return { listed, errors };
